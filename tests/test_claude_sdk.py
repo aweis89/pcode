@@ -49,6 +49,15 @@ from pcode.diagnostics import transient
 from pcode.meridian_reminders import append_reminder
 
 MODEL = "claude-test-1"
+# What the CLI's own web tools answer, in its format (verified with 2.1.285).
+WEB_RESULTS = {
+    "WebSearch": (
+        'Web search results for query: "pcode"\n\n'
+        'Links: [{"title":"pcode docs","url":"https://pcode.example/docs"}]\n\n'
+        "pcode is a coding agent."
+    ),
+    "WebFetch": "The page says hello.",
+}
 
 
 @dataclass
@@ -217,7 +226,22 @@ class FakeCLI:
                     )
                 )
                 return
-            calls, refused, _ = await self._stream(reply)
+            calls, refused, tools = await self._stream(reply)
+            # The CLI runs its own web tools as soon as the message ends.
+            web = [
+                (tool_id, WEB_RESULTS[name], False)
+                for kind, tool_id, name, _ in tools
+                if kind == "web"
+            ]
+            for tool_id, text, error in web:
+                block = ToolResultBlock(tool_id, text, error)
+                self.out.put_nowait(UserMessage([block], uuid=self._uuid()))
+            if web and not calls:
+                content = [
+                    {"type": "tool_result", "tool_use_id": i, "content": c, "is_error": e}
+                    for i, c, e in web
+                ]
+                continue
             if refused == ["malformed"]:
                 # An unparseable tool_use: no handler call, just a retried request.
                 await asyncio.sleep(0.05)
@@ -245,7 +269,7 @@ class FakeCLI:
             )
             content = [
                 {"type": "tool_result", "tool_use_id": i, "content": c, "is_error": e}
-                for i, c, e in results
+                for i, c, e in web + list(results)
             ] + self.queued
             self.queued = []
 
@@ -294,8 +318,9 @@ class FakeCLI:
             else:
                 kind, name, arguments = block
                 tool_id = f"toolu_{next(self.world.ids)}"
-                # A stray call names the tool without the CLI's prefix.
-                wire = name if kind == "stray" else f"{claude.TOOL_PREFIX}{name}"
+                # A stray call names the tool without the CLI's prefix, as does
+                # a call to one of the CLI's own (web) tools.
+                wire = name if kind in ("stray", "web") else f"{claude.TOOL_PREFIX}{name}"
                 self._event(
                     {
                         "type": "content_block_start",
@@ -324,7 +349,7 @@ class FakeCLI:
                     )
                 )
                 tools.append((kind, tool_id, name, arguments))
-                if not start_calls:
+                if not start_calls or kind == "web":
                     pass
                 elif kind == "malformed":
                     refused = ["malformed"]
@@ -1116,3 +1141,125 @@ def test_resume_index_persists_and_prunes(tmp_path, monkeypatch):
     pruned = claude.ResumeIndex(path)
     assert pruned.get("k5") == point and pruned.get("k0") is None
     assert len(path.read_text().splitlines()) == 2
+
+
+def web_agent() -> tuple[Agent, list[str]]:
+    from pydantic_ai.capabilities import WebFetch, WebSearch
+
+    return make_agent(capabilities=[WebSearch(local=False), WebFetch(local=False)])
+
+
+def test_cli_web_tools_fold_into_one_response(world):
+    from pydantic_ai.messages import NativeToolCallPart, NativeToolReturnPart
+
+    agent, calls = web_agent()
+    world.replies = [
+        [
+            ("text", "Searching."),
+            ("web", "WebSearch", {"query": "pcode"}),
+            ("web", "WebFetch", {"url": "https://pcode.example/docs", "prompt": "gist?"}),
+        ],
+        [("text", "pcode is a coding agent.")],
+        [("text", "still a coding agent")],
+    ]
+
+    async def main():
+        first = await agent.run("what is pcode?")
+        second = await agent.run("sure?", message_history=first.all_messages())
+        return first, second
+
+    first, second = run(main)
+    assert second.output == "still a coding agent"
+    [cli] = world.clients  # the CLI's own follow-up never retired the process
+    assert cli.options.tools == ["WebFetch", "WebSearch"]
+    assert cli.options.allowed_tools == [f"mcp__{claude.SERVER}", "WebFetch", "WebSearch"]
+    responses = [m for m in first.all_messages() if isinstance(m, ModelResponse)]
+    [response] = responses  # one pcode response for both CLI messages
+    kinds = [type(part).__name__ for part in response.parts]
+    assert kinds == [
+        "TextPart",
+        "NativeToolCallPart",
+        "NativeToolCallPart",
+        "NativeToolReturnPart",
+        "NativeToolReturnPart",
+        "TextPart",
+    ]
+    search, fetch = (p for p in response.parts if isinstance(p, NativeToolCallPart))
+    assert (search.tool_name, search.args_as_dict()) == ("web_search", {"query": "pcode"})
+    assert fetch.tool_name == "web_fetch" and search.provider_name == "claude"
+    results = {p.tool_name: p for p in response.parts if isinstance(p, NativeToolReturnPart)}
+    [hit] = results["web_search"].content
+    assert (hit["title"], hit["url"]) == ("pcode docs", "https://pcode.example/docs")
+    page = results["web_fetch"].content
+    assert page["url"] == "https://pcode.example/docs"
+    assert page["content"]["source"]["data"] == "The page says hello."
+    # Both requests' usage, counted once each.
+    assert response.usage.input_tokens == 2 * (10 + 900 + 20)
+    assert response.usage.output_tokens == 10
+    assert response.finish_reason == "stop"
+    assert calls == []
+    # The next turn continued the same process with just the new prompt.
+    assert texts(cli.requests[-1]) == ["sure?"]
+
+
+def test_cli_web_results_beside_a_pcode_call_open_the_next_response(world):
+    from pydantic_ai.messages import NativeToolCallPart, NativeToolReturnPart
+
+    agent, calls = web_agent()
+    world.replies = [
+        [("web", "WebSearch", {"query": "pcode"}), ("tool", "lookup", {"key": "a"})],
+        [("text", "found it")],
+    ]
+
+    first = run(lambda: agent.run("both"))
+    assert first.output == "found it" and calls == ["a"]
+    [cli] = world.clients
+    [call, answer] = [m for m in first.all_messages() if isinstance(m, ModelResponse)]
+    assert not any(isinstance(p, NativeToolReturnPart) for p in call.parts)
+    [result] = [p for p in answer.parts if isinstance(p, NativeToolReturnPart)]
+    assert result.tool_call_id == next(
+        p.tool_call_id for p in call.parts if isinstance(p, NativeToolCallPart)
+    )
+    # pcode's result and the CLI's own reached the model in one request.
+    assert {b["tool_use_id"] for b in cli.requests[-1]} == {
+        result.tool_call_id,
+        next(p.tool_call_id for p in call.parts if isinstance(p, ToolCallPart)),
+    }
+
+
+def test_cli_web_tools_are_off_without_native_tools(world):
+    agent, _ = make_agent()
+    world.replies = [[("text", "hi")]]
+    run(lambda: agent.run("hello"))
+    [cli] = world.clients
+    assert cli.options.tools == []
+    assert cli.options.allowed_tools == [f"mcp__{claude.SERVER}"]
+
+
+def test_replay_renders_cli_web_blocks():
+    delta = [
+        {"role": "user", "content": [{"type": "text", "text": "look"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "server_tool_use", "id": "s1", "name": "web_search", "input": {"q": 1}},
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "s1",
+                    "content": [{"type": "web_search_result", "title": "T", "url": "https://u"}],
+                },
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "s2",
+                    "content": {
+                        "type": "web_fetch_result",
+                        "content": {"type": "document", "source": {"data": "page text"}},
+                    },
+                },
+            ],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "next"}]},
+    ]
+    [block] = claude.replay(delta)
+    assert '[Ran web_search (id s1) with {"q": 1}]' in block["text"]
+    assert "T: https://u" in block["text"] and "page text" in block["text"]

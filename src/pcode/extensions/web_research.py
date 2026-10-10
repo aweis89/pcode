@@ -2,12 +2,15 @@
 
 Search and fetch are separate concerns because provider-native search returns
 snippets only: reading documentation needs a page fetch either way. Each half
-prefers the model's native tool (Anthropic and OpenAI models search server-side;
-Anthropic also fetches) and otherwise exposes a local tool. Exa backs the local
-tools when `EXA_API_KEY` is set; DuckDuckGo and a plain HTTP fetch otherwise.
+prefers the model's native tool (Anthropic, OpenAI and `claude:` models search
+natively; Anthropic and `claude:` also fetch) and otherwise exposes a local
+tool. Exa backs the local tools when `EXA_API_KEY` is set; DuckDuckGo and a
+plain HTTP fetch otherwise.
 
 The `web_search` preference picks the policy: `auto` (native when supported),
-`local` (never advertise native tools), or `off`. Copy this file to
+`local` (never advertise native tools), or `off`. Under `auto`, `web_fetch`
+set to `local` keeps fetching on the local tool, whose page text is verbatim
+(the `claude:` CLI's fetch answers with a summary). Copy this file to
 `~/.config/pcode/extensions/web_research.py` to replace the defaults; an empty
 `setup` removes web tools entirely.
 """
@@ -26,10 +29,10 @@ INSTRUCTIONS = (
 )
 
 
-def _mode() -> str:
+def _mode(key: str = "web_search") -> str:
     from pcode.preferences import SETTINGS, load_preferences
 
-    return load_preferences().get("web_search", SETTINGS["web_search"].default)
+    return load_preferences().get(key, SETTINGS[key].default)
 
 
 def _exa_tools():
@@ -85,5 +88,6 @@ def setup(pcode) -> None:
     native = mode == "auto"
     # Ids name the prompt sources in /status; they never reach the model.
     pcode.add_capability(WebSearch(id="web_research", native=native, local=search))
-    pcode.add_capability(WebFetch(id="web_fetch", native=native, local=fetch))
+    native_fetch = native and _mode("web_fetch") == "auto"
+    pcode.add_capability(WebFetch(id="web_fetch", native=native_fetch, local=fetch))
     pcode.instructions(INSTRUCTIONS)

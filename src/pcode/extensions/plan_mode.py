@@ -1,10 +1,12 @@
 """Plan mode: think a change through with the user before building it.
 
-`/plan [topic]` turns it on. While it is on, each user turn carries a reminder
-to investigate, keep a plan in `.pcode/plans/<slug>.md`, and hold off on
-implementing until the user approves. Approval is the model's call: when the
-user says "go ahead" (in whatever words), it calls `exit_plan_mode` and starts
-building in the same turn. `/plan off` is the manual way out.
+`/plan [request]` turns it on and sends the request, if any, as the first
+prompt (its opening words also name the plan file). While it is on, each user
+turn carries a reminder to investigate, keep a plan in
+`.pcode/plans/<slug>.md`, and hold off on implementing until the user approves.
+Approval is the model's call: when the user says "go ahead" (in whatever
+words), it calls `exit_plan_mode` and starts building in the same turn.
+`/plan off` is the manual way out.
 
 The model is trusted rather than fenced in: nothing blocks edits, the reminder
 just says what the user wants. The active plan lives in a marker file beside
@@ -43,7 +45,15 @@ def is_worker(ctx) -> bool:
 
 def slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug[:60].rstrip("-") or "plan"
+    if len(slug) > 60:  # Cut at a word boundary when there is one.
+        cut = slug[:61]
+        slug = cut.rsplit("-", 1)[0] if "-" in cut else slug[:60]
+    return slug or "plan"
+
+
+def topic_slug(request: str) -> str:
+    """Name the plan after the request's opening words."""
+    return slugify(" ".join(request.split("\n", 1)[0].split()[:8]))
 
 
 def setup(pcode) -> None:
@@ -74,7 +84,7 @@ def setup(pcode) -> None:
             ignore.write_text("*\n")
         marker.write_text(slug + "\n")
 
-    def plan_command(argument: str) -> None:
+    def plan_command(argument: str) -> str | None:
         argument = argument.strip()
         current = active()
         if argument == "off":
@@ -89,20 +99,24 @@ def setup(pcode) -> None:
                 f"Plan mode on: {relative(current)}" if current else "Plan mode is off."
             )
             return
-        slug = slugify(argument) if argument else (current or latest() or "plan")
+        slug = topic_slug(argument) if argument else (current or latest() or "plan")
         start(slug)
         exists = (pcode.workspace / relative(slug)).exists()
         verb = "Resuming" if exists else "Planning in"
+        ask = "Say" if argument else "Describe the change; say"
         pcode.ui.notify(
-            f"Plan mode on. {verb} {relative(slug)}. Describe the change; "
-            "say 'go ahead' when the plan looks right."
+            f"Plan mode on. {verb} {relative(slug)}. {ask} 'go ahead' when the plan looks right."
         )
+        # The text is the request itself, so it goes to the model now rather
+        # than making the user send it again.
+        return argument or None
 
     pcode.register_command(
         "/plan",
         "Plan before implementing; the model exits when you approve",
         plan_command,
         arguments=("off", "status"),
+        free_arguments=True,  # anything else is the request to plan
         argument_descriptions={
             "off": "Leave plan mode (the plan file is kept)",
             "status": "Show whether plan mode is on and its file",

@@ -63,6 +63,7 @@ def test_bundled_extension_is_discovered_last_and_shadowed_by_user_files(tmp_pat
     assert extension.summary() == "2 tools"
     assert load_extensions(tmp_path).report(tmp_path) == [
         "browser (bundled): /browser",
+        "plan_mode (bundled): 1 tool, 2 hooks, /plan",
         "ponytail (bundled): off by default (/extensions on ponytail)",
         "sandbox (bundled): off by default (/extensions on sandbox)",
         "session_history (bundled): 2 tools",
@@ -105,6 +106,13 @@ def test_local_policy_never_advertises_native_tools(tmp_path, monkeypatch):
         "tools": ["web_search", "get_page"],
         "native": [],
     }
+
+
+def test_local_fetch_keeps_native_search(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    save_preferences(web_fetch="local")
+    capabilities = web_extension(tmp_path).capabilities
+    assert request_shape(capabilities) == {"tools": ["get_page"], "native": ["web_search"]}
 
 
 def test_off_policy_contributes_nothing(tmp_path):

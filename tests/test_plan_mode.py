@@ -5,6 +5,8 @@ import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
+from pcode.commands import CommandRegistry
+from pcode.ext import ExtensionAPI
 from pcode.extensions import plan_mode
 
 
@@ -52,7 +54,7 @@ def test_plan_mode_reminds_until_the_model_exits(tmp_path):
     plan_mode.setup(api)
     assert remind(api) == []
 
-    api.commands["/plan"]("Add Export Button!")
+    assert api.commands["/plan"]("Add Export Button!") == "Add Export Button!"
     assert (tmp_path / ".pcode/plans/.gitignore").exists()
     [note] = remind(api)
     assert ".pcode/plans/add-export-button.md" in note
@@ -78,10 +80,39 @@ def test_bare_plan_resumes_latest_and_off_stops(tmp_path):
     plan_mode.setup(api)
     (tmp_path / ".pcode/plans").mkdir(parents=True)
     (tmp_path / ".pcode/plans/old-idea.md").write_text("# plan\n")
-    api.commands["/plan"]("")
+    assert api.commands["/plan"]("") is None
     assert "Resuming .pcode/plans/old-idea.md" in api.notes[-1]
-    api.commands["/plan"]("off")
+    assert api.commands["/plan"]("off") is None
     assert remind(api) == []
+
+
+def test_plan_accepts_a_topic_beside_its_fixed_arguments(tmp_path):
+    notes = []
+    ui = SimpleNamespace(notify=lambda text, level="info": notes.append(text))
+    api = ExtensionAPI("plan_mode", tmp_path, ui=ui, session_dir=tmp_path / "sessions")
+    plan_mode.setup(api)
+    registry = CommandRegistry()
+    for command in api.commands:
+        registry.register(command)
+    assert registry.dispatch("/plan Add export button")
+    assert "add-export-button.md" in notes[-1]
+    assert registry.dispatch("/plan status")
+    assert "add-export-button.md" in notes[-1]
+
+
+def test_plan_sends_a_multiline_request_and_names_the_plan_after_it(tmp_path):
+    api = FakeAPI(tmp_path)
+    plan_mode.setup(api)
+    request = (
+        "let's write a doc about this project, what it currently has, and how it differs\n\n"
+        "a brief section on the stack"
+    )
+    assert api.commands["/plan"](request) == request
+    assert ".pcode/plans/let-s-write-a-doc-about-this-project-what.md" in api.notes[-1]
+    long = "internationalization " * 9
+    assert plan_mode.topic_slug(long) == "internationalization-internationalization"
+    assert plan_mode.slugify("x" * 70) == "x" * 60
+    assert "Describe the change" not in api.notes[-1]
 
 
 def test_workers_get_nothing(tmp_path):

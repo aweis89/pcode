@@ -231,6 +231,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `web_search` | `auto` | `auto`, `local`, `off` (provider-native web search when available, pcode's own, or none; see [web search](tools.md#web-search)) |
+| `web_fetch` | `auto` | `auto`, `local` (provider-native page fetching when web tools are on, or pcode's own `get_page`, which returns the page text verbatim) |
 | `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `job_wake` | `on` | `on`, `off` (start a turn when a job the model backgrounded finishes while idle; see [shell jobs](tools.md#shell-jobs)) |
 | `tool_retries` | `3` | Whole number, corrections the model gets per turn when a tool call has invalid arguments |

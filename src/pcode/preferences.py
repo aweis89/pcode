@@ -731,6 +731,13 @@ SETTINGS = {
         ("auto", "local", "off"),
         description="Web tools: provider-native when available, local-only, or none",
     ),
+    # Read by the bundled web_research extension, under `web_search`: `off` there
+    # removes fetching too. Native fetches can return a summary, not the page.
+    "web_fetch": Setting(
+        "auto",
+        ("auto", "local"),
+        description="Page fetching: provider-native when available, or pcode's own get_page",
+    ),
     "tool_output_mode": Setting(
         "spill",
         ("spill", "truncate", "off"),

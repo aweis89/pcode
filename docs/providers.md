@@ -209,8 +209,9 @@ writes it to the cache again.
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, capped at the model's maximum; for a model
   pcode has no limits for, Claude Code's default applies.
 - The model sees tool names as `mcp__pcode__<name>`; pcode displays its own names.
-- Anthropic server tools (web search, web fetch, code execution) are not
-  available, so pcode's local web tools are used.
+- Anthropic server tools are not available. Claude Code's own WebSearch and
+  WebFetch take the place of web search and fetch (see
+  [web search](tools.md#web-search)); there is no code execution.
 - Text pcode adds beside tool results (steering, plan reminders, limit warnings)
   reaches the model as a message the user sent while it was working.
 - Thinking is shown in summarized form.

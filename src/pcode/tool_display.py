@@ -682,10 +682,11 @@ def native_result_projection(content: object) -> object:
         return content
     if not content:
         return "No results."
-    lines = [
-        f"{len(content)} result{'s' if len(content) != 1 else ''} "
-        "(page text is encrypted for the provider; only the model can read it)"
-    ]
+    count = f"{len(content)} result{'s' if len(content) != 1 else ''}"
+    # Hits from the `claude:` CLI's search carry no page text at all.
+    if any(item.get("encrypted_content") for item in content):
+        count += " (page text is encrypted for the provider; only the model can read it)"
+    lines = [count]
     for item in content:
         lines.append("")
         lines.append(str(item.get("title") or "(untitled)"))

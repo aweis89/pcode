@@ -95,7 +95,29 @@ def _render_block(block: dict) -> str:
         return f"[Result of tool call {block.get('tool_use_id')}{status}]\n{_result_text(block)}"
     if kind in ("thinking", "redacted_thinking"):
         return ""
+    if kind == "server_tool_use":
+        arguments = json.dumps(block.get("input"), ensure_ascii=False, default=str)
+        return f"[Ran {block.get('name')} (id {block.get('id')}) with {arguments}]"
+    if kind in ("web_search_tool_result", "web_fetch_tool_result"):
+        return f"[Result of {block.get('tool_use_id')}]\n{_web_result_text(block.get('content'))}"
     return f"[{kind or 'content'} omitted]"
+
+
+def _web_result_text(content: Any) -> str:
+    """A web search's hits or a fetched page, as `web.result_block` shaped them."""
+    if isinstance(content, list):
+        return "\n".join(
+            f"{item.get('title') or item.get('url')}: {item.get('url')}"
+            for item in content
+            if isinstance(item, dict)
+        )
+    if not isinstance(content, dict):
+        return ""
+    if "error_code" in content:
+        return f"(error: {content['error_code']})"
+    document = content.get("content")
+    source = document.get("source") if isinstance(document, dict) else None
+    return str(source.get("data", "")) if isinstance(source, dict) else ""
 
 
 def replay(messages: list[dict], open_tool_ids: tuple[str, ...] = ()) -> list[dict]:

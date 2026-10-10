@@ -516,6 +516,10 @@ class SessionController:
         # under a system row, a skill's prompt, an extension reload, a sign-in.
         self.job_requested: tuple[str, str, Callable[[], list[str]]] | None = None
         self.skill_requested: str | None = None
+        # An extension command's prompt waits for its own turn: steered into a
+        # running one, it would miss what the command set up (plan mode's
+        # reminder only joins a turn's opening request).
+        self.skill_queued = False
         self.skill_mcp_requested: tuple[str, tuple[str, ...]] | None = None
         self.reload_requested = False
         self.reload_pending = False  # Asked for mid-turn; `consume` runs it between turns.
@@ -1204,9 +1208,11 @@ class SessionController:
                 # for it on mcp_idle.
                 self.start_skill_mcp(skill, names)
             prompt, self.skill_requested = self.skill_requested, None
+            queued, self.skill_queued = self.skill_queued, False
             # Queued like a typed message so send mode, steering, and
             # cancellation keep their usual meaning.
-            self.prompts.put(prompt, load_preferences().get("send_mode", "steering"))
+            mode = "queue" if queued else load_preferences().get("send_mode", "steering")
+            self.prompts.put(prompt, mode)
             self.activity.busy = True
         if self.mcp_defaults_requested:
             self.start_mcp_defaults()
@@ -2254,9 +2260,34 @@ class SessionController:
                         f"Extension {extension.name}: {', '.join(taken)} already exists; skipped."
                     )
                     continue
-                self.registry.register(command)
+                self.registry.register(replace(command, handler=self.prompting(command)))
                 self.extension_command_names.append(command.name)
         self.view.commands_changed()
+
+    def prompting(self, command):
+        """Send the text an extension command returns as a prompt, like a skill.
+
+        A sync handler stays sync, so callers that never await still run it whole.
+        """
+
+        def request(result) -> None:
+            if isinstance(result, str) and result.strip():
+                if not self.model:
+                    raise ValueError(f"{command.name} requires a live model session.")
+                self.skill_requested = result
+                self.skill_queued = True
+
+        def run(argument: str):
+            result = command.handler(argument)
+            if not inspect.isawaitable(result):
+                return request(result)
+
+            async def finish() -> None:
+                request(await result)
+
+            return finish()
+
+        return run
 
     def extension_arguments(self) -> tuple[str, ...]:
         """Complete `on`/`off` against the extensions this workspace discovered."""
