@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 
+from markdown_it import MarkdownIt
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.lexers import Lexer
 from pygments.token import Generic, Token
@@ -43,8 +44,12 @@ class EditTranscript:
         )
         if change.patch:
             if (source := created_markdown(change)) is not None:
-                patch = Markdown(safe_text(source), code_theme=self.code_theme)
+                # Link targets print beside their text: a file's URLs are part
+                # of what was written, not something to hide in a hyperlink.
+                patch = Markdown(safe_text(source), code_theme=self.code_theme, hyperlinks=False)
+                omitted = "… rest of file omitted"
             else:
+                omitted = "… additional diff rows omitted"
                 text = patch_text(change.patch, dedent=self.dedent)
                 lines = self.delta.render(text, options.max_width) if self.delta else None
                 patch = (
@@ -59,7 +64,7 @@ class EditTranscript:
                 yield from row
                 yield Segment.line()
             if len(rows) > self.max_rows or change.truncated:
-                yield Text("… additional diff rows omitted", style="pcode.muted")
+                yield Text(omitted, style="pcode.muted")
         if change.omitted:
             yield Text(f"Diff unavailable: {edit_text(change.omitted)}", style="pcode.muted")
         yield block_rule()
@@ -74,7 +79,9 @@ def created_markdown(change: EditCompleted) -> str | None:
     Every line of a created file is an addition, so the `+` column says
     nothing and the raw source buries the document. The patch is the only
     copy of the content the transcript keeps; each `+` line after the hunk
-    header is a line of the file.
+    header is a line of the file; a truncated patch's last one may be cut
+    short, so it is dropped. None keeps the diff, including for a document
+    whose rendering would hide some of what was written (see `_hides_text`).
     """
     if (
         change.operation != "created"
@@ -85,7 +92,32 @@ def created_markdown(change: EditCompleted) -> str | None:
         return None
     lines = patch_text(change.patch, dedent=False).split("\n")
     start = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
-    return "\n".join(line[1:] for line in lines[start + 1 :] if line.startswith("+"))
+    body = [line[1:] for line in lines[start + 1 :] if line.startswith("+")]
+    if change.truncated:
+        body = body[:-1]
+    source = "\n".join(body)
+    return None if _hides_text(source) else source
+
+
+_MARKDOWN = MarkdownIt("commonmark").enable(["strikethrough", "table"])
+
+
+def _hides_text(source: str) -> bool:
+    """Whether rendering drops written text: HTML, comments, or link definitions.
+
+    Rich skips HTML blocks and inline tags and never shows a reference
+    definition, so an instruction in an `<!-- -->` comment would vanish from
+    the record of the write. Such a file shows as its diff instead.
+    """
+    env: dict = {}
+    tokens = _MARKDOWN.parse(source, env)
+    if env.get("references"):
+        return True
+    return any(
+        token.type == "html_block"
+        or any(child.type == "html_inline" for child in token.children or ())
+        for token in tokens
+    )
 
 
 def prefetch_edits(objects, width: int) -> None:
