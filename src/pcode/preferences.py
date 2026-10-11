@@ -732,11 +732,14 @@ SETTINGS = {
         description="Web tools: provider-native when available, local-only, or none",
     ),
     # Read by the bundled web_research extension, under `web_search`: `off` there
-    # removes fetching too. Native fetches can return a summary, not the page.
+    # removes fetching too. `native` admits fetches that return a summary, not the page.
     "web_fetch": Setting(
         "auto",
-        ("auto", "local"),
-        description="Page fetching: provider-native when available, or pcode's own get_page",
+        ("auto", "native", "local"),
+        description=(
+            "Page fetching: provider-native where it returns the page text, any provider-native"
+            " fetch (including Claude Code's summaries), or pcode's own get_page"
+        ),
     ),
     "tool_output_mode": Setting(
         "spill",

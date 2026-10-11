@@ -19,6 +19,7 @@ from pydantic_ai.profiles import ModelProfile
 
 from pcode.agent import create_agent, create_coder
 from pcode.ext import BUNDLED_DIR, load_extensions, user_extension_dir
+from pcode.extensions.web_research import EXA_PAGE_CHARS
 from pcode.live import AgentRuntime
 from pcode.preferences import save_preferences
 from pcode.runtime import ToolStarted, ToolSummary
@@ -35,7 +36,7 @@ def web_extension(workspace):
     return extension
 
 
-def request_shape(capabilities, profile=None):
+def request_shape(capabilities, profile=None, system=None):
     seen = {}
 
     def record(info):
@@ -50,9 +51,10 @@ def request_shape(capabilities, profile=None):
         record(info)
         yield "ok"
 
-    Agent(
-        FunctionModel(model, stream_function=stream, profile=profile), capabilities=capabilities
-    ).run_sync("hi")
+    function_model = FunctionModel(model, stream_function=stream, profile=profile)
+    if system:
+        function_model._system = system
+    Agent(function_model, capabilities=capabilities).run_sync("hi")
     return seen
 
 
@@ -115,6 +117,31 @@ def test_local_fetch_keeps_native_search(tmp_path, monkeypatch):
     assert request_shape(capabilities) == {"tools": ["get_page"], "native": ["web_search"]}
 
 
+@pytest.mark.parametrize(
+    "fetch,expected",
+    [
+        # Claude Code's own fetch answers with a summary, so it is opt-in.
+        (None, {"tools": ["get_page"], "native": ["web_search"]}),
+        ("native", {"tools": [], "native": ["web_search", "web_fetch"]}),
+        ("local", {"tools": ["get_page"], "native": ["web_search"]}),
+    ],
+)
+def test_claude_code_reads_pages_verbatim_unless_told_otherwise(
+    tmp_path, monkeypatch, fetch, expected
+):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    if fetch:
+        save_preferences(web_fetch=fetch)
+    capabilities = web_extension(tmp_path).capabilities
+    assert request_shape(capabilities, system="claude") == expected
+    # Any other model with a native fetch still uses it under the default.
+    if fetch != "local":
+        assert request_shape(capabilities, system="anthropic")["native"] == [
+            "web_search",
+            "web_fetch",
+        ]
+
+
 def test_off_policy_contributes_nothing(tmp_path):
     save_preferences(web_search="off")
     assert web_extension(tmp_path).capabilities == []
@@ -170,7 +197,9 @@ def test_exa_backs_the_local_tools_when_a_key_is_set(tmp_path, monkeypatch):
             assert all(args == () and kwargs == {} for args, kwargs in ctor.call_args_list)
         client.search.assert_awaited_once()
         client.get_contents.assert_awaited_once_with(
-            "https://example.com/docs", text={"max_characters": 10_000}
+            # One over the cap, so a longer page is marked truncated.
+            "https://example.com/docs",
+            text={"max_characters": EXA_PAGE_CHARS + 1},
         )
 
     asyncio.run(run())

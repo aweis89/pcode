@@ -1228,6 +1228,27 @@ def test_cli_web_results_beside_a_pcode_call_open_the_next_response(world):
     }
 
 
+@pytest.mark.parametrize(
+    "fetch,cli_tools",
+    [(None, ["WebSearch"]), ("native", ["WebFetch", "WebSearch"]), ("local", ["WebSearch"])],
+)
+def test_bundled_web_tools_keep_the_summarizing_fetch_opt_in(
+    world, tmp_path, monkeypatch, fetch, cli_tools
+):
+    from pcode.ext import load_extensions
+    from pcode.preferences import save_preferences
+
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    if fetch:
+        save_preferences(web_fetch=fetch)
+    agent, _ = make_agent(capabilities=load_extensions(tmp_path).capabilities)
+    world.replies = [[("text", "hi")]]
+    run(lambda: agent.run("hello"))
+    [cli] = world.clients
+    assert cli.options.tools == cli_tools
+    assert cli.options.allowed_tools == [f"mcp__{claude.SERVER}", *cli_tools]
+
+
 def test_cli_web_tools_are_off_without_native_tools(world):
     agent, _ = make_agent()
     world.replies = [[("text", "hi")]]

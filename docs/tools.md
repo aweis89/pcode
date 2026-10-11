@@ -356,7 +356,7 @@ backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (`anthropic:`, `claude:` and OpenAI models) | provider runs it server-side | Anthropic runs it server-side; `claude:` has Claude Code fetch it |
+| Model has a native tool (`anthropic:`, `claude:` and OpenAI models) | provider runs it server-side | Anthropic runs it server-side; `claude:` uses `get_page` below by default |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 
@@ -364,20 +364,27 @@ Native tools are billed by the provider per search. The Exa key is never passed
 to the model. Anthropic ties each native result to the account that ran the
 search, so a session resumed under a different login cannot replay them; see
 [Retries](sessions.md#retries-and-resend) for how pcode handles that. Search
-returns up to five results, and a fetched page up to 10,000 characters. Queries, URLs, and returned
+returns up to five results, and `get_page` up to 100,000 characters of a page
+(10,000 through Exa). By default a long page is
+[saved to disk](context.md#tool-output-limits) and read back in pieces rather
+than filling the context. Queries, URLs, and returned
 content go to whichever backend is in use, reach the model, and can be saved in
 session history. The worker inherits the same web policy and tools.
 
-On `claude:` models, Claude Code runs its own WebSearch and WebFetch tools and
-pcode shows them like any other native call. Its fetch answers with a summary
-of the page written by a small model, not the page text. Set `web_fetch` to
-`local` when you want the model to read pages verbatim; search stays native.
+On `claude:` models, Claude Code runs its own WebSearch, and pcode shows it
+like any other native call. Pages are read with `get_page` by default, because
+Claude Code's own WebFetch answers with a small model's summary of the page,
+not the page text. The summary is shorter and makes instructions planted in a
+page less likely to reach the model, but it can drop or blur the exact detail
+you fetched the page for. Set `web_fetch` to `native` to use it anyway, or to `local` to
+use `get_page` on every model.
 
 ```sh
 pcode config set web_search local   # Never advertise native tools to the model
 pcode config set web_search off     # No web tools at all
 pcode config unset web_search       # Back to auto
 pcode config set web_fetch local    # Native search, but pcode's own get_page
+pcode config set web_fetch native   # Also Claude Code's summarizing fetch
 ```
 
 `local` is the escape hatch for an endpoint that rejects server-side tools.

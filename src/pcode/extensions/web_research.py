@@ -9,8 +9,10 @@ plain HTTP fetch otherwise.
 
 The `web_search` preference picks the policy: `auto` (native when supported),
 `local` (never advertise native tools), or `off`. Under `auto`, `web_fetch`
-set to `local` keeps fetching on the local tool, whose page text is verbatim
-(the `claude:` CLI's fetch answers with a summary). Copy this file to
+picks the fetch: `auto` uses a native fetch only where it returns the page
+text, so `claude:` models read pages through `get_page` (the CLI's WebFetch
+answers with a small model's summary instead); `native` opts into that summary
+anyway, and `local` always fetches locally. Copy this file to
 `~/.config/pcode/extensions/web_research.py` to replace the defaults; an empty
 `setup` removes web tools entirely.
 """
@@ -18,7 +20,14 @@ set to `local` keeps fetching on the local tool, whose page text is verbatim
 import os
 
 SEARCH_RESULTS = 5
-PAGE_CHARS = 10_000
+# Long enough for most documentation pages. With the default `spill` tool
+# output mode, a page past the threshold is saved to disk and read back in
+# slices, so the cap bounds the fetch, not what lands in context.
+PAGE_CHARS = 100_000
+# Harness's ceiling for Exa page text (`EXA_MAX_PAGE_TEXT_CHARS`, which it takes
+# for Exa's limit; Exa's API reference documents 1,000,000), less the character
+# of headroom it needs to notice a longer page and mark it truncated.
+EXA_PAGE_CHARS = min(PAGE_CHARS, 9_999)
 
 INSTRUCTIONS = (
     "You can research the web: search for pages, then fetch the most promising "
@@ -43,7 +52,7 @@ def _exa_tools():
     exa = ExaSearchToolset(
         client=None,  # Harness builds the client from EXA_API_KEY; the model never sees it.
         num_results=SEARCH_RESULTS,
-        max_text_chars=PAGE_CHARS,
+        max_text_chars=EXA_PAGE_CHARS,
         include_deep_search=False,
     )
     return Tool(exa.web_search, name="web_search"), Tool(exa.get_page, name="get_page")
@@ -75,6 +84,22 @@ def _local_tools():
     return Tool(web_search, name="web_search"), fetch
 
 
+def _native_fetch(native: bool):
+    """The `native` argument for page fetching, per the `web_fetch` preference."""
+    fetch = _mode("web_fetch")
+    if not native or fetch == "local":
+        return False
+    if fetch == "native":
+        return True
+    from pydantic_ai.native_tools import WebFetchTool
+
+    def page_text_only(ctx):
+        # Omitting the native tool leaves `get_page` in the request instead.
+        return None if ctx.model.system == "claude" else WebFetchTool()
+
+    return page_text_only
+
+
 def setup(pcode) -> None:
     mode = _mode()
     if mode == "off":
@@ -88,6 +113,5 @@ def setup(pcode) -> None:
     native = mode == "auto"
     # Ids name the prompt sources in /status; they never reach the model.
     pcode.add_capability(WebSearch(id="web_research", native=native, local=search))
-    native_fetch = native and _mode("web_fetch") == "auto"
-    pcode.add_capability(WebFetch(id="web_fetch", native=native_fetch, local=fetch))
+    pcode.add_capability(WebFetch(id="web_fetch", native=_native_fetch(native), local=fetch))
     pcode.instructions(INSTRUCTIONS)
