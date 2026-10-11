@@ -650,7 +650,20 @@ def result_detail(
     return (f"{where} → {result}" if where and result else where or result), failed
 
 
-def native_result_detail(name: str, args: dict, content: object, outcome: str) -> tuple[str, bool]:
+# Provider of the `claude:` CLI's own WebSearch/WebFetch (`claude_sdk/web.py`).
+# Both run inside Claude Code, and its fetch hands back a model's answer
+# about the page rather than the page, so their results say where they came from.
+CLAUDE_CODE_PROVIDER = "claude"
+
+
+def _url_hits(content: list) -> list[dict]:
+    """Search hits proper: the CLI can record its summary on a hit with no URL."""
+    return [item for item in content if isinstance(item, dict) and item.get("url")]
+
+
+def native_result_detail(
+    name: str, args: dict, content: object, outcome: str, provider: str = ""
+) -> tuple[str, bool]:
     """Summarize a provider-executed tool (native web search or fetch) from its return part.
 
     Providers return structured content rather than Harness text: Anthropic's
@@ -658,41 +671,67 @@ def native_result_detail(name: str, args: dict, content: object, outcome: str) -
     be counted and otherwise only report success or failure.
     """
     where = target(name, args)
+    via = " · via Claude Code" if provider == CLAUDE_CODE_PROVIDER else ""
     error = isinstance(content, dict) and str(content.get("type", "")).endswith("error")
     if outcome != "success" or error:
-        reason = content.get("error_code", "") if isinstance(content, dict) else ""
-        return f"{where} → Failed" + (f" · {plain(str(reason))}" if reason else ""), True
+        reason = ""
+        if isinstance(content, dict):
+            reason = str(content.get("message") or content.get("error_code") or "").strip()
+            reason = reason.splitlines()[0][:200] if reason else ""
+        return f"{where} → Failed" + (f" · {plain(reason)}" if reason else "") + via, True
     if isinstance(content, list):
-        count = len(content)
-        return f"{where} → {count} result{'s' if count != 1 else ''}", False
-    return where, False
+        count = len(_url_hits(content))
+        return f"{where} → {count} result{'s' if count != 1 else ''}{via}", False
+    return where + via, False
 
 
-def native_result_projection(content: object) -> object:
-    """What `/tools` shows for a provider-executed search: the hits, minus the ciphertext.
+def native_result_projection(content: object, provider: str = "") -> object:
+    """What `/tools` shows for a provider-executed web tool: its readable text.
 
     Anthropic's native web search returns each hit with an `encrypted_content`
     blob that only Anthropic can decrypt (it is replayed to the model on later
     requests, never readable client-side). Listing title, URL and age is the
-    whole readable payload; the blob would otherwise bury it in base64.
+    whole readable payload; the blob would otherwise bury it in base64. A fetch
+    is its page text, and a failure its message; anything else is left as is.
     """
+    claude_code = provider == CLAUDE_CODE_PROVIDER
+    if isinstance(content, dict):
+        if str(content.get("type", "")).endswith("error"):
+            return str(content.get("message") or content.get("error_code") or "Failed.")
+        document = content.get("content")
+        source = document.get("source") if isinstance(document, dict) else None
+        # A native fetch of a PDF carries base64, which is no use to read here.
+        if (
+            content.get("type") != "web_fetch_result"
+            or not isinstance(source, dict)
+            or source.get("type") != "text"
+        ):
+            return content
+        header = [str(content.get("url") or "(no url)")]
+        if document.get("title"):
+            header.insert(0, str(document["title"]))
+        if claude_code:
+            header.append("Claude Code's answer about the page, not the page text")
+        return "\n".join(header) + "\n\n" + str(source.get("data") or "")
     if not isinstance(content, list) or not all(
         isinstance(item, dict) and item.get("type") == "web_search_result" for item in content
     ):
         return content
-    if not content:
-        return "No results."
-    count = f"{len(content)} result{'s' if len(content) != 1 else ''}"
-    # Hits from the `claude:` CLI's search carry no page text at all.
-    if any(item.get("encrypted_content") for item in content):
+    hits = _url_hits(content)
+    summary = next((item["summary"] for item in content if item.get("summary")), "")
+    count = f"{len(hits)} result{'s' if len(hits) != 1 else ''}" if hits else "No results."
+    if any(item.get("encrypted_content") for item in hits):
         count += " (page text is encrypted for the provider; only the model can read it)"
     lines = [count]
-    for item in content:
+    for item in hits:
         lines.append("")
         lines.append(str(item.get("title") or "(untitled)"))
-        lines.append(str(item.get("url") or "(no url)"))
+        lines.append(str(item["url"]))
         if item.get("page_age"):
             lines.append(f"Age: {item['page_age']}")
+    if summary:
+        who = "Claude Code's summary" if claude_code else "Summary"
+        lines += ["", f"{who}:", str(summary)]
     return "\n".join(lines)
 
 

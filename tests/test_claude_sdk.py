@@ -1190,6 +1190,7 @@ def test_cli_web_tools_fold_into_one_response(world):
     results = {p.tool_name: p for p in response.parts if isinstance(p, NativeToolReturnPart)}
     [hit] = results["web_search"].content
     assert (hit["title"], hit["url"]) == ("pcode docs", "https://pcode.example/docs")
+    assert hit["summary"] == "pcode is a coding agent."
     page = results["web_fetch"].content
     assert page["url"] == "https://pcode.example/docs"
     assert page["content"]["source"]["data"] == "The page says hello."
@@ -1246,7 +1247,10 @@ def test_replay_renders_cli_web_blocks():
                 {
                     "type": "web_search_tool_result",
                     "tool_use_id": "s1",
-                    "content": [{"type": "web_search_result", "title": "T", "url": "https://u"}],
+                    "content": [
+                        {"type": "web_search_result", "title": "T", "url": "https://u"},
+                        {"type": "web_search_result", "url": "", "summary": "About u."},
+                    ],
                 },
                 {
                     "type": "web_fetch_tool_result",
@@ -1256,6 +1260,15 @@ def test_replay_renders_cli_web_blocks():
                         "content": {"type": "document", "source": {"data": "page text"}},
                     },
                 },
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "s3",
+                    "content": {
+                        "type": "web_fetch_tool_result_error",
+                        "error_code": "unavailable",
+                        "message": "Fetch failed: 503",
+                    },
+                },
             ],
         },
         {"role": "user", "content": [{"type": "text", "text": "next"}]},
@@ -1263,3 +1276,5 @@ def test_replay_renders_cli_web_blocks():
     [block] = claude.replay(delta)
     assert '[Ran web_search (id s1) with {"q": 1}]' in block["text"]
     assert "T: https://u" in block["text"] and "page text" in block["text"]
+    assert "T: https://u\n\nAbout u." in block["text"]
+    assert "(error: Fetch failed: 503)" in block["text"]

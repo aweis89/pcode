@@ -12,7 +12,15 @@ from rich.console import Console
 
 from pcode.live import AgentRuntime
 from pcode.runtime import RunStatus, ToolSummary
-from pcode.tool_display import label, result_detail, spilled_call_id, subject, target
+from pcode.tool_display import (
+    label,
+    native_result_detail,
+    native_result_projection,
+    result_detail,
+    spilled_call_id,
+    subject,
+    target,
+)
 from pcode.ui import Transcript
 
 
@@ -552,6 +560,50 @@ def test_web_tools_show_inputs_in_targets_and_results(name, args, expected):
     )
     assert expected in stream.getvalue()
     assert "Succeeded" not in stream.getvalue()
+
+
+def _hit(url: str, **extra) -> dict:
+    return {"type": "web_search_result", "title": url and "T", "url": url, **extra}
+
+
+def test_claude_code_web_results_are_labelled_and_readable():
+    hits = [_hit("https://a", summary="It says hi."), _hit("https://b")]
+    args = {"query": "q"}
+    assert native_result_detail("web_search", args, hits, "success", "claude") == (
+        "q → 2 results · via Claude Code",
+        False,
+    )
+    shown = native_result_projection(hits, "claude")
+    assert shown == (
+        "2 results\n\nT\nhttps://a\n\nT\nhttps://b\n\nClaude Code's summary:\nIt says hi."
+    )
+    # A summary kept with no parseable links is not a result.
+    alone = [_hit("", summary="Only prose.")]
+    assert native_result_detail("web_search", args, alone, "success")[0] == "q → 0 results"
+    assert native_result_projection(alone) == "No results.\n\nSummary:\nOnly prose."
+
+    page = {
+        "type": "web_fetch_result",
+        "url": "https://a",
+        "retrieved_at": None,
+        "content": {
+            "type": "document",
+            "title": None,
+            "source": {"type": "text", "data": "The answer."},
+        },
+    }
+    assert native_result_projection(page, "claude") == (
+        "https://a\nClaude Code's answer about the page, not the page text\n\nThe answer."
+    )
+    assert native_result_projection(page) == "https://a\n\nThe answer."
+    pdf = {**page, "content": {"type": "document", "source": {"type": "base64", "data": "JVBE"}}}
+    assert native_result_projection(pdf) is pdf
+
+    failure = {"type": "web_fetch_tool_result_error", "error_code": "unavailable"}
+    failure["message"] = "Fetch failed\nstatus 503"
+    detail = native_result_detail("web_fetch", {"url": "https://a"}, failure, "success", "claude")
+    assert detail == ("https://a → Failed · Fetch failed · via Claude Code", True)
+    assert native_result_projection(failure) == "Fetch failed\nstatus 503"
 
 
 def test_tool_search_shows_its_queries():

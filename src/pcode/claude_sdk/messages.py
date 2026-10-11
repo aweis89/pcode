@@ -106,15 +106,14 @@ def _render_block(block: dict) -> str:
 def _web_result_text(content: Any) -> str:
     """A web search's hits or a fetched page, as `web.result_block` shaped them."""
     if isinstance(content, list):
-        return "\n".join(
-            f"{item.get('title') or item.get('url')}: {item.get('url')}"
-            for item in content
-            if isinstance(item, dict)
-        )
+        hits = [item for item in content if isinstance(item, dict)]
+        lines = [f"{h.get('title') or h['url']}: {h['url']}" for h in hits if h.get("url")]
+        summary = next((hit["summary"] for hit in hits if hit.get("summary")), "")
+        return "\n\n".join(filter(None, ("\n".join(lines), summary)))
     if not isinstance(content, dict):
         return ""
     if "error_code" in content:
-        return f"(error: {content['error_code']})"
+        return f"(error: {content.get('message') or content['error_code']})"
     document = content.get("content")
     source = document.get("source") if isinstance(document, dict) else None
     return str(source.get("data", "")) if isinstance(source, dict) else ""

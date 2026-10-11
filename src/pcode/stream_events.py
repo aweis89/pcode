@@ -330,13 +330,14 @@ class EventTranslator:
         # Provider-executed tools (native web search/fetch) return
         # inside the response stream; there is no function event.
         name, args, started = self.tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
-        detail, failed = native_result_detail(name, args, part.content, part.outcome)
+        provider = part.provider_name or ""
+        detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
         yield ToolSummary(
             name,
             detail,
             failed=failed,
             call_id=part.tool_call_id,
-            result=capture(native_result_projection(part.content)),
+            result=capture(native_result_projection(part.content, provider)),
             run_id=self.run_id,
             outcome=part.outcome if not failed else "error",
             elapsed_seconds=max(0, monotonic() - started),
