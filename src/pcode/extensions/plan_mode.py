@@ -110,7 +110,8 @@ def setup(pcode) -> None:
         verb = "Resuming" if exists else "Planning in"
         ask = "Say" if argument else "Describe the change; say"
         pcode.ui.notify(
-            f"Plan mode on. {verb} {relative(slug)}. {ask} 'go ahead' (or just answer its questions) when the plan looks right."
+            f"Plan mode on. {verb} {relative(slug)}. {ask} 'go ahead' "
+            "(or just answer its questions) when the plan looks right."
         )
         # The text is the request itself, so it goes to the model now rather
         # than making the user send it again.
