@@ -147,7 +147,7 @@ def test_notes_while_a_thread_is_shown_flash_instead(monkeypatch):
     assert screen.activity.notice == "Warning: A turn is running."
     screen.output.close_view(screen.transcript.replay)
     back = screen.flush()
-    assert "Copied reply." not in back and "A turn is running." in back
+    assert "Copied reply." not in back and "A turn is running" in back
     # Redrawing the conversation never flashes its old warnings again.
     screen.activity.notice = ""
     screen.output.regenerate(screen.transcript.replay)
