@@ -550,9 +550,11 @@ pcode config set tool_retries 0   # Fail on the first rejected tool call
 
 `strict_tools` (on by default) also sends `edit_file` with Anthropic's
 [strict tool use][strict] flag. It reduces those malformed arguments only
-slightly; the correction budget is what actually recovers them. OpenAI models
-use strict mode anyway, other providers ignore the flag, and schemas it cannot
-support are left alone.
+slightly; the correction budget is what actually recovers them. On OpenAI's
+and Google's own APIs the provider decides for every tool (OpenAI constrains
+the schemas it can; Gemini validates whole requests on models that support
+it); elsewhere pcode's file and shell tools go without strict mode, and schemas
+it cannot support are left alone.
 
 ```sh
 pcode config set strict_tools off   # Leave edit_file arguments unconstrained
