@@ -613,6 +613,53 @@ def test_claude_code_web_results_are_labelled_and_readable():
     assert native_result_projection(failure) == "Fetch failed\nstatus 503"
 
 
+def test_gemini_native_search_and_fetch_are_readable():
+    # Shapes as Pydantic AI records Gemini's Google Search and URL context.
+    queries = {"queries": ["first query", "second query"]}
+    assert target("web_search", queries) == "first query, second query"
+    assert target("web_fetch", {"urls": ["https://a", "https://b"]}) == "https://a (+1 more)"
+    assert target("web_fetch", {"urls": ["https://a"]}) == "https://a"
+
+    sources = [{"domain": None, "title": "a.com", "uri": "https://redirect/a"}]
+    assert native_result_detail("web_search", queries, sources, "success") == (
+        "first query, second query → 1 result",
+        False,
+    )
+    assert native_result_projection(sources) == "1 result\n\na.com\nhttps://redirect/a"
+
+    widget = {"search_suggestions": "<style>.chip {}</style>"}
+    assert native_result_detail("web_search", queries, widget, "success") == (
+        "first query, second query",
+        False,
+    )
+    shown = native_result_projection({**widget, "sources": sources})
+    assert "<style>" not in shown and shown.startswith("1 result\n\na.com")
+    assert native_result_projection(widget).startswith("No sources listed.")
+    # Sources with no widget beside them still count.
+    assert native_result_detail("web_search", queries, {"sources": sources}, "success")[0] == (
+        "first query, second query → 1 result"
+    )
+    unknown = {"url_retrieval_status": "URL_RETRIEVAL_STATUS_UNSPECIFIED"}  # No url either.
+    assert native_result_detail("web_fetch", {}, [unknown], "success") == (
+        "url unavailable → 1 page read",
+        False,
+    )
+
+    ok = {"retrieved_url": "https://a", "url_retrieval_status": "URL_RETRIEVAL_STATUS_SUCCESS"}
+    unsure = {"retrieved_url": "https://b"}  # Gemini sometimes leaves the status out.
+    bad = {"retrieved_url": "https://c", "url_retrieval_status": "URL_RETRIEVAL_STATUS_ERROR"}
+    urls = {"urls": ["https://a", "https://b", "https://c"]}
+    for content in ({"url_metadata": [ok, unsure, bad]}, [ok, unsure, bad]):
+        assert native_result_detail("web_fetch", urls, content, "success") == (
+            "https://a (+2 more) → 2 pages read · 1 failed",
+            False,
+        )
+    assert native_result_detail("web_fetch", urls, [bad], "success")[1] is True
+    assert native_result_projection({"url_metadata": [ok, bad]}) == (
+        "2 pages (Gemini reads them itself)\n\nhttps://a\n\nhttps://c\nStatus: error"
+    )
+
+
 def test_tool_search_shows_its_queries():
     assert label("search_tools") == "Find tools"
     assert target("search_tools", {"queries": ["issues", "pull requests"]}) == (

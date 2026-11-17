@@ -382,10 +382,22 @@ def target(name: str, args: dict, source: str = "") -> str:
             return "queries unavailable"
         return ", ".join(argument(item) for item in queries if isinstance(item, str))
     if name in {"get_page", "web_fetch", "web_search"}:
-        # `web_fetch` is Anthropic's native fetch; the local tools keep Exa's names.
+        # `web_fetch` is the native fetch; the local tools keep Exa's names.
         key = "query" if name == "web_search" else "url"
         value = args.get(key)
-        return argument(value) if isinstance(value, str) else f"{key} unavailable"
+        if isinstance(value, str):
+            return argument(value)
+        # Gemini's native tools run a batch: `queries` and `urls`.
+        values = args.get("queries" if name == "web_search" else "urls")
+        if not isinstance(values, list):
+            values = []
+        shown = [argument(value) for value in values if isinstance(value, str)]
+        if not shown:
+            return f"{key} unavailable"
+        if key == "url" and len(shown) > 1:
+            # Long redirect links would push the result off the row.
+            return f"{shown[0]} (+{len(shown) - 1} more)"
+        return ", ".join(shown)
     if name in {
         "read_file",
         "write_file",
@@ -671,9 +683,54 @@ def result_detail(
 CLAUDE_CODE_PROVIDER = "claude"
 
 
+def _hit_url(item: dict) -> str:
+    """A search hit's link: Anthropic's `url`, or Gemini's `uri`."""
+    return str(item.get("url") or item.get("uri") or "")
+
+
 def _url_hits(content: list) -> list[dict]:
     """Search hits proper: the CLI can record its summary on a hit with no URL."""
-    return [item for item in content if isinstance(item, dict) and item.get("url")]
+    return [item for item in content if isinstance(item, dict) and _hit_url(item)]
+
+
+def _gemini_sources(content: object) -> list | None:
+    """Gemini's search sources: a bare list, or the `sources` beside its suggestions widget."""
+    if isinstance(content, dict) and {"search_suggestions", "sources"} & content.keys():
+        sources = content.get("sources")
+        return sources if isinstance(sources, list) else []
+    return None
+
+
+def _gemini_pages(content: object) -> list[dict] | None:
+    """Gemini's URL context result: one `retrieved_url` entry per page it read."""
+    pages = content.get("url_metadata") if isinstance(content, dict) else content
+    if (
+        isinstance(pages, list)
+        and pages
+        and all(
+            isinstance(page, dict) and {"retrieved_url", "url_retrieval_status"} & page.keys()
+            for page in pages
+        )
+    ):
+        return pages
+    return None
+
+
+def _sources_text(content: list) -> str:
+    """A result count, then each hit's title and link."""
+    hits = _url_hits(content)
+    lines = [f"{len(hits)} result{'s' if len(hits) != 1 else ''}" if hits else "No results."]
+    for item in hits:
+        lines += ["", str(item.get("title") or "(untitled)"), _hit_url(item)]
+    return "\n".join(lines)
+
+
+def _page_failed(page: dict) -> bool:
+    # Some entries carry no status, or the enum's "unknown"; only an explicit
+    # non-success counts.
+    status = page.get("url_retrieval_status")
+    unknown = {None, "", "URL_RETRIEVAL_STATUS_SUCCESS", "URL_RETRIEVAL_STATUS_UNSPECIFIED"}
+    return status not in unknown
 
 
 def native_result_detail(
@@ -694,6 +751,17 @@ def native_result_detail(
             reason = str(content.get("message") or content.get("error_code") or "").strip()
             reason = reason.splitlines()[0][:200] if reason else ""
         return f"{where} → Failed" + (f" · {plain(reason)}" if reason else "") + via, True
+    if (pages := _gemini_pages(content)) is not None:
+        failed = sum(_page_failed(page) for page in pages)
+        read = len(pages) - failed
+        shown = f"{where} → {read} page{'s' if read != 1 else ''} read"
+        return shown + (f" · {failed} failed" if failed else ""), bool(failed) and not read
+    if (sources := _gemini_sources(content)) is not None:
+        if not sources:
+            # No web sources on this search (Gemini puts a response's sources on its
+            # last search), so a count here would wrongly say 0.
+            return where + via, False
+        content = sources
     if isinstance(content, list):
         count = len(_url_hits(content))
         return f"{where} → {count} result{'s' if count != 1 else ''}{via}", False
@@ -710,6 +778,25 @@ def native_result_projection(content: object, provider: str = "") -> object:
     is its page text, and a failure its message; anything else is left as is.
     """
     claude_code = provider == CLAUDE_CODE_PROVIDER
+    if (pages := _gemini_pages(content)) is not None:
+        lines = [f"{len(pages)} page{'s' if len(pages) != 1 else ''} (Gemini reads them itself)"]
+        for page in pages:
+            status = str(page.get("url_retrieval_status") or "")
+            status = status.removeprefix("URL_RETRIEVAL_STATUS_").replace("_", " ").lower()
+            lines += ["", str(page.get("retrieved_url") or "(no url)")]
+            if status and status != "success":
+                lines.append(f"Status: {status}")
+        return "\n".join(lines)
+    if (sources := _gemini_sources(content)) is not None:
+        # Google's suggestions widget is HTML for a browser, unreadable here.
+        shown = _sources_text(sources) if sources else "No sources listed."
+        return shown + "\n\n(Google's search suggestions widget omitted.)"
+    if (
+        isinstance(content, list)
+        and content
+        and all(isinstance(item, dict) and "uri" in item and "type" not in item for item in content)
+    ):
+        return _sources_text(content)
     if isinstance(content, dict):
         if str(content.get("type", "")).endswith("error"):
             return str(content.get("message") or content.get("error_code") or "Failed.")
