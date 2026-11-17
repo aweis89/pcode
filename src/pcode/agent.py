@@ -179,36 +179,73 @@ def _init_fields(capability) -> dict:
     return {f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
 
 
-def _adapt(capability, workspace: Path, output_limits):
-    """Map one of Coder's capabilities to pcode's replacement, or keep it.
+def _guidance(capability, workspace: Path, output_limits):
+    # Coder's base instructions, a delegate variant, and a project line pcode's
+    # file-tool instructions already cover. One text serves parent and worker.
+    return Capability(instructions=CODER_INSTRUCTIONS)
 
-    Ids must be set at construction (`replace(..., id=...)` or the factory):
-    a `Capability` binds its instructions to its id in `__init__`, so a later
-    `capability.id = ...` is silently ignored by /status attribution. Do not
-    blanket-rename everything either: `replace()`-copied children compare
-    fields with their parent and a renamed parent breaks that match.
-    """
-    match capability:
-        # Coder's base instructions, a delegate variant, and a project line
-        # pcode's file-tool instructions already cover. One text serves parent
-        # and worker alike.
-        case _CoderGuidance():
-            return Capability(instructions=CODER_INSTRUCTIONS)
-        case RepoContext():
-            return create_repo_context(workspace)
-        # Named so /status can attribute its prompt; ids never reach the model.
-        # No per-toolset retry budget: the `tool_retries` preference governs.
-        case FileSystem():
-            return replace(
-                DisplayFileSystem.from_filesystem(capability), id="file_tools", max_retries=None
-            )
-        # Replace Coder's 64k truncation, so it cannot cut data before spilling.
-        case ToolOutputLimits():
-            return output_limits
-        case Shell():
-            return _job_shell(capability, workspace)
-        case _:
-            return capability
+
+def _repo_context(capability, workspace: Path, output_limits):
+    return create_repo_context(workspace)
+
+
+def _file_tools(capability, workspace: Path, output_limits):
+    # Named so /status can attribute its prompt; ids never reach the model.
+    # No per-toolset retry budget: the `tool_retries` preference governs.
+    return replace(DisplayFileSystem.from_filesystem(capability), id="file_tools", max_retries=None)
+
+
+def _output_limits(capability, workspace: Path, output_limits):
+    # Replace Coder's 64k truncation, so it cannot cut data before spilling.
+    return output_limits
+
+
+def _shell(capability, workspace: Path, output_limits):
+    return _job_shell(capability, workspace)
+
+
+# Coder's capabilities pcode swaps for its own, first match wins. One table for
+# the swap and for the check in `_adapt_coder`: a Harness release that renames or
+# retypes one (0.67 moved the guidance from a plain `Capability` into
+# `_CoderGuidance`) would otherwise keep Coder's own version unnoticed.
+#
+# Ids must be set at construction (`replace(..., id=...)` or the factory): a
+# `Capability` binds its instructions to its id in `__init__`, so a later
+# `capability.id = ...` is silently ignored by /status attribution. Do not
+# blanket-rename everything either: `replace()`-copied children compare fields
+# with their parent and a renamed parent breaks that match.
+CODER_REPLACEMENTS = (
+    (_CoderGuidance, _guidance),
+    (RepoContext, _repo_context),
+    (FileSystem, _file_tools),
+    (ToolOutputLimits, _output_limits),
+    (Shell, _shell),
+)
+
+
+def _adapt_coder(coder: Coder, workspace: Path, output_limits) -> list:
+    """Coder's capabilities with pcode's replacements, refusing a Coder they no longer fit."""
+    found = coder.capabilities
+    missing = [
+        kind.__name__
+        for kind, _ in CODER_REPLACEMENTS
+        if not any(isinstance(capability, kind) for capability in found)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Harness's Coder has no {', '.join(missing)} any more, so pcode's replacement "
+            "would be skipped and Coder's own kept. Update `CODER_REPLACEMENTS` in "
+            "pcode/agent.py for this Harness release."
+        )
+    return [_adapt(capability, workspace, output_limits) for capability in found]
+
+
+def _adapt(capability, workspace: Path, output_limits):
+    """Map one of Coder's capabilities to pcode's replacement, or keep it."""
+    for kind, replacement in CODER_REPLACEMENTS:
+        if isinstance(capability, kind):
+            return replacement(capability, workspace, output_limits)
+    return capability
 
 
 def _job_shell(shell: Shell, workspace: Path) -> JobShell:
@@ -372,7 +409,7 @@ def create_coder(
     # Keep Coder's tool selection, including its persistent shell (as a
     # `JobShell`). File display and repository discovery remain local adapters;
     # planning is now opt-in.
-    capabilities = [_adapt(c, workspace, output_limits) for c in coder.capabilities]
+    capabilities = _adapt_coder(coder, workspace, output_limits)
     capabilities = [
         # Ahead of the other capabilities in the list, so a tool call in a
         # deleted workspace stops before anything tries to read or write in it.

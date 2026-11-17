@@ -1,18 +1,57 @@
 import asyncio
 import json
+from copy import copy
 
 import pytest
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import Capability
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
+from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.coder._capability import MAX_READ_CHARS
 from pydantic_ai_harness.file_system import FileSystem
 from retry_parts import is_retry
 
-from pcode.agent import create_coder
+from pcode.agent import CODER_REPLACEMENTS, _adapt, _adapt_coder, _CoderGuidance, create_coder
 from pcode.live import AgentRuntime
 from pcode.runtime import EditCompleted, ToolSummary
+from pcode.tool_output_limits import create_tool_output_limits
+
+# Coder's capabilities pcode keeps as they are (ClearToolResults is dropped
+# later, in `create_coder`). A new one, a second guidance capability say, fails
+# here until someone decides whether its prompt or behavior belongs in pcode.
+KEPT_FROM_CODER = {
+    "RequireWorkspace",
+    "ClearToolResults",
+    "RepairToolArguments",
+    "_ReportExhaustedRetries",
+    "_SetToolStrict",
+}
+
+
+def pcode_coder():
+    return Coder(sub_agents=False, caching=False)  # As `create_coder` builds it.
+
+
+def test_every_coder_capability_is_replaced_or_knowingly_kept(tmp_path):
+    for capability in pcode_coder().capabilities:
+        adapted = _adapt(capability, tmp_path, create_tool_output_limits())
+        replaced = any(isinstance(capability, kind) for kind, _ in CODER_REPLACEMENTS)
+        assert (adapted is not capability) is replaced
+        assert replaced or type(capability).__name__ in KEPT_FROM_CODER, type(capability)
+
+
+def test_a_coder_the_replacements_no_longer_fit_fails_loudly(tmp_path):
+    # As Harness 0.67 did in reverse: the guidance arrives under a type the
+    # table doesn't name, which used to keep Coder's own prompt without a word.
+    coder = copy(pcode_coder())
+    coder.capabilities = [
+        Capability(instructions="Coder's own guidance") if isinstance(c, _CoderGuidance) else c
+        for c in coder.capabilities
+    ]
+    with pytest.raises(RuntimeError, match="no _CoderGuidance any more"):
+        _adapt_coder(coder, tmp_path, None)
 
 
 def test_coder_preserves_upstream_tools_schemas_and_read_budget(tmp_path, monkeypatch):

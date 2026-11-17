@@ -59,7 +59,8 @@ subclass `UserWarning`, so `-W error::DeprecationWarning` misses them; run with
 summary for `HarnessDeprecationWarning`. The breaking ones: `filesystem` and
 `subagents` became `file_system` and `sub_agents`; Coder's guidance became the
 private `_CoderGuidance`, so pcode's replacement silently stopped matching and
-Coder's own "finish long-running work" prompt came back; `RepoContext` started
+Coder's own "finish long-running work" prompt came back (`create_coder` now
+refuses to start when a type in `CODER_REPLACEMENTS` is missing); `RepoContext` started
 loading only the first instruction file per directory
 (`discover_every_instruction_file` keeps loading all of them); background
 results are framed in `<pyai:tool_result>`; and `KnownModelName` was curated
