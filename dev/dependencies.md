@@ -59,12 +59,23 @@ subclass `UserWarning`, so `-W error::DeprecationWarning` misses them; run with
 summary for `HarnessDeprecationWarning`. The breaking ones: `filesystem` and
 `subagents` became `file_system` and `sub_agents`; Coder's guidance became the
 private `_CoderGuidance`, so pcode's replacement silently stopped matching and
-Coder's own "finish long-running work" prompt came back (`create_coder` now
-refuses to start when a type in `CODER_REPLACEMENTS` is missing); `RepoContext` started
+Coder's own "finish long-running work" prompt came back (that silent swap is why
+`coding_capabilities` now builds the list itself instead of adapting `Coder`); `RepoContext` started
 loading only the first instruction file per directory
 (`discover_every_instruction_file` keeps loading all of them); background
 results are framed in `<pyai:tool_result>`; and `KnownModelName` was curated
 down to current models, so catalog tests naming an old ID fail.
+
+Because pcode no longer runs `Coder`, the suite cannot tell you when Coder got
+better: a release can't change pcode's prompt or tools behind your back, but
+nothing it adds to `Coder` arrives either. On every bump, diff
+`pydantic_ai_harness/coder/_capability.py` and `coder/_instructions.py` between
+the old and new release (`make harness-src` checks out the new one) and decide
+what to copy into `agent.coding_capabilities`: new or reordered capabilities,
+changed defaults (read budget, shell timeout, strict mode), changes to
+Coder's prompt (`CODER_INSTRUCTIONS` started as a copy of it), and fixes to
+`_ReportExhaustedRetries`, which pcode's `ReportExhaustedRetries` was adapted
+from.
 
 Session stores only migrate forward. Opening a session moves pcode's old
 `pcode_messages` rows into Harness's `snapshot_messages` tables
@@ -120,7 +131,9 @@ installed source. Do not build or install pcode from it.
   `src/pcode/live.py`, `src/pcode/repo_context.py`, and `src/pcode/sessions.py`.
   Start with [Harness Coder](https://ai.pydantic.dev/harness/coder/), then inspect
   the installed `pydantic_ai_harness` implementation for the capabilities used.
-  Verify Coder's actual tool composition, planning, and step-persistence APIs.
+  pcode does not instantiate `Coder`; `coding_capabilities` mirrors its
+  composition, so read Coder as the reference for what pcode copied, not as code
+  that runs.
 
 ### File access and worker shell
 
@@ -158,7 +171,7 @@ lives in `pcode.sandbox`, because `/reload` re-imports the extension.
 
 Forward `tools`, `content_hashes`, and `max_read_chars` when constructing the
 display toolset. Omitting them silently restores legacy tools and hash-bearing
-schemas, and removes Coder's read pagination budget. `max_retries` is dropped on
+schemas, and removes the read pagination budget (`MAX_READ_CHARS`, Coder's figure). `max_retries` is dropped on
 purpose, so the `tool_retries` preference governs file tools too. The `coder` extra supplies
 ripgrep, but an installed `pcode` entry point does not activate its environment's
 `bin` on PATH. `create_coder` appends that bin directory when `rg` is absent,
@@ -460,8 +473,9 @@ and `drain_summary_events` here; verify these on upgrades. Streaming the dedicat
 tool-free summary request is required for streaming-only subscription endpoints.
 Use the actual resolved model object to retain custom auth/proxy behavior.
 
-Installed Coder includes `ClearToolResults(max_fraction=0.7)`; pcode removes it to
-avoid discarding evidence before summarization. The installed summarizer defaults
+Harness's Coder includes `ClearToolResults(max_fraction=0.7)`; `coding_capabilities`
+leaves it out to avoid discarding evidence before summarization. Don't adopt it
+from a Coder diff on upgrade. The installed summarizer defaults
 to 500 characters per tool result, which pcode explicitly raises to 16,000. Its
 `keep_tokens` cutoff can retain an oversized final tool batch, so pcode detects that
 case and summarizes the whole settled history with `keep_messages=0` instead.
@@ -477,9 +491,9 @@ pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history
 ### Tool output limits
 
 `tool_output_limits.py` composes the pinned Harness `ToolOutputLimits`, `Band`,
-`Spill`, `Truncate`, `LocalFileOverflowStore`, and `indented_json` APIs. Coder already
-includes a private `ToolOutputLimits` subclass with a 64k truncation band: replace
-it by type rather than append another limiter, or data can be lost before spilling.
+`Spill`, `Truncate`, `LocalFileOverflowStore`, and `indented_json` APIs. Keep it the
+only `ToolOutputLimits` in the list: Coder ships a private subclass with a 64k
+truncation band, and copying that in beside pcode's loses data before spilling.
 `SubAgents.shared_capabilities` receives a separate instance with the same settings
 and store. Keep retrieval registered even with no bands, since resumed histories
 can contain older handles. Spills are separate from the session journal and survive
@@ -679,7 +693,7 @@ Explicit ignore/error filters still apply, and unrelated warnings are re-emitted
 Only the warning's first paragraph is shown, excluding its Python suppression
 example. Detection, per-model keys, TTL hint, and collapse latch stay upstream.
 
-The main Coder and `SubAgents.shared_capabilities` install the adapter. Child
+The main agent and `SubAgents.shared_capabilities` install the adapter. Child
 warnings are forwarded by `stream_child_activity` without forwarding child prose.
 `CacheBust` presentation events are journaled and replayed as literal warnings,
 not inserted into model history. Tests in `tests/test_cache_warnings.py` exercise
@@ -987,15 +1001,13 @@ Harness comes from PyPI, pinned to one minor in `pyproject.toml`. It pins
 AI 2.N.x), so upgrade the two together.
 
 Since Harness 0.52 every capability works through the run's workspace
-(`ctx.workspace`) rather than a directory argument: `Coder(path)`,
-`Shell.cwd`, `FileSystem.cwd` and `RepoContext.workspace_dir` are deprecated and
+(`ctx.workspace`) rather than a directory argument: `Shell.cwd`, `FileSystem.cwd` and `RepoContext.workspace_dir` are deprecated and
 ignored. `create_coder` attaches `LocalWorkspace(workspace)`, and a run without
 one fails at its start. `WorkspaceGuard` runs first so a deleted worktree is named
 before Harness reports a generic `WorkspaceUnavailableError`. Upstream
 `SubAgents` passes the parent's `ctx.workspace` to every delegate explicitly, so
 isolated delegation hands its child run a context with the task worktree's own
-workspace. Coder's own `SubAgents` is off (`sub_agents=False`); pcode's
-`WorkspaceSubAgents` provides `delegate_task`.
+workspace. pcode's `WorkspaceSubAgents` provides `delegate_task`.
 
 Pydantic AI records the run's workspace as `workspace_ref` on each response
 and refuses to continue history recorded in another directory. pcode moves
@@ -1011,8 +1023,8 @@ workspace it was asked for.
 A `LocalWorkspace` passes commands only `PATH`, `HOME` and locale variables.
 pcode's commands don't go through it: `JobShell` runs them through `pcode.jobs`
 with the whole host environment (direnv tokens included) from its own
-`workdir`, minus `LLM_API_KEY_ENV_PATTERNS`, which Coder applied before it left
-the environment to the workspace.
+`workdir`, minus `LLM_API_KEY_ENV_PATTERNS` (`_job_shell` passes an explicit
+`env`, because `Shell` applies `denied_env_patterns` only to an explicit one).
 
 File tools are `WorkspaceFileSystem`: Harness's toolset with `root_dir='/'`, so
 paths are unconfined while relative ones resolve from the workspace and walked
@@ -1032,8 +1044,9 @@ and `_loader.discover_instruction_files`; `RepoContext._working_dir`,
 slash); nothing in pcode sets them, but a workspace-relative pattern would need
 a `**/` prefix.
 
-Coder selects `Shell(tools=['shell'], default_timeout=270)`. Pcode replaces that
-capability with `pcode.shell_tools.JobShell`, which keeps upstream's command
+`_job_shell` builds the `Shell` Coder would (`tools=['shell']`,
+`default_timeout=MAX_FOREGROUND_WAIT`, 270s) and copies it into
+`pcode.shell_tools.JobShell`, which keeps upstream's command
 policy, environment handling and output cap (it subclasses `Shell` and
 `ShellToolset`) but drops upstream's persistent `shell` tool from the registered
 set and supplies its own, plus `wait_for_job`, `job_output`, `stop_job` and
@@ -1042,17 +1055,16 @@ set and supplies its own, plus `wait_for_job`, `job_output`, `stop_job` and
 Upstream's `CommandStartedEvent`, `CommandOutputEvent` and `CommandFinishedEvent`
 are still the UI contract and are emitted unchanged, so `src/pcode/shell.py` and
 `live.py` keep working. Events carry `tool_call_id`; keep buffers local to a run
-and keyed by that identity. They do not add model calls. Planning and SubAgents
-are no longer in Coder and must be composed explicitly. `ClearToolResults` remains
-removed so pcode can summarize before discarding evidence.
+and keyed by that identity. They do not add model calls.
 
-Pcode also replaces Coder's instruction-only `Capability` with the local
-`CODER_INSTRUCTIONS` in `agent.py`, before copying capabilities to the worker.
-It is upstream's prompt minus the paragraph telling the model to finish
+The coding guidance is a plain `Capability` holding `CODER_INSTRUCTIONS` in
+`agent.py`, built with `id="coding_guidance"` (a `Capability` binds its
+instructions to its id in `__init__`, so setting `id` afterwards leaves /status
+unable to attribute it). It is upstream's Coder prompt minus the paragraph telling the model to finish
 long-running work before responding and to poll status, which kept it waiting
 on jobs instead of answering steering. Do not add job workflow rules back there;
-the shell tool descriptions cover the mechanics. Recheck the copy when bumping
-the Harness pin. `test_parent_and_worker_replace_finish_before_responding_guidance`
+the shell tool descriptions cover the mechanics. Recheck the copy against
+`coder/_instructions.py` when bumping the Harness pin. `test_parent_and_worker_replace_finish_before_responding_guidance`
 checks the resolved prompt for both agents.
 
 Why the replacement rather than the upstream tool: a command that outlives its

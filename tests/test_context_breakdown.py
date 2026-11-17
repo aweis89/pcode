@@ -132,9 +132,10 @@ def test_named_capabilities_leave_the_rendered_prompt_byte_identical():
         "planning",
         "sub_agents",
     }
-    # Coder's base prompt stays anonymous, so it must not be silently dropped.
+    # pcode names every source it builds, so nothing falls into the unnamed group.
     labels = {row.label for row in instruction_rows(parts)}
-    assert ANONYMOUS_LABEL in labels and AGENT_LABEL in labels
+    assert "Coding guidance" in labels and AGENT_LABEL in labels
+    assert ANONYMOUS_LABEL not in labels
 
 
 def test_overhead_reports_instructions_and_schemas_from_a_real_request():

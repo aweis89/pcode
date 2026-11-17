@@ -1,57 +1,64 @@
 import asyncio
 import json
-from copy import copy
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import Capability
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
-from pydantic_ai_harness.coder import Coder
-from pydantic_ai_harness.coder._capability import MAX_READ_CHARS
 from pydantic_ai_harness.file_system import FileSystem
 from retry_parts import is_retry
 
-from pcode.agent import CODER_REPLACEMENTS, _adapt, _adapt_coder, _CoderGuidance, create_coder
+from pcode.agent import MAX_READ_CHARS, coding_capabilities, create_coder, tool_retries
 from pcode.live import AgentRuntime
 from pcode.runtime import EditCompleted, ToolSummary
 from pcode.tool_output_limits import create_tool_output_limits
 
-# Coder's capabilities pcode keeps as they are (ClearToolResults is dropped
-# later, in `create_coder`). A new one, a second guidance capability say, fails
-# here until someone decides whether its prompt or behavior belongs in pcode.
-KEPT_FROM_CODER = {
-    "RequireWorkspace",
-    "ClearToolResults",
-    "RepairToolArguments",
-    "_ReportExhaustedRetries",
-    "_SetToolStrict",
-}
 
-
-def pcode_coder():
-    return Coder(sub_agents=False, caching=False)  # As `create_coder` builds it.
-
-
-def test_every_coder_capability_is_replaced_or_knowingly_kept(tmp_path):
-    for capability in pcode_coder().capabilities:
-        adapted = _adapt(capability, tmp_path, create_tool_output_limits())
-        replaced = any(isinstance(capability, kind) for kind, _ in CODER_REPLACEMENTS)
-        assert (adapted is not capability) is replaced
-        assert replaced or type(capability).__name__ in KEPT_FROM_CODER, type(capability)
-
-
-def test_a_coder_the_replacements_no_longer_fit_fails_loudly(tmp_path):
-    # As Harness 0.67 did in reverse: the guidance arrives under a type the
-    # table doesn't name, which used to keep Coder's own prompt without a word.
-    coder = copy(pcode_coder())
-    coder.capabilities = [
-        Capability(instructions="Coder's own guidance") if isinstance(c, _CoderGuidance) else c
-        for c in coder.capabilities
+def test_coding_capabilities_keep_harness_coders_order(tmp_path):
+    # Instructions render in this order, so a reorder moves prompt text and the
+    # cache boundary. It mirrors Harness's `Coder`; change it on purpose only.
+    kinds = [type(c).__name__ for c in coding_capabilities(tmp_path, create_tool_output_limits())]
+    assert kinds == [
+        "Capability",
+        "DisplayFileSystem",
+        "JobShell",
+        "AutomaticRepoContext",
+        "CodingToolOutputLimits",
+        "RepairToolArguments",
+        "ReportExhaustedRetries",
+        "PrepareTools",
     ]
-    with pytest.raises(RuntimeError, match="no _CoderGuidance any more"):
-        _adapt_coder(coder, tmp_path, None)
+
+
+def test_a_tool_out_of_retries_reports_back_instead_of_ending_the_turn(tmp_path):
+    # A stale edit raises ModelRetry every time; once the budget is spent the
+    # model gets the failure as a result and the turn goes on.
+    (tmp_path / "f.txt").write_text("hello\n")
+    calls = 0
+
+    async def model(messages, info):
+        nonlocal calls
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        if any("failed several times" in str(p.content) for p in returns):
+            yield "changing approach"
+            return
+        calls += 1
+        args = {"path": "f.txt", "old_text": "absent", "new_text": "x"}
+        yield {0: DeltaToolCall(name="edit_file", json_args=json.dumps(args))}
+
+    agent = Agent(
+        FunctionModel(stream_function=model),
+        capabilities=[create_coder(tmp_path, delegation=False)],
+        retries=tool_retries(),
+    )
+
+    async def run():
+        async with agent.run_stream("edit") as result:
+            return await result.get_output()
+
+    assert asyncio.run(run()) == "changing approach"
+    assert calls == tool_retries()["tools"] + 1
 
 
 def test_coder_preserves_upstream_tools_schemas_and_read_budget(tmp_path, monkeypatch):

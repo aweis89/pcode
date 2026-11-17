@@ -51,9 +51,6 @@ def test_the_whole_host_is_reachable_from_a_workspace_base(paths):
     assert filesystem.root_dir == "/"
     # Protected-file rules match at any depth, since paths are relative to `/`.
     assert all(pattern.startswith("**/") for pattern in filesystem.read_only_patterns)
-    # Copying Coder's capability keeps its settings.
-    copied = WorkspaceFileSystem.from_filesystem(WorkspaceFileSystem(max_read_lines=7))
-    assert copied.max_read_lines == 7 and copied.root_dir == "/"
 
 
 def test_external_file_lifecycle_and_conflicts(paths):

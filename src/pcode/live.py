@@ -232,7 +232,7 @@ class AgentRuntime:
     def replace_agent(self, agent: Agent) -> None:
         """Change the agent without resetting conversation-scoped state."""
         self.agent = agent
-        # Coder's public root capability is flattened by Pydantic AI. A resolver
+        # The agent's capabilities are flattened by Pydantic AI. A resolver
         # keeps the store conversation-scoped, including after /new. It resolves
         # per request, so this is also where a second turn would be handed its
         # own store: `ctx` names the run the tools are being called for.

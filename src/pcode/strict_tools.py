@@ -123,6 +123,24 @@ def prepare_strict_tools(ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefin
     ]
 
 
+def provider_strict_off(names: set[str]) -> PrepareTools:
+    """Turn strict mode off for `names` where nothing chose it, so providers
+    that would infer it (OpenAI, Gemini 2.5+) don't. Harness's `Coder` default,
+    kept as is; `create_strict_tools`, later in the list, still opts Anthropic's
+    `edit_file` in.
+    """
+
+    def prepare(ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+        return [
+            replace(tool_def, strict=False)
+            if tool_def.strict is None and tool_def.name in names
+            else tool_def
+            for tool_def in tool_defs
+        ]
+
+    return PrepareTools(prepare)
+
+
 def create_strict_tools() -> PrepareTools | None:
     """Return the capability when enabled, or None to leave tool schemas alone."""
     if not strict_tools_enabled():

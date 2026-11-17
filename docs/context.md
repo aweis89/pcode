@@ -11,7 +11,7 @@ Prompt overhead           ~7.4k tokens · 3% of 200k · estimated
   Instructions            ~4.3k
     ~/AGENTS.md           ~2.8k · instructions
     AGENTS.md             ~675 · instructions
-    Harness base prompts  ~228
+    Coding guidance       ~228
     Planning tool         ~162
     Assistant config      ~105 · paths only · 1 skill
     File tools            ~102

@@ -32,8 +32,8 @@ Run `make test-all` before pushing anything that touches layout, streaming, or
 the editor.
 
 Tests require no API keys or paid model calls. They cover completion, keybindings,
-Unicode/narrow output, streaming, history/reset, cancellation, and actual Coder
-file reads using Pydantic's `FunctionModel`. Session tests cover round-trip history,
+Unicode/narrow output, streaming, history/reset, cancellation, and actual file-tool
+reads using Pydantic's `FunctionModel`. Session tests cover round-trip history,
 post-tool failures, safe diagnostics, file permissions, locking, torn journals,
 and resuming interrupted tools without replaying them or clearing their effect
 ledger. A native-provider wire test checks that explicit cache markers are omitted
@@ -64,7 +64,8 @@ pcode customizes Pydantic AI through capabilities and model/provider subclasses;
 [capabilities.md](capabilities.md) maps every one of them.
 
 - `src/pcode/agent.py`: `Agent(model, capabilities=[create_coder(...), *extensions])`
-  definition, where `create_coder` adapts Harness's `Coder`; independent of the terminal.
+  definition, where `coding_capabilities` composes the coding tools in Harness `Coder`'s
+  order without using `Coder` itself; independent of the terminal.
 - `src/pcode/live.py`: `run_stream_events()` adapter, history, and usage. It runs the
   whole tool loop, including when the model emits text before tool calls, and adds
   the per-run capabilities.
@@ -257,5 +258,6 @@ not the original session's CPU, live prompt redraws, or external processes.
 - [Pydantic Harness Coder](https://ai.pydantic.dev/harness/coder/)
 
 The latest Harness website can describe a newer Coder composition than the pinned
-release. Implementation follows the installed release's public API
+release, and pcode only mirrors Coder (see the upgrade notes in
+[dependencies.md](dependencies.md#upgrading-pydantic-ai-and-harness)). Implementation follows the installed release's public API
 (`make harness-src` checks out the locked release).
