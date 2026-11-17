@@ -101,7 +101,7 @@ def anthropic_credential_hint() -> str:
 CATALOG_SOURCES = {"openai-codex": "openai", "claude": "anthropic"}
 # Released models Pydantic AI's KnownModelName doesn't list yet, by catalog
 # source. Drop an entry once the locked release lists it.
-UNLISTED_MODELS = {"anthropic": ("claude-fable-5-2",)}
+UNLISTED_MODELS: dict[str, tuple[str, ...]] = {}
 
 
 def claude_code_configured() -> bool:

@@ -69,8 +69,10 @@ or only accepts IDs you type.
 | `ollama` | `OLLAMA_BASE_URL` | typed IDs |
 | `vllm` | `VLLM_BASE_URL` | typed IDs |
 
-The catalog is a static list of known models, not what your account is entitled
-to. Providers not in the table (for example `mistral`, `cohere`, `huggingface`,
+The catalog is a static list of current models that comes with Pydantic AI, not
+what your account is entitled to. Older or preview IDs dropped from it (such as
+Gemini 2.5) still work when typed in full; Gemini before 3 searches the web
+through pcode's own tools, since it can't mix Google Search with them. Providers not in the table (for example `mistral`, `cohere`, `huggingface`,
 `litellm`) still work from `--model` once you install their Pydantic AI extra,
 but the picker does not offer them. Apart from Codex and Claude Code, every
 provider is plain API-key access with no login in pcode: set the variable in your shell before launching.

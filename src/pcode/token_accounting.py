@@ -48,7 +48,7 @@ class TokenAccounting(AbstractCapability):
 
     Installed on the parent run and on `SubAgents.shared_capabilities`, so a
     delegated request is counted exactly once, where it happens. Nothing else may
-    add `AgentRunResult.usage` or `DelegationEndEvent.usage` on top: a child's
+    add `AgentRunResult.usage` or `DelegationFinishedEvent.usage` on top: a child's
     tokens already aggregate into the parent's run usage.
     """
 

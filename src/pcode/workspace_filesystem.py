@@ -9,7 +9,7 @@ dev/dependencies.md before upgrading the filesystem integration.
 from dataclasses import fields
 from pathlib import Path
 
-from pydantic_ai_harness.filesystem import FileSystem, FileSystemToolset
+from pydantic_ai_harness.file_system import FileSystem, FileSystemToolset
 
 
 def _any_depth(pattern: str) -> str:

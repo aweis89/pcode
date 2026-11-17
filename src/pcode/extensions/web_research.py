@@ -2,8 +2,8 @@
 
 Search and fetch are separate concerns because provider-native search returns
 snippets only: reading documentation needs a page fetch either way. Each half
-prefers the model's native tool (Anthropic, OpenAI and `claude:` models search
-natively; Anthropic and `claude:` also fetch) and otherwise exposes a local
+prefers the model's native tool (Anthropic, OpenAI, Gemini and `claude:` models
+search natively; Anthropic, Gemini and `claude:` also fetch) and otherwise exposes a local
 tool. Exa backs the local tools when `EXA_API_KEY` is set; DuckDuckGo and a
 plain HTTP fetch otherwise.
 
@@ -51,7 +51,7 @@ def _exa_tools():
 
     exa = ExaSearchToolset(
         client=None,  # Harness builds the client from EXA_API_KEY; the model never sees it.
-        num_results=SEARCH_RESULTS,
+        max_results=SEARCH_RESULTS,
         max_text_chars=EXA_PAGE_CHARS,
         include_deep_search=False,
     )
@@ -84,18 +84,37 @@ def _local_tools():
     return Tool(web_search, name="web_search"), fetch
 
 
+def _beside_function_tools(ctx) -> bool:
+    """Whether the model accepts a native tool in a request that has function tools.
+
+    Every pcode request has them. Gemini before 3 (and Gemma) refuses the mix,
+    failing the turn, so those get the local tools instead.
+    """
+    return ctx.model.profile.get("google_supports_tool_combination", True)
+
+
+def _native_search():
+    from pydantic_ai.native_tools import WebSearchTool
+
+    def search(ctx):
+        # Omitting the native tool leaves the local `web_search` in the request instead.
+        return WebSearchTool() if _beside_function_tools(ctx) else None
+
+    return search
+
+
 def _native_fetch(native: bool):
     """The `native` argument for page fetching, per the `web_fetch` preference."""
     fetch = _mode("web_fetch")
     if not native or fetch == "local":
         return False
-    if fetch == "native":
-        return True
     from pydantic_ai.native_tools import WebFetchTool
 
     def page_text_only(ctx):
+        if not _beside_function_tools(ctx):
+            return None
         # Omitting the native tool leaves `get_page` in the request instead.
-        return None if ctx.model.system == "claude" else WebFetchTool()
+        return None if fetch != "native" and ctx.model.system == "claude" else WebFetchTool()
 
     return page_text_only
 
@@ -112,6 +131,8 @@ def setup(pcode) -> None:
         search, fetch = _local_tools()
     native = mode == "auto"
     # Ids name the prompt sources in /status; they never reach the model.
-    pcode.add_capability(WebSearch(id="web_research", native=native, local=search))
+    pcode.add_capability(
+        WebSearch(id="web_research", native=native and _native_search(), local=search)
+    )
     pcode.add_capability(WebFetch(id="web_fetch", native=_native_fetch(native), local=fetch))
     pcode.instructions(INSTRUCTIONS)

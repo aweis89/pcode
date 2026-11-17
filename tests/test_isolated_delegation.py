@@ -15,7 +15,7 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from pydantic_ai_harness.subagents import SubAgent
+from pydantic_ai_harness.sub_agents import SubAgent
 from retry_parts import is_retry
 
 from pcode.agent import create_agent

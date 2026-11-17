@@ -603,6 +603,6 @@ def test_filter_preserves_newest_first_catalog_order():
             output=DummyOutput(),
         )
         picker.search.text = "anthopus"
-        assert picker.matches[0] == "anthropic:claude-opus-5"
+        assert picker.matches[0] == "anthropic:claude-opus-5-5"
         assert picker.matches.index("anthropic:claude-opus-4-8") < picker.matches.index(current)
         assert "current" in str(picker.fragments())

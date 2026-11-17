@@ -14,7 +14,7 @@ LONG_CHILD_REQUESTS = 130
 
 
 def test_worker_has_its_own_uncapped_budget_and_no_timeout(tmp_path):
-    from pydantic_ai_harness.subagents import SubAgents
+    from pydantic_ai_harness.sub_agents import SubAgents
 
     coder = create_coder(tmp_path)
     (worker,) = next(c for c in coder.capabilities if isinstance(c, SubAgents)).agents

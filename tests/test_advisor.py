@@ -68,7 +68,7 @@ def test_the_native_advisor_names_the_anthropic_model(monkeypatch):
 
     monkeypatch.setattr(agent_module, "side_model", refuse)
     advisor = _build("claude:claude-fable-5-2", "claude-fable-5-2").capabilities[0]
-    assert advisor.mode == "native" and advisor.model == "anthropic:claude-fable-5-2"
+    assert advisor.local is False and advisor.model == "anthropic:claude-fable-5-2"
 
 
 def run_turn(agent, prompt="Plan it"):

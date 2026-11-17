@@ -12,7 +12,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import BinaryContent, ModelRequest, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
-from pydantic_ai_harness.filesystem import FileReadEvent
+from pydantic_ai_harness.file_system import FileReadEvent
 
 from pcode import images, model_metadata
 from pcode.agent import create_coder

@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic_ai.messages import ToolReturn
 from pydantic_ai_harness.tool_output_limits import (
     Band,
-    LocalFileStore,
+    LocalFileOverflowStore,
     Spill,
     ToolOutputLimits,
     Truncate,
@@ -127,7 +127,7 @@ def create_tool_output_limits() -> ToolOutputLimits:
     return CodingToolOutputLimits(
         bands=[] if mode == "off" else [Band(over=threshold, action=action)],
         per_tool={name: [] for name in SELF_PAGING_TOOLS},
-        store=LocalFileStore(
+        store=LocalFileOverflowStore(
             base_dir=tool_results_path(),
             cleanup_after=timedelta(hours=retention) if retention else None,
         ),

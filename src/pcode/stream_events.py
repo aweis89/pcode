@@ -37,7 +37,7 @@ from pydantic_ai_harness.shell import (
     CommandOutputEvent,
     CommandStartedEvent,
 )
-from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
+from pydantic_ai_harness.sub_agents import DelegationFinishedEvent, DelegationStartedEvent
 
 from pcode.background_delegation import (
     DelegatesPending,
@@ -122,7 +122,7 @@ class EventTranslator:
         self.called: dict[str, str] = {}
         self.delegates: dict[str, ToolStarted] = {}
         self.child_tools: dict[str, ToolStarted] = {}
-        self.delegation_ends: dict[str, DelegationEndEvent] = {}
+        self.delegation_ends: dict[str, DelegationFinishedEvent] = {}
         # Delegates whose call returned on steering, by call id, as in `tools`:
         # their rows stay running until the child's result is delivered.
         self.detached: dict[str, tuple[str, dict, float]] = {}
@@ -154,9 +154,9 @@ class EventTranslator:
                 return self.on_cache_bust(event)
             case FileChangeEvent():
                 return self.on_file_change(event)
-            case DelegationStartEvent():
+            case DelegationStartedEvent():
                 return self.on_delegation_start(event)
-            case DelegationEndEvent():
+            case DelegationFinishedEvent():
                 return self.on_delegation_end(event)
             case DelegationDetached():
                 return self.on_delegation_detached(event)
@@ -229,13 +229,13 @@ class EventTranslator:
     def on_file_change(self, event: FileChangeEvent) -> Iterator[Event]:
         yield event.change
 
-    def on_delegation_start(self, event: DelegationStartEvent) -> Iterator[Event]:
+    def on_delegation_start(self, event: DelegationStartedEvent) -> Iterator[Event]:
         if start := self.delegates.get(event.tool_call_id):
             start = replace(start, activity="Waiting for model")
             self.delegates[event.tool_call_id] = start
             yield start
 
-    def on_delegation_end(self, event: DelegationEndEvent) -> Iterator[Event]:
+    def on_delegation_end(self, event: DelegationFinishedEvent) -> Iterator[Event]:
         self.delegation_ends[event.tool_call_id] = event
         # Deliberately not added to session totals: a child's *tokens*
         # already reach `result.usage` even under its own budget, so

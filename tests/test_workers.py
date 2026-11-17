@@ -5,7 +5,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from pydantic_ai.models.function import DeltaThinkingPart, DeltaToolCall, FunctionModel
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.sub_agents import SubAgent, SubAgents
 
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.live import AgentRuntime

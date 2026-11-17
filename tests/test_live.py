@@ -106,7 +106,7 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
 def test_coder_file_paths_are_unconfined_but_workspace_relative(tmp_path, outside_path):
     import json
 
-    from pydantic_ai_harness.filesystem import FileSystem
+    from pydantic_ai_harness.file_system import FileSystem
     from pydantic_ai_harness.repo_context import RepoContext
     from pydantic_ai_harness.shell import Shell
 

@@ -30,7 +30,7 @@ def context(*, system="anthropic", supported=True):
 
 def edit_file_schema(workspace):
     """The real `edit_file` schema, so the transform is checked against upstream's."""
-    from pydantic_ai_harness.filesystem import FileSystem
+    from pydantic_ai_harness.file_system import FileSystem
 
     toolset = FileSystem(root_dir=workspace).get_toolset()
     return toolset.tools["edit_file"].function_schema.json_schema

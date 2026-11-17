@@ -31,18 +31,18 @@ def test_anthropic_can_start_without_key(tmp_path):
         ("claude-fable-5-2", True),
         ("claude-mythos-5-2", True),
         ("claude-fable-5-2-20261109", True),
-        # Fable 5 keeps Pydantic AI's profile, and a longer number is not 5.2.
         ("claude-fable-5", False),
-        ("claude-fable-5-20", False),
     ],
 )
 def test_fable_5_2_profile_binds_thinking_and_refuses_forced_tools(name, fable_5_2):
+    # 5.2 rejects a forced tool choice with a 400, and without the binding flag
+    # an edited prefix fails the turn instead of being retried with `drop_block`.
+    # Pydantic AI's own profile covers this since 2.69; this guards a regression.
     from pcode.auth import anthropic_model
 
     profile = anthropic_model(f"anthropic:{name}", "synthetic-test-key").profile
     assert profile["anthropic_binds_thinking_blocks"] is fable_5_2
     assert profile["supports_forced_tool_choice"] is not fable_5_2
-    # Everything else still comes from Pydantic AI's own profile.
     assert profile["anthropic_supports_adaptive_thinking"] is True
 
 

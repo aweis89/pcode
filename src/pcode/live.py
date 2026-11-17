@@ -36,11 +36,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.anthropic import AnthropicStaleThinkingBlockWarning
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.workspaces import LocalWorkspaceBackend
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.file_system import FileSystem
 from pydantic_ai_harness.planning import InMemoryPlanStore, Planning
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
-from pydantic_ai_harness.subagents import SubAgents
+from pydantic_ai_harness.sub_agents import SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode import retries

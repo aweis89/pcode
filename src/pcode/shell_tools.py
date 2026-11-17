@@ -316,7 +316,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
                 status_path=str(job.status_path),
                 exit_code=job.exit_code,
                 truncated=truncated,
-                total_lines=None,
+                line_count=None,
             )
         )
 

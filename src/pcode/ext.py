@@ -229,7 +229,7 @@ class ExtensionAPI:
         steering the parent. Default to the worker's own uncapped counter; pass
         `usage_limits` explicitly to set a budget.
         """
-        from pydantic_ai_harness.subagents import SubAgent
+        from pydantic_ai_harness.sub_agents import SubAgent
 
         from pcode.agent import SUBAGENT_USAGE_LIMITS
 

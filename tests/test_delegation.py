@@ -9,7 +9,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.sub_agents import SubAgent, SubAgents
 from retry_parts import is_retry
 
 from pcode.agent import create_coder

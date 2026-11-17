@@ -9,7 +9,7 @@ import re
 
 import pytest
 from pydantic_ai.workspaces import LocalWorkspaceBackend
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.file_system import FileSystem
 
 from pcode import filesystem
 from pcode.agent import create_coder

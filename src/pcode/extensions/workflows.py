@@ -59,7 +59,7 @@ def setup(pcode) -> None:
     from pydantic_ai import Agent, ModelRetry
     from pydantic_ai.capabilities import AbstractCapability
     from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
-    from pydantic_ai_harness.subagents import SubAgents
+    from pydantic_ai_harness.sub_agents import SubAgents
 
     from pcode.agent import (
         AGENT_INSTRUCTIONS,

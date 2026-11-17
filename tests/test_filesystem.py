@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from pydantic_ai import ModelRetry
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
-from pydantic_ai_harness.filesystem import (
-    FileChangeRequestEvent,
+from pydantic_ai_harness.file_system import (
+    FileChangeRequestedEvent,
     FileReadEvent,
     FilesSearchedEvent,
     FileWrittenEvent,
@@ -194,7 +194,7 @@ def test_events_locate_their_files_from_the_filesystem_root(paths):
 
     asyncio.run(run())
     # Change requests are pre-mutation events, not successful traversal evidence.
-    events = [event for event in events if not isinstance(event, FileChangeRequestEvent)]
+    events = [event for event in events if not isinstance(event, FileChangeRequestedEvent)]
     assert [type(e) for e in events] == [
         FileReadEvent,
         FileWrittenEvent,

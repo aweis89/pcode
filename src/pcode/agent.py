@@ -23,11 +23,14 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.toolsets import CombinedToolset
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
+
+# Coder's guidance has no public type to match on when replacing it.
+from pydantic_ai_harness.coder._capability import _CoderGuidance
 from pydantic_ai_harness.compaction import ClearToolResults
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.file_system import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
-from pydantic_ai_harness.subagents import ModelOption, SubAgent
+from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode import remote_profile
@@ -186,10 +189,10 @@ def _adapt(capability, workspace: Path, output_limits):
     fields with their parent and a renamed parent breaks that match.
     """
     match capability:
-        # Coder's sole plain Capability holds its base instructions (and a
-        # project line pcode's file-tool instructions already cover). Exact type:
-        # every capability class below would also match `Capability()`.
-        case Capability() if type(capability) is Capability:
+        # Coder's base instructions, a delegate variant, and a project line
+        # pcode's file-tool instructions already cover. One text serves parent
+        # and worker alike.
+        case _CoderGuidance():
             return Capability(instructions=CODER_INSTRUCTIONS)
         case RepoContext():
             return create_repo_context(workspace)

@@ -137,7 +137,7 @@ def test_claude_code_config_activates_claude(monkeypatch, tmp_path):
     (tmp_path / "profile").mkdir()
     assert "claude" in active_providers(None)
     # Picker entries are Anthropic's own model IDs.
-    assert "claude:claude-opus-5" in model_catalog({"claude"})
+    assert "claude:claude-opus-5-5" in model_catalog({"claude"})
 
 
 def test_key_presence_enables_provider(monkeypatch):
@@ -168,10 +168,9 @@ def test_catalog_per_provider_and_typed_only_providers():
 def test_catalog_uses_installed_sdk_and_keeps_custom_current():
     models = model_catalog({"anthropic", "openai-codex"}, "anthropic:custom-id")
     assert "anthropic:custom-id" in models
-    assert "anthropic:claude-opus-5" in models
+    assert "anthropic:claude-opus-5-5" in models
     assert "openai-codex:gpt-5.6-luna" in models
     assert "openai-codex:gpt-6-astra" in models
-    assert "openai-codex:gpt-5-chat-latest" in models
     assert len(models) == len(set(models))
     assert all(name.startswith(("anthropic:", "openai-codex:")) for name in models)
     assert model_catalog(set()) == []
@@ -195,6 +194,6 @@ def test_numeric_version_sort_newest_first_with_alias_before_snapshots():
 
 
 def test_current_model_does_not_override_version_order():
-    current = "anthropic:claude-opus-4-5"
+    current = "anthropic:claude-opus-4-8"
     models = model_catalog({"anthropic"}, current)
-    assert models.index("anthropic:claude-opus-5") < models.index(current)
+    assert models.index("anthropic:claude-opus-5-5") < models.index(current)

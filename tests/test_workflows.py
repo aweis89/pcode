@@ -12,7 +12,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from pydantic_ai_harness.subagents import SubAgents
+from pydantic_ai_harness.sub_agents import SubAgents
 
 from pcode.agent import create_agent
 from pcode.edit_preview import StreamingEditPreview

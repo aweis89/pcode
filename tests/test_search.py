@@ -103,6 +103,17 @@ def test_native_search_and_fetch_hide_the_local_tools(tmp_path, monkeypatch, key
     }
 
 
+def test_models_refusing_native_beside_function_tools_get_the_local_ones(tmp_path, monkeypatch):
+    # Gemini before 3 fails a request mixing native and function tools.
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    capabilities = web_extension(tmp_path).capabilities
+    old_gemini = ModelProfile(google_supports_tool_combination=False)  # type: ignore[typeddict-unknown-key]
+    assert request_shape(capabilities, old_gemini) == {
+        "tools": ["web_search", "get_page"],
+        "native": [],
+    }
+
+
 def test_local_policy_never_advertises_native_tools(tmp_path, monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     save_preferences(web_search="local")

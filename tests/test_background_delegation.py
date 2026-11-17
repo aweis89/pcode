@@ -9,7 +9,7 @@ from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness.background_tools import BackgroundTools
 from pydantic_ai_harness.background_tools import _capability as upstream
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.sub_agents import SubAgent, SubAgents
 
 from pcode.background_delegation import BackgroundDelegation, _failure, _shown
 from pcode.claude_sdk import ClaudeConnectionError
@@ -153,7 +153,7 @@ def test_steering_reaches_the_parent_while_its_delegate_keeps_working():
         assert len(h.requests) == 3 and not task.done()
         h.second_gate.set()
         await asyncio.wait_for(task, 5)
-        assert '<tool_result tool_name="delegate_task" tool_call_id="call-1"' in h.requests[3]
+        assert '<pyai:tool_result tool_name="delegate_task" tool_call_id="call-1"' in h.requests[3]
         assert [e.markdown for e in events if isinstance(e, Message)] == [
             "Still working on it",
             "Second answer",

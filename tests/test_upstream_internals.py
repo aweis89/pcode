@@ -33,14 +33,16 @@ PRIVATE_IMPORTS = {
     ("pydantic_ai_harness.background_tools._capability", "_Completion"),
     ("pydantic_ai_harness.background_tools._capability", "_format_background_failure"),
     ("pydantic_ai_harness.background_tools._capability", "_format_background_result"),
+    ("pydantic_ai_harness.coder._capability", "_CoderGuidance"),
     ("pydantic_ai_harness.compaction._shared", "find_token_cutoff"),
-    ("pydantic_ai_harness.filesystem._content", "apply_replacements"),
+    ("pydantic_ai_harness.file_system._content", "apply_replacements"),
     ("pydantic_ai_harness.playwright._toolset", "_without_credentials"),
     ("pydantic_ai_harness.repo_context._inventory", "scan_assets"),
+    ("pydantic_ai_harness.repo_context._loader", "ContextFile"),
     ("pydantic_ai_harness.repo_context._loader", "context_file_label"),
     ("pydantic_ai_harness.repo_context._loader", "discover_instruction_files"),
     ("pydantic_ai_harness.shell._policy", "recoverable"),
-    ("pydantic_ai_harness.subagents._toolset", "_Ended"),
+    ("pydantic_ai_harness.sub_agents._toolset", "_Ended"),
 }
 
 # Underscore methods pcode adds on its subclasses of upstream classes; anything
@@ -67,6 +69,7 @@ OWN_HELPERS = {
     },
     "pcode.llm_proxy.ProxiedCodexProvider": {"_new_http_client"},
     "pcode.repo_context.AutomaticRepoContext": {
+        "_discover",
         "_inventory_context",
         "_load_inventory",
         "_on_search",

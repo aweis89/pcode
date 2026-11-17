@@ -7,7 +7,7 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.coder._capability import MAX_READ_CHARS
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.file_system import FileSystem
 from retry_parts import is_retry
 
 from pcode.agent import create_coder

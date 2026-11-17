@@ -13,8 +13,8 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 15.0.0 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.66.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.66.0 (released with Pydantic AI 2.66.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.69.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.69.0 (released with Pydantic AI 2.69.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.64.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
 | Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.180 (CLI 2.1.321) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
@@ -52,6 +52,18 @@ method is gone (which otherwise just stops being called). Behavior changes
 then show up in the rest of the suite; 0.66's were retries arriving as
 `ToolReturnPart(outcome="retried")`, summaries as `CompactionPart`,
 `keep_tokens` becoming a floor, and messages stored once per session.
+0.66 to 0.69 skipped two minors anyway, and its breaks were quieter: most
+renames kept deprecated aliases the suite passed through. Harness's warnings
+subclass `UserWarning`, so `-W error::DeprecationWarning` misses them; run with
+`-W error::pydantic_ai_harness.HarnessDeprecationWarning`, or grep the warnings
+summary for `HarnessDeprecationWarning`. The breaking ones: `filesystem` and
+`subagents` became `file_system` and `sub_agents`; Coder's guidance became the
+private `_CoderGuidance`, so pcode's replacement silently stopped matching and
+Coder's own "finish long-running work" prompt came back; `RepoContext` started
+loading only the first instruction file per directory
+(`discover_every_instruction_file` keeps loading all of them); background
+results are framed in `<pyai:tool_result>`; and `KnownModelName` was curated
+down to current models, so catalog tests naming an old ID fail.
 
 Session stores only migrate forward. Opening a session moves pcode's old
 `pcode_messages` rows into Harness's `snapshot_messages` tables
@@ -218,15 +230,15 @@ into the parent's event stream. The handler receives a **child** `RunContext`,
 not the parent tool identity; `DelegationReporting.wrap_tool_execute` binds the
 parent context with a `ContextVar`, reset in `finally`, so parallel children do
 not share attribution. Only child tool boundaries and phase labels are forwarded,
-never child text/thinking deltas. Inspect installed `subagents/_toolset.py` and
-`subagents/_events.py` before changing this integration.
+never child text/thinking deltas. Inspect installed `sub_agents/_toolset.py` and
+`sub_agents/_events.py` before changing this integration.
 
-`live.py` consumes `DelegationStartEvent`/`DelegationEndEvent` by `tool_call_id`.
+`live.py` consumes `DelegationStartedEvent`/`DelegationFinishedEvent` by `tool_call_id`.
 Use the structured delegation outcome: timeout/budget limits can return ordinary
 successful tool strings. A max-calls refusal emits no lifecycle events; cancellation
 and uncontained errors may omit the end event, so keep turn-end interruption cleanup.
 
-Do not add `DelegationEndEvent.usage` to session totals. `SubAgent.usage_limits`
+Do not add `DelegationFinishedEvent.usage` to session totals. `SubAgent.usage_limits`
 isolates a child's *request count* (so a long child cannot trip the parent's
 limit, and a delegate with a set cap gets a steering message rather than a
 raised limit), but its tokens
@@ -464,7 +476,7 @@ pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history
 ### Tool output limits
 
 `tool_output_limits.py` composes the pinned Harness `ToolOutputLimits`, `Band`,
-`Spill`, `Truncate`, `LocalFileStore`, and `indented_json` APIs. Coder already
+`Spill`, `Truncate`, `LocalFileOverflowStore`, and `indented_json` APIs. Coder already
 includes a private `ToolOutputLimits` subclass with a 64k truncation band: replace
 it by type rather than append another limiter, or data can be lost before spilling.
 `SubAgents.shared_capabilities` receives a separate instance with the same settings

@@ -416,7 +416,7 @@ backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (`anthropic:`, `claude:` and OpenAI models) | provider runs it server-side | Anthropic runs it server-side; `claude:` uses `get_page` below by default |
+| Model has a native tool (`anthropic:`, `claude:`, OpenAI, and Gemini 3 or newer) | provider runs it server-side (Gemini through Google Search) | Anthropic and Gemini (URL context) run it server-side; OpenAI uses `get_page` below, and so does `claude:` by default |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 

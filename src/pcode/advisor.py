@@ -19,13 +19,15 @@ the turn's prompt cache); `AsideGuard` refuses the local tool there.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 # Pydantic AI is imported where used: the controller holds a choice from launch.
-from pcode.auth import FABLE_5_2_MODELS
 from pcode.preferences import ANTHROPIC_PROVIDERS, load_preferences
 
 log = logging.getLogger(__name__)
+# `(?!\d)` keeps a future `claude-fable-5-20` out.
+FABLE_5_2_MODELS = re.compile(r"claude-(?:fable|mythos)-5-2(?!\d)")
 
 SETTING = "advisor_model"
 TOOL = "advisor"
@@ -117,9 +119,9 @@ def _build(name: str, model_id: str | None):
             return GUIDANCE.format(name=name)
 
     if model_id is not None:
-        advisor = Advisor(f"anthropic:{model_id}", mode="native")
+        advisor = Advisor(f"anthropic:{model_id}", local=False)
     else:
-        advisor = Advisor(_local_model(name), mode="local")
+        advisor = Advisor(_local_model(name), native=False)
     return CombinedCapability([advisor, Guidance()])
 
 

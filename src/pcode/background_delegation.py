@@ -17,6 +17,7 @@ and result framing; `tests/test_background_delegation.py` pins them.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -185,6 +186,11 @@ def _failure(task_id: str, error: BaseException, max_retries: int) -> _Completio
     return _Completion(DELEGATE, max_retries, content)
 
 
+# Harness 0.67 namespaced the tags (`<pyai:tool_result ...>`); accept either spelling.
+_OPEN_FRAME = re.compile(r"<(?:\w+:)?tool_result\b")
+_CLOSE_FRAME = re.compile(r"</(?:\w+:)?tool_result>")
+
+
 def _shown(completion: _Completion) -> str:
     """A delivered result as the delegate row shows it, without the frame the model reads."""
     text = "\n".join(
@@ -193,7 +199,7 @@ def _shown(completion: _Completion) -> str:
         if isinstance(item, TextContent | str)
     )
     lines = text.splitlines()
-    if lines and lines[0].startswith("<tool_result") and lines[-1] == "</tool_result>":
+    if lines and _OPEN_FRAME.match(lines[0]) and _CLOSE_FRAME.fullmatch(lines[-1]):
         lines = lines[1:-1]
     return "\n".join(lines)
 

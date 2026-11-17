@@ -18,7 +18,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel as LocalModel
 from pydantic_ai.usage import RequestUsage
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.sub_agents import SubAgent, SubAgents
 from pydantic_ai_harness.warn_on_cache_busts import CacheBustWarning, WarnOnCacheBusts
 from rich.console import Console
 

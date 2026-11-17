@@ -1,19 +1,21 @@
 """Discover assistant assets as context, rather than asking the model to do it."""
 
 import asyncio
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic_ai.capabilities import on_event
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
-from pydantic_ai_harness.filesystem import DirectoryListedEvent, FilesSearchedEvent
+from pydantic_ai_harness.file_system import DirectoryListedEvent, FilesSearchedEvent
 from pydantic_ai_harness.repo_context import RepoContext
 
 # Harness exposes no public scanner; reuse its metadata-only scan so the
 # inventory stays consistent with the upstream tool. Covered by integration tests.
 from pydantic_ai_harness.repo_context._inventory import scan_assets
 from pydantic_ai_harness.repo_context._loader import (
+    ContextFile,
     context_file_label,
     discover_instruction_files,
 )
@@ -27,6 +29,33 @@ from pcode.preferences import SETTINGS, load_preferences
 # lands after the shared ones and takes precedence by coming later. Nested discovery takes only
 # the first match per directory, so there a local file shows only on its own.
 INSTRUCTION_FILENAMES = ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md", "AGENTS.local.md")
+
+
+async def discover_every_instruction_file(
+    workspace: Workspace, working_dir: Path, top: Path | None
+) -> list[ContextFile]:
+    """Every instruction file present in each directory, not just the first.
+
+    Harness 0.67 narrowed discovery to the first of `filenames` per directory,
+    which would drop a repo's AGENTS.md beside its CLAUDE.md and every
+    `.local.md` override. Discover each name on its own, then order ancestor
+    first (all directories lie on one chain, so depth orders them) and by
+    `INSTRUCTION_FILENAMES` within a directory, keeping the first copy of
+    identical content, as Harness does (a `CLAUDE.md -> AGENTS.md` link loads once).
+    """
+    found = [
+        file
+        for name in INSTRUCTION_FILENAMES
+        for file in await discover_instruction_files(workspace, working_dir, top, (name,))
+    ]
+    seen: set[str] = set()
+    files = []
+    for file in sorted(found, key=lambda file: len(file.directory.parts)):
+        digest = hashlib.sha256(file.content.encode()).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            files.append(file)
+    return files
 
 
 @dataclass
@@ -48,8 +77,18 @@ class AutomaticRepoContext(RepoContext):
         return run
 
     async def before_run(self, ctx) -> None:
+        # Upstream's run setup stays (nested-traversal bookkeeping included);
+        # only its first-match-per-directory file list is replaced.
         await super().before_run(ctx)
+        if self.autoload_instructions:
+            self._context_files = await self._discover(ctx.workspace)
         await self._load_inventory(ctx.workspace)
+
+    async def _discover(self, workspace: Workspace):
+        working_dir = await self._working_dir(workspace)
+        # `home_dir` needs its symlinks resolved to contain the resolved working directory.
+        top = None if self.home_dir is None else Path(await workspace.realpath(str(self.home_dir)))
+        return await discover_every_instruction_file(workspace, working_dir, top)
 
     async def _load_inventory(self, workspace: Workspace) -> None:
         working_dir = await self._working_dir(workspace)
@@ -108,12 +147,8 @@ class AutomaticRepoContext(RepoContext):
         async def load():
             workspace = Workspace(LocalWorkspaceBackend(self.root))
             self._cached_working_dir = None
-            working_dir = await self._working_dir(workspace)
-            home = None if self.home_dir is None else Path(self.home_dir)
             self._context_files = (
-                await discover_instruction_files(workspace, working_dir, home, self.filenames)
-                if self.autoload_instructions
-                else []
+                await self._discover(workspace) if self.autoload_instructions else []
             )
             await self._load_inventory(workspace)
 
@@ -145,8 +180,8 @@ def create_repo_context(workspace: Path) -> AutomaticRepoContext:
     Snapshot saved defaults at agent creation, not during an active run. Disabling
     the walk keeps workspace instructions; nested discovery is independently opt-in.
 
-    Harness owns the rest: startup files are deduplicated by resolved path and
-    content (first occurrence wins) and loaded per agent run, while nested
+    Startup files load per agent run, every instruction file in each directory
+    (`discover_every_instruction_file`, which dedupes by content), while nested
     discovery takes only the first matching filename in a directory and surfaces
     each directory once per run.
     """

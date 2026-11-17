@@ -17,8 +17,8 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
-from pydantic_ai_harness.subagents import SubAgents
-from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLimits
+from pydantic_ai_harness.sub_agents import SubAgents
+from pydantic_ai_harness.tool_output_limits import LocalFileOverflowStore, ToolOutputLimits
 
 from pcode.agent import create_coder
 from pcode.config import configure
@@ -186,7 +186,7 @@ def test_configured_truncation_and_spill_failure_fallback(strategy, store_failur
         async def fail(*args, **kwargs):
             raise OSError("cannot write")
 
-        monkeypatch.setattr(LocalFileStore, "write", fail)
+        monkeypatch.setattr(LocalFileOverflowStore, "write", fail)
 
     def large_result():
         return "HEAD" + "x" * 1000 + "TAIL"
