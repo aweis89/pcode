@@ -564,6 +564,10 @@ PHASE_GAP_SECONDS = 1.0
 # rewrites itself that fast cannot be read. Once the hold is up the row jumps
 # to whatever is current, skipping anything that came and went meanwhile.
 STATUS_HOLD_SECONDS = 2.5
+# Least time a thought stays on the thinking rows once it stops changing. The
+# answer often starts streaming a moment after the thinking that led to it, and
+# clearing the rows right then made a block of up to ten rows flash and vanish.
+THOUGHT_HOLD_SECONDS = STATUS_HOLD_SECONDS
 # Status text the row leads with verbatim; anything longer is detail.
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
@@ -731,6 +735,16 @@ class _HeldStatus:
     seen: float  # Last drawn.
     turn: tuple[str, str]  # The prompt it belongs to.
     call: ToolCall | None  # The running tool call it reports, if any.
+
+
+@dataclass
+class _HeldThought:
+    """The thought on the thinking rows, and what decides how long it may stay."""
+
+    text: str  # What the rows show (`latest_thought`).
+    since: float  # When this text first showed.
+    seen: float  # Last drawn.
+    turn: tuple[str, str]  # The prompt it belongs to.
 
 
 def _status_text(line: StatusLine) -> tuple:
@@ -978,6 +992,8 @@ class Activity:
     )
     # The status line on screen while a hold keeps it. Drawing state like `_phase`.
     _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
+    # The thought on the thinking rows while a hold keeps it. Drawing state too.
+    _held_thought: _HeldThought | None = field(default=None, init=False, repr=False, compare=False)
     # The turn's latest call on the tool row, kept there once it finishes.
     _last_call: ToolCall | None = field(default=None, init=False, repr=False, compare=False)
 
@@ -995,40 +1011,76 @@ class Activity:
         self.thought = (self.thought + text)[-THINKING_KEEP:]
 
     def forget_thought(self) -> None:
-        """Drop the thinking rows: the answer they led to is streaming now."""
+        """Drop the thought: the answer it led to is streaming now.
+
+        The rows may keep drawing it a moment longer (`shown_thought`).
+        """
         self.thought, self.thought_done = "", True
+
+    def shown_thought(self) -> str:
+        """The thought the thinking rows show, kept at least `THOUGHT_HOLD_SECONDS`.
+
+        A thought shows as it streams. Once forgotten (the answer started) it
+        stays until it has been on screen, unchanged, for the hold, so a block
+        that arrives right before its answer can be read instead of flashing.
+        The hold gives way at once to a new thought, a new turn, the end of
+        the turn, a hidden panel, and a gap in drawing.
+        """
+        if not (self.thinking_mode == "activity-panel" and self.status_shown and self.panel_shown):
+            self._held_thought = None
+            return ""
+        text, now = latest_thought(self.thought), monotonic()
+        turn = (self.prompt_kind, self.prompt)
+        held = self._held_thought
+        if text.strip():
+            if held is None or held.text != text or held.turn != turn:
+                self._held_thought = _HeldThought(text, now, now, turn)
+            else:
+                held.seen = now
+            return text
+        if (
+            held is None
+            or held.turn != turn
+            or now - held.seen > PHASE_GAP_SECONDS
+            or now - held.since >= THOUGHT_HOLD_SECONDS
+        ):
+            self._held_thought = None
+            return ""
+        held.seen = now
+        return held.text
 
     @property
     def thought_shown(self) -> bool:
         """Whether the thinking rows have a thought to show in the activity panel."""
-        return (
-            self.thinking_mode == "activity-panel"
-            and self.status_shown
-            and self.panel_shown
-            and bool(latest_thought(self.thought).strip())
-        )
+        return bool(self.shown_thought())
 
     def thought_fragments(
-        self, width: int, rows: int = THOUGHT_ROWS
+        self, width: int, rows: int = THOUGHT_ROWS, thought: str | None = None
     ) -> list[list[tuple[str, str]]]:
         """The thinking rows of the activity panel, in `activity-panel` mode.
 
         Held through the tool calls that follow a thought, which it usually
-        explains, and gone once the answer streams into scrollback: thinking
-        is the lead-up, not a caption on the result.
+        explains, and gone once the answer streams into scrollback (after
+        `THOUGHT_HOLD_SECONDS` on screen): thinking is the lead-up, not a
+        caption on the result.
 
         Every row opens with the quote mark, as a quoted passage's lines do,
         so a wrapped thought never reads as two things; the marker stays
         upright beside the italic text.
+
+        `thought` is `shown_thought()` as the caller already read it this
+        render, so the rows agree with the space it budgeted for them.
         """
-        if not self.thought_shown or width < 3:
+        if thought is None:
+            thought = self.shown_thought()
+        if not thought or width < 3:
             return []
         lead = f"{THOUGHT_ICON} "
         return [
             # lstrip: a cut row in a very narrow pane can open on the space
             # its ellipsis was set after.
             [("class:activity.thinking.icon", lead), ("class:activity.thinking", row.lstrip())]
-            for row in head_rows(latest_thought(self.thought), width - cell_len(lead), rows)
+            for row in head_rows(thought, width - cell_len(lead), rows)
         ]
 
     def begin_wait(self, label: str) -> Wait:
@@ -1144,6 +1196,9 @@ class Activity:
         """
         self._last_call = None
         self.tools.turn_calls.clear()
+        # Nor on its thought, held or not: the same prompt queued again keeps
+        # the turn key the hold compares.
+        self._held_thought = None
 
     def height_cap(self, rows: int) -> int | None:
         """The editor box's row limit, panel included, on a screen this tall."""
@@ -2761,8 +2816,17 @@ class PromptLayout:
             if budget is not None:
                 # Under a height cap the thought gives way to the editor.
                 rows = min(rows, budget)
-            return self.activity.thought_fragments(self.band_width(), rows)
-        return self.activity.thought_fragments(self.size().columns - 1, rows)
+            return self.activity.thought_fragments(self.band_width(), rows, self.shown_thought())
+        return self.activity.thought_fragments(self.size().columns - 1, rows, self.shown_thought())
+
+    @_per_render
+    def shown_thought(self) -> str:
+        """The thought on the thinking rows, read once per redraw.
+
+        Its hold can run out between two reads of the clock, and the tool rows
+        must not give up a row for a thought the band then leaves out.
+        """
+        return self.activity.shown_thought()
 
     @_per_render
     def status_line(self) -> StatusLine:
@@ -2785,7 +2849,7 @@ class PromptLayout:
         of the pane with the thought, which keeps one row of it when there is
         one to show.
         """
-        limit = self.size().rows // 4 - int(self.activity.thought_shown)
+        limit = self.size().rows // 4 - int(bool(self.shown_thought()))
         return self.activity.tool_rows(
             self.status_line(), self.size().columns - 1, limit, self.tool_spinner_frame()
         )

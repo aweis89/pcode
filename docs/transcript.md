@@ -124,8 +124,10 @@ the modes:
 
 The thinking rows stay through the tool calls that follow a thought, so a
 running tool on the status row doesn't hide them, and the last thought usually
-explains the call under it. They go as soon as any reply text streams into
-scrollback, including a line written before a tool call. A long thought is cut at the end; a short terminal gets fewer rows (at most a quarter of its height).
+explains the call under it. They go once reply text streams into scrollback,
+including a line written before a tool call, but not before the thought has
+sat on screen unchanged for a couple of seconds, so thinking that leads
+straight into the answer can still be read instead of flashing past. A long thought is cut at the end; a short terminal gets fewer rows (at most a quarter of its height).
 Where a summary has section titles, as OpenAI's do, the rows show the newest
 title rather than the prose under it.
 

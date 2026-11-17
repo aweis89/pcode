@@ -1500,9 +1500,13 @@ def test_thinking_modes_cycle_between_row_and_scrollback_without_growing_prompt(
     assert thought_row(screen) == "SAVED_REASONING_TEXT", screen
     assert not in_scrollback(screen)
     assert input_rows(screen) == 1
-    # Gone the moment the answer streams: thinking is the lead-up, not a caption.
+    # Gone once the answer streams: thinking is the lead-up, not a caption.
+    # Only after a hold (tests/test_queue.py times it), so wait for it to end.
     release()
-    screen = capture(pane, "Public answer while thinking is visible", running=True)
+    capture(pane, "Public answer while thinking is visible", running=True)
+    screen = settle(
+        pane, lambda screen: "SAVED_REASONING_TEXT" not in thought_row(screen), running=True
+    )
     assert "SAVED_REASONING_TEXT" not in thought_row(screen), screen
     assert not in_scrollback(screen)
     # Scrollback: written above, and the row goes.

@@ -649,12 +649,27 @@ def test_thinking_marker_leads_every_wrapped_row(width, thought, limit):
     assert rows[-1][1][1].endswith("…")
 
 
-def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
+def test_thinking_rows_hold_the_newest_thought_above_the_status_row(monkeypatch):
     from rich.cells import cell_len
 
+    from pcode import ui
     from pcode.runtime import Message, TextDelta, Thinking, ThinkingDelta, ToolStarted
     from pcode.stream_display import present_stream_event
     from pcode.ui import Activity
+
+    clock = [100.0]
+    monkeypatch.setattr(ui, "monotonic", lambda: clock[0])
+
+    def draw_for(seconds):
+        # Drawn every spinner tick meanwhile, as a running turn is.
+        end = clock[0] + seconds
+        while clock[0] + 0.25 < end:
+            clock[0] += 0.25
+            row()
+        clock[0] = end
+
+    def outlast_the_hold():
+        draw_for(ui.THOUGHT_HOLD_SECONDS + 0.5)
 
     class Output:
         """Accepts every output call; `app.invalidate()` included."""
@@ -714,26 +729,60 @@ def test_thinking_rows_hold_the_newest_thought_above_the_status_row():
     assert "Read file" in "".join(t for _, t in activity.status_fragments("⠋", 80))
     assert row() == "Tracing the resize path"
     # An empty text part says nothing yet; the answer streaming into
-    # scrollback takes over, and the thought goes at once.
+    # scrollback takes over, and the thought goes once it has had its hold.
     feed(TextDelta(""))
     feed(TextDelta(" \n"))
     assert row() == "Tracing the resize path"
+    outlast_the_hold()
     feed(TextDelta("Answer"))
-    assert row() == ""
+    assert activity.thought == "" and row() == ""
+    # A block that arrives whole right before its answer is not wiped the
+    # moment the answer starts: it stays for the hold, then goes.
     feed(Thinking("A whole block, with no deltas"))
     assert row() == "A whole block, with no deltas"
+    feed(TextDelta("Answer"))
+    assert activity.thought == "" and row() == "A whole block, with no deltas"
+    draw_for(ui.THOUGHT_HOLD_SECONDS - 0.1)
+    assert row() == "A whole block, with no deltas"
+    draw_for(0.2)
+    assert row() == ""
+    # A new thought replaces a held one at once.
     feed(ThinkingDelta("Next idea"))
     assert row() == "Next idea"
     # A whole message with no deltas clears it too.
     feed(Message("Answer"))
+    assert row() == "Next idea"
+    outlast_the_hold()
     assert row() == ""
     feed(ThinkingDelta("Again"))
     assert row() == "Again"
-    # The other modes have no row; a new turn starts empty.
+    # A gap in drawing (the rows were not on screen) ends the hold.
+    feed(TextDelta("Answer"))
+    clock[0] += ui.PHASE_GAP_SECONDS + 0.1
+    assert row() == ""
+    # The other modes have no row, and switching to one ends a hold.
+    feed(ThinkingDelta("Again"))
+    assert row() == "Again"
+    feed(TextDelta("Answer"))
+    assert row() == "Again"
     activity.thinking_mode = "scrollback"
     assert row() == ""
     activity.thinking_mode = "activity-panel"
+    assert row() == ""
+    # A new turn ends a hold, even one queued with the same prompt text.
     activity.start_prompt("again")
+    feed(ThinkingDelta("Old"))
+    assert row() == "Old"
+    feed(TextDelta("Answer"))
+    activity.prompt_state = "done"
+    activity.start_prompt("again")
+    assert row() == ""
+    # So does the end of a turn.
+    feed(ThinkingDelta("Last"))
+    assert row() == "Last"
+    feed(TextDelta("Answer"))
+    assert row() == "Last"
+    activity.prompt_state = "done"
     assert row() == ""
 
 
