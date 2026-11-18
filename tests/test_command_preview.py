@@ -80,3 +80,68 @@ def test_preview_shares_space_with_actual_editor_and_queue(height, cap, tasks, d
                     await app.cancel_and_wait_for_background_tasks()
 
     asyncio.run(run())
+
+
+def test_preview_waits_before_showing_a_command(monkeypatch):
+    """A command that settles inside the wait never flashes its output."""
+    from pcode import ui
+
+    monkeypatch.setattr(ui, "COMMAND_PREVIEW_DELAY_SECONDS", 1.0)
+    now = [100.0]
+    monkeypatch.setattr(ui, "monotonic", lambda: now[0])
+    save_preferences(show_commands="activity-panel")
+
+    async def run():
+        stream = StringIO()
+        activity = Activity()
+        activity.start_prompt("Run tests")
+        view = Transcript(Console(file=stream), activity=activity)
+        with create_pipe_input() as pipe:
+            session = create_prompt(
+                CommandRegistry(),
+                activity=activity,
+                transcript=view,
+                on_submit=lambda text: None,
+                input=pipe,
+                output=Vt100_Output(stream, lambda: Size(rows=30, columns=40), enable_cpr=False),
+                bottom_toolbar=[("", "status")],
+            )
+            app = session.app
+            with set_app(app):
+                try:
+
+                    def shown():
+                        app.renderer.render(app, app.layout)
+                        texts = [
+                            fragment_list_to_text(to_formatted_text(window.content.text))
+                            for window in app.layout.find_all_windows()
+                            if isinstance(window.content, FormattedTextControl)
+                        ]
+                        return [text for text in texts if "$ " in text]
+
+                    activity.command_outputs["quick"] = CommandOutput("quick", "fast", "QUICK_OUT")
+                    assert not shown()
+                    now[0] += 0.5
+                    assert not shown()
+                    # It settled inside the wait: nothing ever drew it.
+                    del activity.command_outputs["quick"]
+                    assert not shown()
+                    assert "QUICK_OUT" not in stream.getvalue()
+
+                    activity.command_outputs["slow"] = CommandOutput("slow", "long", "SLOW_OUT")
+                    assert not shown()
+                    now[0] += 0.9
+                    assert not shown()
+                    assert "SLOW_OUT" not in stream.getvalue()
+                    now[0] += 0.1
+                    assert any("SLOW_OUT" in text for text in shown())
+                    del activity.command_outputs["slow"]
+
+                    # A job the user asked to watch is shown at once.
+                    watched = ui.WATCHED_PREFIX + "j1"
+                    activity.command_outputs[watched] = CommandOutput(watched, "tail", "JOB_OUT")
+                    assert any("JOB_OUT" in text for text in shown())
+                finally:
+                    await app.cancel_and_wait_for_background_tasks()
+
+    asyncio.run(run())

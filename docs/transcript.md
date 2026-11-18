@@ -310,7 +310,10 @@ Details:
   summary line.
 - While a foreground `shell` call runs (in `activity-panel` or `scrollback`
   mode), a live preview above the prompt shows
-  its combined stdout/stderr as complete lines arrive. It looks like the settled
+  its combined stdout/stderr as complete lines arrive. It opens only once output
+  has been streaming for a second, so a quick command like `grep` or
+  `git status` never flashes a block that vanishes a moment later; its result
+  is in the tool row and scrollback either way. It looks like the settled
   block, with `⟳` and a running elapsed time. It is capped at
   `command_preview_lines` wrapped rows (not counting the command and border
   lines) and uses whatever height is left after the editor, queued prompts, and

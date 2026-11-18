@@ -568,6 +568,12 @@ STATUS_HOLD_SECONDS = 2.5
 # answer often starts streaming a moment after the thinking that led to it, and
 # clearing the rows right then made a block of up to ten rows flash and vanish.
 THOUGHT_HOLD_SECONDS = STATUS_HOLD_SECONDS
+# How long a command's output must stream before its live preview opens. Most
+# commands (grep, git status, ls) finish well inside this, and showing their
+# output the moment it arrived made a block of up to a dozen rows flash and
+# vanish when they settled. Their result is already in the tool row and
+# scrollback. A watched job skips the wait: the user asked to see it.
+COMMAND_PREVIEW_DELAY_SECONDS = 1.0
 # Status text the row leads with verbatim; anything longer is detail.
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
@@ -2572,6 +2578,10 @@ class PromptLayout:
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
         self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
+        # When each running command's output was first drawn for, by call id,
+        # and whether one is still waiting out COMMAND_PREVIEW_DELAY_SECONDS.
+        self.command_seen: dict[str, float] = {}
+        self.command_waiting = False
         # The status row and side questions (waits on a model) share one
         # spinner; running tool calls and the terminal's own waits (a command)
         # share another, so the two kinds of wait look different at a glance.
@@ -2677,7 +2687,10 @@ class PromptLayout:
         """
         activity, transcript = self.activity, self.transcript
         if transcript is None or transcript.view_shown:
-            # A /btw thread has the screen: the conversation's previews wait for it.
+            # A /btw thread has the screen: the conversation's previews wait for
+            # it, though their commands are still timed.
+            if transcript is not None:
+                self.settled_commands({})
             return None
         edits = transcript.live_edit_previews and activity.edit_previews
         if not edits:
@@ -2691,6 +2704,7 @@ class PromptLayout:
             commands = {
                 key: event for key, event in commands.items() if key.startswith(WATCHED_PREFIX)
             }
+        commands = self.settled_commands(commands)
         if not edits and not commands:
             return None
         size = self.size()
@@ -2765,6 +2779,28 @@ class PromptLayout:
             return plans, heading, rows[-budget:], editor_height
         block = [("class:plan", "$ " + command_preview(event.command)), *rows[-budget:]]
         return plans, heading, [(style, INDENT + text) for style, text in block], editor_height
+
+    def settled_commands(self, commands: dict[str, CommandOutput]) -> dict[str, CommandOutput]:
+        """The commands whose output has streamed for COMMAND_PREVIEW_DELAY_SECONDS.
+
+        Timed from the first redraw that saw the output, so a command that is
+        silent for a while and then prints and exits at once never flashes
+        either. Every running command is timed, shown or not, so toggling the
+        panel on mid-command shows a long one straight away.
+        """
+        now, seen = monotonic(), self.command_seen
+        running = self.activity.command_outputs
+        for key in [key for key in seen if key not in running]:
+            del seen[key]
+        for key in running:
+            seen.setdefault(key, now)
+        settled = {
+            key: event
+            for key, event in commands.items()
+            if key.startswith(WATCHED_PREFIX) or now - seen[key] >= COMMAND_PREVIEW_DELAY_SECONDS
+        }
+        self.command_waiting = len(settled) < len(commands)
+        return settled
 
     def plan_rows(self):
         live = self.preview_layout()
@@ -3539,6 +3575,8 @@ class PromptLayout:
             or activity.asides_running
             or bool(activity.waits)
             or (activity.tasks_shown and activity.tools.animating)
+            # Nothing else may redraw when a waiting command preview is due.
+            or self.command_waiting
         )
 
     async def animate(self, app) -> None:

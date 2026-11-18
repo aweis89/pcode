@@ -296,6 +296,17 @@ def isolated_terminal_background(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def immediate_command_preview(monkeypatch):
+    """Show a command's live preview on its first redraw, as layout tests expect.
+
+    The wait itself is covered in `test_command_preview.py`, which restores it.
+    """
+    from pcode import ui
+
+    monkeypatch.setattr(ui, "COMMAND_PREVIEW_DELAY_SECONDS", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def isolated_jobs():
     """Shell jobs are process-wide on purpose; tests must not inherit them.
 

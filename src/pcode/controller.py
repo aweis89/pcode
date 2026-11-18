@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from pcode.advisor import AdvisorChoice
 from pcode.aside import (
@@ -1638,7 +1639,9 @@ class SessionController:
 
         command = shell_command(text)
         assert command is not None
-        call_id = f"shell_mode_{id(self):x}"
+        # One id per run: the live preview times each command from when its
+        # output first shows, so a reused id would let the next one skip the wait.
+        call_id = f"shell_mode_{uuid4().hex[:12]}"
         cwd, env = (
             self.runtime.shell_environment()
             if hasattr(self.runtime, "shell_environment")
