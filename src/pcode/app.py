@@ -1538,6 +1538,7 @@ class PreviewApp:
             or self.activity.queued_prompts
             or self.controller.working()
             or self.asides.running
+            or self.controller.summarizing
         ):
             return (
                 "This session runs in this terminal, so what it is doing can't move to a "
@@ -2171,12 +2172,12 @@ class PreviewApp:
                 self.transcript.flash("No side question is running.")
             return False
         if name in ("/merge", "/summarize"):
+            action = "merge" if name == "/merge" else "summary"
             try:
-                self.controller.check_bridge(thread)
+                self.controller.check_bridge(thread, action)
             except ValueError as error:
                 self.transcript.flash(str(error))
                 return True
-            action = "merge" if name == "/merge" else "summary"
 
             async def keep() -> None:
                 try:

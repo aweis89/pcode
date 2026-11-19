@@ -73,7 +73,7 @@ def framed_follow_up(question: str) -> str:
 
 
 # Asked in the thread, where its questions and answers are, so the summary
-# reuses the thread's cache; `summary_request` is what the conversation records.
+# reuses the thread's cache; `summary_message` is what the conversation is sent.
 SUMMARY_FRAMING = (
     "[Side thread summary] Summarize this side discussion for the main conversation, "
     "which never saw it: what was asked, what was found, and anything that should change "
@@ -86,19 +86,17 @@ def framed_summary(instructions: str) -> str:
     return SUMMARY_FRAMING + (f"\n\nFocus: {instructions}" if instructions else "")
 
 
-def summary_request(questions: list[str], instructions: str = "") -> str:
-    """The user message a thread's summary is recorded under in the conversation.
+def summary_message(questions: list[str], summary: str) -> str:
+    """The user message that brings a thread's summary to the conversation's model.
 
     The conversation never saw the thread, so this names its questions rather
     than pointing at a discussion "above" that is not there.
     """
     lines = [
-        "[Side thread summary] Beside this conversation I asked side questions it did not see:"
+        "[Side thread summary] Beside this conversation I asked side questions you did not see:"
     ]
     lines += [f"- {' '.join(question.split())}" for question in questions]
-    lines.append("Summarize what came of them for the rest of this conversation.")
-    if instructions:
-        lines.append(f"Focus: {instructions}")
+    lines += ["", "What came of them:", "", summary.strip()]
     return "\n".join(lines)
 
 
@@ -106,8 +104,9 @@ def summary_request(questions: list[str], instructions: str = "") -> str:
 class Bridge:
     """A request to bring a side thread into the conversation.
 
-    `merge` adds the thread to the conversation tree as it is; `summary` adds a
-    summary of it to the active branch, focused by `instructions` when given.
+    `merge` adds the thread to the conversation tree as it is; `summary` sends
+    the conversation's model a summary of it, focused by `instructions` when
+    given, the way a message typed at the prompt is sent.
     """
 
     thread: str

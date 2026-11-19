@@ -725,70 +725,19 @@ class AgentRuntime:
         return extends
 
     async def summarize_aside(
-        self, reply: SideReply, request: str, instructions: str = "", *, report=None
+        self, reply: SideReply, instructions: str = "", *, report=None
     ) -> str:
-        """Add a summary of a side thread to the active branch; returns the summary.
+        """Ask a side thread to summarize itself; returns the summary, recording nothing.
 
-        The summary is asked in the thread, after `reply`, where the questions
-        and answers are and its cache is warm. The conversation records it as
-        one exchange: `request`, which names the questions, and the summary as
-        its answer, so the next turn reads it like any earlier reply.
+        Asked in the thread, after `reply`, where the questions and answers
+        are and its cache is warm. Like any side question it only reads the
+        conversation, so it can run beside a turn; the caller sends the
+        summary on as a message.
         """
         from pcode.aside import framed_summary
 
-        if self.recovery_blocked:
-            raise SessionError(self.recovery_blocked)
-        if self.history and not isinstance(self.history[-1], ModelResponse):
-            # Two requests in a row is what providers reject as non-alternating.
-            raise SessionError(
-                "The conversation stopped mid-turn; send a message or /continue first."
-            )
         summary = await self.aside(instructions, report=report, after=reply, framing=framed_summary)
-        history = [
-            *self.history,
-            ModelRequest([UserPromptPart(request)]),
-            ModelResponse([TextPart(summary.answer)]),
-        ]
-        self._open_session()
-        await self._add_aside_nodes([(request, summary.answer, history)], self.tree.active)
-        self.history = history
         return summary.answer
-
-    async def _add_aside_nodes(self, steps: list[tuple[str, str, list]], parent: str | None):
-        """Record side-thread exchanges as completed nodes, each a child of the last.
-
-        They are ordinary turn records flagged `aside`, with the history to
-        continue from saved the way a turn saves its own, so checkout, resume,
-        replay and /tree treat them like any turn. The tree's active node ends
-        on the last one.
-        """
-        for prompt, answer, history in steps:
-            identity = str(uuid4())
-            started = {
-                "prompt": prompt,
-                "run_id": identity,
-                "parent_id": parent,
-                "continuation": False,
-                "aside": True,
-            }
-            if self.session:
-                self.session.append("turn_started", sync=True, **started)
-                self.session.event(Message(answer), run_id=identity)
-                await self.session.store.save_snapshot(
-                    ContinuableSnapshot(
-                        run_id=identity,
-                        step_index=0,
-                        messages=history,
-                        conversation_id=self.conversation_id,
-                    )
-                )
-                self.session.append("turn_completed", run_id=identity, sync=True)
-            else:
-                self.tree.consume({"kind": "turn_started", **started})
-                self.tree.consume({"kind": "Message", "run_id": identity, "markdown": answer})
-                self.tree.consume({"kind": "turn_completed", "run_id": identity})
-                self.tree.nodes[identity].history = deepcopy(history)
-            parent = identity
 
     def _open_session(self) -> SavedSession | None:
         """The session to record in, created on first use as a turn creates it."""

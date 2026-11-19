@@ -166,10 +166,10 @@ class AsideBrowser:
     question)` starts one, or raises `ValueError` saying why it cannot yet.
 
     With `check_bridge`, prefix `t` merges the selected thread into the
-    conversation tree and prefix `s` summarizes it into the conversation, after
+    conversation tree and prefix `s` sends the model a summary of it, after
     asking for optional instructions in the editor. Either closes the viewer,
-    returning a `Bridge` from `run`; `check_bridge(thread)` raises `ValueError`
-    when it cannot yet.
+    returning a `Bridge` from `run`; `check_bridge(thread, action)` raises
+    `ValueError` when it cannot yet.
 
     Prefix `y` opens `/copy`'s browser over the thread, in place of the viewer
     until something is copied or it is cancelled, and prefix `o` opens a link
@@ -199,7 +199,7 @@ class AsideBrowser:
         asides: Asides,
         *,
         ask: Callable[[str, str], None] | None = None,
-        check_bridge: Callable[[str], object] | None = None,
+        check_bridge: Callable[[str, str], object] | None = None,
         stop: Callable[[], object] | None = None,
         selected: str | None = None,
         edit: bool = False,
@@ -319,18 +319,18 @@ class AsideBrowser:
 
             @shortcuts.add("s", "Summarize", filter=idle)
             def summarize(event):
-                if self.bridgeable():
+                if self.bridgeable("summary"):
                     thread = self.selected
                     self.input.prompt(
                         event.app,
-                        title="Summarize into the conversation · optional focus",
+                        title="Send the model a summary · optional focus",
                         placeholder="Enter summarizes as is, or say what to keep…",
                         submit=lambda text: self.finish(Bridge(thread, "summary", text)),
                     )
 
             @shortcuts.add("t", "Merge into conversation", filter=idle)
             def merge(event):
-                if self.bridgeable():
+                if self.bridgeable("merge"):
                     self.finish(Bridge(self.selected, "merge"))
 
         # Same key meaning as in /jobs: stop the work, keep the record. Listed
@@ -535,7 +535,7 @@ class AsideBrowser:
         """What the editor runs instead of asking: the shortcuts' actions, by name."""
 
         def bridge(kind: str, focus: str) -> None:
-            if not self.bridgeable():
+            if not self.bridgeable(kind):
                 # Said once, in the editor's title, beside the draft it keeps.
                 reason, self.notice = self.notice, ""
                 raise ValueError(reason)
@@ -549,7 +549,7 @@ class AsideBrowser:
             commands += [
                 PopupCommand(
                     "/summarize",
-                    "Summarize into the conversation",
+                    "Send the model a summary of this thread",
                     lambda focus: bridge("summary", focus),
                     argument="[focus]",
                 ),
@@ -569,13 +569,13 @@ class AsideBrowser:
         self.stop_running()
         self.notice = f"Stopping {running} running answer{'s' if running > 1 else ''}"
 
-    def bridgeable(self) -> bool:
-        """Whether the selected thread can join the conversation now; says why not."""
+    def bridgeable(self, action: str) -> bool:
+        """Whether the selected thread can join the conversation now by `action`; says why not."""
         if not self.selected:
             self.notice = "No side question to bring into the conversation"
             return False
         try:
-            self.check_bridge(self.selected)
+            self.check_bridge(self.selected, action)
         except ValueError as error:
             self.notice = str(error)
             return False

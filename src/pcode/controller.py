@@ -31,7 +31,7 @@ from pcode.aside import (
     model_labels,
     parse_models,
     prompt_target,
-    summary_request,
+    summary_message,
 )
 from pcode.commands import Command, CommandRegistry
 from pcode.error_report import error_message
@@ -586,6 +586,8 @@ class SessionController:
         # they settled, so a follow-up's node always lands after its parent's.
         self._side_lock = asyncio.Lock()
         self._side_records: set[asyncio.Task] = set()
+        # Side threads being summarized for the model (`start_summary`).
+        self._summaries: set[asyncio.Task] = set()
         # Titling a session beside its first turn (`session_naming`): the running
         # request, and the sessions asked already while open, so a failure is
         # not retried on every turn. Opening a session (/new, /resume) clears it.
@@ -1163,6 +1165,9 @@ class SessionController:
             for task in active:
                 if not task.cancelling():
                     task.cancel()
+            # A side thread's summary is not such work: it is a message on its
+            # way to the model, which would start a turn right after this stop.
+            self.cancel_summaries()
         # Nothing in the foreground: stop what runs beside it, each one saying so.
         elif not (self.cancel_asides() + self.cancel_background_rename()):
             self.activity.busy = False
@@ -1177,10 +1182,18 @@ class SessionController:
             self.login_task.cancel()
 
     def cancel_asides(self) -> int:
-        """Stop the running side questions alone; a running turn carries on."""
+        """Stop the running side questions and summaries alone; a running turn carries on."""
         if stopped := self.asides.cancel():
             self.view.note(f"Stopped {stopped} side question(s).")
-        return stopped
+        return stopped + self.cancel_summaries()
+
+    def cancel_summaries(self) -> int:
+        """Stop the side-thread summaries still being written; returns how many."""
+        return sum(task.cancel() for task in list(self._summaries) if not task.cancelling())
+
+    @property
+    def summarizing(self) -> bool:
+        return bool(self._summaries)
 
     def cancel_background_rename(self) -> bool:
         """Ctrl+C with no turn running: a bare /rename's request is what is left to stop."""
@@ -1861,18 +1874,27 @@ class SessionController:
         )
 
     def start_summary(self, request) -> None:
-        # Checked before the task marks the session busy, which would refuse it.
-        follows = self.check_bridge(request.thread)
-        self.start_history_task(
-            self.summarize_thread(follows, request.instructions),
-            label="Summarizing side thread",
-            detail=request.instructions,
-            status="Summarizing side thread…",
-            note="Summarizing the side thread into the conversation. Ctrl+C cancels.",
-            done=lambda result: "Side thread summary added to the conversation.",
-            cancelled="Summary cancelled; the conversation is unchanged.",
-            failed="Side thread summary failed",
+        """Summarize a side thread beside whatever runs, then send it to the model.
+
+        Like a side question it only reads the conversation, so it neither
+        waits for a running turn nor holds prompts back; the summary is sent
+        as steering once it is ready (see `summarize_thread`).
+        """
+        follows = self.check_bridge(request.thread, "summary")
+        self.view.note(
+            "Summarizing the side thread; the summary goes to the model when it is ready."
         )
+
+        def finished(task):
+            self._summaries.discard(task)
+            if task.cancelled():
+                self.view.note("Side thread summary stopped; nothing was sent.")
+            elif (error := task.exception()) is not None:
+                self.view.error(error_message(error), title="Side thread summary failed")
+
+        task = asyncio.create_task(self.summarize_thread(follows, request.instructions))
+        self._summaries.add(task)
+        task.add_done_callback(finished)
 
     def start_history_task(
         self, work, *, label, detail, status, note, done, cancelled, failed
@@ -3829,15 +3851,16 @@ class SessionController:
         self.check_effort(target)
         return target
 
-    def check_bridge(self, thread: str) -> Aside:
+    def check_bridge(self, thread: str, action: str = "merge") -> Aside:
         """The answer a thread would be brought into the conversation from.
 
         Raises `ValueError` saying why it cannot be yet: like forking in
-        /tree, changing the conversation waits for the running turn, and a
-        thread from another conversation has nowhere here to go.
+        /tree, a merge moves the conversation and so waits for the running
+        turn, and a thread from another conversation has nowhere here to go.
+        A summary goes as a message, so it never waits.
         """
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("Adding to the conversation waits for the running turn")
+        if action == "merge" and (self.activity.busy or self.activity.queued):
+            raise ValueError("Merging into the conversation waits for the running turn")
         follows = self.asides.follows(thread)
         root = self.asides.thread(thread)[0]
         tree = getattr(self.runtime, "tree", None)
@@ -3856,7 +3879,7 @@ class SessionController:
         `ValueError` says why it cannot be yet.
         """
         if action == "merge":
-            self.check_bridge(thread)
+            self.check_bridge(thread, action)
             # Outside the command queue, so hold prompts back the way a
             # history task does: none may start on the tree while it moves.
             self.compact_idle.clear()
@@ -3902,20 +3925,30 @@ class SessionController:
         )
 
     async def summarize_thread(self, follows: Aside, instructions: str) -> None:
-        """Add a summary of `follows`'s thread to the conversation, and show it."""
-        from pcode.diagnostics import strip_controls
+        """Summarize `follows`'s thread and send the summary to the model.
 
+        Sent as steering: it joins a running turn at its next request, or
+        starts one when the session is idle, so the model acts on it without
+        the user having to say so.
+        """
         asked = self.asides.thread(follows.thread)
-        reply = await self.side_reply(follows)
-        questions = [aside.question for aside, _ in exchanges(asked, reply.messages)]
-        request = summary_request(questions, instructions)
-        summary = await self.runtime.summarize_aside(reply, request, instructions)
+        with self.activity.waiting("Summarizing side thread"):
+            reply = await self.side_reply(follows)
+            questions = [aside.question for aside, _ in exchanges(asked, reply.messages)]
+            summary = await self.runtime.summarize_aside(reply, instructions)
+            # Its node may still be on its way to the journal, where the mark goes.
+            await self.side_records_settled()
+        try:
+            # /new or /resume while it was written leaves it nowhere to go.
+            self.check_bridge(follows.thread, "summary")
+        except ValueError as error:
+            self.view.warning(f"Side thread summary not sent: {error}.")
+            return
+        self.submit(summary_message(questions, summary), "steering")
         follows.bridged = "summarized"
         if follows.recorded:
             self.runtime.mark_side(follows.id, "summarized")
         self.view.aside_changed(follows)
-        self.view.user(strip_controls(request))
-        self.view.show_events((Message(strip_controls(summary)),))
 
     def aside_completions(self, argument: str):
         """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.

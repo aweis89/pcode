@@ -562,7 +562,7 @@ def test_merge_from_the_thread_keeps_it_and_goes_back():
         assert app.btw_submit("/merge") is True  # Refused mid-turn, draft kept.
         app.activity.busy = False
         # A preview has no tree to keep it in; pretend it does.
-        app.controller.check_bridge = lambda thread: second
+        app.controller.check_bridge = lambda thread, action="merge": second
         assert app.btw_submit("/summarize keep decisions") is False
         await asyncio.sleep(0)
         await asyncio.sleep(0)

@@ -143,7 +143,7 @@ a single name (`/co`) is enough on its own:
 | --- | --- |
 | `/copy` | Choose a question, answer, quote or code block from this thread to copy, as Ctrl+Y |
 | `/links` | Open a link from the thread, as Ctrl+O |
-| `/summarize [focus]` | Summarize into the conversation, keeping what *focus* says, as Ctrl+S |
+| `/summarize [focus]` | Send the model a summary of the thread, keeping what *focus* says, as Ctrl+S |
 | `/merge` | Merge into the conversation, as Ctrl+T |
 | `/stop` | Stop running side questions, as Ctrl+K |
 | `/close` | Go back to the conversation, as Escape (swapped-in thread only) |
@@ -215,24 +215,31 @@ threads, dropping the oldest settled thread whole; the session keeps them all
 ## Keeping a thread
 
 A thread that turned up something worth keeping can be brought into the
-conversation from the viewer, in two ways. Both close the viewer, and both wait
-for the running turn the way forking in `/tree` does: the conversation's history
-cannot change under a turn that is about to write it back. Pressing either key
-mid-turn says so in the header and does nothing else.
+conversation from the viewer, in two ways. Both close the viewer.
 
-**Ctrl+S: Summarize into the conversation.** The editor asks for optional
+**Ctrl+S: Send the model a summary.** The editor asks for optional
 instructions ("keep only the decisions", "what should change in the plan?");
 press **Enter** with nothing typed to summarize as is, or **Escape** to cancel
 and get your follow-up draft back. The summary is asked *in the thread*, on its
-model and after its last answer, so it reuses the thread's cache. It is then
-added to the conversation's current branch as one exchange: a message naming the
-thread's questions (and your instructions), answered by the summary. The next
-turn reads it like any earlier reply, and the rest of the history is untouched,
-so the conversation's cache still covers everything before it. While the summary
-runs, the footer shows it like `/compact`, prompts you send wait behind it, and
-Ctrl+C cancels it with the conversation unchanged.
+model and after its last answer, so it reuses the thread's cache. When it is
+ready it is sent to the conversation's model as a message from you, naming the
+thread's questions and carrying the summary, exactly as if you had typed it:
 
-**Ctrl+T: Merge into the conversation.** The thread is already a branch of the
+- **A turn is running:** the summary steers it, joining at the model's next
+  request, so the work in progress can change course.
+- **Nothing is running:** the summary starts a turn, and the model acts on it
+  straight away; there is no need to follow it with "go ahead".
+
+Summarizing never waits for a turn and never holds your prompts back: it runs
+beside the conversation like a side question, with a row above the prompt while
+it is written. Ctrl+C on a running turn stops it too, so it cannot start a new
+turn right after you stopped one; `/stop` in the thread stops it on its own.
+Either way nothing is sent.
+
+**Ctrl+T: Merge into the conversation.** Merging waits for the running turn,
+the way forking in `/tree` does: the conversation's history cannot change under
+a turn that is about to write it back, so pressing it mid-turn says so in the
+header and does nothing else. The thread is already a branch of the
 [conversation tree](conversation-tree.md), forked from the point where it was
 asked (see [saved with the session](#saved-with-the-session)). Merging moves the
 conversation onto it when that loses nothing. What happens depends on what
@@ -248,10 +255,10 @@ happened since:
 
 Merged history is the thread's exactly, framing included, so the model can
 tell those exchanges were side questions. `/continue` refuses on a merged
-question or a summary, since resending would answer it again as a real turn;
+question, since resending would answer it again as a real turn;
 send a message instead. A thread asked before `/new` or `/resume` belongs to
 that other conversation and cannot be kept here. The viewer's list marks a kept
-thread `merged` or `summarized`; summarizing it again adds another summary.
+thread `merged` or `summarized`; summarizing it again sends another summary.
 
 ## What a side question can and cannot do
 

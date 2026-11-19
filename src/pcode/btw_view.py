@@ -30,7 +30,7 @@ Entry = tuple[tuple, str, bool]
 # offered first by the prompt's completion while a thread is shown.
 THREAD_COMMANDS = (
     ("/merge", "Merge this thread into the conversation"),
-    ("/summarize", "Summarize this thread into the conversation: [focus]"),
+    ("/summarize", "Send the model a summary of this thread: [focus]"),
     ("/stop", "Stop running side answers"),
     ("/close", "Back to the conversation"),
 )

@@ -467,7 +467,7 @@ def test_the_editor_runs_slash_commands_and_completes_their_names(monkeypatch):
             browser = AsideBrowser(
                 asides,
                 ask=lambda thread, question: asked.append(question),
-                check_bridge=lambda thread: None,
+                check_bridge=lambda thread, action: None,
                 input=pipe,
                 output=DummyOutput(),
             )

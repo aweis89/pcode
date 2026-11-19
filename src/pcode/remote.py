@@ -503,10 +503,13 @@ class RemoteController:
     def model_suggestions(self) -> list[str]:
         return self.state.get("models") or []
 
-    def check_bridge(self, thread: str):
+    # A summary runs in the host, and a hosted session never hands off again.
+    summarizing = False
+
+    def check_bridge(self, thread: str, action: str = "merge"):
         """What the side-answer viewer checks before offering to merge; the host checks again."""
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("Adding to the conversation waits for the running turn")
+        if action == "merge" and (self.activity.busy or self.activity.queued):
+            raise ValueError("Merging into the conversation waits for the running turn")
         return self.asides.follows(thread)
 
     def follow_up_aside(self, thread: str, question: str) -> None:
