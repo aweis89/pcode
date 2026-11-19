@@ -190,6 +190,22 @@ def summary_index(messages) -> int | None:
     return None
 
 
+def summary_settings(model, window: int | None) -> dict:
+    """The summary request's settings: a bounded answer, and on Gemini little thinking.
+
+    Gemini counts thinking against `max_tokens` and thinks at its own default
+    (Neon: high) unless told otherwise, so a long history could spend the whole
+    budget thinking and return a cut-off summary. Summarizing needs little of it.
+    """
+    from pcode.preferences import GOOGLE_PROVIDERS
+
+    settings: dict = {"max_tokens": min(6000, window // 8) if window else 6000}
+    profile = getattr(model, "profile", None) or {}
+    if getattr(model, "system", None) in GOOGLE_PROVIDERS and profile.get("supports_thinking"):
+        settings["thinking"] = "low"
+    return settings
+
+
 async def summarize(messages, *, model, focus=None, usage=None, window=None, parameters=None):
     """Return a validated candidate without mutating or publishing the source history."""
     from pcode.model_metadata import refresh_context
@@ -230,7 +246,7 @@ async def summarize(messages, *, model, focus=None, usage=None, window=None, par
             # The 500-character upstream default can hide the actual failure. Bound
             # individual results, while still leaving summarizer input/output headroom.
             tool_return_max_chars=tool_return_max_chars,
-            model_settings={"max_tokens": min(6000, window // 8) if window else 6000},
+            model_settings=summary_settings(model, window),
             event_stream_handler=drain_summary_events,
         )
 

@@ -29,6 +29,7 @@ from pcode.compaction import (
     context_estimate,
     effective_window,
     summarize,
+    summary_settings,
 )
 from pcode.context_usage import context_label
 from pcode.live import AgentRuntime
@@ -748,3 +749,14 @@ def test_a_cut_through_a_spanning_native_call_drops_its_orphans(monkeypatch):
         assert "Fetched." in str(result.messages)
 
     asyncio.run(run())
+
+
+def test_gemini_summaries_think_little_so_the_answer_fits():
+    """Gemini counts thinking against `max_tokens`, and Neon defaults to high."""
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.providers.google import GoogleProvider
+
+    gemini = GoogleModel("gemini-4-neon", provider=GoogleProvider(api_key="example"))
+    assert summary_settings(gemini, 1_048_576) == {"max_tokens": 6000, "thinking": "low"}
+    # Other providers' thinking is left as it is: asking could turn it on.
+    assert summary_settings(FunctionModel(lambda *_: None), 40_000) == {"max_tokens": 5000}

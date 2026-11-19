@@ -231,13 +231,28 @@ def test_switch_uses_current_visibility_not_saved_default(monkeypatch, tmp_path)
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("model", ["openai-codex:test", "google:test"])
+@pytest.mark.parametrize("model", ["openai-codex:test", "groq:test", "google:gemma-3-27b-it"])
 def test_other_routes_are_untouched(model):
     settings = {"existing": "setting"}
     agent = SimpleNamespace(model_settings=settings)
     for mode in ("off", "activity-panel", "scrollback"):
         apply_thinking(agent, model, mode)
         assert agent.model_settings is settings
+
+
+@pytest.mark.parametrize("model", ["google:gemini-4-neon", "google-cloud:gemini-2.5-pro"])
+def test_gemini_summaries_follow_the_mode_unless_a_level_is_set(model):
+    agent = SimpleNamespace(model=None, model_settings={"existing": "setting"})
+    for mode in ("activity-panel", "scrollback"):
+        apply_thinking(agent, model, mode)
+        assert agent.model_settings == {"existing": "setting", "thinking": True}
+    apply_thinking(agent, model, "off")
+    assert agent.model_settings == {"existing": "setting"}
+    # An /effort level owns the setting, in every mode.
+    agent.model_settings = {"thinking": "low"}
+    for mode in ("off", "activity-panel", "scrollback"):
+        apply_thinking(agent, model, mode)
+        assert agent.model_settings == {"thinking": "low"}
 
 
 @pytest.mark.parametrize("provider", ["openai", "openai-responses"])

@@ -242,7 +242,12 @@ def catalog_key(model: str | Model, routes: dict[str, str] | None = None) -> str
                     return None
             except ValueError:
                 return None
-    provider = {"openai-responses": "openai", "openai-chat": "openai"}.get(provider, provider)
+    # The catalog files Vertex AI's Gemini under `google-vertex`.
+    provider = {
+        "openai-responses": "openai",
+        "openai-chat": "openai",
+        "google-cloud": "google-vertex",
+    }.get(provider, provider)
     # In particular, openai-codex NEVER maps to openai.
     return f"{provider}:{name}"
 

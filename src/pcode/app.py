@@ -47,6 +47,8 @@ from pcode.library_log import install as install_library_log
 from pcode.preferences import (
     ANTHROPIC_THINKS_BY_DEFAULT,
     COMMAND_MODES,
+    GOOGLE_PROVIDERS,
+    OPENAI_PROVIDERS,
     SETTINGS,
     SYNTAX_THEMES,
     THINKING_KEYS,
@@ -984,8 +986,17 @@ class PreviewApp:
                 # Only scrollback turns thinking on, and only where it was off.
                 if wanted and not ANTHROPIC_THINKS_BY_DEFAULT.search(model):
                     lines.append("This model only thinks when asked: more latency and tokens.")
-            elif wanted:
+            elif wanted and provider in OPENAI_PROVIDERS:
                 lines.append("An unverified OpenAI organisation is refused summaries; use off.")
+            elif (
+                provider in GOOGLE_PROVIDERS
+                and not wanted
+                and (effort := self.current_effort()) not in ("default", "n/a")
+            ):
+                # A Gemini level owns the setting and always returns summaries.
+                lines[-1] = (
+                    f"Effort {effort} still returns thinking summaries; /effort default stops them."
+                )
         self.transcript.flash("\n".join(lines))
 
     @property

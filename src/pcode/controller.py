@@ -2868,6 +2868,9 @@ class SessionController:
         # Replace rather than mutate: a request already sent keeps its settings,
         # and a running turn's next request reads the new ones.
         apply_effort(agent, self.model, value)
+        # On Gemini a level and readable thinking share one setting, so
+        # `default` must hand it back to the thinking mode.
+        apply_thinking(agent, self.model, self.activity.thinking_mode)
         self.persist_defaults(model=self.model)
         # Per model: raising effort on one model must not raise it on the next.
         try:

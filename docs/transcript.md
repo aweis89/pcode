@@ -120,7 +120,7 @@ the modes:
 | --- | --- |
 | `activity-panel` (default; formerly `status-line`) | The newest thought, faded and quoted with `❝` on every row, on up to `thinking_max_lines` (default 10) rows of its own in the [activity panel](commands.md#activity-panel), under the status row |
 | `scrollback` | The full thinking, streamed into scrollback in a dim style |
-| `off` | Nothing, and pcode asks the provider for nothing extra |
+| `off` | Nothing, and pcode asks the provider for nothing extra (on Gemini, an `/effort` level still returns summaries) |
 
 The thinking rows stay through the tool calls that follow a thought, so a
 running tool on the status row doesn't hide them, and the last thought usually
@@ -147,6 +147,9 @@ Each mode asks the provider for the text that suits it:
   either mode. An API organisation that isn't verified is refused summaries;
   switch to `off` if that happens.
 - **`openai-codex:`**: always detailed summaries.
+- **`google:` and `google-cloud:`**: summaries in either mode, at the model's
+  own thinking level. An `/effort` level asks for summaries too, so with one set
+  they still arrive under `off`; `/effort default` stops them.
 
 ```sh
 pcode config set show_thinking scrollback   # Default is activity-panel

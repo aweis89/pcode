@@ -67,6 +67,10 @@ def canonical(key: str, value):
 OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
 # Routes that reach a Claude model and so take Anthropic's own effort setting.
 ANTHROPIC_PROVIDERS = ("anthropic", "claude")
+# Gemini routes. Both levels and readable thinking go through Pydantic AI's
+# unified `thinking` setting, which fits a level to the ones each model accepts
+# (Gemini 4 Neon: low to xhigh; Gemini 2.5: a token budget).
+GOOGLE_PROVIDERS = ("google", "google-cloud")
 
 
 @dataclass(frozen=True)
@@ -1086,6 +1090,8 @@ def effort_setting(model: str | None, resolved=None) -> str | None:
     if provider in ANTHROPIC_PROVIDERS:
         if anthropic_profile(model, resolved).get("anthropic_supports_effort"):
             return "anthropic_effort"
+    if provider in GOOGLE_PROVIDERS and google_profile(model, resolved).get("supports_thinking"):
+        return "thinking"
     return None
 
 
@@ -1096,7 +1102,9 @@ def effort_unavailable(model: str | None) -> str:
             f"{model} has no effort control; Anthropic gates it to "
             "Opus 4.5+ and Sonnet 4.6+ models."
         )
-    base = "Effort control requires an OpenAI/Codex, Anthropic, or Claude model"
+    if (model or "").split(":", 1)[0] in GOOGLE_PROVIDERS:
+        return f"{model} has no effort control; it does not think."
+    base = "Effort control requires an OpenAI/Codex, Anthropic, Claude, or Gemini model"
     return f"{base}; {model} is not one." if model else f"{base}."
 
 
@@ -1113,7 +1121,10 @@ def current_effort(agent, model: str) -> str:
     settings = getattr(resolved, "settings", None) or {}
     settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
     effort = settings.get(key, "default")
-    return "xhigh" if effort == "max" else effort
+    if effort == "max":
+        return "xhigh"
+    # Google's `thinking` is `True` when only readable thinking was asked for.
+    return effort if effort in EFFORTS else "default"
 
 
 def apply_effort(agent, model: str, effort: str | None) -> None:
@@ -1174,6 +1185,16 @@ def tool_rows_preference() -> int:
     return int(load_preferences().get("tool_max_lines", SETTINGS["tool_max_lines"].default))
 
 
+def google_profile(model: str, resolved=None) -> dict:
+    """The profile for a Gemini `model`, from `resolved` when it is a model object."""
+    profile = getattr(resolved, "profile", None)
+    if profile is not None:
+        return profile
+    from pydantic_ai.profiles.google import google_model_profile
+
+    return google_model_profile(model.split(":", 1)[-1]) or {}
+
+
 def openai_profile(model: str, resolved=None) -> dict:
     """The profile for an OpenAI `model`, from `resolved` when it is a model object."""
     profile = getattr(resolved, "profile", None)
@@ -1232,6 +1253,11 @@ def thinking_settings(model: str, resolved, mode: str) -> dict:
         # that is not verified gets a 400 for asking: `off` is the way out.
         if openai_profile(model, resolved).get("openai_supports_reasoning"):
             return {"openai_reasoning_summary": "auto"}
+    if provider in GOOGLE_PROVIDERS:
+        # `True` asks for thought summaries at the model's own level. Gemini
+        # bills its thinking either way; this only makes it readable.
+        if google_profile(model, resolved).get("supports_thinking"):
+            return {"thinking": True}
     return {}
 
 
@@ -1241,6 +1267,8 @@ THINKING_KEYS = {
     "anthropic": ("anthropic_thinking", "anthropic_betas"),
     "openai": ("openai_reasoning_summary",),
     "openai-responses": ("openai_reasoning_summary",),
+    # Shared with /effort: a level set there wins, and already returns summaries.
+    **dict.fromkeys(GOOGLE_PROVIDERS, ("thinking",)),
 }
 
 
@@ -1250,6 +1278,10 @@ def apply_thinking(agent, model: str, mode: str) -> None:
     if keys is None:
         return
     current = getattr(agent, "model_settings", None)
+    if isinstance((current or {}).get("thinking"), str):
+        # An effort level owns Google's `thinking`; Pydantic AI asks for
+        # summaries with any level, so the mode cannot turn them off.
+        return
     wanted = thinking_settings(model, getattr(agent, "model", None), mode)
     if not wanted and not any(key in (current or {}) for key in keys):
         return

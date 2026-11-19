@@ -137,7 +137,7 @@ separate from saved conversations and unaffected by `--no-save`.
 
 ## Reasoning effort
 
-For OpenAI/Codex, Anthropic, and Claude Code models, Ctrl+N raises
+For OpenAI/Codex, Anthropic, Claude Code, and Gemini models, Ctrl+N raises
 effort and Ctrl+P lowers it; or use `/effort low|medium|high|xhigh`. `/effort`
 alone shows the current setting and `/effort default` removes the override. Each
 model remembers its own level. The footer shows the selected effort.
@@ -145,13 +145,20 @@ model remembers its own level. The footer shows the selected effort.
 - Shortcuts stop at the lowest and highest levels. From the provider default they
   start at medium, so Ctrl+N selects high and Ctrl+P selects low.
 - Changes apply from the next request, mid-turn too, and keep your draft.
-- Effort does not change the model's thinking configuration. Not every model
+- On OpenAI and Anthropic, effort does not change the model's thinking
+  configuration. Not every model
   accepts every level; the provider still validates it.
 - On Anthropic and Claude Code, only models that support effort accept
   it (Opus 4.5+ and Sonnet 4.6+, among others). For any other model, `/effort`
   refuses a level and the footer shows no effort; `/effort default` still clears a
   saved level. `xhigh` becomes Anthropic's `max` where the model has no native
   `xhigh`.
+- On Gemini (`google:` and `google-cloud:`), effort sets the model's thinking
+  level, matched to the nearest one it offers (Gemini 4 Neon has all four on the
+  Gemini API; `xhigh` is `high` on Vertex AI for now). Gemini models that don't
+  think, such as Gemma, have no effort control. A Gemini level also returns
+  thinking summaries, even with `/show-thinking off`; `default` leaves the level
+  to the model.
 - The offline preview and other providers show no effort in the footer, and
   `n/a` in `/effort` and `/status`.
 
