@@ -17,7 +17,6 @@ and result framing; `tests/test_background_delegation.py` pins them.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,6 +37,7 @@ from pydantic_ai.exceptions import (
 )
 from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai_harness._background_completion import make_background_result
 from pydantic_ai_harness.background_tools import BackgroundTools
 from pydantic_ai_harness.background_tools._capability import (
     _Completion,
@@ -182,26 +182,19 @@ def _failure(task_id: str, error: BaseException, max_retries: int) -> _Completio
         error = ToolFailed(f"the sub-agent was cancelled. {error}".strip())
     elif not isinstance(error, _REPORTED):
         return error
-    content = (_format_background_failure(DELEGATE, task_id, error),)
-    return _Completion(DELEGATE, max_retries, content)
-
-
-# Harness 0.67 namespaced the tags (`<pyai:tool_result ...>`); accept either spelling.
-_OPEN_FRAME = re.compile(r"<(?:\w+:)?tool_result\b")
-_CLOSE_FRAME = re.compile(r"</(?:\w+:)?tool_result>")
+    return _Completion(DELEGATE, max_retries, _format_background_failure(DELEGATE, task_id, error))
 
 
 def _shown(completion: _Completion) -> str:
-    """A delivered result as the delegate row shows it, without the frame the model reads."""
-    text = "\n".join(
+    """A delivered result's text as the delegate row shows it; the framework frames it for the model."""
+    content = completion.result.content
+    if isinstance(content, str):
+        return content
+    return "\n".join(
         item.content if isinstance(item, TextContent) else item
-        for item in completion.content
+        for item in content
         if isinstance(item, TextContent | str)
     )
-    lines = text.splitlines()
-    if lines and _OPEN_FRAME.match(lines[0]) and _CLOSE_FRAME.fullmatch(lines[-1]):
-        lines = lines[1:-1]
-    return "\n".join(lines)
 
 
 @dataclass
@@ -274,9 +267,9 @@ class BackgroundDelegation(BackgroundTools):
                 if not stop_requested():
                     return
                 # Stopped by `manage_worker(action='stop')`, not by the run ending: say so.
-                outcome = _Completion(
-                    DELEGATE, ctx.max_retries, (stopped_message(task_id, worker_id),)
-                )
+                stopped = stopped_message(task_id, worker_id)
+                result = make_background_result(DELEGATE, task_id, stopped, failed=True)
+                outcome = _Completion(DELEGATE, ctx.max_retries, result)
             elif child.error is not None:
                 if isinstance(child.error, ToolRetryError) and ctx.tool_manager is not None:
                     # As upstream: core charged the child's retry to the step that
@@ -284,8 +277,8 @@ class BackgroundDelegation(BackgroundTools):
                     ctx.tool_manager.failed_tools.discard(DELEGATE)
                 outcome = _failure(task_id, child.error, ctx.max_retries)
             else:
-                content = _format_background_result(DELEGATE, task_id, child.result)
-                outcome = _Completion(DELEGATE, ctx.max_retries, content, succeeded=True)
+                result = _format_background_result(DELEGATE, task_id, child.result)
+                outcome = _Completion(DELEGATE, ctx.max_retries, result, succeeded=True)
             try:
                 if not isinstance(outcome, BaseException):
                     # Settles the delegate row; `_live` still holds the run open.

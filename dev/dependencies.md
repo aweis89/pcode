@@ -13,8 +13,8 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 15.0.0 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.69.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.69.0 (released with Pydantic AI 2.69.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.70.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.70.0 (released with Pydantic AI 2.70.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.64.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
 | Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.180 (CLI 2.1.321) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
@@ -65,6 +65,10 @@ loading only the first instruction file per directory
 (`discover_every_instruction_file` keeps loading all of them); background
 results are framed in `<pyai:tool_result>`; and `KnownModelName` was curated
 down to current models, so catalog tests naming an old ID fail.
+0.70 moved late results to typed `CapabilityPart`s in the request (a
+background result is a `BackgroundToolResultPart`, framed `<tool_result>` by
+the framework at send time), so code or a test helper that collects request
+text from `UserPromptPart`/`ToolReturnPart` alone silently misses them.
 
 Because pcode no longer runs `Coder`, the suite cannot tell you when Coder got
 better: a release can't change pcode's prompt or tools behind your back, but

@@ -30,6 +30,7 @@ PRIVATE_IMPORTS = {
     ("anthropic._models", "construct_type"),
     ("pydantic_ai._run_context", "dispatch_event_stream"),
     ("pydantic_ai._utils", "PeekableAsyncStream"),
+    ("pydantic_ai_harness._background_completion", "make_background_result"),
     ("pydantic_ai_harness.background_tools._capability", "_Completion"),
     ("pydantic_ai_harness.background_tools._capability", "_format_background_failure"),
     ("pydantic_ai_harness.background_tools._capability", "_format_background_result"),

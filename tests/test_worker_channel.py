@@ -5,7 +5,7 @@ import json
 
 import pytest
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.messages import ModelRequest, RetryPromptPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import CapabilityPart, ModelRequest, RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from pcode.agent import create_coder
@@ -23,7 +23,7 @@ def request_text(messages) -> str:
     return "\n".join(
         str(part.content)
         for part in request.parts
-        if isinstance(part, UserPromptPart | ToolReturnPart | RetryPromptPart)
+        if isinstance(part, UserPromptPart | ToolReturnPart | RetryPromptPart | CapabilityPart)
     )
 
 
@@ -33,7 +33,7 @@ def all_text(messages) -> str:
         for message in messages
         if isinstance(message, ModelRequest)
         for part in message.parts
-        if isinstance(part, UserPromptPart | ToolReturnPart)
+        if isinstance(part, UserPromptPart | ToolReturnPart | CapabilityPart)
     )
 
 

@@ -5,8 +5,9 @@ import pytest
 from pydantic_ai import Agent, CallToolsNode, ModelRetry, RunContext
 from pydantic_ai._run_context import dispatch_event_stream
 from pydantic_ai.exceptions import CallDeferred, RunCancelled, ToolFailed
-from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import CapabilityPart, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai_harness._background_completion import make_background_result
 from pydantic_ai_harness.background_tools import BackgroundTools
 from pydantic_ai_harness.background_tools import _capability as upstream
 from pydantic_ai_harness.sub_agents import SubAgent, SubAgents
@@ -28,7 +29,7 @@ def last_request_text(messages) -> str:
     return "\n".join(
         str(part.content)
         for part in request.parts
-        if isinstance(part, UserPromptPart | ToolReturnPart)
+        if isinstance(part, UserPromptPart | ToolReturnPart | CapabilityPart)
     )
 
 
@@ -153,7 +154,7 @@ def test_steering_reaches_the_parent_while_its_delegate_keeps_working():
         assert len(h.requests) == 3 and not task.done()
         h.second_gate.set()
         await asyncio.wait_for(task, 5)
-        assert '<pyai:tool_result tool_name="delegate_task" tool_call_id="call-1"' in h.requests[3]
+        assert '<tool_result tool_name="delegate_task" tool_call_id="call-1"' in h.requests[3]
         assert [e.markdown for e in events if isinstance(e, Message)] == [
             "Still working on it",
             "Second answer",
@@ -244,11 +245,9 @@ def test_a_retried_turn_learns_its_detached_child_was_lost(monkeypatch):
 def test_a_detached_failure_the_call_would_have_reported_is_a_message(error, detail):
     completion = _failure("call-1", error, 3)
     assert completion.retry is None and not completion.succeeded
-    (message,) = completion.content
-    assert 'tool_call_id="call-1"' in message.content
-    assert 'outcome="failed"' in message.content
-    assert detail in message.content
-    assert detail in _shown(completion) and "<tool_result" not in _shown(completion)
+    result = completion.result
+    assert (result.tool_call_id, result.outcome) == ("call-1", "failed")
+    assert detail in _shown(completion)
 
 
 def test_a_detached_crash_still_ends_the_run():
@@ -270,6 +269,8 @@ def test_upstream_internals_this_relies_on():
     assert callable(BackgroundTools._deliver)
     for name in ("_Completion", "_format_background_failure", "_format_background_result"):
         assert callable(getattr(upstream, name))
+    assert "result" in upstream._Completion.__dataclass_fields__
+    assert callable(make_background_result)
     # The end-of-run wait reads which node a stream belongs to and drains its buffer.
     assert "_next_node" in CallToolsNode.__dataclass_fields__
     assert "_event_stream_buffer" in RunContext.__dataclass_fields__
