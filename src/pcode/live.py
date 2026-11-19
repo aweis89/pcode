@@ -75,6 +75,7 @@ from pcode.native_results import (
     drop_unreadable_results,
     unreadable_native_results,
 )
+from pcode.openai_region import regional_host, track, use_regional_host
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.planning import SizedPlanItem
 from pcode.preferences import SETTINGS, load_preferences, parse_token_count
@@ -280,6 +281,9 @@ class AgentRuntime:
             except Exception:
                 # Optional discovery must not prevent reaching /login.
                 pass
+        # Agent() already resolved most names, so this catches a rebuilt
+        # agent (/model, resume) before its first request hits the wrong host.
+        track(self.agent.model)
         await refresh_context(self.agent.model)
 
     def startup_context(self) -> list[str]:
@@ -960,6 +964,7 @@ class AgentRuntime:
         repaired = False
         orphans_checked = False
         undeferred = False
+        rehosted = False
         self._images_reported.clear()
         chosen = None
         if model is not None or settings is not None:
@@ -992,6 +997,22 @@ class AgentRuntime:
                             "every tool up front. Retrying…"
                         )
                         continue
+                # A data-residency project rejects the default host on every
+                # request, the first included, so this also runs before the
+                # checkpoint guard. See `openai_region`.
+                if (
+                    not rehosted
+                    and not self.recovery_blocked
+                    and (host := self._follow_region(error, chosen))
+                ):
+                    rehosted = True
+                    if self.context.checkpoint.messages is not None:
+                        send = None
+                    self.retry_notice(
+                        f"This OpenAI project only accepts requests at {host}, so pcode "
+                        "now sends them there. Retrying…"
+                    )
+                    continue
                 if self.recovery_blocked or self.context.checkpoint.messages is None:
                     raise
                 # Results the current login cannot decrypt fail identically on
@@ -1039,6 +1060,22 @@ class AgentRuntime:
                 await asyncio.sleep(retries.RETRY_DELAY)
             else:
                 return
+
+    def _follow_region(self, error: BaseException, chosen: TurnModel | None) -> str | None:
+        """The regional host this turn's OpenAI requests now go to, if the error named one."""
+        host = regional_host(error)
+        if host is None:
+            return None
+        if isinstance(self.agent.model, str):
+            from pydantic_ai.models import infer_model
+
+            # A model still held by name has no client yet to repoint.
+            try:
+                self.agent.model = infer_model(self.agent.model)
+            except Exception:
+                return None
+        turn = chosen.model.model if chosen and chosen.model else None
+        return host if use_regional_host(host, [self.agent.model, turn]) else None
 
     async def _turn(
         self, send: str | None, chosen: TurnModel | None = None

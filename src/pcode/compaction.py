@@ -193,8 +193,9 @@ def summary_index(messages) -> int | None:
 async def summarize(messages, *, model, focus=None, usage=None, window=None, parameters=None):
     """Return a validated candidate without mutating or publishing the source history."""
     from pcode.model_metadata import refresh_context
+    from pcode.openai_region import track
 
-    model = infer_model(model) if isinstance(model, str) else model
+    model = track(infer_model(model)) if isinstance(model, str) else model
     await refresh_context(model)
     window = window or effective_window(model)
     keep = min(20_000, window // 8) if window else 12_000

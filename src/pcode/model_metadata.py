@@ -225,7 +225,12 @@ def catalog_key(model: str | Model, routes: dict[str, str] | None = None) -> str
         # Use the client's actual URL, not an SDK default that may hide an
         # injected client/proxy. Require scheme, port and path to match too.
         actual = getattr(getattr(endpoint, "client", None), "base_url", None)
-        if canonical is not None and actual is not None:
+        # A data-residency project's regional host serves the same models.
+        from pcode.openai_region import is_regional_url
+
+        if provider == "openai" and is_regional_url(actual):
+            pass
+        elif canonical is not None and actual is not None:
             try:
                 url, expected = urlsplit(str(actual)), urlsplit(canonical)
                 if (

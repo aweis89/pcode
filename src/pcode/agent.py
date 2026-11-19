@@ -565,9 +565,11 @@ def side_model(name: str, effort: str = "") -> SideModel:
             resolved = infer_model(resolved)
     except (UserError, ValueError, ImportError) as error:
         raise ValueError(f"Cannot use {name}: {error}") from error
+    from pcode.openai_region import track
+
     return SideModel(
         name,
-        resolved,
+        track(resolved),
         with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
     )
 
