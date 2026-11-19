@@ -247,7 +247,7 @@ def test_a_detached_failure_the_call_would_have_reported_is_a_message(error, det
     assert completion.retry is None and not completion.succeeded
     result = completion.result
     assert (result.tool_call_id, result.outcome) == ("call-1", "failed")
-    assert detail in _shown(completion)
+    assert detail in _shown(completion) and "tool_result" not in _shown(completion)
 
 
 def test_a_detached_crash_still_ends_the_run():
