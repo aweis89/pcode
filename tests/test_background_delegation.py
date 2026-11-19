@@ -243,7 +243,7 @@ def test_a_retried_turn_learns_its_detached_child_was_lost(monkeypatch):
     ],
 )
 def test_a_detached_failure_the_call_would_have_reported_is_a_message(error, detail):
-    completion = _failure("call-1", error, 3)
+    completion = _failure("call-1", error, 3, (1, 0))
     assert completion.retry is None and not completion.succeeded
     result = completion.result
     assert (result.tool_call_id, result.outcome) == ("call-1", "failed")
@@ -252,7 +252,7 @@ def test_a_detached_failure_the_call_would_have_reported_is_a_message(error, det
 
 def test_a_detached_crash_still_ends_the_run():
     crash = RuntimeError("bug")
-    assert _failure("call-1", crash, 3) is crash
+    assert _failure("call-1", crash, 3, (1, 0)) is crash
 
 
 async def _collect(stream):

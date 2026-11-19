@@ -5,7 +5,13 @@ import json
 
 import pytest
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.messages import CapabilityPart, ModelRequest, RetryPromptPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import (
+    CapabilityPart,
+    ModelRequest,
+    RetryPromptPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from pcode.agent import create_coder

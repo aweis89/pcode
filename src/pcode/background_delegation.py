@@ -43,6 +43,7 @@ from pydantic_ai_harness.background_tools._capability import (
     _Completion,
     _format_background_failure,
     _format_background_result,
+    _position_in_response,
 )
 
 from pcode.steering import run_request, steering_pending, take_steering
@@ -170,23 +171,31 @@ _REPORTED = (
 )
 
 
-def _failure(task_id: str, error: BaseException, max_retries: int) -> _Completion | BaseException:
+def _failure(
+    task_id: str, error: BaseException, max_retries: int, dispatched: tuple[int, int]
+) -> _Completion | BaseException:
     """What a detached child's error delivers: a failed result, or the error that ends the run.
 
     Errors the foreground call would have turned into a failed tool result
     become a failed result too. Anything else ends the run, as it would have
     inline: Harness's `contain_errors` already turns child crashes into retries.
     Neither counts toward `delegate_task`'s retries: the call already returned.
+    `dispatched` is where the model made the call, which orders results
+    requeued at a pause.
     """
     if isinstance(error, RunCancelled):
         error = ToolFailed(f"the sub-agent was cancelled. {error}".strip())
     elif not isinstance(error, _REPORTED):
         return error
-    return _Completion(DELEGATE, max_retries, _format_background_failure(DELEGATE, task_id, error))
+    result = _format_background_failure(DELEGATE, task_id, error)
+    return _Completion(DELEGATE, max_retries, result, dispatched)
 
 
 def _shown(completion: _Completion) -> str:
-    """A delivered result's text as the delegate row shows it; the framework frames it for the model."""
+    """A delivered result's text as the delegate row shows it.
+
+    The framework frames it for the model.
+    """
     content = completion.result.content
     if isinstance(content, str):
         return content
@@ -229,6 +238,8 @@ class BackgroundDelegation(BackgroundTools):
         if call.tool_name != DELEGATE:
             return await handler(args)
         task_id = call.tool_call_id
+        # As upstream: taken while the call's response is still the last message.
+        dispatched = (ctx.run_step, _position_in_response(ctx, call))
         child = _Child()
         scope = anyio.CancelScope()
         hub = hub_for(ctx)
@@ -269,16 +280,16 @@ class BackgroundDelegation(BackgroundTools):
                 # Stopped by `manage_worker(action='stop')`, not by the run ending: say so.
                 stopped = stopped_message(task_id, worker_id)
                 result = make_background_result(DELEGATE, task_id, stopped, failed=True)
-                outcome = _Completion(DELEGATE, ctx.max_retries, result)
+                outcome = _Completion(DELEGATE, ctx.max_retries, result, dispatched)
             elif child.error is not None:
                 if isinstance(child.error, ToolRetryError) and ctx.tool_manager is not None:
                     # As upstream: core charged the child's retry to the step that
                     # issued the call, which already counted it a success.
                     ctx.tool_manager.failed_tools.discard(DELEGATE)
-                outcome = _failure(task_id, child.error, ctx.max_retries)
+                outcome = _failure(task_id, child.error, ctx.max_retries, dispatched)
             else:
                 result = _format_background_result(DELEGATE, task_id, child.result)
-                outcome = _Completion(DELEGATE, ctx.max_retries, result, succeeded=True)
+                outcome = _Completion(DELEGATE, ctx.max_retries, result, dispatched, succeeded=True)
             try:
                 if not isinstance(outcome, BaseException):
                     # Settles the delegate row; `_live` still holds the run open.
