@@ -22,6 +22,7 @@ SANDBOXED_TOOLS = (
     "list_files",
     "grep",
     "read_tool_result",
+    "grep_tool_result",
     "web_search",
     "get_page",
 )

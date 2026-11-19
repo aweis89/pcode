@@ -331,7 +331,7 @@ def test_spill_preview_not_reported_as_complete_file_or_search_metrics():
         assert not failed
 
 
-def test_single_long_line_is_recoverable_through_documented_shell_path(tmp_path):
+def test_single_long_line_is_recoverable_through_a_documented_byte_read(tmp_path):
     payload = "x" * 60000 + "TARGET" + "y" * 60000
 
     def large_result():
@@ -343,13 +343,9 @@ def test_single_long_line_is_recoverable_through_documented_shell_path(tmp_path)
             yield {0: DeltaToolCall(name="large_result", json_args="{}")}
         elif parts[-1].tool_name == "large_result":
             handle = parts[-1].metadata["overflow_handle"]
-            assert str(tool_results_path()) in info.instructions
-            source = (
-                "from pathlib import Path; "
-                f"print(Path({str(tool_results_path() / handle)!r}).read_text()[60000:60006])"
-            )
-            command = f"{shlex.quote(sys.executable)} -c {shlex.quote(source)}"
-            yield {0: DeltaToolCall(name="shell", json_args=json.dumps({"command": command}))}
+            assert "unit='bytes'" in info.instructions
+            args = {"handle": handle, "unit": "bytes", "offset": 60000, "limit": 6}
+            yield {0: DeltaToolCall(name="read_tool_result", json_args=json.dumps(args))}
         else:
             assert "TARGET" in parts[-1].content
             yield "Found"

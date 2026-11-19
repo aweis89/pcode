@@ -168,7 +168,7 @@ async def stream_child_activity(_ctx, events):
     baseline = usage.total_tokens if usage is not None else 0
     # A resumed worker's count continues from its earlier runs.
     earlier = reported = worker.tokens if worker is not None else 0
-    # The child's calls by id, so its `read_tool_result` rows name what spilled.
+    # The child's calls by id, so its spill-reading rows name what spilled.
     called: dict[str, str] = {}
     phase = ""
     async for event in events:

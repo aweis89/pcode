@@ -34,6 +34,7 @@ PRIVATE_IMPORTS = {
     ("pydantic_ai_harness.background_tools._capability", "_Completion"),
     ("pydantic_ai_harness.background_tools._capability", "_format_background_failure"),
     ("pydantic_ai_harness.background_tools._capability", "_format_background_result"),
+    ("pydantic_ai_harness.background_tools._capability", "_position_in_response"),
     ("pydantic_ai_harness.compaction._shared", "find_token_cutoff"),
     ("pydantic_ai_harness.file_system._content", "apply_replacements"),
     ("pydantic_ai_harness.playwright._toolset", "_without_credentials"),

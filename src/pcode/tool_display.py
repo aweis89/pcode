@@ -25,6 +25,7 @@ LABELS = {
     "delegate_task": "Delegate task",
     "read_file": "Read file",
     "read_tool_result": "Read results",
+    "grep_tool_result": "Search results",
     "write_file": "Write file",
     "edit_file": "Edit file",
     "search_files": "Search code",
@@ -247,10 +248,14 @@ def assignment(name: str, args: dict) -> tuple[str, str]:
 _SPILL_HANDLE = re.compile(r"[^/]+/(.+)\.\d+(?:\.content)?")
 # Harness clamps a read to this many lines (its private `_MAX_READ_LINES`).
 _MAX_STORED_READ_LINES = 1000
+# And a byte read to this many bytes (`_MAX_READ_CHARS`).
+_MAX_STORED_READ_BYTES = 50_000
+# Harness's tools that read a spilled result back by its handle.
+SPILL_READERS = frozenset({"read_tool_result", "grep_tool_result"})
 
 
 def spilled_call_id(args: dict) -> str:
-    """The id of the call whose output a `read_tool_result` call reads, or "" if unknown."""
+    """The id of the call whose output a `SPILL_READERS` call reads, or "" if unknown."""
     handle = args.get("handle")
     match = _SPILL_HANDLE.fullmatch(handle) if isinstance(handle, str) else None
     return match[1] if match else ""
@@ -261,22 +266,33 @@ def stored_source(args: dict, called: dict[str, str]) -> str:
     return called.get(spilled_call_id(args), "")
 
 
+def _stored_where(args: dict, source: str) -> str:
+    """Whose stored output a spill reader reads, and the pattern it looks for."""
+    where = f"{plain(source, 40)} output" if source else "stored output"
+    pattern = args.get("pattern")
+    if isinstance(pattern, str) and pattern:
+        where = f"{json.dumps(plain(argument(pattern), 40), ensure_ascii=False)} in {where}"
+    return where
+
+
 def stored_slice(args: dict, source: str = "") -> str:
     """What a `read_tool_result` call reads, in place of its opaque handle.
 
     The handle is a run id and a provider call id, which tell a reader nothing.
     The tool that produced the output and the window read from it do.
     """
-    where = f"{plain(source, 40)} output" if source else "stored output"
+    where = _stored_where(args, source)
     pattern = args.get("pattern")
     matching = isinstance(pattern, str) and bool(pattern)
-    if matching:
-        where = f"{json.dumps(plain(argument(pattern), 40), ensure_ascii=False)} in {where}"
     offset, limit = args.get("offset", 0), args.get("limit", 200)
     if not (isinstance(offset, int) and isinstance(limit, int)) or offset < 0 or limit < 1:
         return where
-    limit = min(limit, _MAX_STORED_READ_LINES)
-    unit = "matches" if matching else "lines"
+    if args.get("unit") == "bytes":
+        limit = min(limit, _MAX_STORED_READ_BYTES)
+        unit = "bytes"
+    else:
+        limit = min(limit, _MAX_STORED_READ_LINES)
+        unit = "matches" if matching else "lines"
     if args.get("from_end") is True:
         span = (
             f"last {limit} {unit}"
@@ -354,7 +370,7 @@ def session_name(session_id: str) -> str:
 
 
 def target(name: str, args: dict, source: str = "") -> str:
-    """`source` names the tool whose stored output a `read_tool_result` call reads."""
+    """`source` names the tool whose stored output a `SPILL_READERS` call reads."""
     if name in {"run_code", "run_workflow"}:
         code = args.get("code")
         return code_preview(code) if isinstance(code, str) else "code unavailable"
@@ -374,6 +390,8 @@ def target(name: str, args: dict, source: str = "") -> str:
         return argument(job_id) if isinstance(job_id, str) else "job unavailable"
     if name == "read_tool_result":
         return stored_slice(args, source)
+    if name == "grep_tool_result":
+        return _stored_where(args, source)
     if name in {"search_sessions", "read_session"}:
         return session_recall(name, args)
     if name == "search_tools":
@@ -538,17 +556,27 @@ def result_detail(
     elif text.startswith("[Tool output too large (") and name != "shell":
         # Do not count the preview's lines/matches as if it were the full result.
         result = "Output stored · preview in context"
-    elif name == "read_tool_result":
-        # Harness heads every slice with `[handle '…': N matching line(s); showing M]`.
-        match = re.match(
-            r"\[handle .*?: ([\d,]+) matching line\(s\); showing (\d+)(, output capped)?\]", text
+    elif name in SPILL_READERS:
+        # Harness heads a slice or grep with `[handle '…': N matching line(s);
+        # showing M…]`, where a cap adds `, output capped at … chars; <notes>`,
+        # and a byte read with `[handle '…': bytes S-E of T (end exclusive)]`.
+        header = text.partition("\n")[0]
+        match = re.match(r"\[handle .*?: ([\d,]+) matching line\(s\); showing ([\d,]+)", header)
+        byte_range = re.match(
+            r"\[handle .*?: bytes (\d+)-(\d+) of (\d+) \(end exclusive\)\]", header
         )
         if match:
-            total, shown = int(match[1].replace(",", "")), int(match[2])
-            noun = "line" if total == 1 else "lines"
+            total, shown = (int(group.replace(",", "")) for group in match.groups())
+            if name == "grep_tool_result":
+                noun = "match" if total == 1 else "matches"
+            else:
+                noun = "line" if total == 1 else "lines"
             result = f"{total:,} {noun}" if shown == total else f"{shown:,} of {total:,} {noun}"
-            if match[3]:
+            if ", output capped" in header:
                 result += " · output capped"
+        elif byte_range:
+            start, end, total = (int(group) for group in byte_range.groups())
+            result = f"{end - start:,} of {total:,} bytes"
         elif text.startswith("[No stored tool result"):
             result, failed = "No stored result", True
         else:

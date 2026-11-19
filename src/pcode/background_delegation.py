@@ -35,7 +35,7 @@ from pydantic_ai.exceptions import (
     ToolFailedError,
     ToolRetryError,
 )
-from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
+from pydantic_ai.messages import TextContent, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai_harness._background_completion import make_background_result
 from pydantic_ai_harness.background_tools import BackgroundTools
@@ -414,12 +414,12 @@ class BackgroundDelegation(BackgroundTools):
         from pydantic_graph import End
 
         if isinstance(result, End) and isinstance(result.data.output, DeferredToolRequests):
-            # As upstream: a deferred-tool pause must not become another request,
-            # but arrived results are recorded when the step's own request ends it.
-            if isinstance(ctx.messages[-1], ModelRequest):
-                for outcome in self._arrived():
-                    self._deliver(ctx, outcome)
-            return result
+            # A deferred-tool pause is upstream's to settle: it waits for live
+            # tasks and records their results in dispatch order. No pcode agent
+            # ends on one today. If one ever does, this wait must wake for worker
+            # questions and steering as `_wait_step` does, or a worker blocked
+            # on a parent answer holds the pause forever.
+            return await super().after_node_run(ctx, node=node, result=result)
         for outcome in self._arrived():
             self._deliver(ctx, outcome)
         if self._ending(ctx, result):

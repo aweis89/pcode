@@ -503,10 +503,11 @@ and store. Keep retrieval registered even with no bands, since resumed histories
 can contain older handles. Spills are separate from the session journal and survive
 `--no-save`; tests must isolate `XDG_STATE_HOME` as well as config/cache directories.
 
-The pinned `read_tool_result` pages by lines, then caps the body at 50k characters.
-A single longer line cannot be recovered with `offset` or `from_end`; the coding
-adapter supplies the stable store path in instructions for shell-based character
-slicing. `indented_json` makes structured returns pageable but does not split long
+The pinned `read_tool_result` pages by lines, then caps the body at 50k characters;
+a single longer line is read with `unit='bytes'` (same cap), and `grep_tool_result`
+returns numbered matches with context. `tool_display.py` parses both tools' headers
+(`[handle …: N matching line(s); showing M…]`, `[handle …: bytes S-E of T …]`), so
+a header change upstream degrades their rows to "Read finished". `indented_json` makes structured returns pageable but does not split long
 string fields. Verify this behavior against the installed source on upgrades.
 
 `CodingToolOutputLimits` reduces only the persistent shell's body, leaving its

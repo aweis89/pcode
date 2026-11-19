@@ -267,9 +267,17 @@ def test_upstream_internals_this_relies_on():
     assert callable(BackgroundTools._arrived)
     assert callable(BackgroundTools._background_mode)
     assert callable(BackgroundTools._deliver)
-    for name in ("_Completion", "_format_background_failure", "_format_background_result"):
+    for name in (
+        "_Completion",
+        "_format_background_failure",
+        "_format_background_result",
+        "_position_in_response",
+    ):
         assert callable(getattr(upstream, name))
-    assert "result" in upstream._Completion.__dataclass_fields__
+    # Built positionally here, with `retry` and `succeeded` by keyword.
+    fields = list(upstream._Completion.__dataclass_fields__)
+    assert fields[:4] == ["tool_name", "max_retries", "result", "dispatched"]
+    assert {"retry", "succeeded"} <= set(fields)
     assert callable(make_background_result)
     # The end-of-run wait reads which node a stream belongs to and drains its buffer.
     assert "_next_node" in CallToolsNode.__dataclass_fields__

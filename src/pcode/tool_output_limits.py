@@ -20,9 +20,9 @@ from pcode.images import has_files
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.shell import REDUCED_SHELL_OUTPUT, split_envelope
 
-# Tools that bound and page their own output (result limits, character offsets). A
-# spill pages by line instead, and their JSON keeps a turn's text on one line,
-# so the spill is unreadable through read_tool_result and only adds a hop.
+# Tools that bound and page their own output (result limits, character offsets).
+# Their JSON keeps a turn's text on one line, so a spill would only be read back
+# by byte range, a worse pager than their own and an extra hop.
 # Exempt means not truncated either: their own caps (read_session's max_chars,
 # search_sessions' limit) are all that bound them.
 SELF_PAGING_TOOLS = ("search_sessions", "read_session")
@@ -42,12 +42,11 @@ class CodingToolOutputLimits(ToolOutputLimits):
     """
 
     def get_instructions(self):
-        # Harness pages by line and caps reads at 50k chars, so one very long line
-        # cannot be fully retrieved that way. Both agents have unrestricted shell.
+        # Harness's tool descriptions cover the arguments; this says when to use them.
         return (
-            "Large tool results may be stored with a read_tool_result handle. "
-            "Read only the slices needed. If a single long line hits its output cap, "
-            f"use shell to read a character range from {tool_results_path()}/<handle>."
+            "Large tool results may be stored with a handle. Read only the slices needed "
+            "with read_tool_result, or find lines with grep_tool_result. For a single long "
+            "line (minified JSON), read_tool_result with unit='bytes' pages through it."
         )
 
     async def after_tool_execute(self, ctx, *, call, tool_def, args, result):

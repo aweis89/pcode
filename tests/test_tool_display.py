@@ -821,6 +821,13 @@ def test_spill_handles_resolve_to_the_call_that_spilled(handle, call_id):
             False,
         ),
         (
+            # Harness 0.71's cap names the limit and how to continue.
+            "[handle 'r/c.0': 9 matching line(s); showing 2, output capped at 50,000 chars;"
+            " line 3 continues at read_tool_result(unit='bytes', offset=9)]\nx",
+            "2 of 9 lines · output capped",
+            False,
+        ),
+        (
             "[No stored tool result for handle 'r/c.0'. Use the exact handle]",
             "No stored result",
             True,
@@ -831,4 +838,28 @@ def test_stored_result_read_summaries(content, expected, failed):
     assert result_detail("read_tool_result", {"handle": "r/c.0"}, content, "success", "grep") == (
         f"grep output · lines 1–200 → {expected}",
         failed,
+    )
+
+
+def test_a_byte_read_names_its_range():
+    args = {"handle": "r/c.0", "unit": "bytes", "offset": 100, "limit": 5000}
+    content = "[handle 'r/c.0': bytes 100-5100 of 120006 (end exclusive)]\nxyz"
+    assert result_detail("read_tool_result", args, content, "success", "shell") == (
+        "shell output · bytes 101–5100 → 5,000 of 120,006 bytes",
+        False,
+    )
+
+
+def test_a_byte_read_shows_the_window_harness_clamps_it_to():
+    args = {"handle": "r/c.0", "unit": "bytes", "limit": 200_000}
+    assert target("read_tool_result", args) == "stored output · bytes 1–50000"
+
+
+def test_a_stored_result_grep_names_its_pattern_and_matches():
+    args = {"handle": "r/c.0", "pattern": "FAIL", "max_matches": 20}
+    content = "[handle 'r/c.0': 42 matching line(s); showing 20]\n3:FAIL x"
+    assert target("grep_tool_result", args, "shell") == '"FAIL" in shell output'
+    assert result_detail("grep_tool_result", args, content, "success", "shell") == (
+        '"FAIL" in shell output → 20 of 42 matches',
+        False,
     )

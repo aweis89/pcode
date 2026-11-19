@@ -68,6 +68,7 @@ from pcode.runtime import (
 from pcode.shell import ShellPreview
 from pcode.tool_display import (
     COMMAND_TOOLS,
+    SPILL_READERS,
     assignment,
     command_error,
     delegation_detail,
@@ -118,7 +119,7 @@ class EventTranslator:
         # Running tools by call id: (name, args, monotonic start).
         self.tools: dict[str, tuple[str, dict, float]] = {}
         # Every tool this run called, by call id, settled or not: a later
-        # `read_tool_result` names the call whose spilled output it reads.
+        # spill reader (`SPILL_READERS`) names the call whose output it reads.
         self.called: dict[str, str] = {}
         self.delegates: dict[str, ToolStarted] = {}
         self.child_tools: dict[str, ToolStarted] = {}
@@ -199,13 +200,13 @@ class EventTranslator:
         return RunStatus(f"Running {len(tools)} tools · {names}…")
 
     def spill_source(self, name: str, args: dict) -> str:
-        """The tool whose stored output a `read_tool_result` call reads, or "".
+        """The tool whose stored output a `SPILL_READERS` call reads, or "".
 
         This run's calls are not in the turn's history until it settles;
         earlier turns', including a resumed session's, are. Either answer is
         remembered, so a call's start, status, and result scan history once.
         """
-        call_id = spilled_call_id(args) if name == "read_tool_result" else ""
+        call_id = spilled_call_id(args) if name in SPILL_READERS else ""
         if not call_id:
             return ""
         if call_id not in self.called:

@@ -301,6 +301,7 @@ def test_diagnostics_redact_provider_secrets_and_keep_failure_reason(monkeypatch
         "find_files",
         "file_info",
         "read_tool_result",
+        "grep_tool_result",
         "write_file",
         "edit_file",
         "run_command",
