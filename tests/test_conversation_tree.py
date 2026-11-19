@@ -699,3 +699,28 @@ def test_tree_rows_draw_a_side_thread_as_a_branch_with_its_follow_ups_in_line():
         "   btw: then",
         "   assistant: [interrupted; last safe checkpoint]",
     ]
+
+
+def test_tree_tracks_a_turns_own_tool_calls():
+    from pcode.live import interrupted_briefing
+
+    tree = ConversationTree()
+    tree.consume({"kind": "turn_started", "run_id": "t", "prompt": "brief", "request": "do it"})
+    started = {"kind": "ToolStarted", "run_id": "t", "name": "shell", "detail": "Shell"}
+    tree.consume({**started, "call_id": "a", "command": "make  test\n-q"})
+    tree.consume({**started, "call_id": "b", "name": "edit_file", "detail": "src/x.py"})
+    # A sub-agent's call is its own, and a background job's notice is no call.
+    tree.consume({**started, "call_id": "c", "parent_call_id": "b"})
+    finished = {"run_id": "t", "name": "shell", "detail": ""}
+    tree.consume({**finished, "kind": "ToolSummary", "call_id": "a"})
+    tree.consume({**finished, "kind": "JobFinished", "call_id": "b"})
+    node = tree.nodes["t"]
+    assert [(t["name"], t["label"], t["outcome"]) for t in node.tools] == [
+        ("shell", "make test -q", "completed"),
+        ("edit_file", "src/x.py", ""),
+    ]
+    assert node.request == "do it"
+    assert interrupted_briefing(node.tools, "do it").splitlines()[1:3] == [
+        "- shell: make test -q (completed)",
+        "- edit_file: src/x.py (no result, interrupted)",
+    ]

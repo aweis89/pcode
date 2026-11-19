@@ -566,6 +566,8 @@ pcode config set strict_tools off   # Leave edit_file arguments unconstrained
 another message. The original prompt appears above the task bar with the running
 spinner as a label only; it is not sent again. Completed tool results stay in
 context and are not re-run; if the last answer completed, only that answer is
-regenerated. An empty conversation cannot be continued. If cancellation left tool
-effects unsettled, `/continue` refuses to replay them; check `/tools` and send an
-explicit next step instead.
+regenerated. An empty conversation cannot be continued. If you interrupt a turn
+while its tools are running, their effects may already be in place, and replaying
+the request would run them again. `/continue` then sends a short note listing the
+tool calls that started and how far each got, and asks the model to check the
+current state before carrying on with your request.

@@ -404,7 +404,8 @@ def test_continue_uses_send_pipeline_and_original_prompt_spinner(following):
 
 
 @pytest.mark.parametrize("saved", [False, True])
-def test_continue_refuses_interrupted_tool_effects(tmp_path, saved):
+def test_continue_briefs_interrupted_tool_effects(tmp_path, saved):
+    from pydantic_ai.messages import UserPromptPart
     from pydantic_ai.models.function import DeltaToolCall
 
     from pcode.sessions import SavedSession
@@ -412,9 +413,15 @@ def test_continue_refuses_interrupted_tool_effects(tmp_path, saved):
     async def drive():
         changed = asyncio.Event()
         effects = []
+        prompts = []
 
         async def model(messages, info):
-            yield {0: DeltaToolCall(name="change_then_wait", json_args="{}")}
+            sent = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)]
+            prompts.append(sent)
+            if len(prompts) == 1:
+                yield {0: DeltaToolCall(name="change_then_wait", json_args="{}")}
+            else:
+                yield "checked; already done"
 
         agent = Agent(FunctionModel(stream_function=model))
 
@@ -439,17 +446,39 @@ def test_continue_refuses_interrupted_tool_effects(tmp_path, saved):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            with pytest.raises(SessionError, match="explicit next step"):
-                runtime.resend_prompt()
-            assert effects == ["changed"]
             if saved:
+                # The calls that started come back from the journal.
                 identity, root = session.info.id, session.directory.parent
                 runtime.close()
                 session = SavedSession.open(identity, root)
                 runtime = AgentRuntime(agent, session)
                 await runtime.restore()
-                with pytest.raises(SessionError, match="explicit next step"):
-                    runtime.resend_prompt()
+            assert runtime.resend_prompt() == "make a change"
+            # A briefing that fails before reaching the model still leaves the
+            # next /continue a briefing, not a replay of the request.
+            refresh = runtime.refresh_context
+
+            async def broken_setup():
+                raise OSError("setup failed")
+
+            runtime.refresh_context = broken_setup
+            with pytest.raises(OSError):
+                [event async for event in runtime.stream(None)]
+            runtime.refresh_context = refresh
+            assert len(prompts) == 1
+            failed = runtime.tree.nodes[runtime.tree.active]
+            assert (failed.status, failed.request) == ("failed", "make a change")
+            # /continue sends a briefing rather than replaying the request
+            # that called the tool, which would have it called again.
+            [event async for event in runtime.stream(None)]
+            assert effects == ["changed"]
+            briefing = prompts[-1][-1]
+            assert briefing.startswith("Your previous turn was interrupted")
+            assert "- change_then_wait" in briefing
+            assert "(no result, interrupted)" in briefing
+            assert briefing.endswith("\n\nmake a change")
+            # Another /continue asks for the request, not the briefing.
+            assert runtime.resend_prompt() == "make a change"
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

@@ -34,6 +34,13 @@ class TurnNode:
     status: str = "interrupted"
     continuation: bool = False
     resend_blocked: bool = False
+    # What /continue asks for again. Empty when it is `prompt` itself; a
+    # resumed interrupted turn's prompt is a briefing that wraps this request.
+    request: str = ""
+    # The turn's own tool calls in start order (not a sub-agent's): name, a
+    # one-line label, and outcome ("" until the call reports one). They brief
+    # /continue after an interrupt the model's history no longer records.
+    tools: list[dict] = field(default_factory=list)
     # The turn's last text block. One that runs tools writes a block between
     # calls, and `earlier` keeps the ones before it, oldest first, for /copy.
     response: str = ""
@@ -54,6 +61,24 @@ class TurnNode:
     def __post_init__(self) -> None:
         self.add_links(self.prompt, "user")
         self.add_links(self.response, "assistant")
+
+    def track_tool(self, record: dict) -> None:
+        call_id = record.get("call_id", "")
+        if record["kind"] == "ToolStarted":
+            label = record.get("command") or record.get("detail") or ""
+            self.tools.append(
+                {
+                    "call_id": call_id,
+                    "name": record.get("name") or "tool",
+                    "label": excerpt(label),
+                    "outcome": "",
+                }
+            )
+            return
+        for tool in reversed(self.tools):
+            if call_id and tool["call_id"] == call_id:
+                tool["outcome"] = "failed" if record.get("failed") else "completed"
+                return
 
     def add_links(self, text: str, source: str, *, tool: bool = False) -> None:
         # Keep URL recency in event order, including assistant text before tools.
@@ -92,6 +117,7 @@ class ConversationTree:
                 parent,
                 record["prompt"],
                 continuation=record.get("continuation", False),
+                request=record.get("request", ""),
                 plan=deepcopy(self.nodes[parent].plan) if parent else [],
                 kind="aside" if record.get("aside") else "turn",
                 side=dict(side) if isinstance(side, dict) else {},
@@ -141,6 +167,8 @@ class ConversationTree:
                     text = record.get(key)
                     if isinstance(text, str):
                         node.add_links(text, source, tool=True)
+                if not record.get("parent_call_id"):
+                    node.track_tool(record)
             elif kind == "PlanUpdated":
                 node.plan = deepcopy(record["items"])
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:

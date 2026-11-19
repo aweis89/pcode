@@ -899,7 +899,12 @@ class AgentRuntime:
         return content
 
     def resend_prompt(self) -> str:
-        """The original prompt is a display label, not another model message."""
+        """The request /continue asks for again, which labels the resent turn.
+
+        It is not sent again unless the history no longer holds it. After an
+        interrupt left tool effects unsettled, `stream` sends it inside a
+        briefing on those tools instead.
+        """
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         active = self.tree.nodes.get(self.tree.active)
@@ -909,16 +914,36 @@ class AgentRuntime:
             raise SessionError(
                 "The last exchange came from a side thread; send a message instead of /continue."
             )
-        if active and active.resend_blocked:
-            raise SessionError(
-                "The interrupted turn may have changed files or run commands. "
-                "Inspect its tools and send an explicit next step instead of /continue."
-            )
         for identity in reversed(self.tree.path(self.tree.active)):
             node = self.tree.nodes[identity]
-            if node.kind == "turn" and node.prompt:
-                return node.prompt
+            if node.kind == "turn" and (request := node.request or node.prompt):
+                return request
         raise SessionError("There is no earlier prompt to resend; send a message instead.")
+
+    def _interrupted_tools(self) -> list[dict] | None:
+        """The calls an interrupt left unsettled, or None when replaying is safe.
+
+        A briefing turn that did not complete may never have reached the model,
+        so it carries its interrupted parent's calls forward along with its own.
+        Including them when it did is only repetition; dropping them could
+        replay the request that started them.
+        """
+        tools: list[dict] = []
+        blocked = False
+        identity = self.tree.active
+        while identity is not None:
+            node = self.tree.nodes[identity]
+            if node.kind != "turn" or node.status == "completed":
+                break
+            if not (node.resend_blocked or node.request):
+                break
+            blocked = blocked or node.resend_blocked
+            tools[:0] = node.tools
+            if not node.request:
+                # The interrupted turn the briefings went back to.
+                break
+            identity = node.parent
+        return tools if blocked else None
 
     async def stream(
         self,
@@ -946,10 +971,16 @@ class AgentRuntime:
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         send = prompt
+        request = ""
         if send is None:
             original = self.resend_prompt()
             node = self.tree.nodes[self.tree.active]
-            if not self.history:
+            if (tools := self._interrupted_tools()) is not None:
+                # The settled history may predate tools that already ran, and
+                # resuming it would have the model call them again. Tell it
+                # what started instead, as a new message.
+                send, request = interrupted_briefing(tools, original), original
+            elif not self.history:
                 send = original
             # A completed text response would short-circuit Agent.run(None).
             # Regenerate just that response, retaining all settled tool results.
@@ -972,7 +1003,7 @@ class AgentRuntime:
         while True:
             try:
                 with profiled_activity("turn"):
-                    async with aclosing(self._turn(send, chosen)) as turn:
+                    async with aclosing(self._turn(send, chosen, request)) as turn:
                         async for event in turn:
                             yield event
             except Exception as error:
@@ -1078,9 +1109,12 @@ class AgentRuntime:
         return host if use_regional_host(host, [self.agent.model, turn]) else None
 
     async def _turn(
-        self, send: str | None, chosen: TurnModel | None = None
+        self, send: str | None, chosen: TurnModel | None = None, request: str = ""
     ) -> AsyncIterator[Event]:
-        """Run one attempt. A `None` prompt continues from history without adding to it."""
+        """Run one attempt. A `None` prompt continues from history without adding to it.
+
+        `request` is the user's request when `send` is a briefing wrapping it.
+        """
         prompt = send or ""
         # This turn's state, read and written through one object rather than
         # through the runtime. One turn runs at a time, so it is still the
@@ -1101,6 +1135,7 @@ class AgentRuntime:
                 run_id=run_id,
                 parent_id=self.tree.active,
                 continuation=send is None,
+                request=request,
                 sync=True,
             )
             saved.info.status = "running"
@@ -1111,6 +1146,7 @@ class AgentRuntime:
                     "kind": "turn_started",
                     "prompt": prompt,
                     "continuation": send is None,
+                    "request": request,
                     "run_id": run_id,
                     "parent_id": self.tree.active,
                 }
@@ -1435,6 +1471,27 @@ def mark_unanswered(history: list[ModelMessage], node) -> list[ModelMessage]:
     if isinstance(tail, UserPromptPart) and tail.content in (CANCELLED_MARKER, UNANSWERED_MARKER):
         return history
     return [*history[:-1], replace(last, parts=[*last.parts, UserPromptPart(marker)])]
+
+
+def interrupted_briefing(tools: list[dict], request: str) -> str:
+    """What /continue sends after a turn stopped with tool effects its history lacks."""
+    lines = [
+        "Your previous turn was interrupted after it had started tools, so some of "
+        "their effects may already be in place even where no result came back:"
+    ]
+    for tool in tools:
+        outcome = tool["outcome"] or "no result, interrupted"
+        label = f": {tool['label']}" if tool["label"] else ""
+        lines.append(f"- {tool['name']}{label} ({outcome})")
+    if not tools:
+        lines.append("- (the calls were not recorded)")
+    lines += [
+        "",
+        "Check the current state before repeating any of them, then carry on with the request:",
+        "",
+        request,
+    ]
+    return "\n".join(lines)
 
 
 RETRY_CEILING = re.compile(r"^Tool '(?P<tool>[^']+)' exceeded max retries count of (?P<limit>\d+)")
