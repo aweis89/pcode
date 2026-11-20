@@ -541,8 +541,9 @@ class AgentRuntime:
         target_model = model.model if model is not None else agent.model
         created_side_model = None
         if getattr(target_model, "system", None) == "antigravity":
-            from pcode.antigravity import AntigravityModel
+            from pcode.antigravity import AntigravityModel, unwrap
 
+            native = unwrap(target_model)
             # Never share the main conversation's AntigravityModel: its lock is
             # held mid-turn and its session would be polluted by the side chat.
             if model is None:
@@ -552,7 +553,7 @@ class AgentRuntime:
                     created_side_model,
                     settings if settings is not None else agent.model_settings,
                 )
-            elif not getattr(target_model, "_side", False):
+            elif native is not None and not native._side:
                 created_side_model = AntigravityModel(target_model.model_name, side=True)
                 model = SideModel(model.name, created_side_model, model.settings)
         if after is not None:

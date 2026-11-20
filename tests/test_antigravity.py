@@ -1492,3 +1492,76 @@ def test_bare_rename_works_on_antigravity_and_retires_side_model(fake_agy, tmp_p
     finally:
         if app.runtime.session is not None:
             app.runtime.session.close()
+
+
+def test_extension_subagent_and_direct_delegation_refuse_antigravity(tmp_path):
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelRetry
+    from pydantic_ai_harness.sub_agents import SubAgent
+
+    from pcode.ext import ExtensionAPI
+    from pcode.isolated_delegation import WorkspaceSubAgentToolset
+
+    api = ExtensionAPI("test", tmp_path, None)
+    with pytest.raises(ValueError, match="delegated worker"):
+        api.subagent(Agent(AntigravityModel("fake-high"), name="ext_worker"))
+
+    toolset = WorkspaceSubAgentToolset.__new__(WorkspaceSubAgentToolset)
+    toolset._models = {}
+    sub = SubAgent(Agent(AntigravityModel("fake-high"), name="ext_worker"))
+    with pytest.raises(ModelRetry, match="delegated worker"):
+        asyncio.run(toolset._run_delegation(SimpleNamespace(model=None), "ext_worker", sub))
+    # Inheriting an Antigravity parent model with model=None is also refused.
+    inheriting = SubAgent(Agent(None, name="worker"))
+    with pytest.raises(ModelRetry, match="delegated worker"):
+        asyncio.run(
+            toolset._run_delegation(
+                SimpleNamespace(model=AntigravityModel("fake-high")), "worker", inheriting
+            )
+        )
+
+
+def test_non_tool_data_capability_parts_are_not_sent_to_antigravity():
+    from pydantic_ai.messages import CapabilitySource
+    from pydantic_ai_harness.planning import PlanReminderPart
+
+    request = ModelRequest(
+        parts=[
+            UserPromptPart("hi"),
+            PlanReminderPart(
+                content="internal plan",
+                source=CapabilitySource("planning", authority="application"),
+            ),
+        ]
+    )
+    blocks, _ = antigravity.user_prompt([request])
+    assert blocks == [{"type": "text", "text": "hi"}]
+
+
+def test_asked_matches_rendered_non_user_and_continue_segments():
+    from pydantic_ai_harness._background_completion import make_background_result
+
+    from pcode.live import CANCELLED_MARKER
+
+    parts = [
+        UserPromptPart(CANCELLED_MARKER),
+        make_background_result("delegate_task", "c1", "worker done"),
+        UserPromptPart(CANCELLED_MARKER),
+    ]
+    assert antigravity._asked(parts) == [
+        antigravity.CONTINUE,
+        "[pcode] Result of the delegate_task call that was running:\nworker done",
+    ]
+
+
+def test_delegation_arguments_replace_empty_or_none_agent_name(subagent_models):
+    subagent_models("claude:fable")
+    assert (
+        antigravity_tools._delegation_arguments({"agent_name": None, "task": "x"})["agent_name"]
+        == "worker"
+    )
+    assert (
+        antigravity_tools._delegation_arguments({"agent_name": "", "task": "x"})["agent_name"]
+        == "worker"
+    )

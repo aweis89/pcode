@@ -389,7 +389,7 @@ def _delegation_schema(schema: dict) -> dict:
 
 def _delegation_arguments(arguments: dict) -> dict:
     """`arguments` with a model the worker may run on: never Antigravity's own."""
-    arguments.setdefault("agent_name", DEFAULT_AGENT)
+    arguments["agent_name"] = arguments.get("agent_name") or DEFAULT_AGENT
     model = arguments.get("model") or default_model()
     if not model:
         # Omitted, the worker would run on the session's model: Antigravity.

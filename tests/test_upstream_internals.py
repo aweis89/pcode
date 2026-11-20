@@ -50,8 +50,10 @@ PRIVATE_IMPORTS = {
 # else with a leading underscore there must override an upstream method.
 OWN_HELPERS = {
     "pcode.antigravity.AntigravityModel": {
+        "_arm_expiry",
         "_compact",
         "_detach_idle",
+        "_detach_session",
         "_drop",
         "_flush_idle",
         "_idle_update",

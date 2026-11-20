@@ -567,6 +567,7 @@ class AntigravityModel(Model):
         self.compact_at: int | None = None
         self._compacted_at: int | None = None
         self._expiry: asyncio.TimerHandle | None = None
+        self._waiters = 0
         self.compaction_notice: Callable[[str], None] = lambda text: None
         # Whether pcode's plan mode is on; set per request by the plan-mode extension.
         self.plan_mode = False
@@ -639,6 +640,33 @@ class AntigravityModel(Model):
     def system(self) -> str:
         return SYSTEM
 
+    def _arm_expiry(self) -> None:
+        if not self._side or self._waiters:
+            return
+        if self._expiry is not None:
+            self._expiry.cancel()
+
+        def expire() -> None:
+            self._expiry = None
+            if not self._lock.locked() and not self._waiters:
+                self.reset()
+
+        # Nothing retires a side model made for one job (a title, a
+        # summary); a follow-up after this replays into a new session.
+        with contextlib.suppress(RuntimeError):
+            self._expiry = asyncio.get_running_loop().call_later(SIDE_IDLE, expire)
+
+    def _detach_session(self) -> None:
+        """Detach `self._session` synchronously and close its connection in the background.
+
+        Used on cancellation inside `_lock`, so a delayed `_drop()` can never
+        race with a newer session the next request opens after `_lock` releases.
+        """
+        session, self._session = self._session, None
+        if session is not None:
+            session.connection.idle = None
+            _spawn(_close(session.connection))
+
     def _detach_idle(self) -> None:
         if self._session is not None:
             self._session.connection.idle = None
@@ -701,22 +729,26 @@ class AntigravityModel(Model):
             # A plain completion (a title, a summary, an advisor's answer): its
             # instructions are the task. A side question's are pcode's own
             # system prompt, about tools Antigravity doesn't have.
-            parts = model_request_parameters.instruction_parts or []
+            parts = getattr(model_request_parameters, "instruction_parts", None) or []
             task = "\n\n".join(part.content for part in parts) or (
                 getattr(messages[-1], "instructions", None) or ""
             )
             if task.strip():
                 prompt = [{"type": "text", "text": task}, *prompt]
-        if self._expiry is not None:
-            self._expiry.cancel()
-            self._expiry = None
         # Anything said since the last turn shows before this one starts.
         self._flush_idle()
         earlier = messages[:-1]
         if interrupted:
             earlier = [*earlier, ModelRequest(parts=interrupted)]
         cwd = str((model_settings or {}).get(CWD_SETTING) or os.getcwd())
-        await self._lock.acquire()
+        self._waiters += 1
+        try:
+            await self._lock.acquire()
+        finally:
+            self._waiters -= 1
+        if self._expiry is not None:
+            self._expiry.cancel()
+            self._expiry = None
         handed_off = False
         # Set first: a new session lists the tools as this turn has them.
         if self.tools is not None:
@@ -754,10 +786,6 @@ class AntigravityModel(Model):
         finally:
             if self.tools is not None:
                 self.tools.cancel_calls()
-            if self._side:
-                # Nothing retires a side model made for one job (a title, a
-                # summary); a follow-up after this replays into a new session.
-                self._expiry = asyncio.get_running_loop().call_later(SIDE_IDLE, self.reset)
             if not handed_off:
                 try:
                     # The next prompt waits for a cancelled worker's cleanup.
@@ -765,6 +793,7 @@ class AntigravityModel(Model):
                         await asyncio.shield(self.tools.drained())
                 finally:
                     self._lock.release()
+                    self._arm_expiry()
 
     async def _ready(self, session: _Session, *, compact: bool) -> None:
         """Before a prompt: put the session in pcode's mode, and make room in its context."""
@@ -790,16 +819,30 @@ class AntigravityModel(Model):
                     await self._compact(session)
         except BaseException:
             # Cancelled partway: the session may be mid-command, so start it over.
-            _spawn(self._drop())
+            self._detach_session()
             raise
 
     async def _compact(self, session: _Session, focus: str = "") -> None:
         """Have Antigravity compact its own context. Not a turn of the conversation."""
         text = f"{COMPACT_COMMAND} {focus}".strip()
-        await session.connection.request(
-            "session/prompt",
-            {"sessionId": session.session_id, "prompt": [{"type": "text", "text": text}]},
-        )
+        previous = session.connection.idle
+
+        def during_compact(update: dict) -> None:
+            kind = update.get("sessionUpdate")
+            if kind == "usage_update":
+                self._usage_update(update)
+            elif kind == "session_info_update":
+                self._title_update(update)
+
+        session.connection.idle = during_compact
+        try:
+            await session.connection.request(
+                "session/prompt",
+                {"sessionId": session.session_id, "prompt": [{"type": "text", "text": text}]},
+            )
+        finally:
+            if session.connection.idle is during_compact:
+                session.connection.idle = previous
         self._compacted_at = self.used
 
     async def compact(
@@ -821,7 +864,7 @@ class AntigravityModel(Model):
             try:
                 await self._compact(session, focus)
             except BaseException:
-                _spawn(self._drop())
+                self._detach_session()
                 raise
             return before, self.used
 
@@ -837,6 +880,7 @@ class AntigravityModel(Model):
                     await self.tools.drained()
             finally:
                 self._lock.release()
+                self._arm_expiry()
 
     async def _drop(self) -> None:
         session, self._session = self._session, None
@@ -928,8 +972,15 @@ class AntigravityModel(Model):
             # A new session: nothing is known about its context yet.
             self.used = self._compacted_at = None
         modes = result.get("modes") or {}
-        if any(m.get("id") == PLAN_MODE for m in modes.get("availableModes") or []):
-            self._session.first_mode = modes.get("currentModeId")
+        available = [m.get("id") for m in modes.get("availableModes") or [] if isinstance(m, dict)]
+        if PLAN_MODE in available:
+            current = modes.get("currentModeId")
+            self._session.planning = current == PLAN_MODE
+            self._session.first_mode = (
+                current
+                if current != PLAN_MODE
+                else next((m for m in available if m != PLAN_MODE), None)
+            )
         intro = SIDE_REPLAY_INTRO if self._side else REPLAY_INTRO
         blocks = (
             [{"type": "text", "text": replay_text(earlier, intro=intro)}]
@@ -951,22 +1002,46 @@ def _markers() -> tuple[str, ...]:
     return (CANCELLED_MARKER, UNANSWERED_MARKER)
 
 
+def _render_parts(parts: list) -> tuple[list[dict], list[str]]:
+    """Render one turn's request parts to ACP blocks, matching what `user_prompt` sends."""
+    blocks: list[dict] = []
+    unsupported: list[str] = []
+    for part in parts:
+        if isinstance(part, UserPromptPart):
+            more, refused = content_blocks(part.content)
+        elif isinstance(part, ToolReturnPart):
+            text = f"[pcode] {part.tool_name} returned:\n{part.model_response_str()}"
+            more, refused = [{"type": "text", "text": text}], []
+        elif isinstance(part, RetryPromptPart):
+            more, refused = [{"type": "text", "text": part.model_response()}], []
+        elif isinstance(part, DataCapabilityPart) and getattr(part, "tool_name", None):
+            # Only background tool results: other DataCapabilityPart subclasses
+            # (PlanReminderPart, RepoContext) describe pcode's own loop.
+            more, refused = _data_blocks(part)
+        else:
+            continue  # Instructions for pcode's own loop, which Antigravity doesn't run.
+        blocks += more
+        unsupported += refused
+    return blocks, unsupported
+
+
 def _asked(parts: list) -> list[str]:
     """Each unanswered prompt's text in a merged request, to compare with what was sent.
 
     Every one ends in one of pcode's markers.
     """
+    markers = _markers()
     asked: list[str] = []
-    texts: list[str] = []
+    segment: list = []
     for part in parts:
-        if not isinstance(part, UserPromptPart):
+        if isinstance(part, UserPromptPart) and part.content in markers:
+            blocks, _ = _render_parts(segment)
+            if not blocks:
+                blocks = [{"type": "text", "text": CONTINUE}]
+            asked.append(_asked_blocks(blocks))
+            segment = []
             continue
-        if part.content in _markers():
-            asked.append("\n".join(texts))
-            texts = []
-            continue
-        items = [part.content] if isinstance(part.content, str) else part.content
-        texts += [item for item in items if isinstance(item, str) and item.strip()]
+        segment.append(part)
     return asked
 
 
@@ -1019,22 +1094,7 @@ def user_prompt(messages: list[ModelMessage], *, side: bool = False) -> tuple[li
         interrupted, parts = list(request.parts[:last_user]), request.parts[last_user:]
     else:
         interrupted, parts = list(request.parts[: marker + 1]), request.parts[marker + 1 :]
-    blocks: list[dict] = []
-    unsupported: list[str] = []
-    for part in parts:
-        if isinstance(part, UserPromptPart):
-            more, refused = content_blocks(part.content)
-        elif isinstance(part, ToolReturnPart):
-            text = f"[pcode] {part.tool_name} returned:\n{part.model_response_str()}"
-            more, refused = [{"type": "text", "text": text}], []
-        elif isinstance(part, RetryPromptPart):
-            more, refused = [{"type": "text", "text": part.model_response()}], []
-        elif isinstance(part, DataCapabilityPart):
-            more, refused = _data_blocks(part)
-        else:
-            continue  # Instructions for pcode's own loop, which Antigravity doesn't run.
-        blocks += more
-        unsupported += refused
+    blocks, unsupported = _render_parts(parts)
     if unsupported:
         raise AntigravityError(
             f"Antigravity can take text and images here, not {', '.join(sorted(set(unsupported)))}."
@@ -1050,6 +1110,8 @@ def _data_blocks(part: DataCapabilityPart) -> tuple[list[dict], list[str]]:
     if not isinstance(content, (str, list, tuple)):
         content = json.dumps(content, default=str)
     blocks, refused = content_blocks(content)
+    if not blocks:
+        return [], refused
     tool = getattr(part, "tool_name", None)
     failed = " (failed)" if getattr(part, "outcome", None) == "failed" else ""
     label = f"[pcode] Result of the {tool} call that was running{failed}:" if tool else "[pcode]"
@@ -1084,13 +1146,19 @@ def replay_text(messages: list[ModelMessage], *, intro: str = REPLAY_INTRO) -> s
     for message in messages:
         for part in message.parts:
             if isinstance(part, UserPromptPart):
-                content = (
-                    part.content
-                    if isinstance(part.content, str)
-                    else " ".join(item for item in part.content if isinstance(item, str))
+                items = [part.content] if isinstance(part.content, str) else list(part.content)
+                content = " ".join(
+                    item.content if isinstance(item, TextContent) else item
+                    for item in items
+                    if isinstance(item, (str, TextContent))
                 )
                 if content.strip():
                     lines += [f"[User]\n{content}", ""]
+            elif isinstance(part, DataCapabilityPart) and getattr(part, "tool_name", None):
+                blocks, _ = _data_blocks(part)
+                text = _asked_blocks(blocks)
+                if text.strip():
+                    lines += [f"[User]\n{_clip(text)}", ""]
             elif isinstance(part, TextPart) and part.content.strip():
                 lines += [f"[Assistant]\n{part.content}", ""]
             elif isinstance(part, (NativeToolCallPart, ToolCallPart)):

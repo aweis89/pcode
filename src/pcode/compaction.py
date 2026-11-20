@@ -219,11 +219,13 @@ def summary_settings(model, window: int | None) -> dict:
 
 async def summarize(messages, *, model, focus=None, usage=None, window=None, parameters=None):
     """Return a validated candidate without mutating or publishing the source history."""
+    from pcode.antigravity import unwrap
     from pcode.model_metadata import refresh_context
     from pcode.openai_region import track
 
     model = track(infer_model(model)) if isinstance(model, str) else model
-    if getattr(model, "system", None) == "antigravity" and not getattr(model, "_side", False):
+    native = unwrap(model)
+    if native is not None and not native._side:
         # The conversation's own session compacts itself (`AgentRuntime.compact`);
         # only a side session can summarize a history handed to it.
         raise CompactionError("Antigravity compacts its own context; use /compact.")

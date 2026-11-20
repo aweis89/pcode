@@ -465,6 +465,21 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         }
 
     async def _run_delegation(self, ctx, agent_name, sub_agent, **kwargs):
+        from pcode.antigravity import WORKER_REFUSAL
+        from pcode.models import runs_own_loop
+
+        key = kwargs.get("key")
+        effective = (
+            self._models[key].model
+            if key is not None and key in self._models
+            else sub_agent.agent.model
+            if sub_agent.agent.model is not None
+            else getattr(ctx, "model", None)
+        )
+        if runs_own_loop(effective):
+            raise ModelRetry(
+                f"Cannot run sub-agent {agent_name!r} on Antigravity: {WORKER_REFUSAL}"
+            )
         resumable = replace(sub_agent, agent=ResumableAgent(sub_agent.agent))
         return await super()._run_delegation(ctx, agent_name, resumable, **kwargs)
 
