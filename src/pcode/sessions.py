@@ -272,8 +272,12 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
                 prompt = record.get("prompt")
                 if not isinstance(prompt, str):
                     continue
-                # A /continue retry reuses the prompt; its outcome belongs to the same turn.
-                if record.get("continuation") and current is not None and current.prompt == prompt:
+                # A /continue retry or provider continuation belongs to the same turn.
+                if (
+                    record.get("continuation")
+                    and current is not None
+                    and (not prompt or current.prompt == prompt)
+                ):
                     current.status = "running"
                     if isinstance(run_id, str):
                         by_run[run_id] = current
@@ -324,6 +328,7 @@ def first_prompt(info: SessionInfo, root: Path | None = None) -> str:
             if (
                 record["kind"] == "turn_started"
                 and isinstance(record.get("prompt"), str)
+                and record["prompt"]
                 and not side_record(record)
             ):
                 return record["prompt"]

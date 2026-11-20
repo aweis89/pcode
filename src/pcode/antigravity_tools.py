@@ -81,6 +81,9 @@ LINE_LIMIT = 16 * 2**20
 # A socket directory younger than this may be another process's, still starting.
 STALE_AFTER = 60.0
 NO_TURN = "pcode runs this only during one of its turns, and none is running now."
+# Seconds a bridged MCP call waits for a pending post-settle continuation turn
+# to enter `begin_turn()` before rejecting with NO_TURN.
+WAKE_TURN_WAIT = 2.0
 NO_MODEL = (
     "Name the model to run the sub-agent on, as provider:model; it can't run on "
     "Antigravity. The user can set a default in pcode's `subagent_models` setting (/config)."
@@ -324,12 +327,19 @@ def _bridge_instructions(ctx: RunContext[Any], exposed: list[str]) -> str:
 class ToolBridge:
     """One conversation's MCP server for its `agy` sessions."""
 
-    def __init__(self, notify: Callable[[str], None] = lambda text: None) -> None:
+    def __init__(
+        self,
+        notify: Callable[[str], None] = lambda text: None,
+        *,
+        wake_starting: Callable[[], bool] = lambda: False,
+    ) -> None:
         # The turn calls run in, and its context variables (sandbox, deadline,
         # tracing); set while a turn streams. Tasks would otherwise copy the
         # context of whichever turn first started the server.
         self.run_context: RunContext[Any] | None = None
         self._context: contextvars.Context | None = None
+        self._wake_starting = wake_starting
+        self._turn_ready = asyncio.Event()
         # Tells the user about the workers Antigravity runs: they reach pcode's
         # event stream only after the turn, and never the worker panel, since
         # no pcode tool call of the parent's starts them.
@@ -370,6 +380,16 @@ class ToolBridge:
     def begin_turn(self, run_context: RunContext[Any] | None) -> None:
         self.run_context = run_context
         self._context = contextvars.copy_context()
+        if run_context is not None:
+            self._turn_ready.set()
+        else:
+            self._turn_ready.clear()
+
+    def abort_wake(self) -> None:
+        """Wake any MCP call waiting on a cancelled/aborted continuation turn."""
+        self._turn_ready.set()
+        if self.run_context is None:
+            self._turn_ready.clear()
 
     def signature(self) -> tuple[tuple[tuple[str, str, str], ...], str] | None:
         """Fingerprint of the bridged tool schemas and instructions for the current turn."""
@@ -386,6 +406,7 @@ class ToolBridge:
     def cancel_calls(self) -> None:
         """The turn ended: cancel the calls it was running and accept no more."""
         self.run_context = self._context = None
+        self._turn_ready.clear()
         for task in list(self._calls):
             task.cancel()
 
@@ -539,6 +560,10 @@ class ToolBridge:
 
     async def _run(self, name: str, arguments: dict) -> list[dict]:
         ctx = self.run_context
+        if (ctx is None or ctx.tool_manager is None) and self._wake_starting():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._turn_ready.wait(), WAKE_TURN_WAIT)
+            ctx = self.run_context
         if ctx is None or ctx.tool_manager is None:
             raise RuntimeError(NO_TURN)
         manager = ctx.tool_manager

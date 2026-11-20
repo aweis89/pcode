@@ -1135,7 +1135,7 @@ class SessionController:
         messages = [
             (text, mode)
             for text, mode in self.prompts.take_all()
-            if mode not in ("wake", "continue")
+            if mode not in ("wake", "continue", "provider_wake")
         ]
         return commands, messages
 
@@ -1159,6 +1159,9 @@ class SessionController:
         """Ctrl+C: clear the queue and stop what is running."""
         self.interrupt_pending = False
         self.clear_queue()
+        clear_wake = getattr(self.runtime, "clear_provider_wake", None)
+        if callable(clear_wake):
+            clear_wake(quarantine=True)
         active = [task for task in self.tasks() if not task.done()]
         # A sign-in waiting beside a turn is not what Ctrl+C aims at: it
         # carries on, and goes with the next Ctrl+C once nothing else runs.
@@ -1432,6 +1435,14 @@ class SessionController:
 
     # --- Turns ---
 
+    def on_provider_wake(self) -> None:
+        """Queue a continuation turn when `agy` wakes up on its own between turns."""
+        if not self.running or self.closing() or self.superseded:
+            return
+        if "provider_wake" in self.activity.queued_modes:
+            return
+        self.submit("Antigravity background work", "provider_wake")
+
     async def consume(self) -> None:
         """Run queued messages one at a time, each once nothing holds the queue."""
         await self.ready.wait()
@@ -1475,7 +1486,19 @@ class SessionController:
                     self.view.preview_reply(text)
                 else:
                     wake = mode == "wake"
-                    if wake:
+                    provider_wake = mode == "provider_wake"
+                    if (
+                        provider_wake
+                        and not getattr(self.runtime, "has_provider_wake", lambda: False)()
+                    ):
+                        # Model changed or a user turn already took over the wake.
+                        self.refresh_busy()
+                        continue
+                    if provider_wake:
+                        self.activity.start_prompt(
+                            "Antigravity", kind="system", detail="Continuing from background work"
+                        )
+                    elif wake:
                         label, detail = wake_row(text)
                         self.activity.start_prompt(label, kind="system", detail=detail)
                     else:
@@ -1484,9 +1507,10 @@ class SessionController:
                     self.runtime.has_steering = self.has_steering
                     self.live_task = asyncio.create_task(
                         self.run_turn(
-                            text,
+                            "" if provider_wake else text,
                             continuing=continuing,
                             wake=wake,
+                            provider_wake=provider_wake,
                         )
                     )
                     try:
@@ -1543,12 +1567,18 @@ class SessionController:
         *,
         continuing: bool = False,
         wake: bool = False,
+        provider_wake: bool = False,
     ) -> bool:
-        """Run a turn: `continuing` asks again from the last checkpoint, and `wake` is one
-        a finished job started, shown as a badge rather than as typed text."""
+        """Run a turn: `continuing` asks again from the last checkpoint, `wake` is one
+        a finished job started, and `provider_wake` drains unsolicited post-turn
+        updates from a provider (`agy acp`) without sending a new prompt."""
         runtime = self.runtime
-        self.view.turn_started(text, echo=not wake)
-        if wake:
+        self.view.turn_started("" if provider_wake else text, echo=not (wake or provider_wake))
+        if provider_wake:
+            self.activity.start_prompt(
+                "Antigravity", kind="system", detail="Continuing from background work"
+            )
+        elif wake:
             # Scrollback already carries the job's summary line; the prompt is
             # pcode's, so it is labelled as system work rather than quoted.
             label, detail = wake_row(text)
@@ -1581,13 +1611,19 @@ class SessionController:
             runtime.retained_notice = self.view.retained_note
         if hasattr(runtime, "title_notice"):
             runtime.title_notice = self.apply_provider_title
+        if hasattr(runtime, "provider_wake_notice"):
+            runtime.provider_wake_notice = self.on_provider_wake
         failure = None
         cancelled = False
-        chosen, prompt = (None, text) if continuing or wake else prompt_target(text)
+        chosen, prompt = (
+            (None, text) if continuing or wake or provider_wake else prompt_target(text)
+        )
         # A `/model` during this turn says which model the rest of it is on.
         self.borrowed_turn = chosen
         source = (
-            self.stream_on(chosen, prompt)
+            runtime.stream("", provider_continuation=True)
+            if provider_wake
+            else self.stream_on(chosen, prompt)
             if chosen is not None
             else runtime.stream(None if continuing else text)
         )
@@ -1601,7 +1637,9 @@ class SessionController:
         # left the session untitled for minutes. A session that existed already
         # (resumed, or after a first turn that failed) is named from its first
         # prompt on disk.
-        first_prompt = prompt if session is None and not (continuing or wake) else None
+        first_prompt = (
+            prompt if session is None and not (continuing or wake or provider_wake) else None
+        )
         if journaled:
             self.start_naming(first_prompt)
         try:

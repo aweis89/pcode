@@ -87,6 +87,9 @@ WORKER_REFUSAL = (
 NO_PROMPT = "Antigravity has nothing to answer here: send a prompt."
 # Sent for a continuation that carries no message of its own (`/continue`).
 CONTINUE = "Continue."
+# Placeholder prompt in Pydantic AI's request when draining an unsolicited
+# post-settle wake from `agy` (never sent over ACP as `session/prompt`).
+PROVIDER_CONTINUATION_PROMPT = "[Antigravity continued from background work]"
 COMPACT_COMMAND = "/compact"
 PLAN_MODE = "plan"
 AUTH_REQUIRED = -32000
@@ -536,6 +539,9 @@ class _Session:
     # A change (e.g. `/advisor` toggled mid-session) drops and resumes the session
     # so `agy` re-runs `initialize` and `tools/list`.
     tools_signature: tuple[Any, str] | None = None
+    # Tool call IDs marked as daemons (`IsDaemon: True`) so their late updates
+    # never spuriously open a post-settle continuation turn.
+    daemon_tools: set[str] = field(default_factory=set)
 
 
 def _stamp(session_id: str, turn: int) -> str:
@@ -547,6 +553,36 @@ def _parse_stamp(response: ModelResponse) -> tuple[str, int] | None:
         return None
     session_id, _, turn = response.provider_response_id.partition("#")
     return (session_id, int(turn)) if session_id and turn.isdigit() else None
+
+
+def _is_daemon_input(update: dict) -> bool:
+    raw_input = update.get("rawInput")
+    return isinstance(raw_input, dict) and (
+        raw_input.get("IsDaemon") is True or raw_input.get("isDaemon") is True
+    )
+
+
+def _is_wake_update(
+    update: dict, *, buffering: bool = False, daemon_tools: set[str] | None = None
+) -> bool:
+    """Whether an unsolicited `session/update` is work worth a continuation turn."""
+    kind = update.get("sessionUpdate")
+    if kind in {"tool_call", "tool_call_update"}:
+        call_id = str(update.get("toolCallId") or "")
+        if _is_daemon_input(update):
+            if daemon_tools is not None and call_id:
+                daemon_tools.add(call_id)
+            return False
+        if daemon_tools is not None and call_id and call_id in daemon_tools:
+            return False
+        return True
+    content = update.get("content")
+    text = content.get("text", "") if isinstance(content, dict) else ""
+    if kind == "agent_thought_chunk":
+        return bool(text)
+    if kind == "agent_message_chunk":
+        return bool(text if buffering else text.strip())
+    return False
 
 
 class AntigravityModel(Model):
@@ -562,8 +598,17 @@ class AntigravityModel(Model):
         self.listener: Callable[[str], None] | None = None
         # Reports titles Antigravity assigns its session (`session_info_update`).
         self.title_listener: Callable[[str], None] | None = None
+        # Wakes the controller to open a continuation turn when `agy` emits
+        # unsolicited work after a turn ended (post-settle continuation).
+        self.wake_listener: Callable[[], None] | None = None
         self._after_turn: list[str] = []
         self._quiet: asyncio.TimerHandle | None = None
+        self._wake_buffer: list[dict] = []
+        self._wake_pending = False
+        # Set on user cancel so trailing cancel frames cannot reopen a turn;
+        # cleared on the next normal prompt.
+        self._wake_quarantined = False
+        self._continuing_wake = False
         # The context Antigravity last reported using, in tokens.
         self.used: int | None = None
         # Compact before a prompt once `used` reaches this; set per request by
@@ -579,7 +624,93 @@ class AntigravityModel(Model):
 
         # pcode's bridged tools, which Antigravity may call (see antigravity_tools).
         # Side questions never get bridged pcode MCP tools.
-        self.tools = None if side else ToolBridge(notify=self._show)
+        self.tools = (
+            None
+            if side
+            else ToolBridge(
+                notify=self._show,
+                wake_starting=lambda: self._wake_pending or self._continuing_wake,
+            )
+        )
+
+    def _history_matches_session(self, history: list[ModelMessage] | None) -> bool:
+        if history is None or self._session is None:
+            return True
+        last = next((m for m in reversed(history) if isinstance(m, ModelResponse)), None)
+        stamp = _parse_stamp(last) if last is not None else None
+        return stamp == (self._session.session_id, self._session.turns)
+
+    def has_pending_wake(self, history: list[ModelMessage] | None = None) -> bool:
+        """Whether unsolicited post-turn updates are buffered for the live session."""
+        return (
+            bool(self._wake_buffer)
+            and self._session is not None
+            and self._session.connection.alive
+            and self._history_matches_session(history)
+        )
+
+    def sync_history(self, history: list[ModelMessage]) -> None:
+        """Drop a live session whose state no longer matches `history` (e.g. after `/tree`)."""
+        self.clear_wake()
+        if self._session is not None and not self._history_matches_session(history):
+            self.reset()
+
+    def clear_wake(self, *, quarantine: bool = False) -> None:
+        """Discard buffered post-turn updates and any pending wake request."""
+        was_pending = self._wake_pending or bool(self._wake_buffer)
+        self._wake_buffer.clear()
+        self._wake_pending = False
+        if quarantine:
+            self._wake_quarantined = True
+            if (
+                was_pending
+                and not self._lock.locked()
+                and self._session is not None
+                and self._session.connection.alive
+            ):
+                _spawn(
+                    self._session.connection.notify(
+                        "session/cancel", {"sessionId": self._session.session_id}
+                    )
+                )
+        if self.tools is not None:
+            self.tools.abort_wake()
+
+    def _drain_wake(self) -> list[dict]:
+        buffered = list(self._wake_buffer)
+        self._wake_buffer.clear()
+        self._wake_pending = False
+        return buffered
+
+    def _flush_wake_as_notes(self) -> None:
+        """Surface any buffered wake frames as notes before a user prompt takes over."""
+        buffered = self._drain_wake()
+        if not buffered:
+            return
+        text_parts: list[str] = []
+        for update in buffered:
+            kind = update.get("sessionUpdate")
+            content = update.get("content")
+            if kind == "agent_message_chunk" and isinstance(content, dict):
+                text_parts.append(str(content.get("text", "")))
+            elif kind == "tool_call_update" and update.get("status") in {"completed", "failed"}:
+                if text := "".join(text_parts).strip():
+                    self._show(f"Antigravity, after the turn:\n{text}")
+                text_parts.clear()
+                title = update.get("title") or update.get("name") or "a tool"
+                failed = " (failed)" if update.get("status") == "failed" else ""
+                self._show(f"Antigravity, after the turn, ran {title}{failed}")
+        if text := "".join(text_parts).strip():
+            self._show(f"Antigravity, after the turn:\n{text}")
+
+    @contextlib.contextmanager
+    def continuation(self) -> Iterator[None]:
+        """Mark the next `request_stream` as draining an unsolicited wake (no `session/prompt`)."""
+        self._continuing_wake = True
+        try:
+            yield
+        finally:
+            self._continuing_wake = False
 
     def _title_update(self, update: dict) -> None:
         title = update.get("title")
@@ -600,19 +731,43 @@ class AntigravityModel(Model):
                 _remember_window(self._model_name, size)
 
     def _idle_update(self, update: dict) -> None:
-        """Show output Antigravity produces on its own between turns; display only.
+        """Handle updates Antigravity emits between turns.
 
-        pcode never answers it with a prompt: that would be pcode driving
-        Antigravity. Text is gathered until it goes quiet, and each tool it
-        finishes is a line of its own.
+        When a controller `wake_listener` is wired, substantive updates are
+        buffered and open a continuation turn (without sending `session/prompt`),
+        so tools, edits, markdown, and bridged MCP calls work normally. Without
+        a controller (e.g. standalone `agent.run`), fall back to transcript notes.
         """
         kind = update.get("sessionUpdate")
         content = update.get("content")
+        if kind == "session_info_update":
+            self._title_update(update)
+            return
         if kind == "usage_update":
             self._usage_update(update)
-        elif kind == "session_info_update":
-            self._title_update(update)
-        elif kind == "agent_message_chunk" and isinstance(content, dict):
+            # A short wake reply can finish before its continuation turn starts;
+            # replay the closing usage_update with the buffered output so the
+            # continuation settles in DEFERRED_FINALIZE_DEBOUNCE instead of 120s.
+            if (
+                self.wake_listener is not None
+                and not self._side
+                and not self._wake_quarantined
+                and self._wake_buffer
+            ):
+                self._wake_buffer.append(update)
+            return
+        if self.wake_listener is not None and not self._side:
+            if self._wake_quarantined:
+                return
+            daemons = self._session.daemon_tools if self._session is not None else None
+            if _is_wake_update(update, buffering=bool(self._wake_buffer), daemon_tools=daemons):
+                self._wake_buffer.append(update)
+                if not self._wake_pending:
+                    self._wake_pending = True
+                    with contextlib.suppress(Exception):
+                        self.wake_listener()
+            return
+        if kind == "agent_message_chunk" and isinstance(content, dict):
             self._after_turn.append(str(content.get("text", "")))
             if self._quiet is not None:
                 self._quiet.cancel()
@@ -678,6 +833,8 @@ class AntigravityModel(Model):
             self._quiet.cancel()
             self._quiet = None
         self._after_turn = []
+        self.clear_wake()
+        self._wake_quarantined = False
 
     def reset(self) -> None:
         """Drop the live `agy` session for a new conversation, keeping listeners wired."""
@@ -702,6 +859,7 @@ class AntigravityModel(Model):
         # land in whichever conversation the view shows next.
         self.listener = None
         self.title_listener = None
+        self.wake_listener = None
         self.reset()
 
     async def request(
@@ -727,24 +885,33 @@ class AntigravityModel(Model):
     ) -> AsyncIterator[StreamedResponse]:
         from pcode.claude_sdk.workspace import CWD_SETTING
 
-        # Before the lock or a process: a refusal must cost nothing.
-        prompt, interrupted = user_prompt(messages, side=self._side)
-        if self._side and not getattr(model_request_parameters, "function_tools", None):
-            # A plain completion (a title, a summary, an advisor's answer): its
-            # instructions are the task. A side question's are pcode's own
-            # system prompt, about tools Antigravity doesn't have.
-            parts = getattr(model_request_parameters, "instruction_parts", None) or []
-            task = "\n\n".join(part.content for part in parts) or (
-                getattr(messages[-1], "instructions", None) or ""
-            )
-            if task.strip():
-                prompt = [{"type": "text", "text": task}, *prompt]
-        # Anything said since the last turn shows before this one starts.
-        self._flush_idle()
-        earlier = messages[:-1]
-        if interrupted:
-            earlier = [*earlier, ModelRequest(parts=interrupted)]
+        continuing = self._continuing_wake
+        self._continuing_wake = False
+        prompt: list[dict] = []
+        interrupted: list = []
+        earlier: list[ModelMessage] = []
         cwd = str((model_settings or {}).get(CWD_SETTING) or os.getcwd())
+        if not continuing:
+            # A new user turn lifts any cancel quarantine from an earlier Ctrl+C.
+            self._wake_quarantined = False
+            # Before the lock or a process: a refusal must cost nothing.
+            prompt, interrupted = user_prompt(messages, side=self._side)
+            if self._side and not getattr(model_request_parameters, "function_tools", None):
+                # A plain completion (a title, a summary, an advisor's answer): its
+                # instructions are the task. A side question's are pcode's own
+                # system prompt, about tools Antigravity doesn't have.
+                parts = getattr(model_request_parameters, "instruction_parts", None) or []
+                task = "\n\n".join(part.content for part in parts) or (
+                    getattr(messages[-1], "instructions", None) or ""
+                )
+                if task.strip():
+                    prompt = [{"type": "text", "text": task}, *prompt]
+            # Anything said since the last turn shows before this one starts.
+            self._flush_wake_as_notes()
+            self._flush_idle()
+            earlier = messages[:-1]
+            if interrupted:
+                earlier = [*earlier, ModelRequest(parts=interrupted)]
         self._waiters += 1
         try:
             await self._lock.acquire()
@@ -758,20 +925,46 @@ class AntigravityModel(Model):
         if self.tools is not None:
             self.tools.begin_turn(run_context)
         try:
-            session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
-            if not self._side:
-                await self._ready(session, compact=not replay)
-            stream = AntigravityStream(
-                model_request_parameters=model_request_parameters,
-                model_id=self._model_name,
-                session=session,
-                prompt=[*replay, *prompt],
-                replayed=len(replay),
-                run_context=run_context,
-                notify=self._show,
-                on_usage=self._usage_update,
-                on_title=self._title_update,
-            )
+            if continuing:
+                session = self._session
+                if (
+                    session is None
+                    or not session.connection.alive
+                    or not self._history_matches_session(messages[:-1])
+                ):
+                    self.clear_wake()
+                    reason = (
+                        session.connection._exit_reason()
+                        if session is not None and not session.connection.alive
+                        else "Antigravity session is not running."
+                    )
+                    raise AntigravityError(reason)
+                stream = AntigravityStream(
+                    model_request_parameters=model_request_parameters,
+                    model_id=self._model_name,
+                    session=session,
+                    continuation=True,
+                    drain_wake=self._drain_wake,
+                    run_context=run_context,
+                    notify=self._show,
+                    on_usage=self._usage_update,
+                    on_title=self._title_update,
+                )
+            else:
+                session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
+                if not self._side:
+                    await self._ready(session, compact=not replay)
+                stream = AntigravityStream(
+                    model_request_parameters=model_request_parameters,
+                    model_id=self._model_name,
+                    session=session,
+                    prompt=[*replay, *prompt],
+                    replayed=len(replay),
+                    run_context=run_context,
+                    notify=self._show,
+                    on_usage=self._usage_update,
+                    on_title=self._title_update,
+                )
             try:
                 yield stream
             finally:
@@ -779,6 +972,10 @@ class AntigravityModel(Model):
                     # As pcode keeps the request: the prompt, then any steering.
                     session.interrupted.append("\n".join(t for t in stream.asked if t))
                 if stream.unfinished:
+                    # Quarantine trailing cancel updates so a user Ctrl+C never
+                    # immediately spawns a post-settle continuation turn.
+                    self._wake_quarantined = True
+                    self.clear_wake()
                     # Stopped mid-turn. The run's cancellation is level-triggered,
                     # so waiting for Antigravity to confirm here would itself be
                     # cancelled; a task does it, keeping the lock so the next
@@ -1021,6 +1218,11 @@ def _render_parts(parts: list) -> tuple[list[dict], list[str]]:
     unsupported: list[str] = []
     for part in parts:
         if isinstance(part, UserPromptPart):
+            if (
+                isinstance(part.content, str)
+                and part.content.strip() == PROVIDER_CONTINUATION_PROMPT
+            ):
+                continue
             more, refused = content_blocks(part.content)
         elif isinstance(part, ToolReturnPart):
             text = f"[pcode] {part.tool_name} returned:\n{part.model_response_str()}"
@@ -1165,7 +1367,7 @@ def replay_text(messages: list[ModelMessage], *, intro: str = REPLAY_INTRO) -> s
                     for item in items
                     if isinstance(item, (str, TextContent))
                 )
-                if content.strip():
+                if content.strip() and content.strip() != PROVIDER_CONTINUATION_PROMPT:
                     lines += [f"[User]\n{content}", ""]
             elif isinstance(part, DataCapabilityPart) and getattr(part, "tool_name", None):
                 blocks, _ = _data_blocks(part)
@@ -1221,6 +1423,11 @@ class _ToolState:
     status: str = ""
 
     @property
+    def active(self) -> bool:
+        """Whether this non-daemon tool is still pending or running."""
+        return self.status in {"pending", "in_progress"} and not self.is_daemon
+
+    @property
     def outlives_prompt(self) -> bool:
         """Whether `agy` keeps running this tool after `session/prompt` settles."""
         if self.status != "in_progress":
@@ -1239,6 +1446,10 @@ class AntigravityStream(StreamedResponse):
     prompt: list[dict] = field(default_factory=list)
     # How many of `prompt`'s blocks replay earlier history.
     replayed: int = 0
+    # True for a post-settle continuation turn: drains buffered wake updates
+    # and listens for unsolicited `agy` updates without sending `session/prompt`.
+    continuation: bool = False
+    drain_wake: Callable[[], list[dict]] | None = None
     # The run, for the user's steering messages; None outside an agent run.
     run_context: RunContext[Any] | None = None
     # Tells the user something about the turn (the model's `_show`).
@@ -1255,8 +1466,8 @@ class AntigravityStream(StreamedResponse):
     # What this turn has told Antigravity: the prompt, then each steering message.
     asked: list[str] = field(default_factory=list, init=False)
     broken: bool = field(default=False, init=False)
-    # True while `session/prompt` has settled but we are still holding the turn
-    # open for a running command/schedule and its unsolicited follow-up reply.
+    # True while `session/prompt` has settled (or in a continuation turn) and we
+    # are waiting for background tools and unsolicited follow-up replies to finish.
     holding: bool = field(default=False, init=False)
     part_count: int = field(default=0, init=False)
     part_kind: str = field(default="", init=False)
@@ -1290,6 +1501,9 @@ class AntigravityStream(StreamedResponse):
     def _has_outliving_tools(self) -> bool:
         return any(tool.outlives_prompt for tool in self.tools.values())
 
+    def _has_running_tools(self) -> bool:
+        return any(tool.active for tool in self.tools.values())
+
     def _should_hold(self, reply: asyncio.Future) -> bool:
         if reply.cancelled() or reply.exception() is not None:
             return False
@@ -1315,8 +1529,19 @@ class AntigravityStream(StreamedResponse):
         _record_turn(session.session_id, session.turns)
         updates: asyncio.Queue = asyncio.Queue()
         connection.updates = updates
-        # What the user asked, not the replay sent ahead of it.
-        self._send_prompt(self.prompt, updates, asked=_asked_blocks(self.prompt[self.replayed :]))
+        if self.continuation:
+            # Drain synchronously right after installing `updates` so no frame
+            # can be lost or reordered between idle buffering and live streaming.
+            if self.drain_wake is not None:
+                for buffered in self.drain_wake():
+                    updates.put_nowait(buffered)
+            # Matches `_asked()` when `PROVIDER_CONTINUATION_PROMPT` is filtered out.
+            self.asked.append(CONTINUE)
+        else:
+            # What the user asked, not the replay sent ahead of it.
+            self._send_prompt(
+                self.prompt, updates, asked=_asked_blocks(self.prompt[self.replayed :])
+            )
         try:
             async for event in self._events(updates, session):
                 yield event
@@ -1326,11 +1551,14 @@ class AntigravityStream(StreamedResponse):
         finally:
             if connection.updates is updates:
                 connection.updates = None
-                # What came after the turn's end belongs to the time between turns.
-                while not updates.empty():
-                    leftover = updates.get_nowait()
-                    if isinstance(leftover, dict) and connection.idle is not None:
-                        connection.idle(leftover)
+                # Only forward leftover updates after a clean turn end: on cancel
+                # or failure, `request_stream` quarantines the session next, so
+                # forwarding here would queue a phantom continuation wake first.
+                if not self.unfinished and not self.failed:
+                    while not updates.empty():
+                        leftover = updates.get_nowait()
+                        if isinstance(leftover, dict) and connection.idle is not None:
+                            connection.idle(leftover)
         if not self.text_seen:
             # A reply with no text reads as empty, and Pydantic AI would ask
             # again: that request would be pcode's, not the user's.
@@ -1344,6 +1572,9 @@ class AntigravityStream(StreamedResponse):
         loop = asyncio.get_running_loop()
         reply_open = False
         quiet_deadline: float | None = None
+        if self.continuation:
+            self.holding = True
+            quiet_deadline = loop.time() + DEFERRED_FINALIZE_DEBOUNCE
         while True:
             if self.run_context is not None and steering_pending(self.run_context):
                 previous = self.reply
@@ -1393,12 +1624,16 @@ class AntigravityStream(StreamedResponse):
                     "tool_call_update",
                 }:
                     reply_open = True
-                if self._has_outliving_tools():
+                # Any active non-daemon tool (including long MCP delegations) pauses
+                # the quiet timer while already holding or continuing a turn.
+                if self._has_running_tools():
                     quiet_deadline = None
                 else:
                     limit = OPEN_REPLY_QUIET_LIMIT if reply_open else DEFERRED_FINALIZE_DEBOUNCE
                     quiet_deadline = loop.time() + limit
-        assert self.reply is not None
+        if self.reply is None:
+            self._finish({"stopReason": "end_turn"})
+            return
         try:
             result = self.reply.result()
         except AntigravityError:
@@ -1516,10 +1751,16 @@ class AntigravityStream(StreamedResponse):
         if isinstance(update.get("title"), str) and update["title"]:
             state.title = update["title"]
         raw_input = update.get("rawInput")
-        if isinstance(raw_input, dict) and (
-            raw_input.get("IsDaemon") is True or raw_input.get("isDaemon") is True
-        ):
-            state.is_daemon = True
+        if isinstance(raw_input, dict):
+            if raw_input.get("IsDaemon") is True or raw_input.get("isDaemon") is True:
+                state.is_daemon = True
+                if self.session is not None:
+                    self.session.daemon_tools.add(call_id)
+            if not state.kind and any(
+                isinstance(raw_input.get(k), str) and raw_input[k].strip()
+                for k in ("CommandLine", "commandLine", "command_line", "command")
+            ):
+                state.kind = "execute"
         status = update.get("status")
         if isinstance(status, str) and status:
             state.status = status
@@ -1568,7 +1809,8 @@ class AntigravityStream(StreamedResponse):
         next prompt would steer it instead of starting a new one.
         """
         await self._cancel()
-        assert self.reply is not None
+        if self.reply is None:
+            return True
         try:
             await asyncio.wait_for(asyncio.shield(self.reply), CANCEL_GRACE)
         except Exception:

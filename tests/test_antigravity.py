@@ -1957,3 +1957,415 @@ def test_delegation_arguments_replace_empty_or_none_agent_name(subagent_models):
         antigravity_tools._delegation_arguments({"agent_name": "", "task": "x"})["agent_name"]
         == "worker"
     )
+
+
+def _controller_app(model: AntigravityModel, tmp_path, *, extra_capabilities=()):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+    from pcode.sessions import SavedSession
+    from pcode.ui import TerminalOutput
+
+    class _DirectOutput(TerminalOutput):
+        def print(self, *objects, end="\n", transient=False) -> None:
+            self.console.print(*objects, end=end)
+
+        async def flush(self, *, drain: bool = False) -> None:
+            pass
+
+    root = tmp_path / "sessions"
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, width=100)
+    app = PreviewApp(
+        model="antigravity:fake-low", workspace=tmp_path, session_dir=root, console=console
+    )
+    app.output = _DirectOutput(console, SimpleNamespace(invalidate=lambda: None))
+    app.model = "antigravity:fake-low"
+    app.runtime = AgentRuntime(
+        Agent(model, capabilities=list(extra_capabilities)),
+        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+    )
+    app.controller.ready.set()
+    return app, root, buffer
+
+
+def test_active_non_execute_tool_pauses_quiet_timer_while_holding(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    monkeypatch.setattr(antigravity, "OPEN_REPLY_QUIET_LIMIT", 0.05)
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        return await agent_for(model, tmp_path).run("BGDELEGATE")
+
+    result = run(go())
+    assert "Delegation finished cleanly." in result.output
+    parts = [p for m in result.all_messages() for p in m.parts]
+    assert any(
+        isinstance(p, NativeToolReturnPart) and p.tool_call_id == "mcp-1" and p.content == "LGTM"
+        for p in parts
+    )
+
+
+def test_post_settle_wake_opens_continuation_turn_end_to_end(fake_agy, tmp_path, monkeypatch):
+    from pcode.sessions import first_prompt, list_sessions, session_turns
+
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    model = AntigravityModel("fake-low")
+    app, root, buffer = _controller_app(model, tmp_path)
+
+    async def exercise():
+        consumer = asyncio.create_task(app.controller.consume())
+        try:
+            app.controller.submit("LATER_WAKE check post-settle continuation", "queue")
+            for _ in range(250):
+                if (
+                    "Committed after background check." in buffer.getvalue()
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "Committed after background check." in buffer.getvalue()
+            assert "Antigravity, after the turn" not in buffer.getvalue()
+            # No extra session/prompt was sent to agy for the continuation.
+            assert len(prompts(fake_agy)) == 1
+            # A follow-up user turn still reuses the warm live session (no replay).
+            app.controller.submit("follow up after wake", "queue")
+            for _ in range(250):
+                if (
+                    "got: follow up after wake" in buffer.getvalue()
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "got: follow up after wake" in buffer.getvalue()
+            assert len(prompts(fake_agy)) == 2
+            assert sum(m.get("method") == "session/new" for m in fake_agy()) == 1
+        finally:
+            app.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(exercise())
+    saved = list_sessions(root)[0]
+    assert first_prompt(saved, root) == "LATER_WAKE check post-settle continuation"
+    turns = session_turns(saved, root)
+    assert turns is not None
+    # The continuation folded onto turn 1 rather than adding a blank user turn.
+    assert len(turns) == 2
+    assert turns[0].prompt == "LATER_WAKE check post-settle continuation"
+    assert any(
+        "Committed after background check." in block
+        for block in turns[0].blocks
+        if isinstance(block, str)
+    )
+    assert any(
+        getattr(block, "name", None) == "run_command"
+        and "git commit" in getattr(block, "detail", "")
+        for block in turns[0].blocks
+    )
+    # Tree view omits an empty user: row for the continuation node.
+    tree_rows = [text for _, text in app.runtime.tree.rows()]
+    assert not any(text.endswith("user: ") for text in tree_rows)
+
+
+def test_post_settle_continuation_allows_bridged_mcp_calls(fake_agy, tmp_path, monkeypatch):
+    from pydantic_ai import FunctionToolset
+    from pydantic_ai.capabilities import AbstractCapability
+
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    seen: list[str] = []
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain
+    def ping_bridge(note: str) -> str:
+        seen.append(note)
+        return f"pong:{note}"
+
+    class _PingCap(AbstractCapability):
+        bridge_to_acp = True
+
+        def get_toolset(self):
+            return toolset
+
+    model = AntigravityModel("fake-low")
+    app, _, buffer = _controller_app(model, tmp_path, extra_capabilities=(_PingCap(),))
+
+    async def exercise():
+        consumer = asyncio.create_task(app.controller.consume())
+        try:
+            payload = json.dumps({"name": "ping_bridge", "arguments": {"note": "from-wake"}})
+            app.controller.submit(f"LATER_MCP {payload}", "queue")
+            for _ in range(300):
+                if (
+                    "late mcp: pong:from-wake" in buffer.getvalue()
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "late mcp: pong:from-wake" in buffer.getvalue()
+            assert seen == ["from-wake"]
+            assert len(prompts(fake_agy)) == 1
+        finally:
+            app.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(exercise())
+
+
+def test_post_settle_continuation_supports_steering_and_cancel(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+
+    # 1. Steering during a continuation turn sends a real prompt and completes.
+    model_steer = AntigravityModel("fake-low")
+    app_steer, _, buf_steer = _controller_app(model_steer, tmp_path)
+
+    async def steer_exercise():
+        consumer = asyncio.create_task(app_steer.controller.consume())
+        try:
+            app_steer.controller.submit("LATER_HANG start", "queue")
+            for _ in range(250):
+                if "Continuing in background..." in buf_steer.getvalue():
+                    break
+                await asyncio.sleep(0.02)
+            assert "Continuing in background..." in buf_steer.getvalue()
+            app_steer.controller.submit("COMPLETE_BG steer continuation", "steering")
+            for _ in range(250):
+                if (
+                    "got: COMPLETE_BG steer continuation" in buf_steer.getvalue()
+                    and not app_steer.activity.busy
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "got: COMPLETE_BG steer continuation" in buf_steer.getvalue()
+        finally:
+            app_steer.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(steer_exercise())
+
+    # 2. Cancelling a continuation turn sends session/cancel and recovers for the next turn.
+    model_cancel = AntigravityModel("fake-low")
+    app_cancel, _, buf_cancel = _controller_app(model_cancel, tmp_path)
+
+    async def cancel_exercise():
+        consumer = asyncio.create_task(app_cancel.controller.consume())
+        try:
+            app_cancel.controller.submit("LATER_HANG cancel me", "queue")
+            for _ in range(250):
+                if "Continuing in background..." in buf_cancel.getvalue():
+                    break
+                await asyncio.sleep(0.02)
+            app_cancel.controller.cancel()
+            for _ in range(200):
+                if not app_cancel.activity.busy and app_cancel.controller.live_task is None:
+                    break
+                await asyncio.sleep(0.02)
+            app_cancel.controller.submit("fresh after cancel", "queue")
+            for _ in range(250):
+                if (
+                    "got: fresh after cancel" in buf_cancel.getvalue()
+                    and not app_cancel.activity.busy
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "got: fresh after cancel" in buf_cancel.getvalue()
+            assert any(m.get("method") == "session/cancel" for m in fake_agy())
+        finally:
+            app_cancel.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(cancel_exercise())
+
+
+def test_cancel_quarantines_trailing_updates_until_next_prompt(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    model = AntigravityModel("fake-low")
+    app, _, buffer = _controller_app(model, tmp_path)
+
+    async def exercise():
+        consumer = asyncio.create_task(app.controller.consume())
+        try:
+            app.controller.submit("CANCEL_TAIL slow run", "queue")
+            for _ in range(200):
+                if "working" in buffer.getvalue():
+                    break
+                await asyncio.sleep(0.01)
+            app.controller.cancel()
+            for _ in range(200):
+                if not app.activity.busy and app.controller.live_task is None:
+                    break
+                await asyncio.sleep(0.01)
+            # Wait past fake_agy's trailing post-cancel frame: must not reopen a turn.
+            await asyncio.sleep(0.12)
+            assert "stale trailing cancel frame" not in buffer.getvalue()
+            assert not model.has_pending_wake()
+            # A subsequent normal prompt lifts quarantine so late wakes work again.
+            app.controller.submit("LATER_WAKE after cancel", "queue")
+            for _ in range(250):
+                if (
+                    "Committed after background check." in buffer.getvalue()
+                    and not app.activity.busy
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "Committed after background check." in buffer.getvalue()
+        finally:
+            app.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(exercise())
+
+
+def test_host_preserves_last_prompt_and_stays_busy_for_provider_wake(tmp_path):
+    from types import SimpleNamespace
+
+    from pcode.host import HostEntry, SessionHost
+
+    entry = HostEntry(
+        id="h1",
+        pid=1,
+        model="antigravity:fake-low",
+        workspace=str(tmp_path),
+    )
+    host = SessionHost(entry, tmp_path / "hosts")
+    host.turn_began("initial user prompt")
+    assert host.entry.last_prompt == "initial user prompt"
+    assert host.entry.title == "initial user prompt"
+    # Provider continuation passes an empty prompt and must not clobber last_prompt/title.
+    host.turn_began("")
+    assert host.entry.last_prompt == "initial user prompt"
+    assert host.entry.title == "initial user prompt"
+    # Host reports busy while a provider wake is pending.
+    host.controller.runtime = SimpleNamespace(has_provider_wake=lambda: True)
+    assert "Antigravity" in host.busy_with()
+
+
+def test_daemon_updates_do_not_trigger_post_settle_wake():
+    daemons: set[str] = set()
+    start = {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "d-1",
+        "kind": "execute",
+        "rawInput": {"CommandLine": "npm run dev", "IsDaemon": True},
+        "status": "in_progress",
+    }
+    end = {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "d-1",
+        "status": "completed",
+    }
+    assert not antigravity._is_wake_update(start, daemon_tools=daemons)
+    assert "d-1" in daemons
+    assert not antigravity._is_wake_update(end, daemon_tools=daemons)
+
+
+def test_continue_after_continuation_does_not_leak_placeholder_and_history_omits_blank_user(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pcode.history import TurnReader
+    from pcode.sessions import list_sessions, session_records
+
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    model = AntigravityModel("fake-low")
+    app, root, buffer = _controller_app(model, tmp_path)
+
+    async def exercise():
+        consumer = asyncio.create_task(app.controller.consume())
+        try:
+            app.controller.submit("initial turn before wake", "queue")
+            for _ in range(250):
+                if (
+                    "got: initial turn before wake" in buffer.getvalue()
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            # Attach a pending `!command` exchange between turns, then trigger a
+            # post-settle wake: the continuation must preserve pending_shell.
+            shell_msg = ModelRequest.user_text_prompt("!pwd -> /tmp")
+            app.runtime.context.pending_shell = [shell_msg]
+            model._idle_update(
+                {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "Committed after background check."},
+                }
+            )
+            model._idle_update({"sessionUpdate": "usage_update", "used": 140, "size": 1_048_576})
+            for _ in range(250):
+                if (
+                    "Committed after background check." in buffer.getvalue()
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "Committed after background check." in buffer.getvalue()
+            assert app.runtime.context.pending_shell == [shell_msg]
+            app.runtime.context.pending_shell = []
+            # /continue after a completed provider continuation must send "Continue.",
+            # never the synthetic PROVIDER_CONTINUATION_PROMPT placeholder.
+            app.controller.submit("", "continue")
+            for _ in range(250):
+                if (
+                    len(prompts(fake_agy)) >= 2
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert len(prompts(fake_agy)) == 2
+            assert prompts(fake_agy)[-1][-1]["text"] == antigravity.CONTINUE
+            sent_texts = [
+                block.get("text", "")
+                for blocks in prompts(fake_agy)
+                for block in blocks
+                if block.get("type") == "text"
+            ]
+            assert not any(antigravity.PROVIDER_CONTINUATION_PROMPT in t for t in sent_texts)
+        finally:
+            app.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(exercise())
+    saved = list_sessions(root)[0]
+    reader = TurnReader()
+    for record in session_records(saved, root):
+        reader.accept(record)
+    assert not any(block == "User: " for turn in reader.turns.values() for block in turn.blocks)
+
+
+def test_navigate_drops_mismatched_antigravity_session_and_clears_wake(
+    fake_agy, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    model = AntigravityModel("fake-low")
+    app, _, _ = _controller_app(model, tmp_path)
+
+    async def exercise():
+        await app.controller.run_turn("first turn")
+        first_node = app.runtime.tree.active
+        await app.controller.run_turn("second turn")
+        assert model._session is not None and model._session.turns == 2
+        # Simulate a pending post-turn wake before rewinding to turn 1.
+        model._wake_buffer.append(
+            {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "late"}}
+        )
+        model._wake_pending = True
+        await app.runtime.navigate(first_node)
+        assert not model.has_pending_wake(app.runtime.history)
+        assert not model._wake_buffer
+
+    run(exercise())

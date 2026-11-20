@@ -827,7 +827,11 @@ class SessionHost:
 
     def turn_began(self, prompt: str) -> None:
         self.reset_buffer()
-        self.update(state="working", last_prompt=prompt, title=self.entry.title or prompt)
+        changes: dict[str, str] = {"state": "working"}
+        if prompt:
+            changes["last_prompt"] = prompt
+            changes["title"] = self.entry.title or prompt
+        self.update(**changes)
         profile = remote_profile.active()
         if profile is not None:
             remote_profile.BUDGET.start()
@@ -887,6 +891,10 @@ class SessionHost:
                 "a background command is running",
             ),
             (controller.startup_pending, "it is starting up"),
+            (
+                getattr(controller.runtime, "has_provider_wake", lambda: False)(),
+                "Antigravity is continuing background work",
+            ),
             (controller.asides.running or self._host_asides, "a side question is running"),
             # A title asked for beside the first turn, or a name /rename asked for, would be lost.
             (controller.naming(), "it is naming the session"),

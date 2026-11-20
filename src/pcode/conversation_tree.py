@@ -211,7 +211,7 @@ class ConversationTree:
             if len(prefix) > 24:
                 prefix = "… " + prefix[-22:]
             connector = ("└─ " if last else "├─ ") if fork else ""
-            if node.kind != "compaction":
+            if node.kind != "compaction" and (node.prompt or not node.continuation):
                 who = "btw: " if node.kind == "aside" else "user: "
                 rows.append(((node.id, True), prefix + connector + who + excerpt(node.prompt)))
             continuation = prefix + (("   " if last else "│  ") if fork else "")

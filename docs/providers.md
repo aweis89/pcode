@@ -320,9 +320,7 @@ consequences:
   pcode tells Antigravity, which picks the work up again. The transcript notes
   when a worker starts and finishes; these workers don't appear in `/agents`.
   When Antigravity names no model, the worker uses the first entry in your
-  `subagent_models` setting; with none set, Antigravity has to name one. It
-  can only start a worker while a pcode turn is running, so a background
-  Antigravity sub-agent can't start one after the turn ends.
+  `subagent_models` setting; with none set, Antigravity has to name one.
 - **It is never a worker itself.** A sub-agent that another model delegates
   to can't run on `antigravity:`. That would be Antigravity driven by another
   agent's loop, which Google suspends accounts for.
@@ -354,10 +352,13 @@ consequences:
 - **Prompts take text and images.** Other attachments are refused.
 - **Messages you send while it works steer the running turn,** as with other
   models: Antigravity folds each into the work in progress.
-- **Background sub-agents report after the turn.** Antigravity's own
-  sub-agents and multi-agent commands keep working after it ends the turn, and
-  what it says or runs then shows up in the transcript as a note as soon as it
-  arrives. pcode only shows it.
+- **Background work continues cleanly.** When Antigravity leaves a shell
+  command or schedule running across a turn, pcode holds the turn open until
+  it finishes and its follow-up closes. If Antigravity wakes up later on its
+  own (for example when a background sub-agent reports back, or after a
+  brief quiet gap), pcode opens a continuation turn without prompting it so
+  its tools, edits, bridged MCP calls, and reply stream normally instead of
+  landing as post-turn notes.
 - **Plan mode is Antigravity's own.** `/plan` switches its session to its
   plan mode, where it writes a plan of its own (not pcode's plan file) and
   waits for your go-ahead; leaving plan mode in pcode switches it back.

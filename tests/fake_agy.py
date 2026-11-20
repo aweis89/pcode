@@ -144,7 +144,7 @@ def prompt(request):
         send({"jsonrpc": "2.0", "id": request["id"], "error": error})
         running.remove(request["id"])
         return
-    if "SLOW" in trigger:
+    if "SLOW" in trigger or "CANCEL_TAIL" in trigger:
         chunk(session, "agent_message_chunk", "working")
         for _ in range(1000):
             if cancelled.is_set() or request["id"] in superseded:
@@ -157,6 +157,19 @@ def prompt(request):
         result = {"stopReason": stop, "usage": usage}
         send({"jsonrpc": "2.0", "id": request["id"], "result": result})
         running.remove(request["id"])
+        if "CANCEL_TAIL" in trigger and stop == "cancelled":
+            threading.Event().wait(0.02)
+            chunk(session, "agent_message_chunk", "stale trailing cancel frame")
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "stale-1",
+                    "title": "stale tool",
+                    "status": "completed",
+                },
+            )
+            update(session, {"sessionUpdate": "usage_update", "used": 20, "size": 1000})
         return
     if "BADLINE" in trigger:
         with lock:
@@ -166,7 +179,13 @@ def prompt(request):
         chunk(session, "agent_message_chunk", "about to fail")
         sys.stdout.flush()
         os._exit(3)
-    if "BGCMD" in trigger or "BGDAEMON" in trigger or "BGSCHED" in trigger or "BGHANG" in trigger:
+    if (
+        "BGCMD" in trigger
+        or "BGDAEMON" in trigger
+        or "BGSCHED" in trigger
+        or "BGHANG" in trigger
+        or "BGDELEGATE" in trigger
+    ):
         is_daemon = "BGDAEMON" in trigger
         is_sched = "BGSCHED" in trigger
         call = (
@@ -204,12 +223,37 @@ def prompt(request):
                 "content": content,
             },
         )
+        if "BGDELEGATE" in trigger:
+            # A non-execute tool (e.g. MCP delegation) that runs longer than
+            # OPEN_REPLY_QUIET_LIMIT while the turn is already held.
+            slow_call = {
+                "toolCallId": "mcp-1",
+                "name": "mcp_pcode_delegate_task",
+                "kind": "other",
+                "title": "Run delegate_task",
+                "rawInput": {"task": "review"},
+            }
+            update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **slow_call})
+            threading.Event().wait(0.15)
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "mcp-1",
+                    "status": "completed",
+                    "content": [{"type": "content", "content": {"type": "text", "text": "LGTM"}}],
+                },
+            )
+            chunk(session, "agent_message_chunk", " Delegation finished cleanly.")
+            update(session, {"sessionUpdate": "usage_update", "used": 120, "size": 1000})
+            return
         chunk(session, "agent_message_chunk", " All tests passed.")
         update(session, {"sessionUpdate": "usage_update", "used": 100, "size": 1000})
         return
     if "COMPLETE_BG" in text:
-        done = {"sessionUpdate": "tool_call_update", "toolCallId": "bg-1", "status": "completed"}
-        update(session, done)
+        for cid in ("bg-1", "wake-hang-1"):
+            done = {"sessionUpdate": "tool_call_update", "toolCallId": cid, "status": "completed"}
+            update(session, done)
     chunk(session, "agent_thought_chunk", "pondering")
     call = {
         "toolCallId": "call-1",
@@ -250,7 +294,88 @@ def prompt(request):
     running.remove(request["id"])
     if "LATER_TITLE" in text:
         update(session, {"sessionUpdate": "session_info_update", "title": "Late idle title"})
-    if "LATER" in text and "LATER_TITLE" not in text:
+    if "LATER_WAKE" in trigger:
+
+        def wake_later():
+            threading.Event().wait(0.04)
+            chunk(session, "agent_thought_chunk", "processing late background result")
+            wake_call = {
+                "toolCallId": "wake-1",
+                "name": "run_command",
+                "kind": "execute",
+                "title": "git commit",
+                "rawInput": {"CommandLine": "git commit -m done"},
+            }
+            update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **wake_call})
+            threading.Event().wait(0.02)
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "wake-1",
+                    "status": "completed",
+                    "content": [
+                        {"type": "content", "content": {"type": "text", "text": "committed"}}
+                    ],
+                },
+            )
+            chunk(session, "agent_message_chunk", "Committed after background check.")
+            update(session, {"sessionUpdate": "usage_update", "used": 140, "size": 1_048_576})
+
+        threading.Thread(target=wake_later, daemon=True).start()
+    elif trigger.startswith("LATER_MCP "):
+        mcp_call = json.loads(trigger[10:])
+
+        def wake_mcp():
+            threading.Event().wait(0.04)
+            wake_call = {
+                "toolCallId": "wake-mcp-1",
+                "name": f"mcp_pcode_{mcp_call['name']}",
+                "kind": "other",
+                "title": f"Run {mcp_call['name']}",
+                "rawInput": mcp_call["arguments"],
+            }
+            update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **wake_call})
+            # Call MCP immediately alongside tool_call (zero delay) to verify
+            # ToolBridge waits for the continuation turn's begin_turn().
+            mcp_result = call_mcp(servers[session][0], mcp_call["name"], mcp_call["arguments"])
+            failed = " (error)" if mcp_result.get("isError") else ""
+            first = mcp_result["content"][0]
+            summary = first["text"] if first.get("type") == "text" else f"<{first.get('type')}>"
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "wake-mcp-1",
+                    "status": "failed" if failed else "completed",
+                    "content": [{"type": "content", "content": {"type": "text", "text": summary}}],
+                },
+            )
+            chunk(session, "agent_message_chunk", f"late mcp{failed}: {summary}")
+            update(session, {"sessionUpdate": "usage_update", "used": 150, "size": 1_048_576})
+
+        threading.Thread(target=wake_mcp, daemon=True).start()
+    elif "LATER_HANG" in trigger:
+
+        def wake_hang():
+            threading.Event().wait(0.04)
+            wake_call = {
+                "toolCallId": "wake-hang-1",
+                "name": "run_command",
+                "kind": "execute",
+                "title": "long task",
+                "rawInput": {"CommandLine": "sleep 60"},
+            }
+            update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **wake_call})
+            chunk(session, "agent_message_chunk", "Continuing in background...\n\n")
+            for _ in range(1000):
+                if cancelled.is_set():
+                    cancelled.clear()
+                    return
+                cancelled.wait(0.01)
+
+        threading.Thread(target=wake_hang, daemon=True).start()
+    elif "LATER" in trigger and "LATER_TITLE" not in trigger:
         # A background sub-agent reporting back after the turn ended.
         chunk(session, "agent_message_chunk", "The sub-agent ")
         chunk(session, "agent_message_chunk", "found 6 files.")

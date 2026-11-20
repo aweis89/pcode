@@ -1548,6 +1548,7 @@ class Activity:
             prefix = {
                 "steering": "Steering",
                 "interrupt": "Interrupting",
+                "provider_wake": "Continuing",
             }.get(mode, "Queued")
             system = system_command(text)
             if system is None:

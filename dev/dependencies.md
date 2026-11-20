@@ -858,12 +858,21 @@ finished turn) off this model. Traps found while building it:
 - Advertising `fs.writeTextFile` makes `agy` send whole-file client writes
   instead of diffs (per T3 Code's integration), so pcode advertises no fs or
   terminal capability.
-- `agy` keeps working after a turn ends: a background sub-agent's report and
-  its follow-up arrive as updates with no prompt pending. They go to the
-  model's `listener` as retained transcript notes, never answered. `agy`
-  writes a prompt's reply and those updates back to back, so the reader queues
-  the reply's future in line; a done-callback ran after both and folded the
-  report into the turn.
+- `agy` keeps working after a turn ends: a background command or schedule may
+  stay `in_progress` across `session/prompt` settlement (held open until
+  active non-daemon tools finish and the follow-up's `usage_update` + quiet
+  debounce settle), and a background sub-agent or delayed wakeup can emit
+  updates after a turn has already finalized. When a `SessionController` is
+  attached (`wake_listener`), `AntigravityModel._idle_update` buffers those
+  updates (including a trailing `usage_update` once output has arrived) and
+  triggers a provider continuation turn (`provider_continuation=True`) that
+  drains the buffer and streams live updates without sending `session/prompt`,
+  keeping bridged MCP tools, steering, and Ctrl+C working. A user Ctrl+C sets
+  `_wake_quarantined` until the next prompt so trailing cancel frames cannot
+  reopen a turn. Standalone callers without a controller fall back to
+  `listener` transcript notes. `agy` writes a prompt's reply and immediate
+  post-turn updates back to back, so the reader queues the reply's future in
+  line; a done-callback ran after both and folded the report into the turn.
 - `agy` 1.5.13 never forwards a background sub-agent's
   `session/request_permission` (t3code#39029); the sub-agent waits about a
   minute and fails. Hence `--dangerously-skip-permissions`. Session modes do

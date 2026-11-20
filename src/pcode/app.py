@@ -2483,7 +2483,8 @@ class PreviewApp:
             for record in saved.transcript_records(end):
                 kind = record["kind"]
                 if kind in ("turn_started", "steering"):
-                    self.transcript.user(strip_controls(record["prompt"]))
+                    if record["prompt"]:
+                        self.transcript.user(strip_controls(record["prompt"]))
                 elif kind in ("Thinking", "thinking_partial"):
                     self.transcript.thinking(strip_controls(record["text"]).rstrip("\n") + "\n\n")
                 elif kind == "CacheBust":

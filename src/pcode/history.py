@@ -313,15 +313,20 @@ class TurnReader:
             if not isinstance(identity, str) or not (parent is None or isinstance(parent, str)):
                 return
             self.parents[identity] = parent
+            blocks = (
+                []
+                if record.get("continuation") and not record["prompt"]
+                else [
+                    ("User (side question): " if record.get("side") else "User: ")
+                    + record["prompt"]
+                ]
+            )
             self.turns[identity] = HistoryTurn(
                 identity,
                 parent,
                 str(record.get("time", "")),
                 active=None,
-                blocks=[
-                    ("User (side question): " if record.get("side") else "User: ")
-                    + record["prompt"]
-                ],
+                blocks=blocks,
             )
             # A side question is a branch beside the conversation, never its head.
             if not side_record(record):

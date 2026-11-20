@@ -107,10 +107,12 @@ class EventTranslator:
         *,
         plan_preview: StreamingPlanPreview | None,
         edit_preview: StreamingEditPreview | None,
+        provider_continuation: bool = False,
     ) -> None:
         self.runtime = runtime
         self.context = context
         self.run_id = context.run_id
+        self.provider_continuation = provider_continuation
         # The plan as last published; a settled tool republishes it on change.
         self.plan_items = plan_items
         self.plan_preview = plan_preview
@@ -499,5 +501,6 @@ class EventTranslator:
         # Full successful history. The outer persistence wrapper also
         # recovers settled tool-boundary snapshots after failures.
         self.context.history = result.all_messages()
-        self.context.pending_shell = []
-        self.runtime.turns += 1
+        if not self.provider_continuation:
+            self.context.pending_shell = []
+            self.runtime.turns += 1
