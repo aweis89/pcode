@@ -281,11 +281,13 @@ def test_conductor_worker_scoping_and_aside_guard(tmp_path):
     cap = loaded.capabilities[0]
     all_defs = [ToolDefinition(name=name) for name in parent_tools]
     parent_ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage(), agent=agent)
-    assert {td.name for td in cap.prepare_tools(parent_ctx, all_defs)} == set(parent_tools)
+    assert {td.name for td in asyncio.run(cap.prepare_tools(parent_ctx, all_defs))} == set(
+        parent_tools
+    )
 
     worker_agent = Agent(TestModel(), name="worker")
     worker_ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage(), agent=worker_agent)
-    assert {td.name for td in cap.prepare_tools(worker_ctx, all_defs)} == {
+    assert {td.name for td in asyncio.run(cap.prepare_tools(worker_ctx, all_defs))} == {
         "list_hosts",
         "inspect_host",
     }

@@ -308,7 +308,7 @@ def _host_is_busy(snapshot: dict) -> bool:
 class _ConductorCapability(Capability):
     """Hides parent-only conductor tools when shared with a delegated worker."""
 
-    def prepare_tools(
+    async def prepare_tools(
         self, ctx: RunContext, tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
         if _in_worker(ctx):
