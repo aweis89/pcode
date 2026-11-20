@@ -540,6 +540,8 @@ class AntigravityModel(Model):
         self._lock = asyncio.Lock()
         # Shows what Antigravity says between turns; set by the runtime.
         self.listener: Callable[[str], None] | None = None
+        # Reports titles Antigravity assigns its session (`session_info_update`).
+        self.title_listener: Callable[[str], None] | None = None
         self._after_turn: list[str] = []
         self._quiet: asyncio.TimerHandle | None = None
         from pcode.antigravity_tools import ToolBridge
@@ -547,6 +549,12 @@ class AntigravityModel(Model):
         # pcode's delegation, which Antigravity may call (see antigravity_tools).
         # Side questions never get delegation tools.
         self.tools = None if side else ToolBridge(notify=self._show)
+
+    def _title_update(self, update: dict) -> None:
+        title = update.get("title")
+        if isinstance(title, str) and title.strip() and self.title_listener is not None:
+            with contextlib.suppress(Exception):  # A display failure must not stop agy.
+                self.title_listener(title)
 
     def _usage_update(self, update: dict) -> None:
         from pcode.model_metadata import positive_int, record_context_window
@@ -568,6 +576,8 @@ class AntigravityModel(Model):
         content = update.get("content")
         if kind == "usage_update":
             self._usage_update(update)
+        elif kind == "session_info_update":
+            self._title_update(update)
         elif kind == "agent_message_chunk" and isinstance(content, dict):
             self._after_turn.append(str(content.get("text", "")))
             if self._quiet is not None:
@@ -613,6 +623,7 @@ class AntigravityModel(Model):
             # What this conversation's agy said after its last turn must not
             # land in whichever conversation the view shows next.
             self.listener = None
+            self.title_listener = None
             if self._quiet is not None:
                 self._quiet.cancel()
                 self._quiet = None
@@ -667,6 +678,7 @@ class AntigravityModel(Model):
                 run_context=run_context,
                 notify=self._show,
                 on_usage=self._usage_update,
+                on_title=self._title_update,
             )
             try:
                 yield stream
@@ -1003,6 +1015,8 @@ class AntigravityStream(StreamedResponse):
     notify: Callable[[str], None] = lambda text: None
     # Records context window sizes reported by ACP `usage_update` notifications.
     on_usage: Callable[[dict], None] = lambda update: None
+    # Reports session titles emitted by ACP `session_info_update` notifications.
+    on_title: Callable[[dict], None] = lambda update: None
     started: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # The newest prompt's reply. A steering message is a further prompt, and
     # Antigravity ends the one before it as soon as it arrives.
@@ -1248,6 +1262,8 @@ class AntigravityStream(StreamedResponse):
             used = update.get("used")
             if type(used) is int and used >= 0:
                 self.context_used = used
+        elif kind == "session_info_update":
+            self.on_title(update)
         elif kind == "agent_message_chunk" and text:
             self.text_seen = self.text_seen or bool(text.strip())
             yield from self._parts_manager.handle_text_delta(

@@ -1569,6 +1569,8 @@ class SessionController:
             runtime.notice = self.view.note
         if hasattr(runtime, "retained_notice"):
             runtime.retained_notice = self.view.retained_note
+        if hasattr(runtime, "title_notice"):
+            runtime.title_notice = self.apply_provider_title
         failure = None
         cancelled = False
         chosen, prompt = (None, text) if continuing or wake else prompt_target(text)
@@ -3308,8 +3310,10 @@ class SessionController:
         `prompt` is the session's first prompt when the caller has it; without
         one it is read from the journal.
         """
+        from pcode.models import user_only
+
         session = getattr(self.runtime, "session", None)
-        if session is None or not self.model:
+        if session is None or not self.model or user_only(self.model):
             return
         info = session.info
         if info.name or info.title or info.id in self._naming_tried:
@@ -3321,6 +3325,27 @@ class SessionController:
             return
         self._naming_tried.add(info.id)
         self.naming_task = asyncio.create_task(self._name_session(session, self.model, prompt))
+
+    def apply_provider_title(self, title: str) -> None:
+        """Save a session title pushed by the model itself (`session_info_update`)."""
+        from pcode.session_naming import clean_title
+
+        session = getattr(self.runtime, "session", None)
+        if session is None or session.info.name or session.info.title:
+            return
+        setting = SETTINGS["session_naming"]
+        if load_preferences().get("session_naming", setting.default) != "on":
+            return
+        cleaned = clean_title(title)
+        if not cleaned:
+            return
+        session.info.title = cleaned
+        try:
+            session.save_info(touch=False)
+        except OSError:
+            return
+        self.view.session_changed()
+        self.view.redraw()
 
     async def _name_session(self, session, model: str, prompt: str | None) -> None:
         import logging
@@ -3363,6 +3388,8 @@ class SessionController:
             self.naming_task.cancel()
         self.cancel_rename()
         self._naming_tried.clear()
+        if hasattr(self.runtime, "title_notice"):
+            self.runtime.title_notice = lambda title: None
 
     def naming(self) -> bool:
         """Whether a title or name is being asked for."""

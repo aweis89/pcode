@@ -224,6 +224,9 @@ def prompt(request):
     body = {"sessionUpdate": "tool_call_update", "status": "completed", "content": content, **call}
     update(session, body)
     chunk(session, "agent_message_chunk", f"got: {text[-40:]}")
+    if "TITLE" in text and "LATER_TITLE" not in text:
+        title_update = {"sessionUpdate": "session_info_update", "title": 'Title: "Fix parser bug."'}
+        update(session, title_update)
     update(session, {"sessionUpdate": "usage_update", "used": 42, "size": 1_048_576})
     result: dict = {"stopReason": "end_turn"}
     if "NO_REPLY_USAGE" not in text:
@@ -235,7 +238,9 @@ def prompt(request):
         }
     send({"jsonrpc": "2.0", "id": request["id"], "result": result})
     running.remove(request["id"])
-    if "LATER" in text:
+    if "LATER_TITLE" in text:
+        update(session, {"sessionUpdate": "session_info_update", "title": "Late idle title"})
+    if "LATER" in text and "LATER_TITLE" not in text:
         # A background sub-agent reporting back after the turn ended.
         chunk(session, "agent_message_chunk", "The sub-agent ")
         chunk(session, "agent_message_chunk", "found 6 files.")

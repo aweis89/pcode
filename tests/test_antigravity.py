@@ -1262,3 +1262,114 @@ def test_compact_cap_is_ignored_for_antigravity_footer():
     assert controller.compact_cap() is None
     assert controller.autocompact_state() == "managed by Antigravity"
     assert controller.context_label() == " · 0/1.05m"
+
+
+def test_session_info_update_titles_antigravity_session_end_to_end(fake_agy, tmp_path, monkeypatch):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+    from pcode.preferences import save_preferences
+    from pcode.sessions import SavedSession, list_sessions
+    from pcode.ui import TerminalOutput
+
+    save_preferences(session_naming="on")
+    asked = []
+
+    async def fail_suggest(*args, **kwargs):
+        asked.append(args)
+        raise AssertionError("antigravity: should not call suggest_title")
+
+    monkeypatch.setattr("pcode.session_naming.suggest_title", fail_suggest)
+
+    root = tmp_path / "sessions"
+    model = AntigravityModel("fake-low")
+    console = Console(file=StringIO())
+    app = PreviewApp(workspace=tmp_path, session_dir=root, console=console)
+    app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
+    app.model = "antigravity:fake-low"
+    app.runtime = AgentRuntime(
+        agent_for(model, tmp_path),
+        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+    )
+
+    try:
+        run(app.controller.run_turn("TITLE fix the parser"))
+        assert asked == []
+        assert app.controller.naming_task is None
+        assert app.controller.session_title() == "Fix parser bug"
+        (info,) = list_sessions(root)
+        assert info.title == "Fix parser bug"
+    finally:
+        if app.runtime.session is not None:
+            app.runtime.session.close()
+
+
+def test_session_info_update_after_turn_and_guards(tmp_path):
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+    from pcode.preferences import save_preferences
+    from pcode.sessions import SavedSession, list_sessions
+
+    root = tmp_path / "sessions"
+    model = AntigravityModel("fake-low")
+    app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
+    app.model = "antigravity:fake-low"
+    app.runtime = AgentRuntime(Agent(model))
+    saved = SavedSession.create("antigravity:fake-low", tmp_path, root)
+    saved.save_info()
+    app.runtime.session = saved
+    app.runtime.title_notice = app.controller.apply_provider_title
+
+    try:
+        # Preference off ignores provider titles.
+        save_preferences(session_naming="off")
+        model._idle_update({"sessionUpdate": "session_info_update", "title": "Ignored when off"})
+        assert saved.info.title is None
+
+        # Malformed or blank titles are ignored.
+        save_preferences(session_naming="on")
+        for bad in (None, 123, "", "   ", '""'):
+            model._idle_update({"sessionUpdate": "session_info_update", "title": bad})
+        assert saved.info.title is None
+
+        # Idle session_info_update sets and persists the cleaned title.
+        model._idle_update({"sessionUpdate": "session_info_update", "title": "  Late idle title! "})
+        assert saved.info.title == "Late idle title"
+        assert list_sessions(root)[0].title == "Late idle title"
+
+        # Existing title is not overwritten by a second update.
+        model._idle_update({"sessionUpdate": "session_info_update", "title": "Second title"})
+        assert saved.info.title == "Late idle title"
+
+        # Existing /rename name blocks provider titles.
+        saved.info.title = None
+        app.controller.rename("User name")
+        model._idle_update({"sessionUpdate": "session_info_update", "title": "After rename"})
+        assert saved.info.title is None
+        assert saved.info.name == "User name"
+
+        # cancel_naming detaches title_notice so late updates don't hit a new session.
+        saved.info.name = None
+        app.controller.cancel_naming()
+        model._idle_update({"sessionUpdate": "session_info_update", "title": "After cancel"})
+        assert saved.info.title is None
+
+        # retire() clears title_listener on the model.
+        assert model.title_listener is not None
+
+        async def retire():
+            model.retire()
+            await asyncio.sleep(0)
+
+        run(retire())
+        assert model.title_listener is None
+    finally:
+        saved.close()
