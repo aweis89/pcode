@@ -266,7 +266,7 @@ async def _resume_session_host(
         if entry.session_id and entry.session_id != info.id:
             try:
                 await remote.stop_entry(entry, keep_worktree=True)
-            except (HostError, RemoteError, OSError):
+            except HostError, RemoteError, OSError:
                 pass
             raise ToolFailed(
                 f"Resumed host {identity} opened forked session {entry.session_id} "
@@ -420,9 +420,7 @@ def setup(pcode) -> None:
         if not cleaned:
             raise ModelRetry("Provide a non-empty question.")
         my_session = _self_session(ctx)
-        entry, resumed = await _ensure_host(
-            target, session_dir=session_dir, my_session=my_session
-        )
+        entry, resumed = await _ensure_host(target, session_dir=session_dir, my_session=my_session)
         try:
             reply = await remote.request_host(
                 entry,
@@ -473,9 +471,7 @@ def setup(pcode) -> None:
         if not 1 <= timeout <= 1800:
             raise ModelRetry("Provide timeout between 1 and 1800 seconds.")
         my_session = _self_session(ctx)
-        entry, resumed = await _ensure_host(
-            target, session_dir=session_dir, my_session=my_session
-        )
+        entry, resumed = await _ensure_host(target, session_dir=session_dir, my_session=my_session)
 
         env_note = (
             "Resumed in another workspace; the host inherited this conductor's environment."
@@ -568,9 +564,7 @@ def setup(pcode) -> None:
             timeout: Maximum seconds to wait, 1-1800.
         """
         if _in_worker(ctx):
-            raise ToolFailed(
-                "wait_for_hosts is only available to the parent session, not workers."
-            )
+            raise ToolFailed("wait_for_hosts is only available to the parent session, not workers.")
         if not host_ids:
             raise ModelRetry("Provide at least one host_id.")
         if not 1 <= timeout <= 1800:
@@ -632,7 +626,7 @@ def setup(pcode) -> None:
                     continue
                 try:
                     snap = await remote.request_host(current, "peek", timeout=5.0)
-                except (HostError, RemoteError, OSError):
+                except HostError, RemoteError, OSError:
                     # Fall back to the on-disk HostEntry if peek fails or host is older.
                     if current.state == "idle":
                         completed.append(
@@ -737,9 +731,7 @@ def setup(pcode) -> None:
 
         if not force:
             try:
-                reason = await remote.stop_if_idle(
-                    entry, require_detached=True, keep_worktree=True
-                )
+                reason = await remote.stop_if_idle(entry, require_detached=True, keep_worktree=True)
             except (HostError, RemoteError, OSError) as error:
                 raise ToolFailed(f"Could not stop host {entry.id}: {error}") from None
             if reason:
@@ -748,9 +740,7 @@ def setup(pcode) -> None:
                         "status": "refused",
                         "host_id": entry.id,
                         "session_id": entry.session_id,
-                        "reason": (
-                            f"{reason}; ask the user or pass force=True to stop anyway."
-                        ),
+                        "reason": (f"{reason}; ask the user or pass force=True to stop anyway."),
                     }
                 return {
                     "status": "busy",
@@ -783,9 +773,8 @@ def setup(pcode) -> None:
         Tool(wait_for_hosts, takes_ctx=True),
         Tool(stop_host, takes_ctx=True),
     ]
+
     def _instructions(ctx: RunContext) -> str:
         return WORKER_INSTRUCTIONS if _in_worker(ctx) else PARENT_INSTRUCTIONS
 
-    pcode.add_capability(
-        _ConductorCapability(id=pcode.id, tools=tools, instructions=_instructions)
-    )
+    pcode.add_capability(_ConductorCapability(id=pcode.id, tools=tools, instructions=_instructions))

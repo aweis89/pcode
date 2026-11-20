@@ -768,9 +768,10 @@ def test_send_to_host_wait_timeout_returns_still_running(tmp_path):
     async def run():
         async with _short_host_dir() as directory:
             gate = asyncio.Event()
-            async with _running_host(
-                tmp_path, directory, host_id="slow1", turn_gate=gate
-            ) as (host, entry):
+            async with _running_host(tmp_path, directory, host_id="slow1", turn_gate=gate) as (
+                host,
+                entry,
+            ):
                 loaded, tools = _load_conductor(tmp_path)
                 mod = _conductor_mod(loaded)
                 with patch.object(mod, "_current_pid", return_value=-1):
