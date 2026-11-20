@@ -282,6 +282,58 @@ writes it to the cache again.
   reaches the model as a message the user sent while it was working.
 - Thinking is shown in summarized form.
 
+## Antigravity provider
+
+An `antigravity:` model uses your Google AI Pro or Ultra subscription through
+Google's Antigravity CLI:
+
+```sh
+pcode -m antigravity:gemini-4-neon-high
+```
+
+Install the [Antigravity CLI](https://antigravity.google/docs/cli/) and sign in
+once by running `agy` (or `agy acp --login`) in a terminal. `antigravity:` shows
+up in `/model` whenever `agy` is on your `PATH`. The picker lists the models your
+account offered the last time a session started.
+
+This works differently from every other provider. pcode runs Google's own
+`agy acp` server unmodified and acts only as its front end, which is the setup
+Google [permits for subscription use](https://discuss.ai.google.dev/t/tos-clarification-is-t3-code-official-antigravity-acp-agent-permitted-under-the-antigravity-terms-of-service/192027).
+Antigravity runs the whole turn with its own tools, rules, and skills, and
+pcode shows its tool calls, edits, and replies as they stream. That has a few
+consequences:
+
+- **pcode's own tools aren't used.** No plans, delegated workers, or pcode
+  shell jobs. Antigravity's built-in versions take their place.
+- **Each prompt you send is one Antigravity turn.** pcode never prompts it on
+  its own, so it can't answer `/btw` questions, act as an advisor or a
+  delegate, or be summarized by `/compact`. Antigravity compacts its own
+  context. Pick another model for those. Switching to it with `/model` while
+  another model's turn is still running fails that turn's next step; send a
+  new prompt instead. `/continue` without a message is refused for the same
+  reason.
+- **Permission prompts are approved one action at a time,** as pcode's own
+  tools run without asking. A rule that denies an action still denies it, but
+  one that would ask is approved, and pcode's own guardrails don't see
+  Antigravity's tool calls. pcode never picks "always allow", so your
+  Antigravity settings are left alone.
+- **Your API keys don't apply.** `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+  `GOOGLE_APPLICATION_CREDENTIALS`, and every `GOOGLE_CLOUD_*`,
+  `GOOGLE_GENAI_*`, `GOOGLE_VERTEX_*`, and `GOOGLE_GEMINI_*` variable are
+  removed from its environment, so a turn always bills the subscription you
+  signed in with.
+- **Prompts take text and images.** Other attachments are refused.
+- **Messages can't steer a running turn yet.** Antigravity's turn is one
+  request, so a message sent while it works can't join it the way it would on
+  another model. Wait for the turn to end, or interrupt it and send the message.
+
+Conversations carry over: each session keeps one `agy` process, a follow-up
+continues it, and `--continue` reopens the same Antigravity session. After a
+rewind, a branch in `/tree`, or a switch from another model, the conversation
+is replayed to a new Antigravity session once, as text, since the old one
+remembers turns your history no longer has. Interrupting a turn cancels it in
+Antigravity too.
+
 ## Model-only HTTP proxy
 
 Set `PCODE_LLM_PROXY` to send Codex model requests, and only those, through an

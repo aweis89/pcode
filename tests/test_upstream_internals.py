@@ -49,6 +49,8 @@ PRIVATE_IMPORTS = {
 # Underscore methods pcode adds on its subclasses of upstream classes; anything
 # else with a leading underscore there must override an upstream method.
 OWN_HELPERS = {
+    "pcode.antigravity.AntigravityModel": {"_drop", "_prepare", "_settle"},
+    "pcode.antigravity.AntigravityStream": {"_cancel", "_events", "_finish", "_map", "_tool", "_vendor"},
     "pcode.background_delegation.BackgroundDelegation": {
         "_drain_while_waiting",
         "_ending",

@@ -3479,13 +3479,17 @@ def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
 
 
 async def _stopping_provider_processes(main):
-    """Run `main`, then stop the `claude:` CLI processes this event loop started."""
+    """Run `main`, then stop the `claude:` and `antigravity:` processes this loop started."""
+    from pcode import antigravity
     from pcode.claude_sdk import shutdown
 
     try:
         return await main
     finally:
-        await shutdown()
+        try:
+            await shutdown()
+        finally:
+            await antigravity.shutdown()
 
 
 def forked_note(saved) -> str:

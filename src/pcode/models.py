@@ -12,6 +12,7 @@ from typing import get_args
 PROVIDERS = {
     "alibaba": "Alibaba",
     "anthropic": "Anthropic",
+    "antigravity": "Antigravity",
     "azure": "Azure OpenAI",
     "bedrock": "Bedrock",
     "bedrock-mantle": "Bedrock Mantle",
@@ -136,6 +137,8 @@ def active_providers(current: str | None) -> set[str]:
         active.add(current.partition(":")[0])
     if claude_sdk_installed() and claude_code_configured():
         active.add("claude")
+    if shutil.which("agy"):
+        active.add("antigravity")
     active.update(name for name, needs in ENV_PROVIDERS.items() if _configured(needs))
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
         active.add("anthropic")
@@ -172,6 +175,12 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
     for source, extra in UNLISTED_MODELS.items():
         by_source.setdefault(source, set()).update(extra)
     models = set()
+    if "antigravity" in providers:
+        from pcode.antigravity import cached_models
+
+        # What the account offered last time; the default until a session has run.
+        offered = cached_models() or ("gemini-4-neon-high",)
+        models.update(f"antigravity:{name}" for name in offered)
     for provider in providers:
         source = CATALOG_SOURCES.get(provider, provider)
         # Providers without a catalog (openrouter, ollama, vllm...) take any

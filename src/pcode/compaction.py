@@ -212,6 +212,10 @@ async def summarize(messages, *, model, focus=None, usage=None, window=None, par
     from pcode.openai_region import track
 
     model = track(infer_model(model)) if isinstance(model, str) else model
+    if getattr(model, "system", None) == "antigravity":
+        raise CompactionError(
+            "Antigravity compacts its own context; pcode can't summarize an Antigravity session."
+        )
     await refresh_context(model)
     window = window or effective_window(model)
     keep = min(20_000, window // 8) if window else 12_000
@@ -384,7 +388,8 @@ class AutoCompaction(AbstractCapability):
     async def before_model_request(self, ctx, request_context):
         # Installed on every turn and read per request, so /autocompact applies
         # to the running turn's next request, not only the next turn.
-        if not self.runtime.auto_compact:
+        # Antigravity compacts its own context (see `summarize`).
+        if not self.runtime.auto_compact or request_context.model.system == "antigravity":
             return request_context
         # A plain copy: the before-chain's list mirrors appends into the run's
         # history, and copying it (deep or not) would go through those appends.

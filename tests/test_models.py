@@ -120,7 +120,7 @@ def test_anthropic_model_without_a_key_stays_unresolved():
     assert resolve_model("anthropic:claude-opus-5") == "anthropic:claude-opus-5"
 
 
-@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"claude"}))
+@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"claude", "antigravity"}))
 def test_every_listed_provider_is_installed(provider):
     # A picker entry that raises ImportError on switch is worse than none.
     infer_provider_class(provider)

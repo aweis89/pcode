@@ -1,0 +1,949 @@
+"""`antigravity:` models: a Google AI Pro/Ultra subscription through `agy acp`.
+
+pcode is an Agent Client Protocol front end here, the shape Google approves
+for subscription use: the unmodified `agy acp` server owns the agent loop, its
+tools and its sign-in, and pcode only sends the user's prompt and shows the
+turn. One pcode request is one whole Antigravity turn. Its tool calls come back
+as provider-executed (native) tool parts, and pcode's own tools are never
+offered to it, so pcode's agent loop ends after every response. A request that
+doesn't end in the user's own prompt (tool results after a mid-turn `/model`
+switch, a bare continuation) is refused rather than sent: pcode must never
+prompt Antigravity on its own. For the same reason `antigravity:` cannot be a
+side model, a delegation target, or a compaction summarizer (see `side_model`,
+`AgentRuntime.aside` and `compaction`).
+
+One `agy acp` process serves one conversation. Each response is stamped
+`<session ID>#<turn>`, and a ledger in pcode's state directory records each
+session's newest turn. A request whose history ends at a session's newest turn
+continues it, in the live process or, after a restart, through
+`session/resume`. Anything else (a rewind or branch, whose session holds turns
+the history dropped, or a switch from another model) starts a new session with
+the earlier conversation replayed as text.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import json
+import os
+import shutil
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from pydantic_ai import RunContext
+from pydantic_ai.messages import (
+    BinaryContent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ModelResponseStreamEvent,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RequestUsage
+
+PREFIX = "antigravity:"
+SYSTEM = "antigravity"
+COMMAND = "agy"
+PROTOCOL_VERSION = 1
+# Credentials and endpoints that would make `agy` bill an API key or a Cloud
+# project, or send its requests somewhere else, instead of using the
+# subscription it signed in with.
+SCRUBBED_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
+SCRUBBED_PREFIXES = ("GOOGLE_CLOUD_", "GOOGLE_GENAI_", "GOOGLE_VERTEX_", "GOOGLE_GEMINI_")
+SIDE_REFUSAL = (
+    "Antigravity runs only as the conversation's model, prompted by you: "
+    "it can't answer side questions, summaries or delegated work. Pick another model for those."
+)
+OWN_PROMPTS_ONLY = (
+    "Antigravity only answers prompts you send: it can't take over a turn already "
+    "running on another model or continue one without a new message. Send a prompt."
+)
+AUTH_REQUIRED = -32000
+LOGIN_HINT = "Sign in once by running `agy` (or `agy acp --login`) in a terminal."
+REPLAY_INTRO = (
+    "This conversation started elsewhere; its earlier messages are replayed below as a "
+    "transcript. Treat them as having happened and continue from the final message."
+)
+# How long a cancelled turn may take to report that it stopped.
+CANCEL_GRACE = 10.0
+# Sessions remembered in the ledger; older ones replay instead of resuming.
+LEDGER_SIZE = 500
+
+
+class AntigravityError(RuntimeError):
+    """A failure `agy acp` reported, or a request pcode refuses to send, phrased for the user."""
+
+
+def installed() -> bool:
+    return shutil.which(COMMAND) is not None
+
+
+def _state_dir() -> Path:
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return state / "pcode"
+
+
+def models_cache() -> Path:
+    return _state_dir() / "antigravity-models.json"
+
+
+def _read_json(path: Path, kind: type) -> Any:
+    try:
+        value = json.loads(path.read_text())
+    except OSError, ValueError:
+        return kind()
+    return value if isinstance(value, kind) else kind()
+
+
+def _write_json(path: Path, value: object) -> None:
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Per process: two pcode processes must not share one temporary file.
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(value))
+        temporary.replace(path)
+
+
+@contextlib.contextmanager
+def _locked(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock beside `path` for a read-modify-write across processes."""
+    import fcntl
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path.with_name(path.name + ".lock"), "a")
+    except OSError:
+        yield  # Unlocked is still better than no ledger at all.
+        return
+    with handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def cached_models() -> tuple[str, ...]:
+    """Model IDs the last Antigravity session offered, for the picker."""
+    return tuple(name for name in _read_json(models_cache(), list) if isinstance(name, str))
+
+
+def _offered(result: dict) -> list[str]:
+    offered = (result.get("models") or {}).get("availableModels") or []
+    return [m["modelId"] for m in offered if isinstance(m, dict) and m.get("modelId")]
+
+
+def _remember_models(result: dict) -> None:
+    names = _offered(result)
+    if names and list(cached_models()) != names:
+        _write_json(models_cache(), names)
+
+
+def _ledger_path() -> Path:
+    return _state_dir() / "antigravity-sessions.json"
+
+
+def newest_turn(session_id: str) -> int | None:
+    """The newest turn pcode prompted in this Antigravity session, if it knows."""
+    turn = _read_json(_ledger_path(), dict).get(session_id)
+    return turn if isinstance(turn, int) else None
+
+
+def _record_turn(session_id: str, turn: int) -> None:
+    # A lost update could put back an older turn and let a rewind resume a
+    # session holding turns its history dropped, so writers take turns.
+    with _locked(_ledger_path()):
+        ledger = _read_json(_ledger_path(), dict)
+        ledger.pop(session_id, None)
+        ledger[session_id] = turn  # Last, so trimming drops the oldest.
+        _write_json(_ledger_path(), dict(list(ledger.items())[-LEDGER_SIZE:]))
+
+
+def child_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in SCRUBBED_ENV and not k.startswith(SCRUBBED_PREFIXES)
+    }
+
+
+def _spawn(coroutine) -> asyncio.Task:
+    """Run `coroutine` as a task kept alive until it finishes."""
+    task = asyncio.ensure_future(coroutine)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    return task
+
+
+class Connection:
+    """One `agy acp` process: JSON-RPC over its stdin and stdout.
+
+    Notifications for a session go to whichever queue a turn installed;
+    permission requests are allowed once each, as pcode runs its own tools
+    without asking.
+    """
+
+    def __init__(self, cwd: str) -> None:
+        self.cwd = cwd
+        self.process: asyncio.subprocess.Process | None = None
+        self.pending: dict[int, asyncio.Future] = {}
+        self.updates: asyncio.Queue | None = None
+        self.next_id = 0
+        self.reader: asyncio.Task | None = None
+        self.stderr: list[str] = []
+
+    @property
+    def alive(self) -> bool:
+        return (
+            self.process is not None
+            and self.process.returncode is None
+            and self.reader is not None
+            and not self.reader.done()
+        )
+
+    async def start(self) -> dict:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            pcode_version = version("pcode")
+        except PackageNotFoundError:
+            pcode_version = "0"
+        self.process = await asyncio.create_subprocess_exec(
+            COMMAND,
+            "acp",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            # Never onto the terminal UI; kept only to explain a failed start.
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.cwd,
+            env=child_env(),
+            # One JSON-RPC message per line, and a session/new reply is long.
+            limit=16 * 1024 * 1024,
+        )
+        self.reader = _spawn(self._read())
+        _spawn(self._drain_stderr())
+        result = await self.request(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                # No client file or terminal access: Antigravity edits files
+                # itself and reports diffs, as its own CLI does.
+                "clientCapabilities": {
+                    "fs": {"readTextFile": False, "writeTextFile": False},
+                    "terminal": False,
+                },
+                "clientInfo": {"name": "pcode", "title": "pcode", "version": pcode_version},
+            },
+        )
+        if result.get("protocolVersion") != PROTOCOL_VERSION:
+            raise AntigravityError(
+                f"Antigravity speaks ACP version {result.get('protocolVersion')!r}; "
+                f"pcode needs {PROTOCOL_VERSION}. Update the Antigravity CLI."
+            )
+        return result
+
+    async def _drain_stderr(self) -> None:
+        assert self.process and self.process.stderr
+        while line := await self.process.stderr.readline():
+            self.stderr = [*self.stderr[-19:], line.decode(errors="replace").rstrip()]
+
+    async def _read(self) -> None:
+        assert self.process and self.process.stdout
+        stopped = False
+        try:
+            while line := await self.process.stdout.readline():
+                try:
+                    message = json.loads(line)
+                    if isinstance(message, dict):
+                        await self._dispatch(message)
+                except ValueError, TypeError, KeyError, AttributeError:
+                    continue  # One malformed message must not stop the conversation.
+        except asyncio.CancelledError:
+            stopped = True  # By `close()`, which ends the process itself.
+            raise
+        finally:
+            gone = AntigravityError(self._exit_reason())
+            for future in self.pending.values():
+                if not future.done():
+                    future.set_exception(gone)
+            self.pending.clear()
+            if self.updates is not None:
+                self.updates.put_nowait(gone)
+            # A reader that failed leaves nobody to answer the process, so it
+            # must not outlive it.
+            if not stopped and self.process is not None and self.process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    self.process.kill()
+
+    def _exit_reason(self) -> str:
+        detail = next((line for line in reversed(self.stderr) if line.strip()), "")
+        return "Antigravity (agy acp) exited" + (f": {detail}" if detail else ".")
+
+    async def _dispatch(self, message: dict) -> None:
+        method = message.get("method")
+        if method is None:
+            future = self.pending.pop(message.get("id"), None)
+            if future is not None and not future.done():
+                if "error" in message:
+                    future.set_exception(rpc_error(message["error"]))
+                else:
+                    future.set_result(message.get("result") or {})
+        elif method == "session/update":
+            if self.updates is not None:
+                self.updates.put_nowait((message.get("params") or {}).get("update") or {})
+        elif "id" in message:
+            with contextlib.suppress(AntigravityError, OSError):
+                await self._answer(message)
+
+    async def _answer(self, message: dict) -> None:
+        if message["method"] == "session/request_permission":
+            options = (message.get("params") or {}).get("options") or []
+            # Once, never "always": that would write a lasting rule into the
+            # user's Antigravity settings.
+            chosen = next((o for o in options if o.get("kind") == "allow_once"), None)
+            refused = next((o for o in options if o.get("kind") == "reject_once"), None)
+            if chosen or refused:
+                outcome = {"outcome": "selected", "optionId": (chosen or refused)["optionId"]}
+            else:
+                outcome = {"outcome": "cancelled"}
+            await self._send(
+                {"jsonrpc": "2.0", "id": message["id"], "result": {"outcome": outcome}}
+            )
+            return
+        error = {"code": -32601, "message": f"pcode does not support {message['method']}"}
+        await self._send({"jsonrpc": "2.0", "id": message["id"], "error": error})
+
+    async def _send(self, message: dict) -> None:
+        if not self.alive:
+            raise AntigravityError(self._exit_reason())
+        assert self.process and self.process.stdin
+        self.process.stdin.write(json.dumps(message).encode() + b"\n")
+        await self.process.stdin.drain()
+
+    def begin(self, method: str, params: dict) -> asyncio.Future:
+        """Send a request now; its reply resolves the returned future."""
+        self.next_id += 1
+        request_id = self.next_id
+        future = asyncio.get_running_loop().create_future()
+        # A caller that was cancelled never reads the reply; don't let a
+        # failure nobody awaits be logged as unretrieved.
+        future.add_done_callback(lambda f: f.cancelled() or f.exception())
+        self.pending[request_id] = future
+
+        async def send() -> None:
+            try:
+                await self._send(
+                    {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+                )
+            except (AntigravityError, OSError) as error:
+                self.pending.pop(request_id, None)
+                if not future.done():
+                    future.set_exception(
+                        error
+                        if isinstance(error, AntigravityError)
+                        else AntigravityError(self._exit_reason())
+                    )
+
+        _spawn(send())
+        return future
+
+    async def request(self, method: str, params: dict) -> dict:
+        return await self.begin(method, params)
+
+    async def notify(self, method: str, params: dict) -> None:
+        await self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    async def close(self) -> None:
+        process, self.process = self.process, None
+        if process is not None and process.returncode is None:
+            if process.stdin:
+                process.stdin.close()
+            try:
+                await asyncio.wait_for(process.wait(), 3)
+            except TimeoutError:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), 3)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+        if self.reader:
+            self.reader.cancel()
+
+
+def rpc_error(error: dict) -> AntigravityError:
+    text = str(error.get("message") or "request failed")
+    data = error.get("data")
+    if isinstance(data, (str, dict)) and data:
+        text += f": {data if isinstance(data, str) else json.dumps(data)[:300]}"
+    if error.get("code") == AUTH_REQUIRED:
+        text += f". {LOGIN_HINT}"
+    return AntigravityError(f"Antigravity: {text}")
+
+
+# Every live connection, so pcode's exit can stop them, and the tasks running
+# beside a turn, which would otherwise be garbage-collected mid-flight.
+_connections: set[Connection] = set()
+_background: set[asyncio.Task] = set()
+
+
+async def shutdown() -> None:
+    # Processes first, each closing its stdin and waiting, so `agy` can save
+    # the session `--continue` resumes; cancelling their readers first would
+    # leave nothing to answer them.
+    connections = list(_connections)
+    _connections.clear()
+    await asyncio.gather(*(c.close() for c in connections), return_exceptions=True)
+    for task in list(_background):
+        task.cancel()
+
+
+async def _close(connection: Connection) -> None:
+    _connections.discard(connection)
+    await connection.close()
+
+
+@dataclass
+class _Session:
+    connection: Connection
+    session_id: str
+    turns: int = 0
+    # Prompts of the newest turns that ended without a reply pcode kept
+    # (cancelled, or failed partway): pcode keeps such a request but not its
+    # partial response, so the history is that many stamps behind.
+    interrupted: list[str] = field(default_factory=list)
+
+
+def _stamp(session_id: str, turn: int) -> str:
+    return f"{session_id}#{turn}"
+
+
+def _parse_stamp(response: ModelResponse) -> tuple[str, int] | None:
+    if response.provider_name != SYSTEM or not response.provider_response_id:
+        return None
+    session_id, _, turn = response.provider_response_id.partition("#")
+    return (session_id, int(turn)) if session_id and turn.isdigit() else None
+
+
+class AntigravityModel(Model):
+    """See the module docstring. One instance serves one conversation."""
+
+    def __init__(self, model_name: str) -> None:
+        super().__init__()
+        self._model_name = model_name
+        self._session: _Session | None = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def system(self) -> str:
+        return SYSTEM
+
+    def retire(self) -> None:
+        """Stop this model's process once any turn on it ends; for a replaced agent."""
+        with contextlib.suppress(RuntimeError):  # No running loop: nothing was started.
+
+            async def retire() -> None:
+                async with self._lock:
+                    await self._drop()
+
+            _spawn(retire())
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        async with self.request_stream(
+            messages, model_settings, model_request_parameters
+        ) as stream:
+            async for _ in stream:
+                pass
+        return stream.get()
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        from pcode.claude_sdk.workspace import CWD_SETTING
+
+        # Before the lock or a process: a refusal must cost nothing.
+        prompt, interrupted = user_prompt(messages)
+        earlier = messages[:-1]
+        if interrupted:
+            earlier = [*earlier, ModelRequest(parts=interrupted)]
+        cwd = str((model_settings or {}).get(CWD_SETTING) or os.getcwd())
+        await self._lock.acquire()
+        handed_off = False
+        try:
+            session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
+            stream = AntigravityStream(
+                model_request_parameters=model_request_parameters,
+                model_id=self._model_name,
+                session=session,
+                prompt=[*replay, *prompt],
+            )
+            try:
+                yield stream
+            finally:
+                if stream.unfinished or (stream.failed and stream.events_seen):
+                    session.interrupted.append(_asked_blocks(prompt))
+                if stream.unfinished:
+                    # Stopped mid-turn. The run's cancellation is level-triggered,
+                    # so waiting for Antigravity to confirm here would itself be
+                    # cancelled; a task does it, keeping the lock so the next
+                    # prompt waits for the turn to really stop.
+                    _spawn(self._settle(stream))
+                    handed_off = True
+                elif stream.broken:
+                    await asyncio.shield(self._drop())
+        finally:
+            if not handed_off:
+                self._lock.release()
+
+    async def _settle(self, stream: AntigravityStream) -> None:
+        try:
+            if not await stream.stop():
+                await self._drop()
+        except Exception:
+            await self._drop()
+        finally:
+            self._lock.release()
+
+    async def _drop(self) -> None:
+        session, self._session = self._session, None
+        if session is not None:
+            await _close(session.connection)
+
+    async def _prepare(
+        self, earlier: list[ModelMessage], interrupted: list[str], cwd: str
+    ) -> tuple[_Session, list[dict]]:
+        """The session to prompt, and any replay to send before the new prompt.
+
+        `interrupted` holds the prompts of unanswered requests ending `earlier`.
+        """
+        last = next((m for m in reversed(earlier) if isinstance(m, ModelResponse)), None)
+        stamp = _parse_stamp(last) if last is not None else None
+        session = self._session
+        if session is not None:
+            current = (session.session_id, session.turns)
+            # The session's extra turns are the interrupted requests this
+            # history kept (with no reply before them when they were its first).
+            ahead = len(session.interrupted)
+            behind = session.turns - ahead
+            same = stamp == current or (
+                ahead > 0
+                and interrupted == session.interrupted
+                and stamp == ((session.session_id, behind) if behind > 0 else None)
+            )
+            # Another process (a fork resumed elsewhere) may have moved it on.
+            # No entry at all means the ledger can't be kept, not that it moved.
+            ours = newest_turn(session.session_id) in (None, session.turns)
+            if session.connection.alive and session.connection.cwd == cwd and same and ours:
+                if stamp == current:
+                    # A kept reply: nothing after it is unanswered any more.
+                    session.interrupted = []
+                return session, []
+            await self._drop()
+        resumable = (
+            stamp is not None and _all_from(earlier, stamp[0]) and newest_turn(stamp[0]) == stamp[1]
+        )
+        connection = Connection(cwd)
+        _connections.add(connection)
+        try:
+            await connection.start()
+            result = None
+            if resumable:
+                assert stamp is not None
+                with contextlib.suppress(AntigravityError):
+                    result = await connection.request(
+                        "session/resume", {"sessionId": stamp[0], "cwd": cwd, "mcpServers": []}
+                    )
+                    result = {**result, "sessionId": stamp[0]}
+            replay = result is None
+            if result is None:
+                result = await connection.request("session/new", {"cwd": cwd, "mcpServers": []})
+            _remember_models(result)
+            session_id = result["sessionId"]
+            current_model = (result.get("models") or {}).get("currentModelId") or ""
+            if self._model_name and self._model_name != current_model:
+                try:
+                    await connection.request(
+                        "session/set_model",
+                        {"sessionId": session_id, "modelId": self._model_name},
+                    )
+                except AntigravityError as error:
+                    offered = _offered(result) or list(cached_models())
+                    raise AntigravityError(
+                        f"{error} Models this account offers: {', '.join(offered)}"
+                        if offered
+                        else str(error)
+                    ) from error
+        except BaseException:
+            # Cancelled here, an await would be cancelled too; close beside it.
+            _spawn(_close(connection))
+            raise
+        turns = stamp[1] if not replay and stamp is not None else 0
+        self._session = _Session(connection, session_id, turns)
+        blocks = [{"type": "text", "text": replay_text(earlier)}] if replay and earlier else []
+        return self._session, blocks
+
+
+def _all_from(earlier: list[ModelMessage], session_id: str) -> bool:
+    """Whether every response in `earlier` came from this one Antigravity session."""
+    responses = [m for m in earlier if isinstance(m, ModelResponse)]
+    return bool(responses) and all((_parse_stamp(m) or ("",))[0] == session_id for m in responses)
+
+
+def _markers() -> tuple[str, ...]:
+    from pcode.live import CANCELLED_MARKER, UNANSWERED_MARKER
+
+    return (CANCELLED_MARKER, UNANSWERED_MARKER)
+
+
+def _asked(parts: list) -> list[str]:
+    """Each unanswered prompt's text in a merged request, to compare with what was sent.
+
+    Every one ends in one of pcode's markers.
+    """
+    asked: list[str] = []
+    texts: list[str] = []
+    for part in parts:
+        if not isinstance(part, UserPromptPart):
+            continue
+        if part.content in _markers():
+            asked.append("\n".join(texts))
+            texts = []
+            continue
+        items = [part.content] if isinstance(part.content, str) else part.content
+        texts += [item for item in items if isinstance(item, str) and item.strip()]
+    return asked
+
+
+def _asked_blocks(blocks: list[dict]) -> str:
+    return "\n".join(b["text"] for b in blocks if b.get("type") == "text")
+
+
+def user_prompt(messages: list[ModelMessage]) -> tuple[list[dict], list]:
+    """The user's new prompt as ACP content blocks; refuses anything else.
+
+    Only a request carrying the user's own message may reach Antigravity.
+    Tool results (a turn started on another model), retry prompts, and a
+    continuation with no new message would be pcode prompting it by itself.
+
+    A request a cancelled or failed turn left unanswered ends in one of pcode's
+    markers (see `live.mark_unanswered`), and Pydantic AI merges the next prompt
+    into it. Its parts up to the marker are returned second: they belong to
+    the history, not the new prompt.
+    """
+    request = messages[-1] if messages else None
+    if not isinstance(request, ModelRequest):
+        raise AntigravityError(OWN_PROMPTS_ONLY)
+    marker = max(
+        (
+            i
+            for i, part in enumerate(request.parts)
+            if isinstance(part, UserPromptPart) and part.content in _markers()
+        ),
+        default=-1,
+    )
+    interrupted, parts = list(request.parts[: marker + 1]), request.parts[marker + 1 :]
+    if any(isinstance(part, (ToolReturnPart, RetryPromptPart)) for part in parts):
+        raise AntigravityError(OWN_PROMPTS_ONLY)
+    blocks: list[dict] = []
+    unsupported: list[str] = []
+    for part in parts:
+        if not isinstance(part, UserPromptPart):
+            continue
+        items = [part.content] if isinstance(part.content, str) else list(part.content)
+        for item in items:
+            if isinstance(item, str):
+                if item.strip():
+                    blocks.append({"type": "text", "text": item})
+            elif isinstance(item, BinaryContent) and item.is_image:
+                data = base64.b64encode(item.data).decode()
+                blocks.append({"type": "image", "mimeType": item.media_type, "data": data})
+            else:
+                unsupported.append(type(item).__name__)
+    if unsupported:
+        raise AntigravityError(
+            f"Antigravity can take text and images here, not {', '.join(sorted(set(unsupported)))}."
+        )
+    if not blocks:
+        raise AntigravityError(OWN_PROMPTS_ONLY)
+    return blocks, interrupted
+
+
+def _clip(text: str, limit: int = 2000) -> str:
+    return text if len(text) <= limit else text[:limit] + " …"
+
+
+def replay_text(messages: list[ModelMessage]) -> str:
+    """Earlier turns as a transcript, for a session that never saw them."""
+    lines = [REPLAY_INTRO, "", "<conversation>"]
+    for message in messages:
+        for part in message.parts:
+            if isinstance(part, UserPromptPart):
+                content = (
+                    part.content
+                    if isinstance(part.content, str)
+                    else " ".join(item for item in part.content if isinstance(item, str))
+                )
+                if content.strip():
+                    lines += [f"[User]\n{content}", ""]
+            elif isinstance(part, TextPart) and part.content.strip():
+                lines += [f"[Assistant]\n{part.content}", ""]
+            elif isinstance(part, (NativeToolCallPart, ToolCallPart)):
+                args = _clip(json.dumps(part.args, default=str), 500)
+                lines += [f"[Assistant ran {part.tool_name}: {args}]", ""]
+            elif isinstance(part, (NativeToolReturnPart, ToolReturnPart)):
+                lines += [f"[{part.tool_name} returned: {_clip(part.model_response_str())}]", ""]
+    lines.append("</conversation>")
+    return "\n".join(lines)
+
+
+def _tool_args(update: dict) -> dict:
+    raw = update.get("rawInput")
+    args = dict(raw) if isinstance(raw, dict) else {}
+    # Antigravity capitalizes argument names (`Path`, `CommandLine`); pcode's
+    # tool rows read lower-case ones.
+    args = {k[:1].lower() + k[1:]: v for k, v in args.items()}
+    if "commandLine" in args and "command" not in args:
+        args["command"] = args["commandLine"]
+    if update.get("title") and "title" not in args:
+        args["title"] = update["title"]
+    return args
+
+
+def _tool_output(update: dict) -> object:
+    texts = []
+    for block in update.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "diff":
+            texts.append(f"Edited {block.get('path', '')}")
+        elif isinstance(inner := block.get("content"), dict) and inner.get("type") == "text":
+            texts.append(str(inner.get("text", "")))
+    if texts:
+        return "\n".join(texts)
+    raw = update.get("rawOutput")
+    return raw if raw not in (None, {}) else ""
+
+
+@dataclass
+class AntigravityStream(StreamedResponse):
+    """One Antigravity turn as Pydantic AI stream events."""
+
+    model_id: str = ""
+    session: _Session | None = None
+    prompt: list[dict] = field(default_factory=list)
+    started: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    reply: asyncio.Future | None = field(default=None, init=False)
+    broken: bool = field(default=False, init=False)
+    part_count: int = field(default=0, init=False)
+    part_kind: str = field(default="", init=False)
+    calls: dict[str, tuple[str, dict]] = field(default_factory=dict, init=False)
+    text_seen: bool = field(default=False, init=False)
+    events_seen: bool = field(default=False, init=False)
+    failed: bool = field(default=False, init=False)
+
+    @property
+    def model_name(self) -> str:
+        return self.model_id
+
+    @property
+    def provider_name(self) -> str:
+        return SYSTEM
+
+    @property
+    def provider_url(self) -> str | None:
+        return None
+
+    @property
+    def timestamp(self) -> datetime:
+        return self.started
+
+    @property
+    def unfinished(self) -> bool:
+        return self.reply is not None and not self.reply.done()
+
+    def _vendor(self, kind: str) -> str:
+        """A part ID that starts a new part whenever the kind of output changes."""
+        if kind != self.part_kind:
+            self.part_kind = kind
+            self.part_count += 1
+        return f"{kind}-{self.part_count}"
+
+    async def _get_event_iterator(self) -> AsyncIterator[ModelResponseStreamEvent]:
+        assert self.session is not None
+        session = self.session
+        connection = session.connection
+        # Stamped up front so an interrupted reply, which pcode keeps, still
+        # names the session that holds the rest of it.
+        session.turns += 1
+        self.provider_response_id = _stamp(session.session_id, session.turns)
+        _record_turn(session.session_id, session.turns)
+        updates: asyncio.Queue = asyncio.Queue()
+        connection.updates = updates
+        self.reply = connection.begin(
+            "session/prompt", {"sessionId": session.session_id, "prompt": self.prompt}
+        )
+        self.reply.add_done_callback(lambda _: updates.put_nowait(None))
+        try:
+            async for event in self._events(updates, session):
+                yield event
+        except Exception:
+            self.failed = True
+            raise
+        finally:
+            if connection.updates is updates:
+                # Anything agy says between turns has nobody to show it to.
+                connection.updates = None
+        if not self.text_seen:
+            # A reply with no text reads as empty, and Pydantic AI would ask
+            # again: that request would be pcode's, not the user's.
+            yield self._parts_manager.handle_part(
+                vendor_part_id="text-end", part=TextPart("(Antigravity finished without a reply.)")
+            )
+
+    async def _events(
+        self, updates: asyncio.Queue, session: _Session
+    ) -> AsyncIterator[ModelResponseStreamEvent]:
+        assert self.reply is not None
+        while True:
+            update = await updates.get()
+            if isinstance(update, BaseException):
+                self.broken = True
+                raise update
+            if update is None:
+                break
+            for event in self._map(update):
+                self.events_seen = True
+                yield event
+        try:
+            result = self.reply.result()
+        except AntigravityError:
+            if not self.events_seen:
+                # Refused before it started (signed out, unknown model): the
+                # session never saw this turn.
+                session.turns -= 1
+                _record_turn(session.session_id, session.turns)
+            raise
+        self._finish(result)
+
+    def _finish(self, result: dict) -> None:
+        stop = result.get("stopReason")
+        reasons = {"end_turn": "stop", "max_tokens": "length", "refusal": "content_filter"}
+        self.finish_reason = reasons.get(stop, "stop")
+        self.provider_details = {"stop_reason": stop} if stop else None
+        usage = result.get("usage") or {}
+        cached = int(usage.get("cachedReadTokens") or 0)
+        written = int(usage.get("cachedWriteTokens") or 0)
+        self._usage = RequestUsage(
+            input_tokens=int(usage.get("inputTokens") or 0) + cached + written,
+            cache_read_tokens=cached,
+            cache_write_tokens=written,
+            output_tokens=int(usage.get("outputTokens") or 0),
+        )
+
+    def _map(self, update: dict) -> Iterator[ModelResponseStreamEvent]:
+        kind = update.get("sessionUpdate")
+        content = update.get("content")
+        text = content.get("text", "") if isinstance(content, dict) else ""
+        if kind == "agent_message_chunk" and text:
+            self.text_seen = self.text_seen or bool(text.strip())
+            yield from self._parts_manager.handle_text_delta(
+                vendor_part_id=self._vendor("text"), content=text
+            )
+        elif kind == "agent_thought_chunk" and text:
+            yield from self._parts_manager.handle_thinking_delta(
+                vendor_part_id=self._vendor("thinking"), content=text
+            )
+        elif kind in {"tool_call", "tool_call_update"}:
+            yield from self._tool(update)
+
+    def _tool(self, update: dict) -> Iterator[ModelResponseStreamEvent]:
+        call_id = str(update.get("toolCallId") or "")
+        if not call_id:
+            return
+        known = self.calls.get(call_id)
+        args = _tool_args(update)
+        # The first report may carry no arguments yet; a later one fills them in.
+        if known is None or (not known[1] and update.get("rawInput")):
+            name = known[0] if known else str(update.get("name") or update.get("kind") or "tool")
+            self.calls[call_id] = (name, args)
+            if known is None:
+                self._vendor("tool")
+            yield self._parts_manager.handle_part(
+                vendor_part_id=f"call-{call_id}",
+                part=NativeToolCallPart(
+                    tool_name=name, args=args, tool_call_id=call_id, provider_name=SYSTEM
+                ),
+            )
+        status = update.get("status")
+        if status in {"completed", "failed"}:
+            name, _ = self.calls[call_id]
+            yield self._parts_manager.handle_part(
+                vendor_part_id=f"return-{call_id}",
+                part=NativeToolReturnPart(
+                    tool_name=name,
+                    content=_tool_output(update),
+                    tool_call_id=call_id,
+                    provider_name=SYSTEM,
+                    outcome="success" if status == "completed" else "failed",
+                ),
+            )
+
+    async def close_stream(self) -> None:
+        await self._cancel()
+
+    async def _cancel(self) -> None:
+        if self.session is None or not self.unfinished:
+            return
+        with contextlib.suppress(AntigravityError, OSError):
+            await self.session.connection.notify(
+                "session/cancel", {"sessionId": self.session.session_id}
+            )
+
+    async def stop(self) -> bool:
+        """Cancel an unfinished turn and wait for it to end; whether it did.
+
+        A turn left running would keep spending the subscription's quota, and the
+        next prompt would steer it instead of starting a new one.
+        """
+        await self._cancel()
+        assert self.reply is not None
+        try:
+            await asyncio.wait_for(asyncio.shield(self.reply), CANCEL_GRACE)
+        except Exception:
+            return False
+        return True
+
+
+def antigravity_model(model: str) -> AntigravityModel:
+    name = model.removeprefix(PREFIX).strip()
+    if not installed():
+        raise ValueError(
+            "Antigravity CLI (agy) is not installed: https://antigravity.google/docs/cli/"
+        )
+    return AntigravityModel(name)

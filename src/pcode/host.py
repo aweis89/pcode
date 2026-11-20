@@ -1016,7 +1016,12 @@ async def _serve(args: argparse.Namespace) -> dict | None:
             try:
                 await host.close()
             finally:
-                await shutdown()
+                from pcode import antigravity
+
+                try:
+                    await shutdown()
+                finally:
+                    await antigravity.shutdown()
         finally:
             # Lets go of the session, which a successor is about to open.
             if runtime is not None and hasattr(runtime, "close"):

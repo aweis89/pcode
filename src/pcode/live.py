@@ -257,6 +257,12 @@ class AgentRuntime:
 
     def replace_agent(self, agent: Agent) -> None:
         """Change the agent without resetting conversation-scoped state."""
+        previous = getattr(self, "agent", None)
+        if previous is not None and previous.model is not agent.model:
+            # An `antigravity:` model's `agy` process would otherwise run until exit.
+            retire = getattr(previous.model, "retire", None)
+            if callable(retire):
+                retire()
         self.agent = agent
         # The agent's capabilities are flattened by Pydantic AI. A resolver
         # keeps the store conversation-scoped, including after /new. It resolves
@@ -517,6 +523,10 @@ class AgentRuntime:
             agent = agent if after.agent is None else after.agent
             model = after.model
             settings = after.settings
+        if model is None and getattr(agent.model, "system", None) == "antigravity":
+            from pcode.antigravity import SIDE_REFUSAL
+
+            raise ValueError(SIDE_REFUSAL)
         if after is not None:
             messages = list(after.messages)
         else:
@@ -818,6 +828,10 @@ class AgentRuntime:
     def close(self) -> None:
         if self.session:
             self.session.close()
+        # `/resume` closes this runtime rather than replacing its agent.
+        retire = getattr(self.agent.model, "retire", None)
+        if callable(retire):
+            retire()
         # Drops the logs of finished jobs only. A still-running job is the
         # whole point of the design and is left alone, still writing its log.
         self.jobs.shutdown()
@@ -946,6 +960,13 @@ class AgentRuntime:
             raise SessionError(self.recovery_blocked)
         send = prompt
         request = ""
+        if send is None and getattr(self.agent.model, "system", None) == "antigravity":
+            # It would resend the prompt, or a briefing pcode wrote, to
+            # Antigravity on the user's behalf; see `pcode.antigravity`.
+            raise SessionError(
+                "/continue isn't available with Antigravity: send a prompt instead "
+                "(it remembers the interrupted turn)."
+            )
         if send is None:
             original = self.resend_prompt()
             node = self.tree.nodes[self.tree.active]

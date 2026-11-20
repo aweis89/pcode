@@ -537,6 +537,10 @@ def resolve_model(model: str) -> Model | str:
         return claude_model(model)
     if model.startswith("google-cloud:"):
         return google_cloud_model(model)
+    if model.startswith("antigravity:"):
+        from pcode.antigravity import antigravity_model
+
+        return antigravity_model(model)
     if not model.startswith("anthropic:"):
         return model
     from pcode.auth import anthropic_model
@@ -577,6 +581,10 @@ def side_model(name: str, effort: str = "") -> SideModel:
 
     from pcode.preferences import effort_for
 
+    if name.startswith("antigravity:"):
+        from pcode.antigravity import SIDE_REFUSAL
+
+        raise ValueError(f"Cannot use {name}: {SIDE_REFUSAL}")
     try:
         resolved = resolve_model(name)
         if isinstance(resolved, str):

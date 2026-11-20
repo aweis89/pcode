@@ -822,6 +822,48 @@ was verified live against the bundled CLI, and most of them are traps:
 `tests/test_claude_sdk.py` drives the provider through a scripted client that
 calls pcode's real MCP server the way the CLI does.
 
+### Antigravity ACP provider (verified agy 1.5.13)
+
+`antigravity:` models (`src/pcode/antigravity.py`) drive `agy acp` as an ACP
+client. Unlike `claude:`, pcode does **not** serve its tools or run the loop:
+Google permits subscription use only from a front end talking to the
+unmodified server ([forum ruling](https://discuss.ai.google.dev/t/tos-clarification-is-t3-code-official-antigravity-acp-agent-permitted-under-the-antigravity-terms-of-service/192027)),
+and suspends accounts whose tokens or `agy -p` feed another agent loop. So do
+not "improve" this into a `claude:`-style adapter, and keep anything pcode
+generates by itself (side questions, summaries, delegation, retries of a
+finished turn) off this model. Traps found while building it:
+
+- `agy` keeps its OAuth login over a `GEMINI_API_KEY` in its environment, but
+  falls back to the key when signed out, which would silently bill a work
+  project. pcode scrubs the Google key and Cloud variables from the child.
+- The run's cancellation is anyio's, level-triggered: once a turn is cancelled,
+  every later `await` in the same task is cancelled too, so the stream cannot
+  wait there for `session/cancel` to settle. A background task does it while
+  holding the model's lock.
+- `session/resume` returns no `models` block, so the model is set again after a
+  resume; `session/new` reports the current one.
+- A rewind must not resume: the `agy` session still holds the dropped turns.
+  The stamp on the history's last response therefore has to be the session's
+  newest turn, which a file-locked ledger in pcode's state directory records
+  (it also catches a fork that moved the session on from another process).
+- A cancelled turn leaves the session one turn ahead of the history: pcode
+  keeps the request (with `live.CANCELLED_MARKER`) but not the partial reply,
+  and Pydantic AI merges the next prompt into that request. `user_prompt`
+  splits it at the last marker, and the session continues only while its
+  extra turns match the unanswered prompts the history kept.
+- `shutdown()` closes stdin and waits before cancelling readers. A reader
+  cancelled first used to SIGKILL `agy` mid-save.
+- `agy` capitalizes tool arguments (`Path`, `CommandLine`); pcode's tool rows
+  read lower-case names, so they are lower-cased on the way in.
+- Advertising `fs.writeTextFile` makes `agy` send whole-file client writes
+  instead of diffs (per T3 Code's integration), so pcode advertises no fs or
+  terminal capability.
+- `agy` may keep working after a turn ends (a backgrounded command's later
+  report). Those updates arrive between turns and are dropped.
+
+`tests/test_antigravity.py` runs the model against `tests/fake_agy.py`, a
+scripted ACP server installed on `PATH` as `agy`.
+
 ### Codex thinking streaming
 
 Verified Pydantic AI 2.43.0's `OpenAICodexModel` inherits the Responses model's
