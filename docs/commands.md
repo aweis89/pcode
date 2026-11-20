@@ -18,15 +18,18 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   [Keybindings](keybindings.md).
 - `/unbind KEY`: disable a prompt action key, including a default binding.
   Changes apply immediately and are saved for your user, not the project.
-- `/login [claude|openai-codex]`: sign in in a browser. `claude` (the default) runs
+- `/login [claude|openai-codex|antigravity]`: sign in in a browser (bare `/login`
+  defaults to the current model's provider, or `claude`). `claude` runs
   `claude auth login` for the login `claude:` models use ([details](providers.md#signing-in));
-  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required). `anthropic:` models use
+  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `antigravity` runs
+  `agy acp --login`, opens the Google sign-in link, and forwards the pasted authorization
+  code or callback URL to `agy` (needs an idle conversation). `anthropic:` models use
   `ANTHROPIC_API_KEY` and have no sign-in.
   `/logout [openai-codex]` removes pcode's stored Codex login, leaving CLI credentials
-  untouched; it needs an idle conversation. `/login` also works mid-turn, to switch
-  accounts without stopping a long run: the turn carries on, and its requests use
-  the new login once you finish in the browser. Ctrl+C (or Ctrl+D) stops the turn first,
-  and the waiting sign-in only when nothing else is running.
+  untouched; it needs an idle conversation. `/login claude` and `/login openai-codex`
+  also work mid-turn, to switch accounts without stopping a long run: the turn carries on,
+  and its requests use the new login once you finish in the browser. Ctrl+C (or Ctrl+D)
+  stops the turn first, and the waiting sign-in only when nothing else is running.
 - `/model`: searchable model picker for configured providers. Keeps the conversation;
   chosen mid-run, the running turn's next request already uses it. To switch for one prompt only, start
   it with `$PROVIDER:MODEL` (optionally `+EFFORT`, as in `$openai:gpt-5+high fix this`)
@@ -90,14 +93,17 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   and a breakdown of the prompt overhead re-sent with every request (see
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes)). Opens a popup in
   the interactive editor; prints inline otherwise.
-- `/usage`: plan limits and spend for the Claude Code and Codex logins, fetched when you
-  run it. No admin key is needed. For Claude, pcode runs Claude Code's own `/usage`
-  headless (`claude -p /usage`) and shows its session and weekly limits; the CLI answers
-  from its own login, so pcode never reads Claude Code's token. Codex shows the session
-  (5h) and weekly percentages with their resets, plus spend against a cap where the seat
-  has one, using pcode's `/login openai-codex` or the Codex CLI's `auth.json`, through
-  `PCODE_LLM_PROXY` when set. The Codex endpoint is undocumented and can change. Plain
-  API keys have no per-user usage endpoint and aren't covered.
+- `/usage [claude|openai-codex|antigravity|all]`: plan limits and spend, fetched when you
+  run it. With no argument, checks the current model's provider when it is one of those
+  three, or all of them otherwise. No admin key is needed. For Claude, pcode runs Claude
+  Code's own `/usage` headless (`claude -p /usage`) and shows its session and weekly
+  limits; the CLI answers from its own login, so pcode never reads Claude Code's token.
+  Codex shows the session (5h) and weekly percentages with their resets, plus spend
+  against a cap where the seat has one, using pcode's `/login openai-codex` or the Codex
+  CLI's `auth.json`, through `PCODE_LLM_PROXY` when set (undocumented endpoint, may
+  change). Antigravity runs `agy -p /usage --output-format json` and shows each model
+  group's 5h and weekly usage and reset times. Plain API keys have no per-user usage
+  endpoint and aren't covered.
 - `/worktree [status|merge|resolve|finish|remove|list|clean]`: manage this session's git
   worktree ([details](workspace.md#one-git-worktree-per-session)).
 - `/plan [--obsidian|--local] [request]`: discuss a change and keep a written plan

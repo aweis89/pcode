@@ -1,6 +1,9 @@
 import json
+import stat
 import subprocess
+from datetime import UTC, datetime
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx2
@@ -178,29 +181,197 @@ def test_codex_usage_explains_an_unreachable_proxy(monkeypatch):
         usage.codex_usage()
 
 
+def _script(path: Path, body: str) -> str:
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return str(path)
+
+
+ANTIGRAVITY_BODY = {
+    "status": "SUCCESS",
+    "response": "fallback text",
+    "command": {
+        "name": "usage",
+        "data": {
+            "groups": [
+                {
+                    "name": "Gemini Models",
+                    "buckets": [
+                        {
+                            "id": "gemini-weekly",
+                            "name": "Weekly Limit Remaining",
+                            "window": "weekly",
+                            "remaining_fraction": 0.94,
+                            "reset_time": datetime.fromtimestamp(
+                                NOW + 6 * 86400 + 20 * 3600, UTC
+                            ).isoformat(),
+                        },
+                        {
+                            "id": "gemini-5h",
+                            "name": "Five Hour Limit Remaining",
+                            "window": "5h",
+                            "remaining_fraction": 0.80,
+                            "reset_time": datetime.fromtimestamp(NOW + 2 * 3600, UTC).isoformat(),
+                        },
+                    ],
+                },
+                {
+                    "name": "Claude and GPT models",
+                    "buckets": [
+                        {
+                            "id": "3p-5h",
+                            "name": "Five Hour Limit Remaining",
+                            "window": "5h",
+                            "remaining_fraction": 0.86,
+                            "reset_time": datetime.fromtimestamp(
+                                NOW + 2 * 3600 + 40 * 60, UTC
+                            ).isoformat(),
+                        },
+                    ],
+                },
+            ]
+        },
+    },
+}
+
+
+def test_antigravity_lines():
+    assert usage.antigravity_lines(ANTIGRAVITY_BODY, now=NOW) == [
+        "Gemini Models (Weekly): 6% used, resets in 6d 20h",
+        "Gemini Models (5h): 20% used, resets in 2h",
+        "Claude and GPT models (5h): 14% used, resets in 2h 40m",
+    ]
+    assert usage.antigravity_lines({"response": "Line one\n\n  Line two  \n"}) == [
+        "Line one",
+        "Line two",
+    ]
+    assert usage.antigravity_lines({}) == ["No limits reported for this login."]
+
+
+def test_antigravity_usage_runs_agy_with_scrubbed_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-key")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "synthetic-project")
+    payload = tmp_path / "payload.json"
+    payload.write_text(json.dumps(ANTIGRAVITY_BODY))
+    agy = _script(
+        tmp_path / "agy",
+        'echo "[$GEMINI_API_KEY][$GOOGLE_CLOUD_PROJECT]|$*" > "$(dirname "$0")/call"\n'
+        f'cat "{payload}"\n',
+    )
+    monkeypatch.setattr(usage.shutil, "which", lambda _: agy)
+
+    lines = usage.antigravity_usage()
+    assert lines[0].startswith("Gemini Models (Weekly): 6% used")
+    assert lines[1].startswith("Gemini Models (5h): 20% used")
+    assert (tmp_path / "call").read_text().strip() == "[][]|-p /usage --output-format json"
+
+
+def test_antigravity_usage_bails_early_when_logged_out(monkeypatch, tmp_path):
+    # Simulates `agy -p /usage` printing an auth prompt on stderr and waiting 60s.
+    agy = _script(
+        tmp_path / "agy",
+        'echo "Authentication required. Please visit the URL to log in:" >&2\nexec sleep 30\n',
+    )
+    monkeypatch.setattr(usage.shutil, "which", lambda _: agy)
+    monkeypatch.setattr(usage, "ANTIGRAVITY_USAGE_TIMEOUT", 10)
+
+    with pytest.raises(
+        usage.UsageUnavailable, match="No Antigravity login; run /login antigravity"
+    ):
+        usage.antigravity_usage()
+
+
+def test_antigravity_usage_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(usage.shutil, "which", lambda _: None)
+    with pytest.raises(usage.UsageUnavailable, match="was not found"):
+        usage.antigravity_usage()
+
+    bad_exit = _script(tmp_path / "agy-fail", 'echo "boom" >&2\nexit 2\n')
+    monkeypatch.setattr(usage.shutil, "which", lambda _: bad_exit)
+    with pytest.raises(usage.UsageUnavailable, match="failed \\(exit 2\\): boom"):
+        usage.antigravity_usage()
+
+    bad_status = _script(tmp_path / "agy-status", 'echo \'{"status":"ERROR"}\'\n')
+    monkeypatch.setattr(usage.shutil, "which", lambda _: bad_status)
+    with pytest.raises(usage.UsageUnavailable, match="failed \\(ERROR\\)"):
+        usage.antigravity_usage()
+
+    slow = _script(tmp_path / "agy-slow", "exec sleep 30\n")
+    monkeypatch.setattr(usage.shutil, "which", lambda _: slow)
+    monkeypatch.setattr(usage, "ANTIGRAVITY_USAGE_TIMEOUT", 0.2)
+    with pytest.raises(usage.UsageUnavailable, match="did not answer in time"):
+        usage.antigravity_usage()
+
+
 def test_report_keeps_going_when_one_provider_fails(monkeypatch):
     def broken():
         raise usage.UsageUnavailable("No Claude Code login.")
 
     monkeypatch.setattr(usage, "claude_usage", broken)
     monkeypatch.setattr(usage, "codex_usage", lambda: ["Plan: plus"])
+    monkeypatch.setattr(usage, "antigravity_usage", lambda: ["Gemini Models (5h): 10% used"])
     assert usage.usage_report() == [
         "Claude Code",
         "  No Claude Code login.",
         "Codex",
         "  Plan: plus",
+        "Antigravity",
+        "  Gemini Models (5h): 10% used",
     ]
 
 
-def test_usage_command_prints_the_report(monkeypatch):
+def test_report_for_single_provider_does_not_query_others(monkeypatch):
+    called = []
+
+    def claude():
+        called.append("claude")
+        return ["Plan: max"]
+
+    def codex():
+        called.append("codex")
+        return ["Plan: plus"]
+
+    def agy():
+        called.append("antigravity")
+        return ["Gemini Models (5h): 10% used"]
+
+    monkeypatch.setattr(usage, "claude_usage", claude)
+    monkeypatch.setattr(usage, "codex_usage", codex)
+    monkeypatch.setattr(usage, "antigravity_usage", agy)
+
+    assert usage.usage_report("antigravity") == [
+        "Antigravity",
+        "  Gemini Models (5h): 10% used",
+    ]
+    assert called == ["antigravity"]
+
+
+def test_usage_command_defaults_to_current_provider_and_accepts_arguments(monkeypatch):
     from pcode.app import PreviewApp
 
-    monkeypatch.setattr(usage, "usage_report", lambda: ["Claude Code", "  Plan: max"])
-    buffer = StringIO()
-    runtime = SimpleNamespace(agent=SimpleNamespace(model=None), history=[])
-    app = PreviewApp(model="test", runtime=runtime, console=Console(file=buffer))
-    app.handle("/usage")
-    assert "Plan: max" in buffer.getvalue()
+    seen = []
+
+    def fake_report(provider=None):
+        seen.append(provider)
+        return [f"Report:{provider or 'all'}"]
+
+    monkeypatch.setattr(usage, "usage_report", fake_report)
+
+    for model, command, expected in (
+        ("antigravity:gemini-4-neon-high", "/usage", "antigravity"),
+        ("claude:claude-sonnet-5", "/usage", "claude"),
+        ("openai-codex:gpt-5", "/usage", "openai-codex"),
+        ("anthropic:claude-sonnet-5", "/usage", None),
+        ("antigravity:gemini-4-neon-high", "/usage all", None),
+        ("antigravity:gemini-4-neon-high", "/usage claude", "claude"),
+    ):
+        buffer = StringIO()
+        runtime = SimpleNamespace(agent=SimpleNamespace(model=None), history=[])
+        app = PreviewApp(model=model, runtime=runtime, console=Console(file=buffer))
+        app.handle(command)
+        assert f"Report:{expected or 'all'}" in buffer.getvalue()
+
+    assert seen == ["antigravity", "claude", "openai-codex", None, None, "claude"]
 
 
 def test_duration():

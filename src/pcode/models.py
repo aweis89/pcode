@@ -95,7 +95,7 @@ def runs_own_loop(model) -> bool:
 
 def login_sources() -> tuple[str, ...]:
     """What `/login` accepts; the first is what a bare `/login` signs in to."""
-    return ("claude", "openai-codex")
+    return ("claude", "openai-codex", "antigravity")
 
 
 def logout_sources() -> tuple[str, ...]:

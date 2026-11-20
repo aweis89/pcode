@@ -90,7 +90,7 @@ CONTINUE = "Continue."
 COMPACT_COMMAND = "/compact"
 PLAN_MODE = "plan"
 AUTH_REQUIRED = -32000
-LOGIN_HINT = "Sign in once by running `agy` (or `agy acp --login`) in a terminal."
+LOGIN_HINT = "Run `/login antigravity` (or `agy acp --login` in a terminal) to sign in."
 REPLAY_INTRO = (
     "This conversation started elsewhere; its earlier messages are replayed below as a "
     "transcript. Treat them as having happened and continue from the final message."

@@ -674,7 +674,7 @@ class SessionController:
         """Commands for the model, its sign-ins, and the extensions it runs with."""
         from pcode.models import login_sources, logout_sources
 
-        login_targets = "Claude Code or OpenAI Codex"
+        login_targets = "Claude Code, OpenAI Codex, or Antigravity"
         return (
             Command(
                 "/model",
@@ -821,8 +821,10 @@ class SessionController:
             ),
             Command(
                 "/usage",
-                "Plan limits and spend for the Claude Code and Codex logins",
+                "Plan limits and spend (current provider, or claude / openai-codex / "
+                "antigravity / all)",
                 self.usage,
+                ("claude", "openai-codex", "antigravity", "all"),
                 group="Inspect",
             ),
         )
@@ -1064,6 +1066,13 @@ class SessionController:
         than being spliced into a running one. `owner` hears when it starts,
         or that it was dropped; a steering message never starts a turn.
         """
+        if (
+            owner is None
+            and mode != "shell"
+            and not self.turn_running()
+            and self.logins.accept_input(text)
+        ):
+            return
         if mode == "steering" and prompt_target(text)[0] is not None:
             # A turn cannot change models mid-request: a prompt naming one gets
             # its own turn on it, never spliced into one that starts first.
@@ -3047,9 +3056,16 @@ class SessionController:
             self.view.redraw()
 
     def usage(self, argument: str) -> None:
-        from pcode.usage import usage_report
+        from pcode.usage import usage_provider_for, usage_report
 
-        self.defer("Checking usage", "", usage_report)
+        arg = argument.strip()
+        if arg == "all":
+            target = None
+        elif arg:
+            target = arg
+        else:
+            target = usage_provider_for(self.model)
+        self.defer("Checking usage", target or "", lambda: usage_report(target))
 
     # --- Worktrees ---
 

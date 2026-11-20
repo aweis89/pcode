@@ -292,7 +292,7 @@ pcode -m antigravity:gemini-4-neon-high
 ```
 
 Install the [Antigravity CLI](https://antigravity.google/docs/cli/) and sign in
-once by running `agy` (or `agy acp --login`) in a terminal. `antigravity:` shows
+with `/login antigravity` (or `agy acp --login` in a terminal). `antigravity:` shows
 up in `/model` whenever `agy` is on your `PATH`. The picker lists the models your
 account offered the last time a session started.
 

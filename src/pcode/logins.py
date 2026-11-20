@@ -20,6 +20,15 @@ class Logins:
 
     def __init__(self, controller: SessionController) -> None:
         self.controller = controller
+        self._code_waiter: asyncio.Future[str] | None = None
+
+    def accept_input(self, text: str) -> bool:
+        """Deliver a pasted sign-in code if a login flow is waiting for one."""
+        waiter = self._code_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result(text)
+            return True
+        return False
 
     @property
     def view(self):
@@ -31,7 +40,9 @@ class Logins:
         from pcode.models import login_sources
 
         sources = login_sources()
-        source = argument.strip() or sources[0]
+        current = (self.controller.model or "").partition(":")[0]
+        default = current if current in sources else sources[0]
+        source = argument.strip() or default
         if source not in sources:
             self.view.note(f"Usage: /login [{'|'.join(sources)}]")
             return
@@ -59,6 +70,14 @@ class Logins:
         cancel = "Ctrl+C cancels once nothing else runs" if beside else "Ctrl+C cancels"
         if source == "openai-codex":
             await self.login_codex(cancel)
+        elif source == "antigravity":
+            if beside:
+                self.view.warning(
+                    "Wait for the current turn to finish before running /login antigravity "
+                    "(it needs you to paste a code)."
+                )
+                return
+            await self.login_antigravity(cancel)
         else:
             await self.login_claude(cancel)
 
@@ -126,6 +145,41 @@ class Logins:
             self.view.error(str(error))
         except Exception:
             self.view.error("OpenAI Codex sign-in failed. No credential details were logged.")
+
+    async def login_antigravity(self, cancel: str = "Ctrl+C cancels") -> None:
+        """Run `agy acp --login` and feed the pasted authorization code to it."""
+        from pcode.antigravity import AntigravityModel
+        from pcode.antigravity_login import antigravity_login
+        from pcode.auth import LoginError
+
+        async def read_code() -> str:
+            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            self._code_waiter = future
+            try:
+                return await future
+            finally:
+                if self._code_waiter is future:
+                    self._code_waiter = None
+
+        self.view.note(
+            "Signing in to Antigravity with `agy acp --login`. "
+            f"Open the link in your browser ({cancel}):"
+        )
+        try:
+            await antigravity_login(self.view.note, read_code, cancel=cancel)
+            model = getattr(getattr(self.controller.runtime, "agent", None), "model", None)
+            if isinstance(model, AntigravityModel):
+                model.reset()
+            self.view.note(
+                "Signed in to Antigravity. Next turn uses the new login; pcode stores nothing."
+            )
+        except asyncio.CancelledError:
+            self.view.note("Antigravity sign-in cancelled.")
+            raise
+        except LoginError as error:
+            self.view.error(str(error))
+        except Exception:
+            self.view.error("Antigravity sign-in failed. No credential details were logged.")
 
     async def perform_logout(self) -> None:
         from pcode.auth import LoginError

@@ -1,21 +1,26 @@
-"""`/usage`: plan limits and spend for the Claude Code and Codex logins, on demand.
+"""`/usage`: plan limits and spend for the Claude Code, Codex, and Antigravity logins.
 
-Both come from the logins pcode already runs on, so no admin key is involved:
+All three come from the logins pcode already runs on, so no admin key is involved:
 
 - Claude: Claude Code's own `/usage`, run headless (`claude -p /usage`). The
   CLI answers from its own login; pcode never reads Claude Code's token.
 - Codex: `GET chatgpt.com/backend-api/wham/usage`, an undocumented endpoint the
   Codex CLI calls, through the Codex provider's auth, which injects the token,
   refreshes it on a 401, and never writes the Codex CLI's `auth.json`.
+- Antigravity: `agy -p /usage --output-format json`, run headless. The CLI
+  answers from its own login without a model turn.
 """
 
 import asyncio
 import json
 import os
+import selectors
+import shutil
 import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from datetime import datetime
 
 import httpx2
 
@@ -23,23 +28,38 @@ CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 TIMEOUT = httpx2.Timeout(15, connect=5)
 CLAUDE_USAGE_ARGS = ("-p", "/usage", "--output-format", "json", "--no-session-persistence")
 CLAUDE_USAGE_TIMEOUT = 30
+ANTIGRAVITY_USAGE_ARGS = ("-p", "/usage", "--output-format", "json")
+ANTIGRAVITY_USAGE_TIMEOUT = 15
+ANTIGRAVITY_WINDOW_LABELS = {"5h": "5h", "weekly": "Weekly"}
 # The CLI's report continues with a local breakdown of what drove usage.
 CLAUDE_BREAKDOWN_HEADING = "What's contributing"
 CODEX_WINDOW_LABELS = {5 * 3600: "Session (5h)", 7 * 86400: "Weekly"}
+USAGE_PROVIDERS = ("claude", "openai-codex", "antigravity")
 
 
 class UsageUnavailable(Exception):
     """A provider's usage could not be read; the message says why."""
 
 
-def usage_report() -> list[str]:
-    """Transcript lines for every provider; one failing never hides the other."""
+def usage_provider_for(model: str | None) -> str | None:
+    """The `/usage` provider for `model`, or None if it is not a subscription provider."""
+    provider = (model or "").partition(":")[0]
+    return provider if provider in USAGE_PROVIDERS else None
+
+
+def usage_report(provider: str | None = None) -> list[str]:
+    """Transcript lines for one provider, or all of them; one failing never hides another."""
     lines: list[str] = []
-    sources: tuple[tuple[str, Callable[[], list[str]]], ...] = (
-        ("Claude Code", claude_usage),
-        ("Codex", codex_usage),
+    all_sources: tuple[tuple[str, str, Callable[[], list[str]]], ...] = (
+        ("claude", "Claude Code", claude_usage),
+        ("openai-codex", "Codex", codex_usage),
+        ("antigravity", "Antigravity", antigravity_usage),
     )
-    for title, fetch in sources:
+    if provider is None or provider == "all":
+        sources = all_sources
+    else:
+        sources = tuple(entry for entry in all_sources if entry[0] == provider)
+    for _key, title, fetch in sources:
         try:
             body = fetch()
         except UsageUnavailable as error:
@@ -190,6 +210,142 @@ def codex_window_lines(details: dict | None, prefix: str, now: float) -> list[st
             percent_line(prefix + label, window.get("used_percent"), window.get("reset_at"), now)
         )
     return lines
+
+
+# Antigravity
+
+
+def _run_antigravity_usage(
+    executable: str, env: dict[str, str], timeout: float
+) -> tuple[int, str, str]:
+    """Run `agy -p /usage --output-format json`, bailing early if it asks to log in."""
+    process = subprocess.Popen(
+        [executable, *ANTIGRAVITY_USAGE_ARGS],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=tempfile.gettempdir(),
+        env=env,
+    )
+    assert process.stdout is not None and process.stderr is not None
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    deadline = time.monotonic() + timeout
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(executable, timeout)
+            events = selector.select(timeout=remaining)
+            if not events:
+                raise subprocess.TimeoutExpired(executable, timeout)
+            for key, _ in events:
+                chunk = os.read(key.fd, 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "stdout":
+                    stdout_chunks.append(chunk)
+                else:
+                    stderr_chunks.append(chunk)
+                    # Without a login, `agy -p` prints an auth URL and waits 60s on stdin.
+                    if b"authentication required" in b"".join(stderr_chunks).lower():
+                        raise UsageUnavailable("No Antigravity login; run /login antigravity.")
+        remaining = max(0.1, deadline - time.monotonic())
+        returncode = process.wait(timeout=remaining)
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    stdout = b"".join(stdout_chunks).decode("utf-8", "replace")
+    stderr = b"".join(stderr_chunks).decode("utf-8", "replace")
+    return returncode, stdout, stderr
+
+
+def antigravity_usage() -> list[str]:
+    """The quota limits `agy -p /usage --output-format json` reports."""
+    from pcode.antigravity import COMMAND, child_env
+
+    executable = shutil.which(COMMAND)
+    if executable is None:
+        raise UsageUnavailable(f"Antigravity CLI (`{COMMAND}`) was not found.")
+    try:
+        returncode, stdout, stderr = _run_antigravity_usage(
+            executable, child_env(), ANTIGRAVITY_USAGE_TIMEOUT
+        )
+    except UsageUnavailable:
+        raise
+    except subprocess.TimeoutExpired:
+        raise UsageUnavailable("Antigravity CLI did not answer in time.") from None
+    except OSError as error:
+        raise UsageUnavailable(f"Could not run Antigravity CLI ({type(error).__name__}).") from None
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or returncode != 0:
+        detail = stderr.strip().splitlines()[:1]
+        reason = f": {detail[0]}" if detail else ""
+        raise UsageUnavailable(f"Antigravity's /usage failed (exit {returncode}){reason}.")
+    status = data.get("status")
+    if isinstance(status, str) and status.upper() not in ("", "SUCCESS"):
+        raise UsageUnavailable(f"Antigravity's /usage failed ({status}).")
+    return antigravity_lines(data)
+
+
+def _iso_timestamp(value: object) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def antigravity_lines(data: dict, now: float | None = None) -> list[str]:
+    """Format the quota groups from `agy -p /usage --output-format json`."""
+    now = time.time() if now is None else now
+    command = data.get("command")
+    groups = (
+        command.get("data", {}).get("groups")
+        if isinstance(command, dict) and isinstance(command.get("data"), dict)
+        else None
+    )
+    lines: list[str] = []
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_name = group.get("name") or "Models"
+            for bucket in group.get("buckets") or ():
+                if not isinstance(bucket, dict):
+                    continue
+                window = bucket.get("window")
+                window_label = (
+                    ANTIGRAVITY_WINDOW_LABELS.get(window) or bucket.get("name") or window or "Limit"
+                )
+                remaining = bucket.get("remaining_fraction")
+                used = (
+                    max(0.0, min(100.0, (1.0 - float(remaining)) * 100.0))
+                    if isinstance(remaining, (int, float)) and not isinstance(remaining, bool)
+                    else None
+                )
+                resets = _iso_timestamp(bucket.get("reset_time"))
+                lines.append(percent_line(f"{group_name} ({window_label})", used, resets, now))
+    if lines:
+        return lines
+    response = data.get("response")
+    if isinstance(response, str):
+        fallback = [line.strip() for line in response.splitlines() if line.strip()]
+        if fallback:
+            return fallback
+    return ["No limits reported for this login."]
 
 
 # Formatting
