@@ -1417,3 +1417,45 @@ def test_session_info_update_after_turn_end_to_end_and_reset(fake_agy, tmp_path)
     finally:
         if app.runtime.session is not None:
             app.runtime.session.close()
+
+
+def test_bare_rename_works_on_antigravity_and_retires_side_model(fake_agy, tmp_path):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+    from pcode.sessions import SavedSession, list_sessions
+    from pcode.ui import TerminalOutput
+
+    root = tmp_path / "sessions"
+    model = AntigravityModel("fake-low")
+    console = Console(file=StringIO())
+    app = PreviewApp(workspace=tmp_path, session_dir=root, console=console)
+    app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
+    app.model = "antigravity:fake-low"
+    app.runtime = AgentRuntime(
+        agent_for(model, tmp_path),
+        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+    )
+
+    async def exercise():
+        await app.controller.run_turn("fix the parser")
+        main_session_id = model._session.session_id
+        app.controller.rename("")
+        assert app.controller.rename_task is not None
+        await app.controller.rename_task
+        assert app.controller.session_title()
+        assert list_sessions(root)[0].name == app.controller.session_title()
+        # Main conversation's ACP session is untouched; rename ran in its own side session.
+        assert model._session.session_id == main_session_id
+        sessions = [m for m in fake_agy() if m.get("method") == "session/new"]
+        assert len(sessions) == 2
+
+    try:
+        run(exercise())
+    finally:
+        if app.runtime.session is not None:
+            app.runtime.session.close()

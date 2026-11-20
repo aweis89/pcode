@@ -3247,7 +3247,7 @@ class SessionController:
         self.view.flash("Asking the model for a name…")
 
     async def _suggest_name(self, session) -> None:
-        from pcode.aside import ASIDE_TIMEOUT_SECONDS
+        from pcode.aside import ASIDE_TIMEOUT_SECONDS, retire_reply
         from pcode.diagnostics import provider_context
         from pcode.error_report import error_message
         from pcode.session_naming import RENAME_REQUEST, clean_title
@@ -3257,7 +3257,7 @@ class SessionController:
             # every later /rename, and a host's idle stop, for good.
             async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
                 # Sent as it is: the side question framing would ask for an answer.
-                reply = await self.runtime.aside(RENAME_REQUEST, framing=str, user_initiated=False)
+                reply = await self.runtime.aside(RENAME_REQUEST, framing=str)
         except Exception as error:  # noqa: BLE001 - nobody else is waiting to report it.
             # The warning is redacted as a turn's is, so the frames go where a turn's do.
             agent = getattr(self.runtime, "agent", None)
@@ -3274,6 +3274,7 @@ class SessionController:
             )
             self.view.warning(f"Could not name the session: {reason}")
             return
+        retire_reply(reply)
         name = clean_title(reply.answer)
         if not name:
             self.view.warning("Could not name the session: the model gave no name.")
