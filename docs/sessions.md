@@ -286,7 +286,7 @@ updated member. Searching lists matches flat, best first.
   plan. Esc cancels.
 - Ctrl+X (or Delete in the session list), pressed twice, permanently deletes the
   selected session. The active session and one open in another process are
-  refused.
+  refused; use `/delete` to remove the active session.
 
 A session from another worktree of the same repository switches the workspace to
 that worktree: file tools, the shell, extensions, and skill commands move there,

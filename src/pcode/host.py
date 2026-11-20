@@ -592,6 +592,9 @@ class SessionHost:
         """Send a view call to every terminal and keep it for the ones that attach later."""
         if method in RESETS:
             self.reset_buffer()
+        if method == "conversation_reset":
+            self.update(session_id="", forked_from="", title="", last_prompt="", outcome="")
+            self.own_jobs()
         for client in list(self.clients.values()):
             client.peer.notify(method, *args, **kwargs)
         if method in RESETS:

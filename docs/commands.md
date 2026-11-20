@@ -132,6 +132,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   scrollback, keeps input history. With PROMPT, a new
   [background session](sessions.md#background-sessions) works on it instead and this
   terminal stays where it is, mid-turn or not.
+- `/delete`: delete the current saved session and start a new conversation; clears the
+  screen and retained scrollback, keeps input history.
 - `/resume`: browse and search saved conversations (prompts, responses, tool calls,
   name, or session ID); resume one in place.
 - `/rename [NAME | -]`: name this conversation so `/resume` lists and finds it by that
@@ -734,7 +736,7 @@ context, and effort commands work while it's busy. `/model` and `/effort` also w
 apply from the running turn's next request. So does an account switched with `/login`:
 Codex from the next request, `claude:` models within about 30 seconds. A turn sent to
 another model with `$provider:model` keeps the login it started with.
-Bare `/new`, `/resume`, and `/logout` need an idle conversation: cancel or wait, then retry.
+Bare `/new`, `/delete`, `/resume`, and `/logout` need an idle conversation: cancel or wait, then retry.
 
 Cancelling:
 

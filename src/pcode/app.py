@@ -391,6 +391,7 @@ class PreviewApp:
             self.controller.registry.find("/subagents"),
             self.controller.registry.find("/reload"),
             self.controller.registry.find("/new"),
+            self.controller.registry.find("/delete"),
             Command(
                 "/resume",
                 "Browse and search saved sessions to resume",

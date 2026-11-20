@@ -51,6 +51,7 @@ def make_app(width=80, workspace=None):
                 "/subagents",
                 "/reload",
                 "/new",
+                "/delete",
                 "/resume",
                 "/rename",
                 "/attach",

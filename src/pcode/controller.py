@@ -177,7 +177,9 @@ QUERIES = frozenset(
 # Commands that change the conversation itself, refused while a turn runs or
 # prompts wait (bar /compact and /continue sent while idle, which go first).
 # /login is not among them: sent while working, it waits beside the turn.
-IDLE_COMMANDS = frozenset({"/continue", "/retry", "/new", "/resume", "/logout", "/compact"})
+IDLE_COMMANDS = frozenset(
+    {"/continue", "/retry", "/new", "/delete", "/resume", "/logout", "/compact"}
+)
 
 # Commands that make a model request or change the toolset. Each holds the
 # session busy from Enter until its handler starts, so a Ctrl+C in the same
@@ -747,6 +749,12 @@ class SessionController:
                 "it in a background session, and this terminal stays here",
                 self.new,
                 free_arguments=True,
+                group="Session",
+            ),
+            Command(
+                "/delete",
+                "Delete this saved session and start a new conversation",
+                self.delete,
                 group="Session",
             ),
             Command(
@@ -3374,6 +3382,41 @@ class SessionController:
         )
         if self.model and self.runtime.session:
             self.view.note(f"Saving session: {self.runtime.session.info.id}")
+        self.mcp_defaults_requested = True
+        # The old conversation's name leaves the tab with it.
+        self.view.session_changed()
+
+    async def delete(self, argument: str) -> None:
+        from pcode.host_protocol import forget_stopped
+        from pcode.sessions import SessionError, delete_session
+
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            raise ValueError("Nothing is saved yet; /delete removes a saved session.")
+        identity = session.info.id
+        root = session.directory.parent
+        await self.stop_naming()
+        self.runtime.reset()
+        # Drain after reset so no newly-settled /btw starts recording to the old
+        # session and any in-flight write finishes before the directory is removed.
+        await self.side_records_settled()
+        error: str | None = None
+        try:
+            await asyncio.to_thread(delete_session, identity, root)
+        except (SessionError, OSError) as exc:
+            error = str(exc)
+        if error is None:
+            forget_stopped(identity)
+        # On the host too, not just this terminal's copy, so one attaching later agrees.
+        self.activity.turn_outcome = ""
+        self.view.conversation_reset("New conversation")
+        if error is not None:
+            self.view.warning(f"Could not delete session {identity[:8]}: {error}")
+        else:
+            self.view.note(
+                f"Deleted session {identity[:8]}. Context reset; MCP servers are off unless "
+                "marked enabled. Screen cleared; input history is unchanged."
+            )
         self.mcp_defaults_requested = True
         # The old conversation's name leaves the tab with it.
         self.view.session_changed()
