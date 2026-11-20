@@ -66,14 +66,18 @@ class TurnNode:
         call_id = record.get("call_id", "")
         if record["kind"] == "ToolStarted":
             label = record.get("command") or record.get("detail") or ""
-            self.tools.append(
-                {
-                    "call_id": call_id,
-                    "name": record.get("name") or "tool",
-                    "label": excerpt(label),
-                    "outcome": "",
-                }
-            )
+            entry = {
+                "call_id": call_id,
+                "name": record.get("name") or "tool",
+                "label": excerpt(label),
+                "outcome": "",
+            }
+            if call_id:
+                for tool in reversed(self.tools):
+                    if tool["call_id"] == call_id and not tool["outcome"]:
+                        tool.update(entry)
+                        return
+            self.tools.append(entry)
             return
         for tool in reversed(self.tools):
             if call_id and tool["call_id"] == call_id:

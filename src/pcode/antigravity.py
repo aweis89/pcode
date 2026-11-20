@@ -1765,6 +1765,7 @@ class AntigravityStream(StreamedResponse):
     part_count: int = field(default=0, init=False)
     part_kind: str = field(default="", init=False)
     calls: dict[str, tuple[str, dict]] = field(default_factory=dict, init=False)
+    call_inputs: set[str] = field(default_factory=set, init=False)
     tools: dict[str, _ToolState] = field(default_factory=dict, init=False)
     text_seen: bool = field(default=False, init=False)
     events_seen: bool = field(default=False, init=False)
@@ -2054,17 +2055,22 @@ class AntigravityStream(StreamedResponse):
                 for k in ("CommandLine", "commandLine", "command_line", "command")
             ):
                 state.kind = "execute"
+        was_terminal = state.status in {"completed", "failed"}
         status = update.get("status")
         if isinstance(status, str) and status:
             state.status = status
         known = self.calls.get(call_id)
         args = _tool_args(update)
-        # The first report may carry no arguments yet; a later one fills them in.
-        if known is None or (not known[1] and update.get("rawInput")):
+        if state.title and "title" not in args:
+            args["title"] = state.title
+        has_input = isinstance(raw_input, dict) and bool(raw_input)
+        # The first report may carry no arguments yet (only a title); a later one fills them in.
+        if not was_terminal and (known is None or (call_id not in self.call_inputs and has_input)):
             name = known[0] if known else str(update.get("name") or update.get("kind") or "tool")
+            if has_input:
+                self.call_inputs.add(call_id)
             self.calls[call_id] = (name, args)
-            if known is None:
-                self._vendor("tool")
+            self._vendor("tool")
             yield self._parts_manager.handle_part(
                 vendor_part_id=f"call-{call_id}",
                 part=NativeToolCallPart(
@@ -2073,6 +2079,7 @@ class AntigravityStream(StreamedResponse):
             )
         if status in {"completed", "failed"}:
             name, _ = self.calls[call_id]
+            self._vendor("tool")
             yield self._parts_manager.handle_part(
                 vendor_part_id=f"return-{call_id}",
                 part=NativeToolReturnPart(

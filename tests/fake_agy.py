@@ -319,6 +319,85 @@ def prompt(request):
         chunk(session, "agent_message_chunk", " All tests passed.")
         update(session, {"sessionUpdate": "usage_update", "used": 100, "size": 1000})
         return
+    if "GATE_TOOL" in trigger or "PARALLEL_TOOLS" in trigger or "LATE_INPUT" in trigger:
+        gate = os.environ.get("FAKE_AGY_GATE")
+        if "PARALLEL_TOOLS" in trigger:
+            calls = [
+                {
+                    "toolCallId": "par-1",
+                    "name": "read_file",
+                    "kind": "read",
+                    "title": "Read a.py",
+                    "rawInput": {"Path": "a.py"},
+                },
+                {
+                    "toolCallId": "par-2",
+                    "name": "run_command",
+                    "kind": "execute",
+                    "title": "Run pytest",
+                    "rawInput": {"CommandLine": "pytest"},
+                },
+            ]
+            for call in calls:
+                update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **call})
+        elif "LATE_INPUT" in trigger:
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call",
+                    "status": "in_progress",
+                    "toolCallId": "late-1",
+                    "name": "run_command",
+                    "kind": "execute",
+                    "title": "Run tests",
+                },
+            )
+            calls = [
+                {
+                    "toolCallId": "late-1",
+                    "name": "run_command",
+                    "kind": "execute",
+                    "rawInput": {"CommandLine": "make test"},
+                }
+            ]
+        else:
+            calls = [
+                {
+                    "toolCallId": "gate-1",
+                    "name": "run_command",
+                    "kind": "execute",
+                    "title": "Run pytest",
+                    "rawInput": {"CommandLine": "pytest"},
+                }
+            ]
+            update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **calls[0]})
+        if gate:
+            for _ in range(1000):
+                if os.path.exists(gate) or cancelled.is_set():
+                    break
+                cancelled.wait(0.01)
+        if "LATE_INPUT" in trigger:
+            chunk(session, "agent_message_chunk", "before input ")
+            update(
+                session,
+                {"sessionUpdate": "tool_call_update", "status": "in_progress", **calls[0]},
+            )
+            chunk(session, "agent_message_chunk", "after input ")
+        for call in calls:
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": call["toolCallId"],
+                    "status": "completed",
+                    "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}],
+                },
+            )
+        chunk(session, "agent_message_chunk", "done")
+        result = {"stopReason": "end_turn", "usage": {"inputTokens": 4, "outputTokens": 2}}
+        send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        running.remove(request["id"])
+        return
     if "COMPLETE_BG" in text:
         for cid in ("bg-1", "wake-hang-1"):
             done = {"sessionUpdate": "tool_call_update", "toolCallId": cid, "status": "completed"}

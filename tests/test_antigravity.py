@@ -3218,3 +3218,120 @@ def test_stale_list_models_cache_is_ignored(monkeypatch, tmp_path):
     cache.write_text('["gemini-4-neon-high", "gemini-4-neon-low"]')
     assert cached_models() == ()
     assert model_catalog({"antigravity"}) == ["antigravity:gemini-4-neon"]
+
+
+def test_antigravity_tool_started_emits_while_tool_is_still_running(
+    fake_agy, tmp_path, monkeypatch
+):
+    """ToolStarted + Running status arrive on `tool_call`, not after `completed`."""
+    from pcode.live import AgentRuntime
+    from pcode.runtime import RunStatus, ToolStarted, ToolSummary
+
+    gate = tmp_path / "release.gate"
+    monkeypatch.setenv("FAKE_AGY_GATE", str(gate))
+    model = AntigravityModel("fake-flash")
+    runtime = AgentRuntime(agent_for(model, tmp_path))
+
+    async def exercise():
+        seen: list = []
+        started_before_gate = False
+        status_before_gate = ""
+        async for event in runtime.stream("GATE_TOOL"):
+            seen.append(event)
+            if isinstance(event, RunStatus) and "pytest" in event.text and not gate.exists():
+                started_before_gate = any(
+                    isinstance(e, ToolStarted) and e.call_id == "gate-1" for e in seen
+                )
+                status_before_gate = event.text
+                # Wait briefly so elapsed_seconds reflects real runtime before completion.
+                await asyncio.sleep(0.03)
+                gate.write_text("go")
+        return seen, started_before_gate, status_before_gate
+
+    seen, started_before_gate, status_before_gate = run(exercise())
+    assert started_before_gate
+    assert status_before_gate == "Running run_command · pytest…"
+    starts = [e for e in seen if isinstance(e, ToolStarted) and e.call_id == "gate-1"]
+    summaries = [e for e in seen if isinstance(e, ToolSummary) and e.call_id == "gate-1"]
+    assert len(starts) == 1
+    assert starts[0].detail == "pytest"
+    assert len(summaries) == 1
+    assert summaries[0].elapsed_seconds >= 0.02
+
+
+def test_antigravity_parallel_tools_both_report_running_before_completion(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pcode.live import AgentRuntime
+    from pcode.runtime import RunStatus, ToolStarted, ToolSummary
+
+    gate = tmp_path / "parallel.gate"
+    monkeypatch.setenv("FAKE_AGY_GATE", str(gate))
+    model = AntigravityModel("fake-flash")
+    runtime = AgentRuntime(agent_for(model, tmp_path))
+
+    async def exercise():
+        seen: list = []
+        saw_two_running = False
+        async for event in runtime.stream("PARALLEL_TOOLS"):
+            seen.append(event)
+            if (
+                isinstance(event, RunStatus)
+                and "Running 2 tools" in event.text
+                and not gate.exists()
+            ):
+                saw_two_running = True
+                gate.write_text("go")
+        return seen, saw_two_running
+
+    seen, saw_two_running = run(exercise())
+    assert saw_two_running
+    assert [(e.call_id, e.detail) for e in seen if isinstance(e, ToolStarted)] == [
+        ("par-1", "a.py"),
+        ("par-2", "pytest"),
+    ]
+    assert [e.call_id for e in seen if isinstance(e, ToolSummary)] == ["par-1", "par-2"]
+
+
+def test_antigravity_late_raw_input_updates_running_tool_without_duplicating(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pcode.live import AgentRuntime
+    from pcode.runtime import ToolStarted, ToolSummary
+
+    gate = tmp_path / "late.gate"
+    monkeypatch.setenv("FAKE_AGY_GATE", str(gate))
+    model = AntigravityModel("fake-flash")
+    runtime = AgentRuntime(agent_for(model, tmp_path))
+
+    async def exercise():
+        seen: list = []
+        async for event in runtime.stream("LATE_INPUT"):
+            seen.append(event)
+            if isinstance(event, ToolStarted) and event.call_id == "late-1" and not gate.exists():
+                await asyncio.sleep(0.03)
+                gate.write_text("go")
+        return seen
+
+    seen = run(exercise())
+    starts = [e for e in seen if isinstance(e, ToolStarted) and e.call_id == "late-1"]
+    summaries = [e for e in seen if isinstance(e, ToolSummary) and e.call_id == "late-1"]
+    # Initial start on title-only `tool_call`, then restated once `rawInput` arrives.
+    assert [e.detail for e in starts] == ["command unavailable", "make test"]
+    assert starts[0].started_at == starts[1].started_at
+    assert "Run tests" in starts[1].arguments
+    assert len(summaries) == 1
+    assert summaries[0].detail == "make test"
+    assert summaries[0].elapsed_seconds >= 0.02
+    # Text streamed around the late update and tool return must all settle into messages.
+    from pcode.runtime import Message
+
+    messages = [e.markdown for e in seen if isinstance(e, Message)]
+    assert messages == ["before input ", "after input ", "done"]
+    # Tree and tool archive keep one entry per call_id, updated in place.
+    node = runtime.tree.nodes[runtime.tree.active]
+    assert len(node.tools) == 1
+    assert node.tools[0]["label"] == "make test"
+    assert node.tools[0]["outcome"] == "completed"
+    assert len(runtime.inspections.calls) == 1
+    assert runtime.inspections.calls[0].detail == "make test"

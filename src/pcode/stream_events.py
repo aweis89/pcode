@@ -121,6 +121,11 @@ class EventTranslator:
         self.emitted_text = False
         # Running tools by call id: (name, args, monotonic start).
         self.tools: dict[str, tuple[str, dict, float]] = {}
+        # Native calls already emitted from `PartStartEvent`, by call id:
+        # (name, args, raw_args, started_at). `PartEndEvent` updates them only
+        # when new arguments arrived and skips calls already settled.
+        self.native_calls: dict[str, tuple[str, dict, Any, str]] = {}
+        self.settled_native: set[str] = set()
         # Every tool this run called, by call id, settled or not: a later
         # spill reader (`SPILL_READERS`) names the call whose output it reads.
         self.called: dict[str, str] = {}
@@ -349,8 +354,33 @@ class EventTranslator:
             if event.part.content:
                 yield ThinkingDelta(event.part.content)
             yield RunStatus("Thinking…")
+        elif isinstance(event.part, NativeToolCallPart):
+            if event.part.tool_call_id:
+                self.settled_native.discard(event.part.tool_call_id)
+            if self._native_call_ready(event.part):
+                yield from self.on_native_tool_call(event.part)
         elif isinstance(event.part, NativeToolReturnPart):
             yield from self.on_native_tool_return(event.part)
+
+    @staticmethod
+    def _native_call_ready(part: NativeToolCallPart) -> bool:
+        """Whether a `PartStartEvent`'s native tool call already has usable arguments.
+
+        Streaming API native tools (such as Anthropic's web search) open with
+        `args=None` or partial JSON and complete at `PartEndEvent`; emitting
+        early would show `query unavailable`. Non-delta native tools (such as
+        Antigravity ACP) arrive as a dict on start and do not get `PartEndEvent`
+        until the next part (often the return), so waiting hid running tools.
+        """
+        if isinstance(part.args, dict):
+            return True
+        if isinstance(part.args, str) and part.args.strip():
+            try:
+                part.args_as_dict(raise_if_invalid=True)
+            except ValueError, TypeError, AssertionError:
+                return False
+            return True
+        return False
 
     def on_native_tool_return(self, part: NativeToolReturnPart) -> Iterator[Event]:
         if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
@@ -359,6 +389,9 @@ class EventTranslator:
             return
         # Provider-executed tools (native web search/fetch) return
         # inside the response stream; there is no function event.
+        if part.tool_call_id:
+            self.settled_native.add(part.tool_call_id)
+            self.native_calls.pop(part.tool_call_id, None)
         name, args, started = self.tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
         provider = part.provider_name or ""
         detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
@@ -389,24 +422,38 @@ class EventTranslator:
         elif isinstance(event.part, ThinkingPart) and event.part.content:
             yield Thinking(event.part.content)
         elif isinstance(event.part, NativeToolCallPart):
-            yield from self.on_native_tool_call(event.part)
+            yield from self.on_native_tool_call(event.part, from_end=True)
 
-    def on_native_tool_call(self, part: NativeToolCallPart) -> Iterator[Event]:
+    def on_native_tool_call(
+        self, part: NativeToolCallPart, *, from_end: bool = False
+    ) -> Iterator[Event]:
         if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
             return
+        call_id = part.tool_call_id
+        if from_end and call_id and call_id in self.settled_native:
+            return
         try:
-            args = part.args_as_dict()
-        except ValueError, TypeError:
+            args = part.args_as_dict(raise_if_invalid=True)
+        except ValueError, TypeError, AssertionError:
             args = {}
-        self.tools[part.tool_call_id] = (part.tool_name, args, monotonic())
+        raw = args if args else part.args
+        previous = self.native_calls.get(call_id) if call_id else None
+        if previous is not None and previous[:3] == (part.tool_name, args, raw):
+            return
+        existing = self.tools.get(call_id) if call_id else None
+        started = existing[2] if existing is not None else monotonic()
+        started_at = previous[3] if previous is not None else datetime.now(timezone.utc).isoformat()
+        if call_id:
+            self.tools[call_id] = (part.tool_name, args, started)
+            self.native_calls[call_id] = (part.tool_name, args, raw, started_at)
         agent, task = assignment(part.tool_name, args)
         yield ToolStarted(
             part.tool_name,
             target(part.tool_name, args),
-            part.tool_call_id,
-            arguments=capture(args if args else part.args),
+            call_id,
+            arguments=capture(raw),
             run_id=self.run_id,
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=started_at,
             agent=agent,
             task=task,
         )
