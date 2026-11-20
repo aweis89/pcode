@@ -49,3 +49,10 @@ make harness-src        # prints "tmp/pydantic-ai @ v<version>"
 - Narrower traps live as comments beside the code: hook and capability-id
   semantics in `agent.py` and `cache_warnings.py`, terminal handoff in
   `ui.suspended_editor`, resume semantics in `live.py`.
+- A capability's `wrap_model_request` cannot catch a provider error from a
+  *streamed* request (every turn here). `ContinuationModel` defers the HTTP
+  call to the first iteration of the event stream, so the wrap task is parked
+  on `stream_done` and the exception surfaces in the consumer instead;
+  `_agent_graph` also skips `on_model_request_error` whenever `stream_error`
+  is set. Recovery that reacts to a failed provider response belongs in
+  `AgentRuntime.stream`, which owns turn retries.
