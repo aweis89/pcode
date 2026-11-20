@@ -30,6 +30,7 @@ pcode --hosts                    # list running hosts (--json for scripts)
 pcode --attach                   # reattach to the newest host in this repository
 pcode --attach 3f9c              # ...or to one by host or session ID prefix
 pcode --kill-hosts idle          # stop hosts with nothing running (or: stale, all)
+pcode --restart-hosts stale      # restart hosts on older pcode code (or: all)
 ```
 
 `--kill-hosts idle` is for the hosts a forgotten terminal tab keeps alive: an
@@ -68,6 +69,15 @@ Inside a hosted session:
   conversation up again in the same worktree. A host keeps the code it started
   with, so this is how a long-running session gets a fix you just merged; the
   picker and `--hosts` mark hosts that are on older code.
+  The host starts its own replacement, so it keeps the environment it was
+  started with (credentials from that project's `.envrc`, say) rather than
+  taking this terminal's.
+- `/restart all` (or `pcode --restart-hosts stale`) does the same for every host on
+  older code, this one last. A host that is busy is
+  skipped and listed with the reason. Another terminal showing a host that
+  restarted says which host it became, for `/attach`. Hosts started by a pcode older than
+  this feature can't restart from elsewhere: `/restart` each of those once in
+  its own terminal.
 - Quitting (Ctrl+D, `/quit`, or `/stop`) ends this session's host, asking about
   the worktree the way a local exit does. `/detach` quits but leaves the host
   running for `pcode --attach`, as closing the terminal window does, until it

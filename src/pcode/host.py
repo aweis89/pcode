@@ -31,12 +31,14 @@ from pcode.controller import INTENTS, SESSION_FIELDS, SessionController
 from pcode.error_report import error_message
 from pcode.host_protocol import (
     LINE_LIMIT,
+    NOTHING_TO_RESUME,
     PROTOCOL,
     HostEntry,
     code_fingerprint,
     dumps,
     forget_stopped,
     host_dir,
+    new_host_id,
     read_message,
     remember_stopped,
     remove_entry,
@@ -62,7 +64,9 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
-HOST_CALLS = frozenset({"attach", "query", "send", "run", "stop", "stop_if_idle", "asides_read"})
+HOST_CALLS = frozenset(
+    {"attach", "query", "send", "run", "stop", "stop_if_idle", "restart", "asides_read"}
+)
 
 _MISSING = object()
 
@@ -246,6 +250,10 @@ class _Client:
         """`pcode --kill-hosts idle`: "" once stopping, else what it is busy with."""
         return self.host.stop_if_idle()
 
+    def restart(self) -> dict:
+        """`/restart all`: `{"id": successor}` once stopping, else `{"skipped": why not}`."""
+        return self.host.restart()
+
 
 class HostView:
     """The controller's view in a host: calls go to the attached terminals.
@@ -389,6 +397,8 @@ class SessionHost:
         self.active_at = time.monotonic()
         # Stopped for being idle, not asked to: an unseen result is remembered.
         self.idle_stopped = False
+        # The host `restart` asked to carry the session on once this one has gone.
+        self.successor: str | None = None
         # Open connections, counted from hello on: a terminal mid-handshake is not
         # a client yet, and must not find the host gone.
         self.connections = 0
@@ -750,6 +760,25 @@ class SessionHost:
         self.stop()
         return ""
 
+    def restart(self) -> dict:
+        """Stop, leaving a successor to resume this session on the pcode installed now.
+
+        `main` starts the successor once this host has let go of the session,
+        from this process, so it keeps this host's environment and remote
+        profile rather than those of whoever asked. Attached terminals do not
+        stop it; work in progress does. Checked and stopped with no await in
+        between, so nothing starts in the gap.
+        """
+        if reason := self.busy_with():
+            return {"skipped": reason}
+        if not self.entry.session_id:
+            return {"skipped": NOTHING_TO_RESUME}
+        self.successor = new_host_id()
+        # The successor resumes in this worktree.
+        self.keep_worktree = True
+        self.stop()
+        return {"id": self.successor}
+
     async def stop_when_idle(
         self, minutes: float, *, every: float = 2.0, grace: float = IDLE_GRACE_SECONDS
     ) -> None:
@@ -799,7 +828,8 @@ class SessionHost:
         # (a "Run cancelled" for a host stopped while idle).
         clients, self.clients = list(self.clients.values()), {}
         for client in clients:
-            client.peer.notify("host_closed")
+            # Older terminals ignore the argument; newer ones point at the successor.
+            client.peer.notify("host_closed", self.successor)
             client.peer.close()
         controller.cancel_all()
         for task in self.tasks:
@@ -814,7 +844,7 @@ class SessionHost:
         if controller.extensions is not None:
             await controller.extensions.close()
         remove_entry(self.entry.id, self.directory)
-        if self.idle_stopped and self.entry.unseen:
+        if self.idle_stopped and self.entry.unseen and self.successor is None:
             # After the entry goes, so /attach never sees both. Only a saved
             # session has an ID, so only one /resume could reopen.
             remember_stopped(self.entry, self.directory)
@@ -881,7 +911,8 @@ def fork_worktree(saved, workspace: Path) -> Path:
     return created
 
 
-async def _serve(args: argparse.Namespace) -> None:
+async def _serve(args: argparse.Namespace) -> dict | None:
+    """Run the host until it stops; `spawn_host` arguments for its successor, if any."""
     from pcode.app import _enter_worktree, _resume_workspace
     from pcode.preferences import (
         SETTINGS,
@@ -980,14 +1011,20 @@ async def _serve(args: argparse.Namespace) -> None:
             watcher.cancel()
         from pcode.claude_sdk import shutdown
 
-        try:
-            await host.close()
-        finally:
-            await shutdown()
         runtime = controller.runtime
-        if runtime is not None and hasattr(runtime, "close"):
-            runtime.close()
-        if not host.keep_worktree:
+        try:
+            try:
+                await host.close()
+            finally:
+                await shutdown()
+        finally:
+            # Lets go of the session, which a successor is about to open.
+            if runtime is not None and hasattr(runtime, "close"):
+                runtime.close()
+            elif saved is not None:
+                saved.close()  # Startup failed before a runtime took it.
+        # A stop that came after `restart` must not tidy away the successor's worktree.
+        if not host.keep_worktree and host.successor is None:
             # A terminal that asked to keep it tidies it itself, and can ask first.
             leave_worktree(
                 controller.workspace,
@@ -998,6 +1035,32 @@ async def _serve(args: argparse.Namespace) -> None:
                 # so its branch waits to be resumed rather than merged.
                 merge=not host.idle_stopped,
             )
+    if host.successor is None:
+        return None
+    return {
+        "identity": host.successor,
+        "model": controller.model,
+        "workspace": controller.workspace,
+        "resume": entry.session_id,
+        "session_dir": controller.session_dir,
+        "profile": profile,
+    }
+
+
+def start_successor(successor: dict) -> None:
+    """Start the host a `restart` asked for, now this one has let go of the session.
+
+    Spawned from here, it inherits this host's environment (a remote profile's
+    is scrubbed already) and its remote profile.
+    """
+    from pcode.remote import spawn_host
+
+    try:
+        identity, _, log = spawn_host(**successor)
+    except Exception as error:  # noqa: BLE001 - the log is the only reader.
+        print(f"could not start the successor: {error_message(error)}", file=sys.stderr)
+        return
+    print(f"restarted as {identity} (log: {log})", file=sys.stderr, flush=True)
 
 
 def _idle_minutes(preferences: dict, settings: dict) -> int | None:
@@ -1020,12 +1083,14 @@ def main(argv: list[str] | None = None) -> None:
     # The terminal that started the host may close; the host outlives it.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        asyncio.run(_serve(args))
+        successor = asyncio.run(_serve(args))
     except Exception as error:  # noqa: BLE001 - the log is the only reader.
         print(f"session host failed: {error_message(error)}", file=sys.stderr, flush=True)
         remove_entry(args.id)
         raise SystemExit(1) from error
     remove_entry(args.id)
+    if successor is not None:
+        start_successor(successor)
 
 
 if __name__ == "__main__":

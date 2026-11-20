@@ -217,6 +217,9 @@ class PreviewApp:
         # `/new PROMPT`'s prompt (bare `/new` is the session's own).
         self.new_requested: str | None = None
         self.restart_requested = False
+        self.restart_all_requested = False
+        # `/restart` is moving this terminal to the host's successor.
+        self.restarting = False
         self.host_stopped = False
         # A command this terminal sent ended the host's session (`/worktree finish`).
         self.session_over = False
@@ -414,8 +417,10 @@ class PreviewApp:
             ),
             Command(
                 "/restart",
-                "Restart this background session's host on the pcode installed now",
+                "Restart this background session's host on the pcode installed now; "
+                "all: every host on older code",
                 self.restart,
+                arguments=("all",),
                 group="Session",
             ),
             Command(
@@ -1609,8 +1614,11 @@ class PreviewApp:
             self._emulator(notification(f"pcode: {title} — {what}"))
 
     def restart(self, argument: str) -> None:
+        if argument == "all":
+            self.restart_all_requested = True
+            return
         if argument:
-            raise ValueError("Usage: /restart")
+            raise ValueError("Usage: /restart [all]")
         if not self.hosted:
             raise ValueError("/restart restarts a session host; quit and relaunch for new code.")
         if self.activity.busy or self.activity.queued_prompts:
@@ -1618,11 +1626,55 @@ class PreviewApp:
         self.restart_requested = True
 
     async def restart_host(self) -> None:
-        """Stop this host and resume its conversation in a new one, on the code now installed."""
-        from pcode.remote import wait_for_exit
+        """Restart this host on the code now installed and show the new one here.
+
+        The host starts its successor itself, which keeps its environment and
+        remote profile: this terminal may have attached from another project.
+        So is one older than that, or with nothing saved to resume (a fresh
+        host on the new code replaces it).
+        """
+        from pcode.host_protocol import NOTHING_TO_RESUME, list_hosts
+        from pcode.remote import (
+            TOO_OLD_TO_RESTART,
+            HostError,
+            restart_entry,
+            wait_for_exit,
+            wait_for_host,
+        )
+        from pcode.rpc import RemoteError
 
         self.restart_requested = False
         runtime = self.runtime
+        entry = next((e for e in await asyncio.to_thread(list_hosts) if e.id == runtime.id), None)
+        if entry is not None:
+            successor = skipped = ""
+            # Its going is expected: no "has exited" warning for it.
+            self.restarting = True
+            try:
+                with self.activity.waiting("Restarting the session host"):
+                    successor, skipped = await restart_entry(entry)
+                    if successor:
+                        controller, welcome = await wait_for_host(successor, self, self.activity)
+            except (OSError, HostError, RemoteError) as error:
+                message = f"The session host did not restart: {error}"
+                if successor:
+                    message += f" /attach {successor} shows its successor once it is up."
+                elif getattr(self.controller, "host_stopped", False) and runtime.session_id:
+                    message += f" pcode --continue {runtime.session_id} resumes it."
+                if getattr(self.controller, "host_stopped", False):
+                    self.activity.busy = False
+                self.transcript.error(message)
+                return
+            finally:
+                self.restarting = False
+            if successor:
+                await self.adopt_controller(
+                    controller, welcome, f"Restarted on the current pcode ({successor})"
+                )
+                return
+            if skipped not in (TOO_OLD_TO_RESTART, NOTHING_TO_RESUME):
+                self.transcript.warning(f"The session host did not restart: {skipped}.")
+                return
         # Kept: the new host resumes in the same worktree.
         runtime.stop(keep_worktree=True)
         with self.activity.waiting("Stopping the session host"):
@@ -1633,6 +1685,32 @@ class PreviewApp:
             )
         else:
             await self.start_host_session("")
+
+    async def restart_stale_hosts(self) -> None:
+        """`/restart all`: every host on older pcode restarts, this terminal's own last.
+
+        Each other host starts its own successor, so it keeps its environment
+        rather than taking this terminal's. Busy ones are skipped and say why.
+        """
+        from pcode.host_protocol import code_fingerprint, list_hosts
+        from pcode.remote import restart_and_report
+
+        self.restart_all_requested = False
+        own = self.runtime.id if self.hosted else None
+        code = await asyncio.to_thread(code_fingerprint)
+        stale = [entry for entry in await asyncio.to_thread(list_hosts) if entry.stale(code)]
+        others = [entry for entry in stale if entry.id != own]
+        for entry in others:
+            with self.activity.waiting(f"Restarting session {entry.id}"):
+                line, failed = await restart_and_report(entry)
+            (self.transcript.warning if failed else self.transcript.note)(line)
+        if own is not None and any(entry.id == own for entry in stale):
+            if self.activity.busy or self.activity.queued_prompts:
+                self.transcript.note("This session's host waits for its turn: /restart it after.")
+            else:
+                await self.restart_host()
+        elif not others:
+            self.transcript.note("Every session host already runs the pcode installed now.")
 
     async def move_to_host(self) -> None:
         """`/detach` in a session running here: carry it on in a new host, still shown here.
@@ -1794,13 +1872,19 @@ class PreviewApp:
 
     def host_closed(self) -> None:
         """The host this terminal was showing went away (stopped elsewhere, or crashed)."""
-        if self.session_over:
-            return  # Expected: this terminal is already on its way out.
+        if self.session_over or self.restarting:
+            return  # Expected: this terminal is on its way out, or to the successor.
         runtime = self.runtime
-        session = runtime.session_id and f" pcode --continue {runtime.session_id} resumes it."
-        self.transcript.warning(
-            f"The session host {runtime.id} has exited. /attach picks another;{session}"
-        )
+        if successor := getattr(self.controller, "successor", None):
+            self.transcript.warning(
+                f"The session host {runtime.id} is restarting on the current pcode as "
+                f"{successor}: /attach {successor} shows it once it is up."
+            )
+        else:
+            session = runtime.session_id and f" pcode --continue {runtime.session_id} resumes it."
+            self.transcript.warning(
+                f"The session host {runtime.id} has exited. /attach picks another;{session}"
+            )
         self.activity.busy = False
         self.redraw()
 
@@ -2579,6 +2663,8 @@ class PreviewApp:
                 await self.start_host_session(prompt)
             if self.restart_requested:
                 await self.restart_host()
+            if self.restart_all_requested:
+                await self.restart_stale_hosts()
             if self.handoff_requested:
                 await self.move_to_host()
             if self.session_info_requested:
@@ -3234,6 +3320,12 @@ def main() -> None:
         "--stop-hosts", dest="kill_hosts", choices=host_kinds, help=argparse.SUPPRESS
     )
     parser.add_argument(
+        "--restart-hosts",
+        choices=("stale", "all"),
+        help="Restart session hosts running older pcode code (or all of them) on the pcode "
+        "installed now, keeping each conversation, and exit; busy ones are skipped",
+    )
+    parser.add_argument(
         "--email-listen",
         action="store_true",
         help="Take tasks by email from the account set up with --email-setup; "
@@ -3469,6 +3561,18 @@ def _kill_hosts(which: str, entries: list, code: str) -> None:
             print(f"Skipped {entry.id}  {entry.label()}: {busy}")
         else:
             print(f"Stopped {entry.id}  {entry.label()}")
+    if not chosen:
+        print("No stale session hosts." if which == "stale" else "No session hosts are running.")
+
+
+def _restart_hosts(which: str, entries: list, code: str) -> None:
+    """`--restart-hosts stale|all`, reporting each host as it restarts or why it did not."""
+    from pcode.remote import restart_and_report
+
+    chosen = [entry for entry in entries if which == "all" or entry.stale(code)]
+    for entry in chosen:
+        line, failed = asyncio.run(restart_and_report(entry))
+        print(line, file=sys.stderr if failed else sys.stdout)
     if not chosen:
         print("No stale session hosts." if which == "stale" else "No session hosts are running.")
 
@@ -3727,7 +3831,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         app.transcript.events(app.preview.demo(), show_tools=True)
         app.transcript.syntax_gallery()
         return
-    if args.hosts or args.kill_hosts:
+    if args.hosts or args.kill_hosts or args.restart_hosts:
         from pcode.host_protocol import code_fingerprint, list_hosts
         from pcode.host_ui import host_row, ordered
 
@@ -3735,6 +3839,9 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         entries = ordered(list_hosts())
         if args.kill_hosts:
             _kill_hosts(args.kill_hosts, entries, code)
+            return
+        if args.restart_hosts:
+            _restart_hosts(args.restart_hosts, entries, code)
             return
         if args.json:
             import json

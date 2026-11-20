@@ -18,6 +18,7 @@ import os
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from uuid import uuid4
 
 from pcode.runtime import (
     CacheBust,
@@ -113,6 +114,14 @@ def host_dir() -> Path:
         return Path(value).expanduser()
     state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return state / "pcode" / "hosts"
+
+
+# What `restart` answers for a host with no saved conversation for a successor to resume.
+NOTHING_TO_RESUME = "it has no saved conversation to resume"
+
+
+def new_host_id() -> str:
+    return uuid4().hex[:8]
 
 
 def socket_path(identity: str, directory: Path | None = None) -> Path:

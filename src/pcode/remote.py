@@ -22,7 +22,6 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
 from pcode.aside import Aside, Asides
 from pcode.commands import Command, CommandRegistry
@@ -40,6 +39,7 @@ from pcode.host_protocol import (
     dumps,
     host_dir,
     list_hosts,
+    new_host_id,
     read_message,
     socket_path,
 )
@@ -257,6 +257,8 @@ class RemoteController:
         self.on_closed = lambda: None
         # The host said it was stopping, rather than just going away.
         self.host_stopped = False
+        # The host that carries the session on, when it stopped to restart.
+        self.successor: str | None = None
         # One per command sent and not yet answered by `after_command`, oldest
         # first: the host runs them in order and reports each exactly once.
         self._command_waits: list = []
@@ -361,6 +363,7 @@ class RemoteController:
             return None
         if name == "host_closed":
             self.host_stopped = True
+            self.successor = args[0] if args else None
             return None
         if name == "read_asides":
             return self._read_asides()
@@ -561,6 +564,7 @@ def spawn_host(
     fork: bool = False,
     directory: Path | None = None,
     profile: RemoteProfile | None = None,
+    identity: str | None = None,
 ) -> tuple[str, subprocess.Popen, Path]:
     """Start a host from this process, so it inherits this terminal's environment.
 
@@ -569,7 +573,7 @@ def spawn_host(
     """
     directory = directory or host_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    identity = uuid4().hex[:8]
+    identity = identity or new_host_id()
     socket_path(identity, directory)  # Fail here, not in the child, on a too-long path.
     log = directory / f"{identity}.log"
     argv = [
@@ -735,6 +739,56 @@ async def stop_if_idle(entry: HostEntry) -> str:
     if not await wait_for_exit(entry.pid):
         raise HostError("it was told to stop but is still running after 30 s")
     return ""
+
+
+TOO_OLD_TO_RESTART = "it predates restarting from elsewhere; /restart it in its own terminal"
+
+
+async def restart_entry(
+    entry: HostEntry, directory: Path | None = None, *, timeout: float = 30.0
+) -> tuple[str, str]:
+    """Restart another host on the pcode installed now: (successor's ID, "") or ("", why not).
+
+    The host starts its successor itself, so the successor keeps that host's
+    environment, not this caller's (another project's credentials, say). A
+    host older than the call is skipped rather than restarted from here. Returns
+    once the successor has written its entry, so it can be attached to.
+    """
+    try:
+        answer = await request_host(entry, "restart")
+    except RemoteError as error:
+        if error.type_name != "PermissionError":
+            raise
+        return "", TOO_OLD_TO_RESTART
+    if skipped := answer.get("skipped"):
+        return "", skipped
+    if not await wait_for_exit(entry.pid, timeout):
+        raise HostError(f"it was told to restart but is still running after {timeout:g} s")
+    successor = answer["id"]
+    directory = directory or host_dir()
+    log = directory / f"{successor}.log"
+    # Spawning creates the log, before the old host exits.
+    if not log.exists():
+        raise HostError(f"it stopped but could not start its successor; see {entry.log}")
+    # Written first thing once its code has loaded: the new code imports cleanly.
+    deadline = time.monotonic() + timeout
+    while not socket_path(successor, directory).with_suffix(".json").exists():
+        if time.monotonic() > deadline:
+            raise HostError(f"its successor {successor} did not start; see {log}")
+        await asyncio.sleep(0.05)
+    return successor, ""
+
+
+async def restart_and_report(entry: HostEntry) -> tuple[str, bool]:
+    """`restart_entry` as one line to show, and whether it is an error."""
+    try:
+        successor, skipped = await restart_entry(entry)
+    except (OSError, ValueError, HostError, RemoteError) as error:
+        # Usually gone since it was listed (stopped itself, or crashed).
+        return f"Could not restart {entry.id}: {error}", True
+    if skipped:
+        return f"Skipped {entry.id}  {entry.label()}: {skipped}", False
+    return f"Restarted {entry.id} as {successor}  {entry.label()}", False
 
 
 @asynccontextmanager

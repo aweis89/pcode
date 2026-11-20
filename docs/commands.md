@@ -149,7 +149,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   (`/detach`, or by itself once idle after `/fork PROMPT`), both run at once and Ctrl+^
   flips between them ([parallel sessions](sessions.md#parallel-sessions)).
 - `/restart`: restart this background session's host on the pcode installed now, keeping
-  the conversation.
+  the conversation. `/restart all` restarts every host on older code
+  ([sessions](sessions.md#parallel-sessions)).
 - `/stop`: end this background session's host and quit. Quitting any other way (Ctrl+D,
   `/quit`) does the same.
 - `/detach`: quit but leave this background session's host running until it
