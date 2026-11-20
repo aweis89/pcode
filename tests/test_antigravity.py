@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models import ModelRequestParameters
 
 from pcode import antigravity, antigravity_tools
 from pcode.antigravity import AntigravityError, AntigravityModel, cached_models, replay_text
@@ -162,24 +163,44 @@ def test_another_models_history_is_replayed_tools_included(fake_agy, tmp_path):
     assert latest == {"type": "text", "text": "and now?"}
 
 
-@pytest.mark.parametrize(
-    "history",
-    [
-        # A turn running on another model when /model switched to Antigravity.
-        [
-            ModelRequest(parts=[UserPromptPart("fix it")]),
-            ModelResponse(parts=[ToolCallPart("shell", {"command": "ls"}, "c1")]),
-            ModelRequest(parts=[ToolReturnPart("shell", "ok", "c1"), UserPromptPart("steer")]),
-        ],
-        # A continuation with no new message.
-        [ModelRequest(parts=[UserPromptPart("fix it")]), ModelResponse(parts=[TextPart("hm")])],
-    ],
-)
-def test_requests_the_user_did_not_send_are_refused_unsent(fake_agy, tmp_path, history):
-    model = AntigravityModel("fake-high")
-    with pytest.raises(AntigravityError, match="only answers prompts you send"):
-        run(model.request(history, None, None))
-    assert fake_agy() == []  # Not even a process.
+def test_what_pcode_tells_any_model_is_sent_as_text(fake_agy, tmp_path):
+    from pydantic_ai_harness._background_completion import make_background_result
+
+    # A turn another model was running when /model switched, and a worker's result.
+    history = [
+        ModelRequest(parts=[UserPromptPart("fix it")]),
+        ModelResponse(parts=[ToolCallPart("shell", {"command": "ls"}, "c1")]),
+        ModelRequest(
+            parts=[
+                ToolReturnPart("shell", "ok", "c1"),
+                make_background_result("delegate_task", "c2", "the report"),
+                UserPromptPart("steer"),
+            ]
+        ),
+    ]
+    settings = {CWD_SETTING: str(tmp_path)}
+    run(AntigravityModel("fake-high").request(history, settings, ModelRequestParameters()))
+    texts = [block["text"] for block in prompts(fake_agy)[0]]
+    assert texts[1:] == [
+        "[pcode] shell returned:\nok",
+        "[pcode] Result of the delegate_task call that was running:",
+        "the report",
+        "steer",
+    ]
+
+
+def test_a_continuation_with_no_message_says_continue(fake_agy, tmp_path):
+    from pcode.live import CANCELLED_MARKER
+
+    kept = ModelRequest(parts=[UserPromptPart("fix it"), UserPromptPart(CANCELLED_MARKER)])
+    settings = {CWD_SETTING: str(tmp_path)}
+    run(AntigravityModel("fake-high").request([kept], settings, ModelRequestParameters()))
+    texts = [block["text"] for block in prompts(fake_agy)[0]]
+    assert "fix it" in texts[0] and texts[1:] == ["Continue."]
+    # A history that ends in a reply has nothing to answer.
+    answered = [ModelRequest(parts=[UserPromptPart("x")]), ModelResponse(parts=[TextPart("y")])]
+    with pytest.raises(AntigravityError, match="nothing to answer"):
+        run(AntigravityModel("fake-high").request(answered, None, None))
 
 
 def test_unsupported_attachments_are_refused(fake_agy):
@@ -417,18 +438,6 @@ def test_replacing_or_closing_the_runtime_stops_its_process(fake_agy, tmp_path):
     assert run(go()) == (True, True)
 
 
-def test_continue_is_refused():
-    from pcode.live import AgentRuntime
-    from pcode.sessions import SessionError
-
-    async def go():
-        async for _ in AgentRuntime(Agent(AntigravityModel("fake-high"))).stream(None):
-            pass
-
-    with pytest.raises(SessionError, match="/continue isn't available with Antigravity"):
-        asyncio.run(go())
-
-
 def test_malformed_messages_do_not_stop_the_reader(fake_agy, tmp_path):
     async def go():
         model = AntigravityModel("fake-high")
@@ -553,33 +562,22 @@ def test_a_steer_reaches_the_copy_pcode_restores_after_a_cancel(fake_agy, tmp_pa
     ]
 
 
-def test_pcode_written_notices_are_kept_from_it():
+def test_pcode_notices_reach_it_like_any_model():
     from types import SimpleNamespace
 
     from pcode.background_delegation import AbandonedDelegations
-    from pcode.job_notices import JobNotices
+    from pcode.isolated_delegation import WorkspaceSubAgents
 
     request = ModelRequest(parts=[UserPromptPart("hi")])
     ctx = SimpleNamespace(messages=[request])
     context = SimpleNamespace(model=AntigravityModel("fake-high"), messages=[request])
-
-    class Jobs:
-        def take_announcements(self, _):
-            raise AssertionError("would take a job notice for Antigravity")
-
-    asyncio.run(JobNotices(Jobs()).before_model_request(ctx, context))
     ids = ["w1"]
     asyncio.run(AbandonedDelegations(ids).before_model_request(ctx, context))
-    assert [p.content for p in request.parts] == ["hi"] and ids == ["w1"]
-
-
-def test_a_finished_job_never_wakes_it(monkeypatch):
-    from types import SimpleNamespace
-
-    from pcode.controller import SessionController
-
-    controller = SimpleNamespace(model="antigravity:fake", runtime=SimpleNamespace(jobs=object()))
-    assert SessionController.wake_prompt(controller) is None
+    delegation = WorkspaceSubAgents.__new__(WorkspaceSubAgents)
+    delegation.hub = SimpleNamespace(take_questions=lambda: ["Worker w2 asks: which file?"])
+    asyncio.run(delegation.before_model_request(ctx, context))
+    assert ids == [] and len(request.parts) == 3
+    assert request.parts[2].content == "Worker w2 asks: which file?"
 
 
 def test_retiring_drops_unshown_output_after_the_turn():
@@ -617,9 +615,12 @@ def delegating_agent(model, workspace, ran: list):
     agent = Agent(model, model_settings={CWD_SETTING: str(workspace)})
 
     @agent.tool_plain
-    def delegate_task(task: str, model: str | None = None, run_in_background: bool = False):
+    def delegate_task(
+        agent_name: str, task: str, model: str | None = None, run_in_background: bool = False
+    ):
         """Delegate a task."""
         ran.append({"task": task, "model": model, "background": run_in_background})
+        assert agent_name == "worker"  # Filled in: Antigravity can't know pcode's names.
         return f"report on {task} from {model}"
 
     @agent.tool_plain
@@ -653,14 +654,14 @@ def test_antigravity_can_delegate_to_a_worker_on_another_provider(
         "Antigravity started a pcode worker on claude:fable: review",
         "The pcode worker on claude:fable finished; Antigravity has its report.",
     ]
-    # The first default it may use, never Antigravity's own, and never in the background.
-    assert ran == [{"task": "review", "model": "claude:fable", "background": False}]
+    # The first default it may use, never Antigravity's own.
+    assert ran == [{"task": "review", "model": "claude:fable", "background": True}]
     assert result.output == "tool said: report on review from claude:fable"
     [listed] = [e for e in fake_agy() if "mcp_tools" in e]
     assert listed["mcp_discover"]["error"]["code"] == -32601
     [tool] = listed["mcp_tools"]
     assert tool["name"] == "delegate_task"
-    assert "run_in_background" not in tool["inputSchema"]["properties"]
+    assert "run_in_background" in tool["inputSchema"]["properties"]
     schema = tool["inputSchema"]
     assert schema["properties"]["model"]["description"] == (
         "The model to run the sub-agent on, as provider:model, one of: "
@@ -740,7 +741,7 @@ def test_each_turns_calls_run_in_that_turns_context(fake_agy, tmp_path, subagent
         agent = Agent(model, model_settings={CWD_SETTING: str(tmp_path)})
 
         @agent.tool_plain
-        def delegate_task(task: str, model: str | None = None):
+        def delegate_task(agent_name: str, task: str, model: str | None = None):
             """Delegate."""
             return turn.get()
 
@@ -767,7 +768,7 @@ def test_a_call_agy_cancels_stops_its_worker(fake_agy, tmp_path, subagent_models
         agent = Agent(model, model_settings={CWD_SETTING: str(tmp_path)})
 
         @agent.tool_plain
-        async def delegate_task(task: str, model: str | None = None):
+        async def delegate_task(agent_name: str, task: str, model: str | None = None):
             """Delegate."""
             try:
                 await asyncio.sleep(30)
@@ -809,68 +810,13 @@ def test_a_crashed_sessions_socket_directory_is_swept(tmp_path, monkeypatch):
     assert not stale.exists() and fresh.exists()
 
 
-def test_a_workers_question_is_shown_to_the_user_once():
-    from types import SimpleNamespace
+def test_steering_at_a_turns_start_is_sent_with_the_prompt(fake_agy, tmp_path):
+    from pcode.steering import STEERING_REMINDER
 
-    from pcode.worker_channel import Question, WorkerHub
-
-    hub = WorkerHub()
-    handle = hub.claim("c1", {"task": "t"})
-    handle.question = Question("Which file?", "edit a.txt")
-    shown: list = []
-    bridge = antigravity_tools.ToolBridge(notify=shown.append)
-    ctx = SimpleNamespace(capabilities={"delegation": SimpleNamespace(hub=hub)})
-    bridge._relay_questions(ctx)
-    bridge._relay_questions(ctx)
-    assert shown == [
-        f"Worker {handle.id} asks: Which file? Without an answer it goes with: edit a.txt\n"
-        f"To answer, send: Answer for {handle.id}: <your answer>"
-    ]
-
-
-def test_a_workers_question_is_not_added_to_its_prompt():
-    from types import SimpleNamespace
-
-    from pcode.isolated_delegation import WorkspaceSubAgents
-
-    class Hub:
-        def take_questions(self):
-            raise AssertionError("would deliver a worker's question to Antigravity")
-
-    request = ModelRequest(parts=[UserPromptPart("hi")])
-    context = SimpleNamespace(model=AntigravityModel("fake-high"), messages=[request])
-    capability = WorkspaceSubAgents.__new__(WorkspaceSubAgents)
-    capability.hub = Hub()
-    asyncio.run(capability.before_model_request(SimpleNamespace(messages=[request]), context))
-    assert [p.content for p in request.parts] == ["hi"]
-
-
-def test_a_delegation_from_antigravity_is_never_detached(monkeypatch):
-    from types import SimpleNamespace
-
-    from pcode.background_delegation import DELEGATE, BackgroundDelegation
-
-    async def go():
-        ctx = SimpleNamespace(model=AntigravityModel("fake-high"))
-
-        async def handler(args):
-            return "inline"
-
-        call = SimpleNamespace(tool_name=DELEGATE, tool_call_id="c1")
-        capability = BackgroundDelegation()
-        return await capability.wrap_tool_execute(
-            ctx, call=call, tool_def=None, args={}, handler=handler
-        )
-
-    # No task group, no steering check: it simply runs.
-    assert asyncio.run(go()) == "inline"
-
-
-def test_steering_at_a_turns_start_carries_no_pcode_reminder(fake_agy, tmp_path):
     queue = ["queued early"]
     run(streamed(steering_agent(AntigravityModel("fake-high"), tmp_path, queue), "hello"))
     texts = [b["text"] for b in prompts(fake_agy)[0]]
-    assert texts == ["hello", "queued early"]
+    assert texts == ["hello", "queued early", STEERING_REMINDER]
 
 
 def test_output_after_the_turn_is_shown(fake_agy, tmp_path, monkeypatch):
@@ -919,18 +865,106 @@ def test_replay_text_lists_turns_and_tool_calls():
     assert '[Assistant ran run_command: {"command": "make"}]' in text
 
 
-def test_side_uses_are_refused():
-    from pcode.agent import side_model
-    from pcode.compaction import CompactionError, summarize
-    from pcode.live import AgentRuntime
+def test_compact_asks_antigravity_and_is_not_a_turn(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-high")
+        nothing = await model.compact([], str(tmp_path))
+        first = await agent_for(model, tmp_path).run("one")
+        sizes = await model.compact(first.all_messages(), str(tmp_path), "keep the plan")
+        await agent_for(model, tmp_path).run("two", message_history=first.all_messages())
+        return nothing, sizes
 
-    with pytest.raises(ValueError, match="prompts you send"):
-        side_model("antigravity:fake-high")
-    with pytest.raises(CompactionError, match="compacts its own context"):
+    nothing, sizes = run(go())
+    assert nothing is None and sizes == (42, 800)
+    # The same session carries on after it: no replay, no new turn in the stamps.
+    texts = [blocks[0]["text"] for blocks in prompts(fake_agy)]
+    assert texts == ["one", "/compact keep the plan", "two"]
+    assert len(fake_agy("session/new")) == 2  # One was the empty conversation's.
+
+
+def test_auto_compaction_runs_before_the_prompt_and_not_again_until_it_grows(fake_agy, tmp_path):
+    notices: list[str] = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.compaction_notice = notices.append
+        agent = agent_for(model, tmp_path)
+        history = (await agent.run("one")).all_messages()
+        model.compact_at, model.used = 500, 900
+        history = (await agent.run("two", message_history=history)).all_messages()
+        model.used = 900  # The fake reported 800 left: barely grown since.
+        await agent.run("three", message_history=history)
+
+    run(go())
+    texts = [blocks[0]["text"] for blocks in prompts(fake_agy)]
+    assert texts == ["one", "/compact", "two", "three"]
+    assert notices == ["Compacting context automatically…"]
+
+
+def test_autocompact_tells_antigravity_when_to_compact():
+    from types import SimpleNamespace
+
+    from pcode.compaction import AutoCompaction
+
+    model = AntigravityModel("fake-low")
+    model._usage_update({"size": 1_000_000})
+    runtime = SimpleNamespace(
+        auto_compact=True, auto_compact_limit=200_000, compaction_notice=lambda text: None
+    )
+    capability = AutoCompaction(runtime, SimpleNamespace(run_id="r"))
+    context = SimpleNamespace(model=model, model_settings={}, messages=[])
+    asyncio.run(capability.before_model_request(None, context))
+    assert model.compact_at == 200_000
+    runtime.auto_compact = False
+    asyncio.run(capability.before_model_request(None, context))
+    assert model.compact_at is None
+
+
+def test_plan_mode_puts_the_session_in_antigravitys_own(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = agent_for(model, tmp_path)
+        model.plan_mode = True
+        history = (await agent.run("one")).all_messages()
+        history = (await agent.run("two", message_history=history)).all_messages()
+        model.plan_mode = False
+        await agent.run("three", message_history=history)
+
+    run(go())
+    assert [e["params"]["modeId"] for e in fake_agy("session/set_mode")] == ["plan", "default"]
+
+
+def test_a_plain_side_job_is_sent_its_instructions_and_its_process_expires(
+    fake_agy, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(antigravity, "SIDE_IDLE", 0.1)
+
+    async def go():
+        model = AntigravityModel("fake-high", side=True)
+        settings = {CWD_SETTING: str(tmp_path)}
+        await Agent(model, instructions="Write a title.", model_settings=settings).run("hello")
+        connection = model._session.connection
+        for _ in range(100):
+            if not connection.alive:
+                break
+            await asyncio.sleep(0.05)
+        return connection.alive
+
+    assert run(go()) is False
+    assert [block["text"] for block in prompts(fake_agy)[0]] == ["Write a title.", "hello"]
+
+
+def test_side_uses_get_a_session_of_their_own_but_it_is_never_a_worker():
+    from pcode.agent import side_model, subagent_menu, worker_model
+    from pcode.compaction import CompactionError, summarize
+
+    assert side_model("antigravity:fake-high").model._side
+    with pytest.raises(ValueError, match="delegated worker"):
+        worker_model("antigravity:fake-high")
+    assert subagent_menu(["antigravity:fake-high"])[0] == {}
+    # The conversation's own session compacts itself instead (`/compact`).
+    with pytest.raises(CompactionError, match="use /compact"):
         asyncio.run(summarize([], model=AntigravityModel("fake-high")))
-    runtime = AgentRuntime(Agent(AntigravityModel("fake-high")))
-    with pytest.raises(ValueError, match="prompts you send"):
-        asyncio.run(runtime.aside("what changed?", user_initiated=False))
 
 
 def test_btw_runs_in_separate_session_with_replay_and_reuses_for_follow_up(fake_agy, tmp_path):
@@ -1022,7 +1056,7 @@ def test_btw_explicit_antigravity_model_handles_mid_tool_loop_context(fake_agy, 
             ModelResponse(parts=[ToolCallPart("read_file", {"path": "x.py"}, "c1")]),
             ModelRequest(parts=[ToolReturnPart("read_file", "print(1)", "c1")]),
         ]
-        chosen = side_model("antigravity:fake-low", allow_antigravity=True, side=True)
+        chosen = side_model("antigravity:fake-low")
         return await runtime.aside("is x.py right?", model=chosen)
 
     reply = run(go())
@@ -1042,7 +1076,7 @@ def test_btw_retires_side_process_on_failure_close_and_summarize(fake_agy, tmp_p
     async def go():
         runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
         # Explicit $antigravity: model that fails mid-turn retires its connection.
-        chosen = side_model("antigravity:fake-low", allow_antigravity=True, side=True)
+        chosen = side_model("antigravity:fake-low")
         with pytest.raises(AntigravityError):
             await runtime.aside("CRASH", model=chosen)
         await asyncio.gather(*list(antigravity._background), return_exceptions=True)
@@ -1240,7 +1274,7 @@ def test_usage_update_ignores_malformed_and_handles_idle_updates(monkeypatch):
     assert context_window(model) == 100_000
 
 
-def test_compact_cap_is_ignored_for_antigravity_footer():
+def test_the_compact_cap_applies_to_antigravity_too():
     from types import SimpleNamespace
 
     from pcode.controller import SessionController
@@ -1259,9 +1293,8 @@ def test_compact_cap_is_ignored_for_antigravity_footer():
     controller.runtime = runtime
     controller.startup_pending = False
     controller.startup_error = None
-    assert controller.compact_cap() is None
-    assert controller.autocompact_state() == "managed by Antigravity"
-    assert controller.context_label() == " · 0/1.05m"
+    assert controller.compact_cap() == 100_000
+    assert "100k" in controller.autocompact_state()
 
 
 def test_session_info_update_titles_antigravity_session_end_to_end(fake_agy, tmp_path, monkeypatch):

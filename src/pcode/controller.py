@@ -1030,11 +1030,8 @@ class SessionController:
         idle: a job that ended mid-turn after the last request is included,
         because nothing else is going to deliver it.
         """
-        from pcode.models import user_only
-
         registry = getattr(self.runtime, "jobs", None)
-        # A model that hears only the user can't be woken by pcode's notice.
-        if registry is None or not self.model or user_only(self.model):
+        if registry is None or not self.model:
             return None
         wakeable = [
             job
@@ -2351,20 +2348,11 @@ class SessionController:
         """The token cap automatic compaction honors right now, if any."""
         if not getattr(self.runtime, "auto_compact", False):
             return None
-        from pcode.models import user_only
-
-        resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
-        if user_only(resolved or self.model):
-            return None
         return getattr(self.runtime, "auto_compact_limit", None)
 
     def autocompact_state(self) -> str:
         from pcode.context_usage import compact_tokens
-        from pcode.models import user_only
 
-        resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
-        if user_only(resolved or self.model):
-            return "managed by Antigravity"
         if not getattr(self.runtime, "auto_compact", False):
             return "off"
         cap = self.compact_cap()
@@ -3311,10 +3299,11 @@ class SessionController:
         `prompt` is the session's first prompt when the caller has it; without
         one it is read from the journal.
         """
-        from pcode.models import user_only
+        from pcode.models import runs_own_loop
 
         session = getattr(self.runtime, "session", None)
-        if session is None or not self.model or user_only(self.model):
+        # Antigravity titles its own session (`AgentRuntime.title_notice`).
+        if session is None or not self.model or runs_own_loop(self.model):
             return
         info = session.info
         if info.name or info.title or info.id in self._naming_tried:
@@ -3755,9 +3744,7 @@ class SessionController:
             return follows.reply
         messages = await self.runtime.side_history(follows.id)
         chosen = (
-            await self.target_options(
-                SideTarget(follows.model, follows.effort), allow_antigravity=True, side=True
-            )
+            await self.target_options(SideTarget(follows.model, follows.effort))
             if follows.model or follows.effort
             else {}
         )
@@ -3814,9 +3801,7 @@ class SessionController:
         if effort_setting(name, resolved) is None:
             raise ValueError(effort_unavailable(name))
 
-    async def target_options(
-        self, target: SideTarget, *, allow_antigravity: bool = False, side: bool = False
-    ) -> dict:
+    async def target_options(self, target: SideTarget) -> dict:
         """How a run asks `target`: `AgentRuntime.aside`/`stream` keyword arguments.
 
         Another model is resolved now, so a bad name fails before anything is
@@ -3827,16 +3812,7 @@ class SessionController:
         from pcode.agent import side_model, with_effort
 
         if target.model not in ("", self.model):
-            if allow_antigravity and target.model.startswith("antigravity:"):
-                resolved = await asyncio.to_thread(
-                    side_model,
-                    target.model,
-                    target.effort,
-                    allow_antigravity=True,
-                    side=side,
-                )
-            else:
-                resolved = await asyncio.to_thread(side_model, target.model, target.effort)
+            resolved = await asyncio.to_thread(side_model, target.model, target.effort)
             return {"model": resolved}
         if not target.effort:
             return {}
@@ -3856,10 +3832,7 @@ class SessionController:
         """
         models = models or [SideTarget()]
         others = [target for target in models if target.model not in ("", self.model)]
-        options = [
-            await self.target_options(target, allow_antigravity=True, side=True)
-            for target in models
-        ]
+        options = [await self.target_options(target) for target in models]
         labels = model_labels(models)
         tree = getattr(self.runtime, "tree", None)
         for target, chosen in zip(models, options):
@@ -3916,10 +3889,7 @@ class SessionController:
                     temporary_after = after_reply
                 chosen = {**chosen, "after": after_reply}
             if target is not None:
-                chosen = {
-                    **chosen,
-                    **await self.target_options(target, allow_antigravity=True, side=True),
-                }
+                chosen = {**chosen, **await self.target_options(target)}
             try:
                 result = await self.runtime.aside(question, report=report, **chosen)
             except BaseException:

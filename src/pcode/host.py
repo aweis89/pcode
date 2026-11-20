@@ -679,7 +679,7 @@ class SessionHost:
                     target = SideTarget(name, effort)
                     controller.check_effort(target)
                     options = await controller.target_options(target)
-                reply = await runtime.aside(cleaned, user_initiated=False, **options)
+                reply = await runtime.aside(cleaned, **options)
         finally:
             self._host_asides -= 1
         self.active_at = time.monotonic()

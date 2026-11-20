@@ -887,6 +887,28 @@ finished turn) off this model. Traps found while building it:
   with `python -I`, relaying to a Unix socket in the pcode process, where calls
   run through the live turn's `tool_manager.handle_call`.
 
+- What pcode may send (decided 2026-11): the forum ruling asks for single-user,
+  interactive use of the unmodified binary with its own sign-in, and bans token
+  proxying and wrapping `agy` in another agent's loop. It does not ban a client
+  prompting on the session's own events, which T3 Code (the client it approves
+  by name) does. So job and worker notices, wake turns, background results,
+  `/continue` and side sessions (`/btw`, titles, summaries, advisor) are all
+  sent. The one refusal left is `WORKER_REFUSAL`: Antigravity as a worker under
+  another model. T3 runs the same `agy` CLI (managed install or a manual
+  `agy` path), not the registry's separate `agy_acp_server.par`.
+- `/compact` sent as a prompt runs agy's own compaction (no reply text; the
+  session keeps its memory). It is not counted in pcode's turn stamps. The
+  `usage_update` right after reports the compaction request itself, which in a
+  small session exceeds what it freed.
+- `session/new` returns `modes` (`default`, `accept-edits`, `auto`, `plan`).
+  `session/set_mode` to `plan` makes agy write its own
+  `implementation_plan.md` under `brain/` and wait; it leaves plan mode itself
+  once the user approves, so pcode sets the mode only when its own plan mode
+  changes.
+- A request's `BackgroundToolResultPart` (a detached or background worker's
+  result) and tool results left by another model are rendered as text in
+  `user_prompt`; agy made none of those calls.
+
 `tests/test_antigravity.py` runs the model against `tests/fake_agy.py`, a
 scripted ACP server installed on `PATH` as `agy`.
 

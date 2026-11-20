@@ -487,7 +487,6 @@ class AgentRuntime:
         after: SideReply | None = None,
         fresh: bool = False,
         framing: Callable[[str], str] | None = None,
-        user_initiated: bool = True,
     ) -> SideReply:
         """Answer `question` beside the conversation, recording nothing.
 
@@ -542,10 +541,8 @@ class AgentRuntime:
         target_model = model.model if model is not None else agent.model
         created_side_model = None
         if getattr(target_model, "system", None) == "antigravity":
-            from pcode.antigravity import SIDE_REFUSAL, AntigravityModel
+            from pcode.antigravity import AntigravityModel
 
-            if not user_initiated:
-                raise ValueError(SIDE_REFUSAL)
             # Never share the main conversation's AntigravityModel: its lock is
             # held mid-turn and its session would be polluted by the side chat.
             if model is None:
@@ -838,6 +835,15 @@ class AgentRuntime:
         """Persist a new branch-local context checkpoint before publishing it."""
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
+        from pcode.antigravity import unwrap
+
+        if (native := unwrap(self.agent.model)) is not None:
+            from pcode.compaction import CompactionResult
+
+            sizes = await native.compact(self.history, str(self._workspace_dir()), focus)
+            if sizes is None:
+                return CompactionResult(self.history, 0, 0, False)
+            return CompactionResult(self.history, sizes[0] or 0, sizes[1] or 0, False, native=True)
         usage = RunUsage()
         # Size the kept history and summary to the autocompact cap, as automatic
         # compaction does, or the result can land just under it and recompact.
@@ -1012,13 +1018,6 @@ class AgentRuntime:
             raise SessionError(self.recovery_blocked)
         send = prompt
         request = ""
-        if send is None and getattr(self.agent.model, "system", None) == "antigravity":
-            # It would resend the prompt, or a briefing pcode wrote, to
-            # Antigravity on the user's behalf; see `pcode.antigravity`.
-            raise SessionError(
-                "/continue isn't available with Antigravity: send a prompt instead "
-                "(it remembers the interrupted turn)."
-            )
         if send is None:
             original = self.resend_prompt()
             node = self.tree.nodes[self.tree.active]

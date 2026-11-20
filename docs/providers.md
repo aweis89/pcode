@@ -310,26 +310,30 @@ consequences:
   Antigravity its `delegate_task` tool (and `manage_worker`), so Antigravity
   can ask for, say, a Claude reviewer or an OpenAI second opinion. The worker
   runs in pcode with pcode's tools, and its report goes back to Antigravity.
-  The transcript notes when one starts and finishes. These workers don't
-  appear in `/agents`, and a worker's question shows up as a note for you
-  rather than going to Antigravity. You can reply with `Answer for w1: …`
-  for Antigravity to pass on; unanswered, the worker goes with its own
-  fallback after a while. A worker never runs on `antigravity:`
-  itself. When Antigravity names no model, the worker uses the first entry in
-  your `subagent_models` setting; with none set, Antigravity has to name one.
-  These workers always run in the foreground, and only while a pcode turn is
-  running, so a background Antigravity sub-agent can't start one after the
-  turn ends.
-- **Each prompt you send is one Antigravity turn.** pcode never prompts it on
-  its own, so it can't act as an advisor or a delegate, or be summarized by
-  `/compact` (Antigravity compacts its own context). Pick another model for
-  those. `/btw` side questions do work: each thread runs in its own `agy acp`
-  session (without delegation tools) with the conversation replayed as context,
-  so it can run alongside an active turn without touching the main session, and
-  follow-ups continue that side session. Switching to Antigravity with `/model`
-  while another model's turn is still running fails that turn's next step; send
-  a new prompt instead. `/continue` without a message is refused for the same
-  reason.
+  A worker can run in the background: when it finishes, or asks a question,
+  pcode tells Antigravity, which picks the work up again. The transcript notes
+  when a worker starts and finishes; these workers don't appear in `/agents`.
+  When Antigravity names no model, the worker uses the first entry in your
+  `subagent_models` setting; with none set, Antigravity has to name one. It
+  can only start a worker while a pcode turn is running, so a background
+  Antigravity sub-agent can't start one after the turn ends.
+- **It is never a worker itself.** A sub-agent that another model delegates
+  to can't run on `antigravity:`. That would be Antigravity driven by another
+  agent's loop, which Google suspends accounts for.
+- **pcode tells it what it tells any model.** A finished background job, a
+  worker's result or question, and a message you queued all reach Antigravity
+  as prompts, and a finished job can wake it. `/continue` sends "Continue."
+  Switching to Antigravity with `/model` mid-turn hands it the tool results
+  the other model was waiting on, as text.
+- **Side uses run in sessions of their own.** `/btw`, session titles,
+  summaries, and an advisor on an `antigravity:` model each get a separate
+  `agy acp` session (without delegation tools), so they run alongside a turn
+  without touching the conversation's session. A `/btw` thread's follow-ups
+  continue its side session.
+- **`/compact` and `/autocompact` use Antigravity's own compaction.** pcode
+  sends its `/compact` command (before your prompt, once the context reaches
+  the autocompact threshold), and Antigravity summarizes its own session.
+  pcode's transcript is left as it is.
 - **Antigravity runs without asking,** as pcode's own tools do. pcode starts
   it with `--dangerously-skip-permissions`, since otherwise a background
   sub-agent's permission prompt never reaches pcode and the sub-agent stalls,
@@ -343,14 +347,14 @@ consequences:
   signed in with.
 - **Prompts take text and images.** Other attachments are refused.
 - **Messages you send while it works steer the running turn,** as with other
-  models: Antigravity folds each into the work in progress. pcode's own
-  steering reminder isn't added.
+  models: Antigravity folds each into the work in progress.
 - **Background sub-agents report after the turn.** Antigravity's own
   sub-agents and multi-agent commands keep working after it ends the turn, and
   what it says or runs then shows up in the transcript as a note as soon as it
-  arrives. pcode only shows it; nothing is sent back until your next prompt.
-- **Plan mode doesn't apply.** Antigravity has its own planning, and pcode's
-  plan-mode reminder isn't sent to it.
+  arrives. pcode only shows it.
+- **Plan mode is Antigravity's own.** `/plan` switches its session to its
+  plan mode, where it writes a plan of its own (not pcode's plan file) and
+  waits for your go-ahead; leaving plan mode in pcode switches it back.
 
 Conversations carry over: each session keeps one `agy` process, a follow-up
 continues it, and `--continue` reopens the same Antigravity session. After a

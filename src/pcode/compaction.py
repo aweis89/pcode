@@ -166,8 +166,19 @@ class CompactionResult:
     before: int
     after: int
     changed: bool
+    # The model compacted its own context (`antigravity:`): pcode's history is as it was.
+    native: bool = False
 
     def description(self) -> str:
+        if self.native:
+            # Right after, it reports the compaction request itself, which in a
+            # small session is more than it freed.
+            if not self.before or not self.after or self.after >= self.before:
+                return "Antigravity compacted its own context."
+            return (
+                f"Antigravity compacted its own context: ~{compact_tokens(self.before)} "
+                f"→ ~{compact_tokens(self.after)}."
+            )
         if not self.changed:
             return "Nothing to compact: history is already within the recent-context budget."
         return (
@@ -212,10 +223,10 @@ async def summarize(messages, *, model, focus=None, usage=None, window=None, par
     from pcode.openai_region import track
 
     model = track(infer_model(model)) if isinstance(model, str) else model
-    if getattr(model, "system", None) == "antigravity":
-        raise CompactionError(
-            "Antigravity compacts its own context; pcode can't summarize an Antigravity session."
-        )
+    if getattr(model, "system", None) == "antigravity" and not getattr(model, "_side", False):
+        # The conversation's own session compacts itself (`AgentRuntime.compact`);
+        # only a side session can summarize a history handed to it.
+        raise CompactionError("Antigravity compacts its own context; use /compact.")
     await refresh_context(model)
     window = window or effective_window(model)
     keep = min(20_000, window // 8) if window else 12_000
@@ -388,8 +399,21 @@ class AutoCompaction(AbstractCapability):
     async def before_model_request(self, ctx, request_context):
         # Installed on every turn and read per request, so /autocompact applies
         # to the running turn's next request, not only the next turn.
-        # Antigravity compacts its own context (see `summarize`).
-        if not self.runtime.auto_compact or request_context.model.system == "antigravity":
+        from pcode.antigravity import unwrap
+
+        if (native := unwrap(request_context.model)) is not None:
+            # Antigravity compacts its own context: tell it when, and it sends
+            # its `/compact` command before the prompt.
+            native.compaction_notice = self.runtime.compaction_notice
+            native.compact_at = None
+            window = effective_window(request_context.model)
+            if self.runtime.auto_compact and window is not None:
+                reserve = (request_context.model_settings or {}).get("max_tokens") or 0
+                native.compact_at = auto_compaction_threshold(window, reserve)
+                if limit := self.runtime.auto_compact_limit:
+                    native.compact_at = min(native.compact_at, limit)
+            return request_context
+        if not self.runtime.auto_compact:
             return request_context
         # A plain copy: the before-chain's list mirrors appends into the run's
         # history, and copying it (deep or not) would go through those appends.

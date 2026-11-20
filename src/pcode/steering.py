@@ -39,8 +39,8 @@ class Steering(AbstractCapability):
     async def take(self, *, remind: bool = True) -> list:
         """The pending messages, consumed, each as the model is to be sent it.
 
-        `remind=False` leaves out pcode's reminder, for an `antigravity:` model,
-        which must only ever hear what the user wrote.
+        `remind=False` leaves out pcode's reminder, for an `antigravity:` turn
+        the message steers natively (the reminder describes pcode's own loop).
         """
         messages = self.take_messages()
         if self.prepare is not None:
@@ -52,10 +52,7 @@ class Steering(AbstractCapability):
     async def before_model_request(self, ctx, request_context):
         # Append to the framework's request so tool results remain ahead of the
         # new user input and the input is included in persisted message history.
-        from pcode.models import user_only
-
-        remind = not user_only(getattr(request_context, "model", None))
-        for content in await self.take(remind=remind):
+        for content in await self.take():
             run_request(ctx, request_context).parts.append(UserPromptPart(content))
         return request_context
 

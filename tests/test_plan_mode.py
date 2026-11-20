@@ -78,8 +78,14 @@ def test_plan_mode_reminds_until_the_model_exits(tmp_path):
     assert remind(api, [ToolReturnPart("t", "ok", "id")]) == []
     assert remind(api, [UserPromptPart("hi"), UserPromptPart(note)]) == []
     assert remind(api, agent="worker") == []
-    # Antigravity runs its own loop and only hears what the user wrote.
-    assert remind(api, system="antigravity") == []
+    # Antigravity has no pcode plan tools: its session goes to its own plan mode.
+    from pcode.antigravity import AntigravityModel
+
+    native = AntigravityModel("fake")
+    request = ModelRequest(parts=[UserPromptPart("hi")])
+    ctx = SimpleNamespace(agent=SimpleNamespace(name="pcode"), messages=[request])
+    asyncio.run(api.hook(ctx, SimpleNamespace(messages=[request], model=native)))
+    assert native.plan_mode and len(request.parts) == 1
     tool_def = SimpleNamespace(name="exit_plan_mode")
     worker = SimpleNamespace(agent=SimpleNamespace(name="worker"))
     with pytest.raises(ModelRetry):

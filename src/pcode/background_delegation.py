@@ -136,9 +136,7 @@ class AbandonedDelegations(AbstractCapability):
         self.ids = ids
 
     async def before_model_request(self, ctx, request_context):
-        from pcode.models import user_only
-
-        if self.ids and not user_only(request_context.model):
+        if self.ids:
             note = UserPromptPart(abandoned_message(self.ids))
             run_request(ctx, request_context).parts.append(note)
             self.ids.clear()
@@ -237,11 +235,7 @@ class BackgroundDelegation(BackgroundTools):
         raise error
 
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
-        from pcode.models import user_only
-
-        # A detached result reaches the parent as a pcode notice, which a
-        # parent that hears only the user never gets: its calls stay inline.
-        if call.tool_name != DELEGATE or user_only(ctx.model):
+        if call.tool_name != DELEGATE:
             return await handler(args)
         task_id = call.tool_call_id
         # As upstream: taken while the call's response is still the last message.

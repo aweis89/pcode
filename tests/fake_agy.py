@@ -7,7 +7,8 @@ naming the environment's Google variables. A prompt's text picks a script:
 starting, `ALWAYS` offers only "always allow" or "reject", and `BADLINE`
 writes malformed messages before a normal reply. `MCP {"name": ..., "arguments":
 ...}` starts the session's first MCP server as agy does, logs `mcp_tools` and
-`mcp_result`, and replies with the call's result.
+`mcp_result`, and replies with the call's result. `/compact` reports the
+context left and says nothing.
 """
 
 import json
@@ -118,6 +119,13 @@ def prompt(request):
     blocks = [b.get("text", "") for b in params["prompt"] if b.get("type") == "text"]
     text = " ".join(blocks)
     trigger = blocks[-1] if blocks else ""
+    if trigger.startswith("/compact"):
+        # As agy does: no reply text, and the context it reports afterwards.
+        update(session, {"sessionUpdate": "usage_update", "used": 800, "size": 1000})
+        result = {"stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
+        send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        running.remove(request["id"])
+        return
     if trigger.startswith("MCP "):
         call = json.loads(trigger[4:])
         result = call_mcp(
@@ -279,7 +287,11 @@ def main():
             current = {"availableModels": models, "currentModelId": "fake-high"}
             session_id = f"s-{started_sessions()}"
             servers[session_id] = message["params"].get("mcpServers", [])
-            reply = {"result": {"sessionId": session_id, "models": current}}
+            modes = {
+                "currentModeId": "default",
+                "availableModes": [{"id": "default"}, {"id": "plan"}],
+            }
+            reply = {"result": {"sessionId": session_id, "models": current, "modes": modes}}
         elif method == "session/resume" and message["params"]["sessionId"].startswith("gone"):
             reply = {"error": {"code": -32002, "message": "Session not found"}}
         elif method == "session/resume":

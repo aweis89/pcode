@@ -81,12 +81,12 @@ ENV_PROVIDERS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
-def user_only(model) -> bool:
-    """Whether `model` may only be sent what the user wrote: no pcode notices or reminders.
+def runs_own_loop(model) -> bool:
+    """Whether `model`'s own CLI runs the agent loop, with its tools, context and titles.
 
-    `antigravity:` runs its own agent loop on a subscription Google permits
-    only for a front end the user drives (see `pcode.antigravity`). `model` is
-    a model object or a `provider:name` string.
+    True for `antigravity:` (see `pcode.antigravity`): pcode's tools, plan
+    reminders and summaries don't apply to it, and it can't be a worker under
+    another model's loop. `model` is a model object or a `provider:name` string.
     """
     if isinstance(model, str):
         return model.strip().lower().startswith("antigravity:")

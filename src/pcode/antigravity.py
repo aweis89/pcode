@@ -2,19 +2,27 @@
 
 pcode is an Agent Client Protocol front end here, the shape Google approves
 for subscription use: the unmodified `agy acp` server owns the agent loop, its
-tools and its sign-in, and pcode only sends the user's prompt and shows the
-turn. One pcode request is one whole Antigravity turn. Its tool calls come back
-as provider-executed (native) tool parts, and pcode's own tools are never
-offered to it as function tools, so pcode's agent loop ends after every
-response. (Delegation alone is offered the ACP way, as an MCP server
-Antigravity's own loop may call: see `pcode.antigravity_tools`.) A request that
-doesn't end in the user's own prompt (tool results after a mid-turn `/model`
-switch, a bare continuation) is refused rather than sent: pcode must never
-prompt Antigravity on its own. For the same reason `antigravity:` cannot be an
-advisor, a delegation target, or a compaction summarizer (see `side_model` and
-`compaction`). User-initiated `/btw` side questions are allowed: each runs in
-its own `agy acp` session (`side=True`, with no delegation tools) replaying the
-conversation as context, so it never blocks or pollutes the main session.
+tools and its sign-in, and pcode sends prompts and shows the turn. One pcode
+request is one whole Antigravity turn. Its tool calls come back as
+provider-executed (native) tool parts, and pcode's own tools are never offered
+to it as function tools, so pcode's agent loop ends after every response
+unless pcode has something to tell it. (Delegation alone is offered the ACP
+way, as an MCP server Antigravity's own loop may call: see
+`pcode.antigravity_tools`.)
+
+What pcode sends is what it would send any model in the user's session, as
+other ACP clients do: the user's prompts, and the session's own events (a
+finished background job or worker, a worker's question, a continuation),
+written out as text since Antigravity has no pcode tool calls for them to
+answer. Side uses (`/btw`, titles, summaries, an advisor) each run in their
+own `agy acp` session (`side=True`, with no delegation tools), so they never
+block or pollute the conversation's. The one thing it is never used for is a
+worker under another model's loop (`WORKER_REFUSAL`): that is the "agy
+wrapped in a third-party agent loop" Google suspends accounts for.
+
+Context is Antigravity's own: `/compact` and automatic compaction send its
+`/compact` command, and pcode's plan mode switches the session to its `plan`
+mode.
 
 One `agy acp` process serves one conversation. Each response is stamped
 `<session ID>#<turn>`, and a ledger in pcode's state directory records each
@@ -43,6 +51,7 @@ from typing import Any
 from pydantic_ai import RunContext
 from pydantic_ai.messages import (
     BinaryContent,
+    DataCapabilityPart,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -50,6 +59,7 @@ from pydantic_ai.messages import (
     NativeToolCallPart,
     NativeToolReturnPart,
     RetryPromptPart,
+    TextContent,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -70,15 +80,15 @@ PROTOCOL_VERSION = 1
 # subscription it signed in with.
 SCRUBBED_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
 SCRUBBED_PREFIXES = ("GOOGLE_CLOUD_", "GOOGLE_GENAI_", "GOOGLE_VERTEX_", "GOOGLE_GEMINI_")
-SIDE_REFUSAL = (
-    "Antigravity runs only for prompts you send (the conversation or /btw): "
-    "it can't be an advisor, a compaction summarizer, or a delegated worker. "
-    "Pick another model for those."
+WORKER_REFUSAL = (
+    "Antigravity can't run as a delegated worker under another model's loop. "
+    "Pick another model for the worker."
 )
-OWN_PROMPTS_ONLY = (
-    "Antigravity only answers prompts you send: it can't take over a turn already "
-    "running on another model or continue one without a new message. Send a prompt."
-)
+NO_PROMPT = "Antigravity has nothing to answer here: send a prompt."
+# Sent for a continuation that carries no message of its own (`/continue`).
+CONTINUE = "Continue."
+COMPACT_COMMAND = "/compact"
+PLAN_MODE = "plan"
 AUTH_REQUIRED = -32000
 LOGIN_HINT = "Sign in once by running `agy` (or `agy acp --login`) in a terminal."
 REPLAY_INTRO = (
@@ -90,6 +100,8 @@ SIDE_REPLAY_INTRO = (
     "running in the same workspace. Its transcript so far is below for context; answer "
     "only the side question that follows and do not continue or redo the main task."
 )
+# Seconds a side session's process is kept for a follow-up.
+SIDE_IDLE = 120.0
 # How long a cancelled turn may take to report that it stopped.
 CANCEL_GRACE = 10.0
 # How often a running turn checks for the user's steering messages.
@@ -516,6 +528,10 @@ class _Session:
     # (cancelled, or failed partway): pcode keeps such a request but not its
     # partial response, so the history is that many stamps behind.
     interrupted: list[str] = field(default_factory=list)
+    # The mode the session started in, when it offers `PLAN_MODE`, and whether
+    # pcode's plan mode was last applied to it as on.
+    first_mode: str | None = None
+    planning: bool = False
 
 
 def _stamp(session_id: str, turn: int) -> str:
@@ -544,6 +560,16 @@ class AntigravityModel(Model):
         self.title_listener: Callable[[str], None] | None = None
         self._after_turn: list[str] = []
         self._quiet: asyncio.TimerHandle | None = None
+        # The context Antigravity last reported using, in tokens.
+        self.used: int | None = None
+        # Compact before a prompt once `used` reaches this; set per request by
+        # `AutoCompaction`, with the notice it shows.
+        self.compact_at: int | None = None
+        self._compacted_at: int | None = None
+        self._expiry: asyncio.TimerHandle | None = None
+        self.compaction_notice: Callable[[str], None] = lambda text: None
+        # Whether pcode's plan mode is on; set per request by the plan-mode extension.
+        self.plan_mode = False
         from pcode.antigravity_tools import ToolBridge
 
         # pcode's delegation, which Antigravity may call (see antigravity_tools).
@@ -559,6 +585,9 @@ class AntigravityModel(Model):
     def _usage_update(self, update: dict) -> None:
         from pcode.model_metadata import positive_int, record_context_window
 
+        used = update.get("used")
+        if type(used) is int and used >= 0:
+            self.used = used
         size = positive_int(update.get("size"))
         if size is not None:
             record_context_window(self, size, source=SYSTEM)
@@ -620,6 +649,9 @@ class AntigravityModel(Model):
 
     def reset(self) -> None:
         """Drop the live `agy` session for a new conversation, keeping listeners wired."""
+        if self._expiry is not None:
+            self._expiry.cancel()
+            self._expiry = None
         self._detach_idle()
         with contextlib.suppress(RuntimeError):
             asyncio.get_running_loop()
@@ -665,6 +697,19 @@ class AntigravityModel(Model):
 
         # Before the lock or a process: a refusal must cost nothing.
         prompt, interrupted = user_prompt(messages, side=self._side)
+        if self._side and not getattr(model_request_parameters, "function_tools", None):
+            # A plain completion (a title, a summary, an advisor's answer): its
+            # instructions are the task. A side question's are pcode's own
+            # system prompt, about tools Antigravity doesn't have.
+            parts = model_request_parameters.instruction_parts or []
+            task = "\n\n".join(part.content for part in parts) or (
+                getattr(messages[-1], "instructions", None) or ""
+            )
+            if task.strip():
+                prompt = [{"type": "text", "text": task}, *prompt]
+        if self._expiry is not None:
+            self._expiry.cancel()
+            self._expiry = None
         # Anything said since the last turn shows before this one starts.
         self._flush_idle()
         earlier = messages[:-1]
@@ -678,6 +723,8 @@ class AntigravityModel(Model):
             self.tools.begin_turn(run_context)
         try:
             session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
+            if not self._side:
+                await self._ready(session, compact=not replay)
             stream = AntigravityStream(
                 model_request_parameters=model_request_parameters,
                 model_id=self._model_name,
@@ -707,6 +754,10 @@ class AntigravityModel(Model):
         finally:
             if self.tools is not None:
                 self.tools.cancel_calls()
+            if self._side:
+                # Nothing retires a side model made for one job (a title, a
+                # summary); a follow-up after this replays into a new session.
+                self._expiry = asyncio.get_running_loop().call_later(SIDE_IDLE, self.reset)
             if not handed_off:
                 try:
                     # The next prompt waits for a cancelled worker's cleanup.
@@ -714,6 +765,65 @@ class AntigravityModel(Model):
                         await asyncio.shield(self.tools.drained())
                 finally:
                     self._lock.release()
+
+    async def _ready(self, session: _Session, *, compact: bool) -> None:
+        """Before a prompt: put the session in pcode's mode, and make room in its context."""
+        connection = session.connection
+        try:
+            if session.first_mode is not None and self.plan_mode != session.planning:
+                # Only when pcode's plan mode changes: Antigravity leaves its
+                # own once the user approves the plan, and must not be put back.
+                wanted = PLAN_MODE if self.plan_mode else session.first_mode
+                session.planning = self.plan_mode
+                # A refusal leaves the mode alone; the prompt still goes.
+                with contextlib.suppress(AntigravityError):
+                    await connection.request(
+                        "session/set_mode", {"sessionId": session.session_id, "modeId": wanted}
+                    )
+            limit, used = self.compact_at, self.used
+            # Not again until the context has grown: a compaction that freed
+            # little would otherwise rerun before every prompt.
+            grown = self._compacted_at is None or (used or 0) > self._compacted_at * 1.2
+            if compact and limit is not None and used is not None and used >= limit and grown:
+                self.compaction_notice("Compacting context automatically…")
+                with contextlib.suppress(AntigravityError):
+                    await self._compact(session)
+        except BaseException:
+            # Cancelled partway: the session may be mid-command, so start it over.
+            _spawn(self._drop())
+            raise
+
+    async def _compact(self, session: _Session, focus: str = "") -> None:
+        """Have Antigravity compact its own context. Not a turn of the conversation."""
+        text = f"{COMPACT_COMMAND} {focus}".strip()
+        await session.connection.request(
+            "session/prompt",
+            {"sessionId": session.session_id, "prompt": [{"type": "text", "text": text}]},
+        )
+        self._compacted_at = self.used
+
+    async def compact(
+        self, history: list[ModelMessage], cwd: str, focus: str = ""
+    ) -> tuple[int | None, int | None] | None:
+        """`/compact`: the context used before and after, or None with nothing to compact.
+
+        `history` finds the conversation's session, resuming it after a restart.
+        """
+        earlier, asked = list(history), []
+        if earlier and isinstance(earlier[-1], ModelRequest):
+            asked = _asked(earlier[-1].parts)
+        async with self._lock:
+            session, replay = await self._prepare(earlier, asked, cwd)
+            if replay or not session.turns:
+                # A session that never saw this conversation holds none of it.
+                return None
+            before = self.used
+            try:
+                await self._compact(session, focus)
+            except BaseException:
+                _spawn(self._drop())
+                raise
+            return before, self.used
 
     async def _settle(self, stream: AntigravityStream) -> None:
         try:
@@ -814,6 +924,12 @@ class AntigravityModel(Model):
         connection.idle = self._idle_update
         turns = stamp[1] if not replay and stamp is not None else 0
         self._session = _Session(connection, session_id, turns)
+        if replay:
+            # A new session: nothing is known about its context yet.
+            self.used = self._compacted_at = None
+        modes = result.get("modes") or {}
+        if any(m.get("id") == PLAN_MODE for m in modes.get("availableModes") or []):
+            self._session.first_mode = modes.get("currentModeId")
         intro = SIDE_REPLAY_INTRO if self._side else REPLAY_INTRO
         blocks = (
             [{"type": "text", "text": replay_text(earlier, intro=intro)}]
@@ -859,11 +975,13 @@ def _asked_blocks(blocks: list[dict]) -> str:
 
 
 def user_prompt(messages: list[ModelMessage], *, side: bool = False) -> tuple[list[dict], list]:
-    """The user's new prompt as ACP content blocks; refuses anything else.
+    """The new request as ACP content blocks.
 
-    Only a request carrying the user's own message may reach Antigravity.
-    Tool results (a turn started on another model), retry prompts, and a
-    continuation with no new message would be pcode prompting it by itself.
+    Besides the user's message it may hold what pcode tells any model: job
+    and worker notices, a background result, tool results a turn on another
+    model left (after a mid-turn `/model`), a retry prompt. Antigravity made
+    none of those calls, so each is written out as text. A continuation with
+    no message at all (`/continue`) sends `CONTINUE`.
 
     A request a cancelled or failed turn left unanswered ends in one of pcode's
     markers (see `live.mark_unanswered`), and Pydantic AI merges the next prompt
@@ -877,7 +995,7 @@ def user_prompt(messages: list[ModelMessage], *, side: bool = False) -> tuple[li
     """
     request = messages[-1] if messages else None
     if not isinstance(request, ModelRequest):
-        raise AntigravityError(OWN_PROMPTS_ONLY)
+        raise AntigravityError(NO_PROMPT)
     markers = _markers()
     marker = max(
         (
@@ -897,26 +1015,45 @@ def user_prompt(messages: list[ModelMessage], *, side: bool = False) -> tuple[li
             default=-1,
         )
         if last_user < 0:
-            raise AntigravityError(OWN_PROMPTS_ONLY)
+            raise AntigravityError(NO_PROMPT)
         interrupted, parts = list(request.parts[:last_user]), request.parts[last_user:]
     else:
         interrupted, parts = list(request.parts[: marker + 1]), request.parts[marker + 1 :]
-    if any(isinstance(part, (ToolReturnPart, RetryPromptPart)) for part in parts):
-        raise AntigravityError(OWN_PROMPTS_ONLY)
     blocks: list[dict] = []
     unsupported: list[str] = []
     for part in parts:
         if isinstance(part, UserPromptPart):
             more, refused = content_blocks(part.content)
-            blocks += more
-            unsupported += refused
+        elif isinstance(part, ToolReturnPart):
+            text = f"[pcode] {part.tool_name} returned:\n{part.model_response_str()}"
+            more, refused = [{"type": "text", "text": text}], []
+        elif isinstance(part, RetryPromptPart):
+            more, refused = [{"type": "text", "text": part.model_response()}], []
+        elif isinstance(part, DataCapabilityPart):
+            more, refused = _data_blocks(part)
+        else:
+            continue  # Instructions for pcode's own loop, which Antigravity doesn't run.
+        blocks += more
+        unsupported += refused
     if unsupported:
         raise AntigravityError(
             f"Antigravity can take text and images here, not {', '.join(sorted(set(unsupported)))}."
         )
     if not blocks:
-        raise AntigravityError(OWN_PROMPTS_ONLY)
+        blocks = [{"type": "text", "text": CONTINUE}]
     return blocks, interrupted
+
+
+def _data_blocks(part: DataCapabilityPart) -> tuple[list[dict], list[str]]:
+    """Something a capability hands the model (a background tool's result), labelled as such."""
+    content = part.model_content()
+    if not isinstance(content, (str, list, tuple)):
+        content = json.dumps(content, default=str)
+    blocks, refused = content_blocks(content)
+    tool = getattr(part, "tool_name", None)
+    failed = " (failed)" if getattr(part, "outcome", None) == "failed" else ""
+    label = f"[pcode] Result of the {tool} call that was running{failed}:" if tool else "[pcode]"
+    return [{"type": "text", "text": label}, *blocks], refused
 
 
 def content_blocks(content) -> tuple[list[dict], list[str]]:
@@ -924,6 +1061,8 @@ def content_blocks(content) -> tuple[list[dict], list[str]]:
     blocks: list[dict] = []
     unsupported: list[str] = []
     for item in [content] if isinstance(content, str) else list(content):
+        if isinstance(item, TextContent):
+            item = item.content
         if isinstance(item, str):
             if item.strip():
                 blocks.append({"type": "text", "text": item})
@@ -1354,6 +1493,15 @@ class AntigravityStream(StreamedResponse):
         except Exception:
             return False
         return True
+
+
+def unwrap(model: Any) -> AntigravityModel | None:
+    """The `AntigravityModel` behind `model` and any wrappers around it, if there is one."""
+    for _ in range(8):
+        if isinstance(model, AntigravityModel) or model is None:
+            return model
+        model = getattr(model, "wrapped", None)
+    return None
 
 
 def antigravity_model(model: str, *, side: bool = False) -> AntigravityModel:

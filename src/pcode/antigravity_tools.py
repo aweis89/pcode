@@ -4,21 +4,20 @@ Antigravity's own agent loop may call pcode's `delegate_task`, to run a pcode
 worker on another provider (`claude:`, `openai-codex:`, ...), and
 `manage_worker`, to answer or message one. This is the ordinary ACP shape: the
 client lists MCP servers in `session/new` and the agent decides when to call
-them, so pcode still never prompts Antigravity. A call runs through the
-current turn's tool manager, as the model's own call would, so it is pcode's
-real delegation and counts against the turn. Nothing reaches Antigravity
-except each call's result; the user sees notes about each worker instead of
-the worker panel, which only a parent's own tool call feeds.
+them. A call runs through the current turn's tool manager, as the model's own
+call would, so it is pcode's real delegation and counts against the turn:
+it can run in the background or be detached, and its result or a worker's
+question then reaches Antigravity as the turn's next prompt, as it reaches
+any model. The user sees a note when a worker starts and finishes, since the
+worker panel is fed only by a parent's own tool calls.
 
 Each session's `agy` starts `antigravity_relay.py`, which joins this bridge's
 Unix socket. A call made while no pcode turn is running (a background
 sub-agent after the turn ended) is refused: there is no run to execute it in.
 
-Workers never run on `antigravity:`: a call always names a model (the first
-`subagent_models` entry when Antigravity names none, since an omitted model
-means the session's own), Antigravity's are refused here as `side_model`
-refuses them, and `run_in_background` is not offered, since a background result reaches the
-parent as a pcode notice Antigravity must not be sent.
+Workers never run on `antigravity:` (`WORKER_REFUSAL`): a call always names a
+model, the first `subagent_models` entry when Antigravity names none, since
+an omitted model means the session's own.
 """
 
 from __future__ import annotations
@@ -44,13 +43,12 @@ from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDenied
 
-from pcode.antigravity import SIDE_REFUSAL
-from pcode.models import user_only
+from pcode.antigravity import WORKER_REFUSAL
+from pcode.models import runs_own_loop
 
 SERVER_NAME = "pcode"
 EXPOSED = ("delegate_task", "manage_worker")
-# Seconds between checks for a running worker's question.
-QUESTION_POLL = 0.5
+DEFAULT_AGENT = "worker"
 RELAY = Path(__file__).with_name("antigravity_relay.py")
 SOCKET_DIR_PREFIX = "pcode-agy-"
 # A brief with long context is one JSON line; asyncio's default cap is 64 KiB.
@@ -333,58 +331,46 @@ class ToolBridge:
         about = arguments.get("purpose") or " ".join(str(arguments.get("task", "")).split())
         worker = f"pcode worker on {arguments['model']}"
         self.notify(f"Antigravity started a {worker}: {about[:100]}")
-        task = asyncio.ensure_future(handle())
         try:
-            while not task.done():
-                await asyncio.wait({task}, timeout=QUESTION_POLL)
-                self._relay_questions(ctx)
-            text = _text(task.result())
+            text = _text(await handle())
         except BaseException:
-            task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
             self.notify(f"The {worker} stopped without a report.")
             raise
-        self.notify(f"The {worker} finished; Antigravity has its report.")
-        return text
-
-    def _relay_questions(self, ctx: RunContext[Any]) -> None:
-        """Show the user a worker's question; Antigravity hears only their reply."""
         from pcode.worker_channel import hub_for
 
         hub = hub_for(ctx)
-        for handle in hub.handles() if hub is not None else ():
-            question = handle.question
-            if question is None or question.delivered:
-                continue
-            question.delivered = True
-            fallback = (
-                f" Without an answer it goes with: {question.fallback}" if question.fallback else ""
-            )
-            self.notify(
-                f"Worker {handle.id} asks: {question.text}{fallback}\n"
-                f"To answer, send: Answer for {handle.id}: <your answer>"
-            )
+        still_running = hub is not None and any(
+            handle.call_id == call.tool_call_id and handle.running for handle in hub.handles()
+        )
+        # In the background or detached, its result reaches Antigravity later.
+        if not still_running:
+            self.notify(f"The {worker} finished; Antigravity has its report.")
+        return text
 
 
 def offered_models() -> list[str]:
     """The models a sub-agent may run on: the /model picker's, less Antigravity's."""
     from pcode.models import active_providers, model_catalog
 
-    return [name for name in model_catalog(active_providers(None)) if not user_only(name)]
+    return [name for name in model_catalog(active_providers(None)) if not runs_own_loop(name)]
 
 
 def default_model() -> str | None:
     """The first `subagent_models` entry Antigravity may delegate to."""
     from pcode.preferences import subagent_models
 
-    return next((name for name in subagent_models() if not user_only(name)), None)
+    return next((name for name in subagent_models() if not runs_own_loop(name)), None)
 
 
 def _delegation_schema(schema: dict) -> dict:
     properties = schema.setdefault("properties", {})
-    properties.pop("run_in_background", None)
-    required = [key for key in schema.get("required", []) if key != "run_in_background"]
+    # Antigravity never sees pcode's list of sub-agents, and guesses a name.
+    required = [key for key in schema.get("required", []) if key != "agent_name"]
+    properties["agent_name"] = {
+        "type": "string",
+        "default": DEFAULT_AGENT,
+        "description": f"Which pcode sub-agent runs it; {DEFAULT_AGENT!r} is the general one.",
+    }
     default = default_model()
     offered = ", ".join(offered_models())
     properties["model"] = {
@@ -402,13 +388,13 @@ def _delegation_schema(schema: dict) -> dict:
 
 
 def _delegation_arguments(arguments: dict) -> dict:
-    """`arguments` made safe to run for Antigravity: in the foreground, never on its model."""
-    arguments.pop("run_in_background", None)
+    """`arguments` with a model the worker may run on: never Antigravity's own."""
+    arguments.setdefault("agent_name", DEFAULT_AGENT)
     model = arguments.get("model") or default_model()
     if not model:
         # Omitted, the worker would run on the session's model: Antigravity.
         raise RuntimeError(NO_MODEL)
-    if user_only(model):
-        raise RuntimeError(f"Cannot use {model}: {SIDE_REFUSAL}")
+    if runs_own_loop(model):
+        raise RuntimeError(f"Cannot use {model}: {WORKER_REFUSAL}")
     arguments["model"] = model
     return arguments

@@ -568,9 +568,7 @@ class SideModel:
     settings: dict | None
 
 
-def side_model(
-    name: str, effort: str = "", *, allow_antigravity: bool = False, side: bool = False
-) -> SideModel:
+def side_model(name: str, effort: str = "") -> SideModel:
     """Resolve `name` now, failing with a clear message rather than on first request.
 
     The settings are the ones the model would get as the conversation's model:
@@ -584,14 +582,11 @@ def side_model(
     from pcode.preferences import effort_for
 
     if name.startswith("antigravity:"):
-        if not allow_antigravity:
-            from pcode.antigravity import SIDE_REFUSAL
-
-            raise ValueError(f"Cannot use {name}: {SIDE_REFUSAL}")
         from pcode.antigravity import antigravity_model
 
         try:
-            resolved = antigravity_model(name, side=side)
+            # Its own `agy` session, never the conversation's.
+            resolved = antigravity_model(name, side=True)
         except ValueError as error:
             raise ValueError(f"Cannot use {name}: {error}") from error
         from pcode.openai_region import track
@@ -620,6 +615,17 @@ def side_model(
     )
 
 
+def worker_model(name: str) -> SideModel:
+    """`side_model`, for a model that runs a worker: never one that runs its own loop."""
+    from pcode.models import runs_own_loop
+
+    if runs_own_loop(name):
+        from pcode.antigravity import WORKER_REFUSAL
+
+        raise ValueError(f"Cannot use {name}: {WORKER_REFUSAL}")
+    return side_model(name)
+
+
 def subagent_menu(names: Sequence[str]) -> tuple[dict[str, ModelOption], list[str]]:
     """The `delegate_task` model menu for `names`, and why any name was left out.
 
@@ -631,7 +637,7 @@ def subagent_menu(names: Sequence[str]) -> tuple[dict[str, ModelOption], list[st
     problems: list[str] = []
     for name in names:
         try:
-            chosen = side_model(name)
+            chosen = worker_model(name)
         except ValueError as error:
             problems.append(str(error))
             continue
