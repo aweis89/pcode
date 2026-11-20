@@ -104,7 +104,12 @@ def load(name: str):
 
 def svg(ansi: str, width: int, title: str, look: Look, progress: tuple | None) -> str:
     console = Console(
-        record=True, width=width, file=io.StringIO(), force_terminal=True, color_system="truecolor"
+        record=True,
+        width=width,
+        file=io.StringIO(),
+        force_terminal=True,
+        color_system="truecolor",
+        _environ={**os.environ, "TERM": "xterm-256color"},
     )
     # Decoded whole, then split: capture-pane sets a style once and lets it run
     # on into the next line, as a wrapped paragraph does on a real terminal.
@@ -312,6 +317,8 @@ def setup(iterm: bool) -> tuple[Look, dict]:
         "terminal_progress": "on",
         # A still of `arc` catches a broken circle; every braille frame reads whole.
         "spinner": "dots",
+        # Scripted scenes call read_file/grep directly rather than via code_mode.
+        "code_mode": "off",
     }
     if iterm:
         look = profile_look()
