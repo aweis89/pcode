@@ -26,11 +26,16 @@ _CPR = re.compile(rb"\x1b\[(\d+);(\d+)R")
 # one write, so the glyph is gone before the terminal can show it; the
 # replies still measure it because a terminal answers in order.
 _WIDTH_PROBE = "\x1b[6n\x1b7─\x1b[6n\x1b8\x1b[K".encode()
+_CURSOR_PROBE = b"\x1b[6n"
 # The probe's position reports that had not arrived when it gave up waiting.
 # They are the first the editor will see, ahead of its own, so it drops them.
 _unanswered_cprs = 0
 # The probe's answer: True when `─` took two cells, None when unmeasured.
 _ambiguous_wide: bool | None = None
+# The cursor's 1-based row before the welcome banner printed, when a startup
+# CPR answered in time. Pre-seeding prompt_toolkit's renderer with it avoids
+# the first-frame jump when CPR arrives after the initial draw.
+_cursor_row: int | None = None
 
 
 # The last background the terminal reported, as `#rrggbb` with the theme it
@@ -51,18 +56,37 @@ def ambiguous_wide() -> bool | None:
     return _ambiguous_wide
 
 
+def take_initial_cursor_row() -> int | None:
+    """Return and clear the 1-based cursor row measured during startup, if any."""
+    global _cursor_row
+    row, _cursor_row = _cursor_row, None
+    return row
+
+
 def _measure_width(response: bytearray) -> bool:
     """Take the probe's two position reports out of `response`; whether both were there."""
-    global _ambiguous_wide
+    global _ambiguous_wide, _cursor_row
     reports = list(_CPR.finditer(response))[:2]
     if len(reports) < 2:
         return False
     (row, before), (row_after, after) = ((int(match[1]), int(match[2])) for match in reports)
+    _cursor_row = row
     # A glyph that wrapped onto the next row measures nothing.
     if row == row_after and after - before in (1, 2):
         _ambiguous_wide = after - before == 2
     for match in reversed(reports):
         del response[match.start() : match.end()]
+    return True
+
+
+def _measure_cursor(response: bytearray) -> bool:
+    """Take one position report out of `response`; whether it was there."""
+    global _cursor_row
+    match = _CPR.search(response)
+    if match is None:
+        return False
+    _cursor_row = int(match[1])
+    del response[match.start() : match.end()]
     return True
 
 
@@ -101,8 +125,11 @@ def _terminal():
     return handle.fileno(), handle.fileno(), handle
 
 
-def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> str | None:
-    global _unanswered_cprs
+def _query_background(
+    timeout: float = 0.15, *, probe_width: bool = False, probe_cursor: bool = False
+) -> str | None:
+    global _unanswered_cprs, _cursor_row
+    _cursor_row = None
     # Nothing will be colored, so there is no palette to match: stay quiet
     # rather than write an escape sequence into whatever stdout is.
     if os.environ.get("TERM") == "dumb" or not (sys.stdout.isatty() or sys.stderr.isatty()):
@@ -118,7 +145,9 @@ def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> st
     # Only the terminal pcode draws on is measured; the controlling terminal
     # fallback serves `--print`, which lays nothing out.
     probe_width = probe_width and handle is None
-    measured = not probe_width
+    probe_cursor = (probe_cursor and not probe_width) and handle is None
+    expected_cprs = 2 if probe_width else 1 if probe_cursor else 0
+    measured = expected_cprs == 0
     detected = None
     try:
         # Don't steal already queued input, or flush it on entering/leaving cbreak.
@@ -138,7 +167,8 @@ def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> st
             if handle is None:
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
-            os.write(query_fd, b"\x1b]11;?\x1b\\" + (_WIDTH_PROBE if probe_width else b""))
+            probe = _WIDTH_PROBE if probe_width else _CURSOR_PROBE if probe_cursor else b""
+            os.write(query_fd, b"\x1b]11;?\x1b\\" + probe)
             deadline = time.monotonic() + timeout
             while detected is None or not measured:
                 remaining = deadline - time.monotonic()
@@ -153,9 +183,11 @@ def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> st
                     if detected is not None:
                         response[:] = _BACKGROUND.sub(b"", response)
                 if not measured and chunk == b"R":
-                    measured = _measure_width(response)
+                    measured = (
+                        _measure_width(response) if probe_width else _measure_cursor(response)
+                    )
             if not measured:
-                _unanswered_cprs = 2 - len(_CPR.findall(response))
+                _unanswered_cprs = expected_cprs - len(_CPR.findall(response))
                 response[:] = _CPR.sub(b"", response)
         finally:
             termios.tcsetattr(fd, termios.TCSANOW, original)
@@ -192,12 +224,13 @@ def replay_pending_input(app, on_theme=None) -> None:
     _unanswered_cprs = 0
 
 
-def detect_theme(*, probe_width: bool = False) -> str:
+def detect_theme(*, probe_width: bool = False, probe_cursor: bool = False) -> str:
     """Use OSC 11, then COLORFGBG (when supplied by the terminal), then dark.
 
-    `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`).
+    `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`);
+    `probe_cursor` records the starting cursor row (`take_initial_cursor_row`).
     """
-    detected = _query_background(probe_width=probe_width)
+    detected = _query_background(probe_width=probe_width, probe_cursor=probe_cursor)
     if detected is not None:
         return detected
     try:
