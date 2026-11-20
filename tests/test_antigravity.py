@@ -3335,3 +3335,63 @@ def test_antigravity_late_raw_input_updates_running_tool_without_duplicating(
     assert node.tools[0]["outcome"] == "completed"
     assert len(runtime.inspections.calls) == 1
     assert runtime.inspections.calls[0].detail == "make test"
+
+
+def test_session_new_appends_pcode_system_prompt_when_advertised(fake_agy, tmp_path, monkeypatch):
+    from pydantic_ai.capabilities import Capability
+    from pydantic_ai.models.test import TestModel
+
+    from pcode import advisor as advisor_mod
+    from pcode.agent import PCODE_CLIENT_INSTRUCTIONS
+
+    monkeypatch.setattr(advisor_mod, "_local_model", lambda _name: TestModel())
+
+    def delegate_task(task: str) -> str:
+        """Delegate a task."""
+        return task
+
+    async def go():
+        # Plain agent: client instructions only, no delegation or advisor notes.
+        await streamed(agent_for(AntigravityModel("fake-neon"), tmp_path), "hello")
+        # Agent with delegation and real advisor_capability (Dynamic -> Combined).
+        agent = Agent(
+            AntigravityModel("fake-neon"),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[
+                Capability(id="delegation", tools=[delegate_task]),
+                advisor_mod.advisor_capability(advisor_mod.AdvisorChoice("openai:gpt-5")),
+            ],
+        )
+        await streamed(agent, "hello")
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 2
+    plain_append = new_calls[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert PCODE_CLIENT_INSTRUCTIONS in plain_append
+    assert "mcp_pcode_delegate_task" not in plain_append
+    assert "advisor" not in plain_append
+    assert "edit_file" not in plain_append
+
+    full_append = new_calls[1]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert PCODE_CLIENT_INSTRUCTIONS in full_append
+    assert "mcp_pcode_delegate_task" in full_append
+    assert "openai:gpt-5" in full_append
+    assert "edit_file" not in full_append
+
+
+def test_system_prompt_append_skipped_for_side_worker_and_unadvertised(
+    fake_agy, tmp_path, monkeypatch
+):
+    async def go():
+        for kwargs in ({"side": True}, {"worker": True}):
+            model = AntigravityModel("fake-neon", **kwargs)
+            await Agent(model, model_settings={CWD_SETTING: str(tmp_path)}).run("hello")
+        monkeypatch.setenv("FAKE_AGY_NO_SYSTEM_PROMPT_APPEND", "1")
+        await streamed(agent_for(AntigravityModel("fake-neon"), tmp_path), "hello")
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 3
+    for call in new_calls:
+        assert "_meta" not in call["params"]

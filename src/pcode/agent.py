@@ -87,7 +87,7 @@ Servers may remain running once readiness is verified; shut them down when no
 longer needed.
 """
 
-AGENT_INSTRUCTIONS = (
+PCODE_CLIENT_INSTRUCTIONS = (
     "Responses are displayed in a terminal with Markdown rendering "
     "and syntax highlighting. "
     "Use fenced code blocks with a language tag for multiline code or shell examples, "
@@ -98,13 +98,17 @@ AGENT_INSTRUCTIONS = (
     # /copy offers quotes as their own choice, since the rendered rail and wrap
     # make them hard to select by hand.
     "Put text meant for the user to paste elsewhere in a > blockquote. "
-    # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
-    "Prefer edit_file and write_file for file changes over shell tools. "
     # The model is the intended extension author, so it needs to know the
     # mechanism exists without the reference text sitting in every prompt.
     "pcode itself is extensible with small Python files (new slash commands, "
     "tools, guardrails on tool calls, extra instructions). When asked to change "
     f"how pcode behaves, first read {EXTENSION_GUIDE} and follow it."
+)
+
+AGENT_INSTRUCTIONS = (
+    PCODE_CLIENT_INSTRUCTIONS
+    # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
+    + " Prefer edit_file and write_file for file changes over shell tools."
 )
 
 

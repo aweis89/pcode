@@ -406,6 +406,15 @@ def _spawn(coroutine) -> asyncio.Task:
     return task
 
 
+def _supports_system_prompt_append(initialize_result: dict) -> bool:
+    """Whether `agy` advertises `_meta.antigravity.systemPrompt.append` on `initialize`."""
+    caps = initialize_result.get("agentCapabilities")
+    meta = caps.get("_meta") if isinstance(caps, dict) else None
+    antigravity = meta.get("antigravity") if isinstance(meta, dict) else None
+    system_prompt = antigravity.get("systemPrompt") if isinstance(antigravity, dict) else None
+    return isinstance(system_prompt, dict) and system_prompt.get("append") is True
+
+
 class Connection:
     """One `agy acp` process: JSON-RPC over its stdin and stdout.
 
@@ -425,6 +434,7 @@ class Connection:
         # Where updates go while no turn is running: Antigravity keeps working
         # after a turn ends (a background sub-agent's report, its follow-up).
         self.idle: Callable[[dict], None] | None = None
+        self.supports_system_prompt_append = False
 
     @property
     def alive(self) -> bool:
@@ -478,6 +488,7 @@ class Connection:
                 f"Antigravity speaks ACP version {result.get('protocolVersion')!r}; "
                 f"pcode needs {PROTOCOL_VERSION}. Update the Antigravity CLI."
             )
+        self.supports_system_prompt_append = _supports_system_prompt_append(result)
         return result
 
     async def _drain_stderr(self) -> None:
@@ -1366,9 +1377,16 @@ class AntigravityModel(Model):
                     result = {**result, "sessionId": stamp[0]}
             replay = result is None
             if result is None:
-                result = await connection.request(
-                    "session/new", {"cwd": cwd, "mcpServers": servers}
-                )
+                params: dict[str, Any] = {"cwd": cwd, "mcpServers": servers}
+                # Sent on session/new only: agy keeps the appended prompt for the
+                # session's lifetime (not updated on session/resume).
+                if (
+                    connection.supports_system_prompt_append
+                    and self.tools is not None
+                    and (append := self.tools.system_prompt_append())
+                ):
+                    params["_meta"] = {"antigravity": {"systemPrompt": {"append": append}}}
+                result = await connection.request("session/new", params)
             _remember_models(result)
             session_id = result["sessionId"]
             config_source = result

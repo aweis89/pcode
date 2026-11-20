@@ -863,6 +863,12 @@ for what pcode sends and spawns via `agy acp`. Traps found while building it:
 - Advertising `fs.writeTextFile` makes `agy` send whole-file client writes
   instead of diffs (per T3 Code's integration), so pcode advertises no fs or
   terminal capability.
+- `initialize` on `agy` 1.5.13 advertises
+  `agentCapabilities._meta.antigravity.systemPrompt.append: true`. When
+  present, main conversational `session/new` requests pass
+  `_meta.antigravity.systemPrompt.append` with pcode's concise terminal/extension
+  instructions (plus delegation and `/advisor` notes when active), leaving side
+  sessions and delegated workers untouched.
 - `agy` keeps working after a turn ends: a background command or schedule may
   stay `in_progress` across `session/prompt` settlement (held open until
   active non-daemon tools finish and the follow-up's `usage_update` + quiet

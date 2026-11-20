@@ -556,7 +556,10 @@ def main():
             continue
         reply: dict = {"result": {}}
         if method == "initialize":
-            reply = {"result": {"protocolVersion": 1}}
+            caps: dict = {}
+            if not os.environ.get("FAKE_AGY_NO_SYSTEM_PROMPT_APPEND"):
+                caps["_meta"] = {"antigravity": {"systemPrompt": {"append": True}}}
+            reply = {"result": {"protocolVersion": 1, "agentCapabilities": caps}}
         elif method == "session/new":
             session_id = f"s-{started_sessions()}"
             servers[session_id] = message["params"].get("mcpServers", [])

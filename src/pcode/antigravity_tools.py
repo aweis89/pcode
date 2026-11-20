@@ -100,6 +100,12 @@ INTRO = (
     "Claude or OpenAI). For long-running tasks (over ~2 minutes), pass "
     "`run_in_background=True`.\n\n"
 )
+DELEGATION_PROMPT_NOTE = (
+    "Use `mcp_pcode_delegate_task` (with `mcp_pcode_manage_worker` and "
+    "`mcp_pcode_task_worktree`) to delegate to another provider:model (such as Claude or "
+    "OpenAI) or into an isolated git worktree; pass `run_in_background=True` for tasks "
+    "over ~2 minutes."
+)
 
 
 @dataclass(kw_only=True)
@@ -348,6 +354,22 @@ def _bridge_instructions(ctx: RunContext[Any], exposed: list[str]) -> str:
     return "\n\n".join(dict.fromkeys(parts))
 
 
+def _system_prompt_append(ctx: RunContext[Any] | None) -> str:
+    """Concise pcode-specific instructions appended to `agy`'s system prompt on `session/new`."""
+    from pcode.agent import PCODE_CLIENT_INSTRUCTIONS
+
+    parts: list[str] = [PCODE_CLIENT_INSTRUCTIONS]
+    if ctx is not None and ctx.tool_manager is not None:
+        exposed = _exposed_names(ctx)
+        if "delegate_task" in exposed:
+            parts.append(DELEGATION_PROMPT_NOTE)
+        if "advisor" in exposed:
+            for cap_id, capability in (ctx.capabilities or {}).items():
+                if cap_id in ("advisor", "advisor_guidance"):
+                    parts.extend(_capability_instructions(capability, ctx))
+    return "\n\n".join(dict.fromkeys(parts))
+
+
 class ToolBridge:
     """One conversation's MCP server for its `agy` sessions."""
 
@@ -533,6 +555,10 @@ class ToolBridge:
         text = _bridge_instructions(ctx, _exposed_names(ctx))
         self._instructions_text = text
         return text
+
+    def system_prompt_append(self) -> str:
+        """pcode-specific system prompt addition for `session/new` `_meta`."""
+        return _system_prompt_append(self.run_context)
 
     def _build_tools(self, ctx: RunContext[Any]) -> list[dict]:
         manager = ctx.tool_manager
