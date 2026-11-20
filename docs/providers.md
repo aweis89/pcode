@@ -137,7 +137,7 @@ separate from saved conversations and unaffected by `--no-save`.
 
 ## Reasoning effort
 
-For OpenAI/Codex, Anthropic, Claude Code, and Gemini models, Ctrl+N raises
+For OpenAI/Codex, Anthropic, Claude Code, Gemini, and Antigravity models, Ctrl+N raises
 effort and Ctrl+P lowers it; or use `/effort low|medium|high|xhigh`. `/effort`
 alone shows the current setting and `/effort default` removes the override. Each
 model remembers its own level. The footer shows the selected effort.
@@ -159,6 +159,9 @@ model remembers its own level. The footer shows the selected effort.
   think, such as Gemma, have no effort control. A Gemini level also returns
   thinking summaries, even with `/show-thinking off`; `default` leaves the level
   to the model.
+- On Antigravity (`antigravity:`), effort sets the ACP session's thinking level,
+  matched to the nearest one the model offers. Models Antigravity exposes
+  without a thinking level have no effort control once seen.
 - The offline preview and other providers show no effort in the footer, and
   `n/a` in `/effort` and `/status`.
 
@@ -288,7 +291,7 @@ An `antigravity:` model uses your Google AI Pro or Ultra subscription through
 Google's Antigravity CLI:
 
 ```sh
-pcode -m antigravity:gemini-4-neon-high
+pcode -m antigravity:gemini-4-neon
 ```
 
 Install the [Antigravity CLI](https://antigravity.google/docs/cli/) and sign in

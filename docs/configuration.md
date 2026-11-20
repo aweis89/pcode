@@ -165,7 +165,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
-| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Claude Code, Gemini); fallback for models `/effort` has not set |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Claude Code, Gemini, Antigravity); fallback for models `/effort` has not set |
 | `model_providers` | empty | `,`-separated providers `/model` lists; empty shows every provider you're signed in to or have a key for |
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |

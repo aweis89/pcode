@@ -27,6 +27,53 @@ superseded: set = set()
 running: list = []
 # Each session's `mcpServers`, from session/new or session/resume.
 servers: dict = {}
+# Base models offered via ACP `configOptions`, with their default and offered `thought_level`s.
+MODELS: dict[str, tuple[str | None, tuple[str, ...]]] = {
+    "fake-neon": ("high", ("low", "medium", "high", "xhigh")),
+    "fake-flash": ("medium", ("low", "medium", "high")),
+    "fake-fixed": (None, ()),
+}
+DEFAULT_MODEL = "fake-neon"
+session_models: dict[str, str] = {}
+session_thoughts: dict[str, str | None] = {}
+
+
+def config_options(session_id: str) -> list[dict]:
+    model_id = session_models.get(session_id, DEFAULT_MODEL)
+    default_level, levels = MODELS.get(model_id, (None, ()))
+    options: list[dict] = [
+        {
+            "id": "model",
+            "name": "Model",
+            "category": "model",
+            "type": "select",
+            "currentValue": model_id,
+            "options": [{"value": name, "name": name} for name in MODELS],
+        }
+    ]
+    if levels:
+        current = session_thoughts.get(session_id, default_level)
+        options.append(
+            {
+                "id": "thought_level",
+                "name": "Thinking Level",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": current,
+                "options": [{"value": level, "name": level} for level in levels],
+            }
+        )
+    options.append(
+        {
+            "id": "mode",
+            "name": "Mode",
+            "category": "mode",
+            "type": "select",
+            "currentValue": "default",
+            "options": [{"value": "default", "name": "Default"}, {"value": "plan", "name": "Plan"}],
+        }
+    )
+    return options
 
 
 def log(entry):
@@ -410,21 +457,59 @@ def main():
         if method == "initialize":
             reply = {"result": {"protocolVersion": 1}}
         elif method == "session/new":
-            models = [{"modelId": "fake-high"}, {"modelId": "fake-low"}]
-            current = {"availableModels": models, "currentModelId": "fake-high"}
             session_id = f"s-{started_sessions()}"
             servers[session_id] = message["params"].get("mcpServers", [])
+            session_models[session_id] = DEFAULT_MODEL
+            session_thoughts[session_id] = MODELS[DEFAULT_MODEL][0]
             modes = {
                 "currentModeId": "default",
                 "availableModes": [{"id": "default"}, {"id": "plan"}],
             }
-            reply = {"result": {"sessionId": session_id, "models": current, "modes": modes}}
+            reply = {
+                "result": {
+                    "sessionId": session_id,
+                    "modes": modes,
+                    "configOptions": config_options(session_id),
+                }
+            }
         elif method == "session/resume" and message["params"]["sessionId"].startswith("gone"):
             reply = {"error": {"code": -32002, "message": "Session not found"}}
         elif method == "session/resume":
-            servers[message["params"]["sessionId"]] = message["params"].get("mcpServers", [])
-        elif method == "session/set_model" and message["params"]["modelId"] == "missing":
-            reply = {"error": {"code": -32602, "message": "Unknown model"}}
+            session_id = message["params"]["sessionId"]
+            servers[session_id] = message["params"].get("mcpServers", [])
+            session_models.setdefault(session_id, DEFAULT_MODEL)
+            session_thoughts.setdefault(session_id, MODELS[DEFAULT_MODEL][0])
+        elif method == "session/set_config_option":
+            params = message["params"]
+            session_id = params["sessionId"]
+            config_id = params.get("configId")
+            value = params.get("value")
+            if config_id == "model":
+                if value not in MODELS:
+                    reply = {"error": {"code": -32602, "message": f"Unknown model ID: {value}"}}
+                else:
+                    changed = session_models.get(session_id) != value
+                    session_models[session_id] = value
+                    if changed or session_id not in session_thoughts:
+                        session_thoughts[session_id] = MODELS[value][0]
+                    reply = {"result": {"configOptions": config_options(session_id)}}
+            elif config_id == "thought_level":
+                model_id = session_models.get(session_id, DEFAULT_MODEL)
+                _, levels = MODELS.get(model_id, (None, ()))
+                if value not in levels:
+                    reply = {
+                        "error": {
+                            "code": -32602,
+                            "message": (
+                                f'Thinking level "{value}" is not offered for model "{model_id}"'
+                            ),
+                        }
+                    }
+                else:
+                    session_thoughts[session_id] = value
+                    reply = {"result": {"configOptions": config_options(session_id)}}
+            else:
+                reply = {"error": {"code": -32602, "message": f"Unknown configId: {config_id}"}}
         send({"jsonrpc": "2.0", "id": message["id"], **reply})
 
 

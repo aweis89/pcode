@@ -34,6 +34,7 @@ def make_app(model="openai-codex:test", runtime=None):
         "openai-codex:test",
         "anthropic:claude-opus-4-5",
         "claude:claude-opus-4-5",
+        "antigravity:gemini-4-neon",
     ],
 )
 def test_command_validation_completion_and_defaults(model):
@@ -62,7 +63,9 @@ def test_unsupported_models_do_not_silently_change_settings(model):
     app, output = make_app(model)
     app.handle("/effort high")
     assert app.runtime.agent.model_settings == {"temperature": 0.5}
-    assert "requires an OpenAI/Codex, Anthropic, Claude, or Gemini model" in output.getvalue()
+    assert "requires an OpenAI/Codex, Anthropic, Claude, Gemini, or Antigravity model" in " ".join(
+        output.getvalue().split()
+    )
 
 
 def test_gemini_models_that_do_not_think_are_refused():
@@ -219,6 +222,7 @@ def test_real_keybindings_preserve_draft_and_cursor(busy):
         ("openai-codex:gpt-5", "openai_reasoning_effort"),
         ("anthropic:claude-opus-4-5", "anthropic_effort"),
         ("google:gemini-4-neon", "thinking"),
+        ("antigravity:gemini-4-neon", "antigravity_effort"),
     ],
 )
 def test_effort_changes_apply_from_the_running_turns_next_request(name, key):

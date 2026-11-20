@@ -76,7 +76,7 @@ def test_login_signs_in_to_claude_code():
 def test_bare_login_defaults_to_current_provider():
     for model, expected in (
         ("openai-codex:gpt-5", "openai-codex"),
-        ("antigravity:gemini-4-neon-high", "antigravity"),
+        ("antigravity:gemini-4-neon", "antigravity"),
         ("claude:claude-sonnet-5", "claude"),
         ("anthropic:claude-sonnet-5", "claude"),
     ):

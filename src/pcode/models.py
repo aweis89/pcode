@@ -191,7 +191,7 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
         from pcode.antigravity import cached_models
 
         # What the account offered last time; the default until a session has run.
-        offered = cached_models() or ("gemini-4-neon-high",)
+        offered = cached_models() or ("gemini-4-neon",)
         models.update(f"antigravity:{name}" for name in offered)
     for provider in providers:
         source = CATALOG_SOURCES.get(provider, provider)

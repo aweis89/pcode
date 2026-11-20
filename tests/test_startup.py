@@ -30,13 +30,14 @@ from rich.console import Console
 from pcode.app import PreviewApp, main
 app = PreviewApp(model='test:local', console=Console(file=StringIO()))
 app.toolbar()
+PreviewApp(model='antigravity:gemini-4-neon', console=Console(file=StringIO())).toolbar()
 # Stop at the boundary where the CLI would start the interactive event loop.
 PreviewApp.run = lambda self: None
 sys.stdin.isatty = lambda: True
 sys.stdout.isatty = lambda: True
 sys.argv = ['pcode', '-m', 'test:local', '--no-host', '--no-worktree']
 main()
-for name in ('pcode.sessions', 'pcode.agent', 'pcode.live', 'pydantic_ai'):
+for name in ('pcode.sessions', 'pcode.agent', 'pcode.live', 'pcode.antigravity', 'pydantic_ai'):
     assert name not in sys.modules, name
 """,
         ],

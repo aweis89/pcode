@@ -1076,6 +1076,61 @@ def anthropic_profile(model: str | None, resolved=None) -> dict:
     return anthropic_model_profile((model or "").split(":", 1)[-1]) or {}
 
 
+# In-memory mirror of Antigravity's per-model `thought_levels` cache so
+# `effort_setting` never imports `pcode.antigravity` (or `pydantic_ai`) on startup
+# and footer rendering does not reread JSON on every frame. Stored as one
+# immutable `(stat_key, mapping)` pair so worker threads never see a torn cache.
+_antigravity_cache: tuple[tuple[Path, int, int, int], dict[str, tuple[str, ...]]] | None = None
+
+
+def _cached_antigravity_thought_levels(model_name: str) -> tuple[str, ...] | None:
+    global _antigravity_cache
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    path = state / "pcode" / "antigravity-models.json"
+    try:
+        info = path.stat()
+    except OSError:
+        _antigravity_cache = None
+        return None
+    key = (path, info.st_ino, info.st_mtime_ns, info.st_size)
+    cached = _antigravity_cache
+    if cached is not None and cached[0] == key:
+        return cached[1].get(model_name)
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        raw = {}
+    stored = raw.get("thought_levels") if isinstance(raw, dict) else None
+    mapping = (
+        {
+            name: tuple(v for v in levels if isinstance(v, str) and v)
+            for name, levels in stored.items()
+            if isinstance(name, str) and isinstance(levels, list)
+        }
+        if isinstance(stored, dict)
+        else {}
+    )
+    _antigravity_cache = (key, mapping)
+    return mapping.get(model_name)
+
+
+def _antigravity_thought_levels(model: str | None, resolved=None) -> tuple[str, ...] | None:
+    target = resolved
+    for _ in range(8):
+        if target is None:
+            break
+        levels = getattr(target, "thought_levels", None)
+        if levels is not None:
+            return tuple(levels)
+        target = getattr(target, "wrapped", None)
+    name = (model or "").split(":", 1)[-1].strip()
+    return _cached_antigravity_thought_levels(name) if name else None
+
+
 def effort_setting(model: str | None, resolved=None) -> str | None:
     """The settings key /effort writes for `model`, or None where it has none.
 
@@ -1092,19 +1147,26 @@ def effort_setting(model: str | None, resolved=None) -> str | None:
             return "anthropic_effort"
     if provider in GOOGLE_PROVIDERS and google_profile(model, resolved).get("supports_thinking"):
         return "thinking"
+    if provider == "antigravity" and _antigravity_thought_levels(model, resolved) != ():
+        return "antigravity_effort"
     return None
 
 
 def effort_unavailable(model: str | None) -> str:
     """Why /effort refuses `model`, naming the model where the provider is fine."""
-    if (model or "").split(":", 1)[0] in ANTHROPIC_PROVIDERS:
+    provider = (model or "").split(":", 1)[0]
+    if provider in ANTHROPIC_PROVIDERS:
         return (
             f"{model} has no effort control; Anthropic gates it to "
             "Opus 4.5+ and Sonnet 4.6+ models."
         )
-    if (model or "").split(":", 1)[0] in GOOGLE_PROVIDERS:
+    if provider in GOOGLE_PROVIDERS:
         return f"{model} has no effort control; it does not think."
-    base = "Effort control requires an OpenAI/Codex, Anthropic, Claude, or Gemini model"
+    if provider == "antigravity":
+        return f"{model} has no effort control; Antigravity does not offer a thinking level for it."
+    base = (
+        "Effort control requires an OpenAI/Codex, Anthropic, Claude, Gemini, or Antigravity model"
+    )
     return f"{base}; {model} is not one." if model else f"{base}."
 
 
@@ -1130,7 +1192,19 @@ def current_effort(agent, model: str) -> str:
 def apply_effort(agent, model: str, effort: str | None) -> None:
     resolved = getattr(agent, "model", None)
     key = effort_setting(model, resolved)
-    if effort not in EFFORTS or key is None:
+    if effort not in EFFORTS:
+        return
+    if key is None:
+        # Clearing a saved effort on a newly-gated Antigravity model should drop
+        # any `antigravity_effort` left on the agent from before its first turn.
+        if (
+            effort == "default"
+            and (model or "").split(":", 1)[0] == "antigravity"
+            and "antigravity_effort" in (agent.model_settings or {})
+        ):
+            settings = dict(agent.model_settings or {})
+            settings.pop("antigravity_effort", None)
+            agent.model_settings = settings
         return
     settings = dict(agent.model_settings or {})
     if effort == "default":

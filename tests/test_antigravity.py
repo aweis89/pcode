@@ -76,7 +76,7 @@ def prompts(received) -> list[list[dict]]:
 
 def test_one_turn_maps_text_thinking_tools_and_usage(fake_agy, tmp_path):
     async def go():
-        return await agent_for(AntigravityModel("fake-low"), tmp_path).run("hello")
+        return await agent_for(AntigravityModel("fake-flash"), tmp_path).run("hello")
 
     result = run(go())
     response = result.all_messages()[-1]
@@ -100,20 +100,24 @@ def test_one_turn_maps_text_thinking_tools_and_usage(fake_agy, tmp_path):
     assert new["cwd"] == str(tmp_path)
     # pcode's delegation, as an MCP server agy may call; see antigravity_tools.
     assert [server["name"] for server in new["mcpServers"]] == ["pcode"]
-    assert fake_agy("session/set_model")[0]["params"]["modelId"] == "fake-low"
+    assert fake_agy("session/set_config_option")[0]["params"] == {
+        "sessionId": "s-1",
+        "configId": "model",
+        "value": "fake-flash",
+    }
     # pcode's own tools are never offered: the agent loop ends after one request.
     assert len(prompts(fake_agy)) == 1
-    assert cached_models() == ("fake-high", "fake-low")
+    assert cached_models() == ("fake-neon", "fake-flash", "fake-fixed")
 
 
 def test_follow_up_continues_the_session_and_a_new_model_resumes_it(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         first = await agent_for(model, tmp_path).run("one")
         second = await agent_for(model, tmp_path).run("two", message_history=first.all_messages())
         await antigravity.shutdown()
         # As after a restart: a fresh model given the saved history.
-        return await agent_for(AntigravityModel("fake-high"), tmp_path).run(
+        return await agent_for(AntigravityModel("fake-neon"), tmp_path).run(
             "three", message_history=second.all_messages()
         )
 
@@ -129,11 +133,11 @@ def test_follow_up_continues_the_session_and_a_new_model_resumes_it(fake_agy, tm
 
 def test_a_rewind_replays_rather_than_resuming_a_session_with_later_turns(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         first = await agent_for(model, tmp_path).run("one")
         await agent_for(model, tmp_path).run("two", message_history=first.all_messages())
         # Back to after "one": the session also holds "two", which this history dropped.
-        return await agent_for(AntigravityModel("fake-high"), tmp_path).run(
+        return await agent_for(AntigravityModel("fake-neon"), tmp_path).run(
             "branch", message_history=first.all_messages()
         )
 
@@ -153,7 +157,7 @@ def test_another_models_history_is_replayed_tools_included(fake_agy, tmp_path):
         ModelResponse(parts=[TextPart("noted")], provider_name="google"),
     ]
 
-    run(agent_for(AntigravityModel("fake-high"), tmp_path).run("and now?", message_history=earlier))
+    run(agent_for(AntigravityModel("fake-neon"), tmp_path).run("and now?", message_history=earlier))
     assert fake_agy("session/resume") == []
     replayed, latest = prompts(fake_agy)[-1]
     assert "replayed below as a transcript" in replayed["text"]
@@ -179,7 +183,7 @@ def test_what_pcode_tells_any_model_is_sent_as_text(fake_agy, tmp_path):
         ),
     ]
     settings = {CWD_SETTING: str(tmp_path)}
-    run(AntigravityModel("fake-high").request(history, settings, ModelRequestParameters()))
+    run(AntigravityModel("fake-neon").request(history, settings, ModelRequestParameters()))
     texts = [block["text"] for block in prompts(fake_agy)[0]]
     assert texts[1:] == [
         "[pcode] shell returned:\nok",
@@ -194,37 +198,37 @@ def test_a_continuation_with_no_message_says_continue(fake_agy, tmp_path):
 
     kept = ModelRequest(parts=[UserPromptPart("fix it"), UserPromptPart(CANCELLED_MARKER)])
     settings = {CWD_SETTING: str(tmp_path)}
-    run(AntigravityModel("fake-high").request([kept], settings, ModelRequestParameters()))
+    run(AntigravityModel("fake-neon").request([kept], settings, ModelRequestParameters()))
     texts = [block["text"] for block in prompts(fake_agy)[0]]
     assert "fix it" in texts[0] and texts[1:] == ["Continue."]
     # A history that ends in a reply has nothing to answer.
     answered = [ModelRequest(parts=[UserPromptPart("x")]), ModelResponse(parts=[TextPart("y")])]
     with pytest.raises(AntigravityError, match="nothing to answer"):
-        run(AntigravityModel("fake-high").request(answered, None, None))
+        run(AntigravityModel("fake-neon").request(answered, None, None))
 
 
 def test_unsupported_attachments_are_refused(fake_agy):
     pdf = BinaryContent(b"%PDF", media_type="application/pdf")
     request = ModelRequest(parts=[UserPromptPart(["read this", pdf])])
     with pytest.raises(AntigravityError, match="text and images here, not BinaryContent"):
-        run(AntigravityModel("fake-high").request([request], None, None))
+        run(AntigravityModel("fake-neon").request([request], None, None))
 
 
 def test_images_are_sent_as_image_blocks(fake_agy, tmp_path):
     png = BinaryContent(b"\x89PNG", media_type="image/png")
-    run(agent_for(AntigravityModel("fake-high"), tmp_path).run(["look", png]))
+    run(agent_for(AntigravityModel("fake-neon"), tmp_path).run(["look", png]))
     assert prompts(fake_agy)[0][1] == {"type": "image", "mimeType": "image/png", "data": "iVBORw=="}
 
 
 def test_never_chooses_always_allow(fake_agy, tmp_path):
-    run(agent_for(AntigravityModel("fake-high"), tmp_path).run("ALWAYS"))
+    run(agent_for(AntigravityModel("fake-neon"), tmp_path).run("ALWAYS"))
     answers = [e for e in fake_agy() if e.get("id") == "perm"]
     assert answers[0]["result"]["outcome"]["optionId"] == "no"
 
 
 def test_a_refused_turn_leaves_the_session_where_it_was(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         first = await agent_for(model, tmp_path).run("one")
         with pytest.raises(AntigravityError, match="agy acp --login"):
             await agent_for(model, tmp_path).run("AUTH", message_history=first.all_messages())
@@ -237,7 +241,7 @@ def test_a_refused_turn_leaves_the_session_where_it_was(fake_agy, tmp_path):
 
 def test_a_crash_mid_turn_fails_it_and_the_next_turn_starts_over(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         first = await agent_for(model, tmp_path).run("one")
         with pytest.raises(AntigravityError, match="exited"):
             await agent_for(model, tmp_path).run("CRASH", message_history=first.all_messages())
@@ -258,13 +262,15 @@ def test_a_session_that_cannot_resume_is_replayed(fake_agy, tmp_path):
             parts=[TextPart("ok")], provider_name="antigravity", provider_response_id="gone-1#1"
         ),
     ]
-    run(agent_for(AntigravityModel("fake-high"), tmp_path).run("two", message_history=earlier))
+    run(agent_for(AntigravityModel("fake-neon"), tmp_path).run("two", message_history=earlier))
     assert [e["params"]["sessionId"] for e in fake_agy("session/resume")] == ["gone-1"]
     assert "[User]\none" in prompts(fake_agy)[-1][0]["text"]
 
 
 def test_an_unknown_model_names_the_offered_ones(fake_agy, tmp_path):
-    with pytest.raises(AntigravityError, match="Models this account offers: fake-high, fake-low"):
+    with pytest.raises(
+        AntigravityError, match="Models this account offers: fake-neon, fake-flash, fake-fixed"
+    ):
         run(agent_for(AntigravityModel("missing"), tmp_path).run("hi"))
 
 
@@ -278,7 +284,7 @@ def interrupted(history, prompt: str) -> list:
 
 def test_cancel_stops_the_turn_and_the_next_prompt_continues_it(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = agent_for(model, tmp_path)
         first = await agent.run("one")
         # Level-triggered, as pcode's runs are cancelled.
@@ -299,7 +305,7 @@ def test_cancel_stops_the_turn_and_the_next_prompt_continues_it(fake_agy, tmp_pa
 
 def test_a_rewind_past_a_cancelled_turn_replays(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = agent_for(model, tmp_path)
         first = await agent.run("one")
         with anyio.move_on_after(1):
@@ -320,7 +326,7 @@ def test_a_new_session_replays_the_interrupted_request_too(fake_agy, tmp_path):
         ],
         "half-done ask",
     )
-    run(agent_for(AntigravityModel("fake-high"), tmp_path).run("after", message_history=history))
+    run(agent_for(AntigravityModel("fake-neon"), tmp_path).run("after", message_history=history))
     replayed, latest = prompts(fake_agy)[-1]
     assert "[User]\nhalf-done ask" in replayed["text"]
     assert latest == {"type": "text", "text": "after"}
@@ -328,7 +334,7 @@ def test_a_new_session_replays_the_interrupted_request_too(fake_agy, tmp_path):
 
 def test_two_cancels_in_a_row_still_continue_the_session(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = agent_for(model, tmp_path)
         first = await agent.run("one")
         kept = first.all_messages()
@@ -346,7 +352,7 @@ def test_two_cancels_in_a_row_still_continue_the_session(fake_agy, tmp_path):
 
 def test_a_cancelled_first_turn_still_continues_the_session(fake_agy, tmp_path):
     async def go():
-        agent = agent_for(AntigravityModel("fake-high"), tmp_path)
+        agent = agent_for(AntigravityModel("fake-neon"), tmp_path)
         with anyio.move_on_after(1):
             await agent.run("SLOW")
         return await agent.run("after", message_history=interrupted([], "SLOW"))
@@ -359,10 +365,10 @@ def test_a_cancelled_first_turn_still_continues_the_session(fake_agy, tmp_path):
 
 def test_a_fork_that_moved_the_session_on_is_not_continued(fake_agy, tmp_path):
     async def go():
-        original = AntigravityModel("fake-high")
+        original = AntigravityModel("fake-neon")
         first = await agent_for(original, tmp_path).run("one")
         # Another pcode process resumes the same session and adds a turn.
-        await agent_for(AntigravityModel("fake-high"), tmp_path).run(
+        await agent_for(AntigravityModel("fake-neon"), tmp_path).run(
             "fork", message_history=first.all_messages()
         )
         return await agent_for(original, tmp_path).run("mine", message_history=first.all_messages())
@@ -379,7 +385,7 @@ def test_an_unwritable_state_directory_still_continues_live(fake_agy, tmp_path, 
     monkeypatch.setenv("XDG_STATE_HOME", str(blocked))
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         first = await agent_for(model, tmp_path).run("one")
         return await agent_for(model, tmp_path).run("two", message_history=first.all_messages())
 
@@ -403,7 +409,7 @@ def test_the_ledger_keeps_every_writers_turn(tmp_path, monkeypatch):
 
 def test_shutdown_lets_agy_exit_on_its_own(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         await agent_for(model, tmp_path).run("one")
         process = model._session.connection.process
         await antigravity.shutdown()
@@ -424,11 +430,11 @@ def test_replacing_or_closing_the_runtime_stops_its_process(fake_agy, tmp_path):
         return False
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         runtime = AgentRuntime(agent_for(model, tmp_path))
         await runtime.agent.run("one")
         connection = model._session.connection
-        runtime.replace_agent(Agent(AntigravityModel("fake-low")))  # /model
+        runtime.replace_agent(Agent(AntigravityModel("fake-flash")))  # /model
         replaced = await stopped(connection)
         second = runtime.agent.model
         await runtime.agent.run("two", model_settings={CWD_SETTING: str(tmp_path)})
@@ -440,7 +446,7 @@ def test_replacing_or_closing_the_runtime_stops_its_process(fake_agy, tmp_path):
 
 def test_malformed_messages_do_not_stop_the_reader(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         result = await agent_for(model, tmp_path).run("BADLINE")
         return result.output, model._session.connection.alive
 
@@ -474,7 +480,7 @@ def test_a_message_sent_mid_turn_steers_it(fake_agy, tmp_path):
     queue: list = []
 
     async def go():
-        agent = steering_agent(AntigravityModel("fake-high"), tmp_path, queue)
+        agent = steering_agent(AntigravityModel("fake-neon"), tmp_path, queue)
         run = asyncio.create_task(streamed(agent, "SLOW"))
         for _ in range(200):
             if prompts(fake_agy):
@@ -506,7 +512,7 @@ def test_a_steered_turn_that_is_cancelled_still_continues(fake_agy, tmp_path):
     queue: list = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = steering_agent(model, tmp_path, queue)
         first = await agent.run("one")
         with anyio.move_on_after(1.5):
@@ -541,7 +547,7 @@ def test_a_steer_reaches_the_copy_pcode_restores_after_a_cancel(fake_agy, tmp_pa
             return taken
 
         agent = Agent(
-            AntigravityModel("fake-high"),
+            AntigravityModel("fake-neon"),
             model_settings={CWD_SETTING: str(tmp_path)},
             capabilities=[Steering(take, lambda: bool(queue)), checkpoint],
         )
@@ -570,7 +576,7 @@ def test_pcode_notices_reach_it_like_any_model():
 
     request = ModelRequest(parts=[UserPromptPart("hi")])
     ctx = SimpleNamespace(messages=[request])
-    context = SimpleNamespace(model=AntigravityModel("fake-high"), messages=[request])
+    context = SimpleNamespace(model=AntigravityModel("fake-neon"), messages=[request])
     ids = ["w1"]
     asyncio.run(AbandonedDelegations(ids).before_model_request(ctx, context))
     delegation = WorkspaceSubAgents.__new__(WorkspaceSubAgents)
@@ -584,7 +590,7 @@ def test_retiring_drops_unshown_output_after_the_turn():
     shown: list[str] = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.listener = shown.append
         model._idle_update({"sessionUpdate": "agent_message_chunk", "content": {"text": "late"}})
         model.retire()
@@ -640,10 +646,10 @@ def test_antigravity_can_delegate_to_a_worker_on_another_provider(
 ):
     ran: list = []
     shown: list = []
-    subagent_models("antigravity:fake-low", "claude:fable")
+    subagent_models("antigravity:fake-flash", "claude:fable")
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.listener = shown.append
         agent = delegating_agent(model, tmp_path, ran)
         prompt = mcp_prompt("delegate_task", {"task": "review", "run_in_background": True})
@@ -674,7 +680,7 @@ def test_with_no_default_antigravity_must_name_the_model(fake_agy, tmp_path, sub
     ran: list = []
 
     async def go():
-        agent = delegating_agent(AntigravityModel("fake-high"), tmp_path, ran)
+        agent = delegating_agent(AntigravityModel("fake-neon"), tmp_path, ran)
         return await streamed(agent, mcp_prompt("delegate_task", {"task": "x"}))
 
     result = run(go())
@@ -690,20 +696,20 @@ def test_a_worker_never_runs_on_antigravity(fake_agy, tmp_path, subagent_models,
     subagent_models(*default)
 
     async def go():
-        agent = delegating_agent(AntigravityModel("fake-high"), tmp_path, ran)
-        arguments = {"task": "x", "model": "antigravity:fake-low"}
+        agent = delegating_agent(AntigravityModel("fake-neon"), tmp_path, ran)
+        arguments = {"task": "x", "model": "antigravity:fake-flash"}
         return await streamed(agent, mcp_prompt("delegate_task", arguments))
 
     result = run(go())
     assert ran == []
-    assert result.output.startswith("tool said (error): Cannot use antigravity:fake-low")
+    assert result.output.startswith("tool said (error): Cannot use antigravity:fake-flash")
 
 
 def test_only_delegation_is_offered_and_only_during_a_turn(fake_agy, tmp_path, subagent_models):
     ran: list = []
 
     async def go():
-        agent = delegating_agent(AntigravityModel("fake-high"), tmp_path, ran)
+        agent = delegating_agent(AntigravityModel("fake-neon"), tmp_path, ran)
         hidden = await streamed(agent, mcp_prompt("read_file", {"path": "x"}))
         # Unstreamed, the model has no run to execute a call in.
         unstreamed = await agent.run(mcp_prompt("delegate_task", {"task": "x"}))
@@ -717,7 +723,7 @@ def test_only_delegation_is_offered_and_only_during_a_turn(fake_agy, tmp_path, s
 
 def test_retiring_closes_the_tool_bridge(fake_agy, tmp_path, subagent_models):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         await streamed(delegating_agent(model, tmp_path, []), "hello")
         socket_dir = Path(model.tools._dir)
         assert (socket_dir / "mcp.sock").exists()
@@ -737,7 +743,7 @@ def test_each_turns_calls_run_in_that_turns_context(fake_agy, tmp_path, subagent
     turn: ContextVar[str] = ContextVar("turn", default="none")
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = Agent(model, model_settings={CWD_SETTING: str(tmp_path)})
 
         @agent.tool_plain
@@ -764,7 +770,7 @@ def test_a_call_agy_cancels_stops_its_worker(fake_agy, tmp_path, subagent_models
     stopped: list = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = Agent(model, model_settings={CWD_SETTING: str(tmp_path)})
 
         @agent.tool_plain
@@ -788,7 +794,7 @@ def test_a_call_agy_cancels_stops_its_worker(fake_agy, tmp_path, subagent_models
 
 def test_shutdown_removes_the_socket(fake_agy, tmp_path, subagent_models):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         await streamed(delegating_agent(model, tmp_path, []), "hello")
         return Path(model.tools._dir)
 
@@ -814,7 +820,7 @@ def test_steering_at_a_turns_start_is_sent_with_the_prompt(fake_agy, tmp_path):
     from pcode.steering import STEERING_REMINDER
 
     queue = ["queued early"]
-    run(streamed(steering_agent(AntigravityModel("fake-high"), tmp_path, queue), "hello"))
+    run(streamed(steering_agent(AntigravityModel("fake-neon"), tmp_path, queue), "hello"))
     texts = [b["text"] for b in prompts(fake_agy)[0]]
     assert texts == ["hello", "queued early", STEERING_REMINDER]
 
@@ -824,7 +830,7 @@ def test_output_after_the_turn_is_shown(fake_agy, tmp_path, monkeypatch):
     shown: list[str] = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.listener = shown.append
         await agent_for(model, tmp_path).run("LATER")
         for _ in range(100):
@@ -844,7 +850,7 @@ def test_output_after_the_turn_is_shown(fake_agy, tmp_path, monkeypatch):
 def test_the_runtime_shows_output_after_the_turn_as_a_lasting_note():
     from pcode.live import AgentRuntime
 
-    model = AntigravityModel("fake-high")
+    model = AntigravityModel("fake-neon")
     runtime = AgentRuntime(Agent(model))
     notes: list[str] = []
     runtime.retained_notice = notes.append
@@ -951,13 +957,13 @@ def test_non_side_huge_prompt_and_images_replay_budget(fake_agy, tmp_path, monke
     async def go():
         # Huge text prompt omits replay on a brand-new session and never triggers
         # auto-compaction on the 0-turn session.
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.compact_at, model.used = 10, 500
         await agent_for(model, tmp_path).run("x" * 2100, message_history=earlier)
 
         # A large image attachment beside short text does not wipe out replay.
         img = BinaryContent(b"\x89PNG" + b"\x00" * 5000, media_type="image/png")
-        await agent_for(AntigravityModel("fake-high"), tmp_path).run(
+        await agent_for(AntigravityModel("fake-neon"), tmp_path).run(
             ["look", img], message_history=earlier
         )
 
@@ -1002,17 +1008,19 @@ def test_btw_caps_replayed_transcript_and_shrinks_for_large_prompts(
                 ModelResponse(parts=[TextPart(f"ans-{i:02d} " + "y" * 100)]),
             )
         ]
-        short_reply = await runtime.aside("status update", model=side_model("antigravity:fake-low"))
+        short_reply = await runtime.aside(
+            "status update", model=side_model("antigravity:fake-flash")
+        )
         # A medium-large question shrinks replay so replay + question stays within
         # PROMPT_BUDGET_BYTES.
         medium_question = ("m" * 600) + " mid-end"
         medium_reply = await runtime.aside(
-            medium_question, model=side_model("antigravity:fake-low")
+            medium_question, model=side_model("antigravity:fake-flash")
         )
         # A question larger than PROMPT_BUDGET_BYTES omits replay rather than
         # pushing the prompt itself over the ceiling.
         huge_question = ("z" * 2100) + " big-end"
-        huge_reply = await runtime.aside(huge_question, model=side_model("antigravity:fake-low"))
+        huge_reply = await runtime.aside(huge_question, model=side_model("antigravity:fake-flash"))
         return short_reply, medium_reply, huge_reply
 
     short_reply, medium_reply, huge_reply = run(go())
@@ -1042,7 +1050,7 @@ def test_btw_caps_replayed_transcript_and_shrinks_for_large_prompts(
 
 def test_compact_asks_antigravity_and_is_not_a_turn(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         nothing = await model.compact([], str(tmp_path))
         first = await agent_for(model, tmp_path).run("one")
         sizes = await model.compact(first.all_messages(), str(tmp_path), "keep the plan")
@@ -1061,7 +1069,7 @@ def test_auto_compaction_runs_before_the_prompt_and_not_again_until_it_grows(fak
     notices: list[str] = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.compaction_notice = notices.append
         agent = agent_for(model, tmp_path)
         history = (await agent.run("one")).all_messages()
@@ -1081,7 +1089,7 @@ def test_autocompact_tells_antigravity_when_to_compact():
 
     from pcode.compaction import AutoCompaction
 
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     model._usage_update({"size": 1_000_000})
     runtime = SimpleNamespace(
         auto_compact=True, auto_compact_limit=200_000, compaction_notice=lambda text: None
@@ -1097,7 +1105,7 @@ def test_autocompact_tells_antigravity_when_to_compact():
 
 def test_plan_mode_puts_the_session_in_antigravitys_own(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = agent_for(model, tmp_path)
         model.plan_mode = True
         history = (await agent.run("one")).all_messages()
@@ -1115,7 +1123,7 @@ def test_a_plain_side_job_is_sent_its_instructions_and_its_process_expires(
     monkeypatch.setattr(antigravity, "SIDE_IDLE", 0.1)
 
     async def go():
-        model = AntigravityModel("fake-high", side=True)
+        model = AntigravityModel("fake-neon", side=True)
         settings = {CWD_SETTING: str(tmp_path)}
         await Agent(model, instructions="Write a title.", model_settings=settings).run("hello")
         connection = model._session.connection
@@ -1133,13 +1141,13 @@ def test_side_uses_get_a_session_of_their_own_but_it_is_never_a_worker():
     from pcode.agent import side_model, subagent_menu, worker_model
     from pcode.compaction import CompactionError, summarize
 
-    assert side_model("antigravity:fake-high").model._side
+    assert side_model("antigravity:fake-neon").model._side
     with pytest.raises(ValueError, match="delegated worker"):
-        worker_model("antigravity:fake-high")
-    assert subagent_menu(["antigravity:fake-high"])[0] == {}
+        worker_model("antigravity:fake-neon")
+    assert subagent_menu(["antigravity:fake-neon"])[0] == {}
     # The conversation's own session compacts itself instead (`/compact`).
     with pytest.raises(CompactionError, match="use /compact"):
-        asyncio.run(summarize([], model=AntigravityModel("fake-high")))
+        asyncio.run(summarize([], model=AntigravityModel("fake-neon")))
 
 
 def test_btw_runs_in_separate_session_with_replay_and_reuses_for_follow_up(fake_agy, tmp_path):
@@ -1147,7 +1155,7 @@ def test_btw_runs_in_separate_session_with_replay_and_reuses_for_follow_up(fake_
     from pcode.live import AgentRuntime
 
     async def go():
-        runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
+        runtime = AgentRuntime(agent_for(AntigravityModel("fake-neon"), tmp_path))
         _ = [event async for event in runtime.stream("main task")]
         reports: list[tuple[str, str]] = []
         first = await runtime.aside("why?", report=lambda ans, act: reports.append((ans, act)))
@@ -1188,7 +1196,7 @@ def test_btw_runs_in_parallel_while_main_turn_is_in_flight(fake_agy, tmp_path):
     from pcode.live import AgentRuntime
 
     async def go():
-        runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
+        runtime = AgentRuntime(agent_for(AntigravityModel("fake-neon"), tmp_path))
         stream = runtime.stream("SLOW")
         # Consume until the slow main turn is actively streaming (holding its lock).
         async for event in stream:
@@ -1231,12 +1239,16 @@ def test_btw_explicit_antigravity_model_handles_mid_tool_loop_context(fake_agy, 
             ModelResponse(parts=[ToolCallPart("read_file", {"path": "x.py"}, "c1")]),
             ModelRequest(parts=[ToolReturnPart("read_file", "print(1)", "c1")]),
         ]
-        chosen = side_model("antigravity:fake-low")
+        chosen = side_model("antigravity:fake-flash")
         return await runtime.aside("is x.py right?", model=chosen)
 
     reply = run(go())
     assert "Question: is x.py right?" in reply.answer
-    assert fake_agy("session/set_model")[0]["params"]["modelId"] == "fake-low"
+    assert fake_agy("session/set_config_option")[0]["params"] == {
+        "sessionId": "s-1",
+        "configId": "model",
+        "value": "fake-flash",
+    }
     side_prompt = prompts(fake_agy)[0]
     assert len(side_prompt) == 2
     assert "[read_file returned: print(1)]" in side_prompt[0]["text"]
@@ -1249,9 +1261,9 @@ def test_btw_retires_side_process_on_failure_close_and_summarize(fake_agy, tmp_p
     from pcode.live import AgentRuntime
 
     async def go():
-        runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
+        runtime = AgentRuntime(agent_for(AntigravityModel("fake-neon"), tmp_path))
         # Explicit $antigravity: model that fails mid-turn retires its connection.
-        chosen = side_model("antigravity:fake-low")
+        chosen = side_model("antigravity:fake-flash")
         with pytest.raises(AntigravityError):
             await runtime.aside("CRASH", model=chosen)
         await asyncio.gather(*list(antigravity._background), return_exceptions=True)
@@ -1285,9 +1297,11 @@ def test_provider_shows_when_agy_is_installed(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert "antigravity" in active_providers(None)
     # Before any session: one default to pick.
-    assert model_catalog({"antigravity"}) == ["antigravity:gemini-4-neon-high"]
-    antigravity._remember_models({"models": {"availableModels": [{"modelId": "fake-low"}]}})
-    assert model_catalog({"antigravity"}) == ["antigravity:fake-low"]
+    assert model_catalog({"antigravity"}) == ["antigravity:gemini-4-neon"]
+    antigravity._remember_models(
+        {"configOptions": [{"id": "model", "options": [{"value": "fake-flash"}]}]}
+    )
+    assert model_catalog({"antigravity"}) == ["antigravity:fake-flash"]
 
 
 def test_missing_cli_is_explained(monkeypatch):
@@ -1301,7 +1315,7 @@ def test_background_command_holds_turn_open_until_followup_ends(fake_agy, tmp_pa
     shown: list[str] = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.listener = shown.append
         return await agent_for(model, tmp_path).run("BGCMD")
 
@@ -1320,7 +1334,7 @@ def test_background_command_holds_turn_open_until_followup_ends(fake_agy, tmp_pa
 
 def test_daemon_command_does_not_hold_turn_open(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         return await agent_for(model, tmp_path).run("BGDAEMON")
 
     result = run(go())
@@ -1332,7 +1346,7 @@ def test_schedule_tool_holds_turn_open(fake_agy, tmp_path, monkeypatch):
     shown: list[str] = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.listener = shown.append
         return await agent_for(model, tmp_path).run("BGSCHED")
 
@@ -1346,7 +1360,7 @@ def test_steering_during_held_turn_resumes_prompt_lifecycle(fake_agy, tmp_path):
     queue: list[str] = []
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = steering_agent(model, tmp_path, queue)
         task = asyncio.create_task(streamed(agent, "BGHANG"))
         for _ in range(200):
@@ -1369,7 +1383,7 @@ def test_steering_during_held_turn_resumes_prompt_lifecycle(fake_agy, tmp_path):
 
 def test_cancelling_held_turn_sends_session_cancel_and_recovers(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = agent_for(model, tmp_path)
         task = asyncio.create_task(streamed(agent, "BGHANG"))
         for _ in range(200):
@@ -1396,13 +1410,13 @@ def test_cancelling_held_turn_sends_session_cancel_and_recovers(fake_agy, tmp_pa
 def test_usage_update_records_context_window_and_caches_it(fake_agy, tmp_path):
     from pcode.context_usage import context_label, context_window
 
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     assert context_window(model) is None
-    assert context_window("antigravity:fake-low") is None
+    assert context_window("antigravity:fake-flash") is None
 
     result = run(agent_for(model, tmp_path).run("hello"))
     assert context_window(model) == 1_048_576
-    assert context_window("antigravity:fake-low") == 1_048_576
+    assert context_window("antigravity:fake-flash") == 1_048_576
     # Billing usage keeps the prompt reply total (13), while the footer context
     # meter uses ACP `usage_update.used` (42) rather than the multi-call sum.
     response = result.all_messages()[-1]
@@ -1413,7 +1427,7 @@ def test_usage_update_records_context_window_and_caches_it(fake_agy, tmp_path):
     # A fresh model instance (as after a restart) reloads the cached window from disk.
     antigravity._windows_loaded_path = None
     antigravity._windows = {}
-    fresh = AntigravityModel("fake-low")
+    fresh = AntigravityModel("fake-flash")
     assert context_window(fresh) == 1_048_576
     assert context_label(fresh, []) == " · 0/1.05m"
 
@@ -1421,7 +1435,7 @@ def test_usage_update_records_context_window_and_caches_it(fake_agy, tmp_path):
 def test_usage_update_used_fallback_when_reply_omits_usage(fake_agy, tmp_path):
     from pcode.context_usage import context_label
 
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     result = run(agent_for(model, tmp_path).run("NO_REPLY_USAGE"))
     response = result.all_messages()[-1]
     assert response.usage.input_tokens == 42
@@ -1454,7 +1468,7 @@ def test_the_compact_cap_applies_to_antigravity_too():
 
     from pcode.controller import SessionController
 
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     model._usage_update({"size": 1_048_576})
     runtime = SimpleNamespace(
         agent=SimpleNamespace(model=model),
@@ -1464,7 +1478,7 @@ def test_the_compact_cap_applies_to_antigravity_too():
         context_history=None,
     )
     controller = object.__new__(SessionController)
-    controller.model = "antigravity:fake-low"
+    controller.model = "antigravity:fake-flash"
     controller.runtime = runtime
     controller.startup_pending = False
     controller.startup_error = None
@@ -1494,14 +1508,14 @@ def test_session_info_update_titles_antigravity_session_end_to_end(fake_agy, tmp
     monkeypatch.setattr("pcode.session_naming.suggest_title", fail_suggest)
 
     root = tmp_path / "sessions"
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     console = Console(file=StringIO())
     app = PreviewApp(workspace=tmp_path, session_dir=root, console=console)
     app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
-    app.model = "antigravity:fake-low"
+    app.model = "antigravity:fake-flash"
     app.runtime = AgentRuntime(
         agent_for(model, tmp_path),
-        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+        session_factory=lambda: SavedSession.create("antigravity:fake-flash", tmp_path, root),
     )
 
     try:
@@ -1527,11 +1541,11 @@ def test_session_info_update_after_turn_and_guards(tmp_path):
     from pcode.sessions import SavedSession, list_sessions
 
     root = tmp_path / "sessions"
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     app = PreviewApp(workspace=tmp_path, session_dir=root, console=Console(file=StringIO()))
-    app.model = "antigravity:fake-low"
+    app.model = "antigravity:fake-flash"
     app.runtime = AgentRuntime(Agent(model))
-    saved = SavedSession.create("antigravity:fake-low", tmp_path, root)
+    saved = SavedSession.create("antigravity:fake-flash", tmp_path, root)
     saved.save_info()
     app.runtime.session = saved
     app.runtime.title_notice = app.controller.apply_provider_title
@@ -1592,14 +1606,14 @@ def test_session_info_update_after_turn_end_to_end_and_reset(fake_agy, tmp_path)
 
     save_preferences(session_naming="on")
     root = tmp_path / "sessions"
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     console = Console(file=StringIO())
     app = PreviewApp(workspace=tmp_path, session_dir=root, console=console)
     app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
-    app.model = "antigravity:fake-low"
+    app.model = "antigravity:fake-flash"
     app.runtime = AgentRuntime(
         agent_for(model, tmp_path),
-        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+        session_factory=lambda: SavedSession.create("antigravity:fake-flash", tmp_path, root),
     )
 
     async def exercise():
@@ -1639,14 +1653,14 @@ def test_bare_rename_works_on_antigravity_and_retires_side_model(fake_agy, tmp_p
     from pcode.ui import TerminalOutput
 
     root = tmp_path / "sessions"
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     console = Console(file=StringIO())
     app = PreviewApp(workspace=tmp_path, session_dir=root, console=console)
     app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
-    app.model = "antigravity:fake-low"
+    app.model = "antigravity:fake-flash"
     app.runtime = AgentRuntime(
         agent_for(model, tmp_path),
-        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+        session_factory=lambda: SavedSession.create("antigravity:fake-flash", tmp_path, root),
     )
 
     async def exercise():
@@ -1709,7 +1723,7 @@ def test_browser_tools_screenshots_and_instructions_are_bridged_when_enabled(fak
 
     async def go():
         agent = Agent(
-            AntigravityModel("fake-high"),
+            AntigravityModel("fake-neon"),
             model_settings={CWD_SETTING: str(tmp_path)},
             capabilities=[browser_cap, ext_browser, file_cap],
         )
@@ -1804,7 +1818,7 @@ def test_core_tools_bridged_extensions_and_opt_in_extension_are_exposed(fake_agy
 
     async def go():
         agent = Agent(
-            AntigravityModel("fake-high"),
+            AntigravityModel("fake-neon"),
             model_settings={CWD_SETTING: str(tmp_path)},
             capabilities=caps,
         )
@@ -1856,7 +1870,7 @@ def test_delegate_task_lists_browser_subagent_and_notifies_role(
     ]
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         model.listener = shown.append
         agent = Agent(
             model,
@@ -1896,7 +1910,7 @@ def test_dynamic_tool_change_resumes_session_while_compact_reuses(fake_agy, tmp_
         return cap
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = Agent(
             model,
             model_settings={CWD_SETTING: str(tmp_path)},
@@ -1993,7 +2007,7 @@ def test_dynamic_toggle_off_and_non_core_dynamic_combined_and_prefixed_capabilit
 
     async def go():
         agent = Agent(
-            AntigravityModel("fake-high"),
+            AntigravityModel("fake-neon"),
             model_settings={CWD_SETTING: str(tmp_path)},
             capabilities=ext.capabilities(),
         )
@@ -2026,7 +2040,7 @@ def test_dynamic_toggle_off_and_non_core_dynamic_combined_and_prefixed_capabilit
 
 def test_cold_compact_then_streamed_turn_resumes_to_load_mcp_tools(fake_agy, tmp_path):
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         agent = delegating_agent(model, tmp_path, [])
         # Turn 1 unstreamed (no RunContext -> tools_signature=None), then cold /compact,
         # then a streamed turn (with RunContext and tools -> must resume to load MCP tools).
@@ -2072,11 +2086,11 @@ def test_extension_subagent_and_direct_delegation_refuse_antigravity(tmp_path):
 
     api = ExtensionAPI("test", tmp_path, None)
     with pytest.raises(ValueError, match="delegated worker"):
-        api.subagent(Agent(AntigravityModel("fake-high"), name="ext_worker"))
+        api.subagent(Agent(AntigravityModel("fake-neon"), name="ext_worker"))
 
     toolset = WorkspaceSubAgentToolset.__new__(WorkspaceSubAgentToolset)
     toolset._models = {}
-    sub = SubAgent(Agent(AntigravityModel("fake-high"), name="ext_worker"))
+    sub = SubAgent(Agent(AntigravityModel("fake-neon"), name="ext_worker"))
     with pytest.raises(ModelRetry, match="delegated worker"):
         asyncio.run(toolset._run_delegation(SimpleNamespace(model=None), "ext_worker", sub))
     # Inheriting an Antigravity parent model with model=None is also refused.
@@ -2084,7 +2098,7 @@ def test_extension_subagent_and_direct_delegation_refuse_antigravity(tmp_path):
     with pytest.raises(ModelRetry, match="delegated worker"):
         asyncio.run(
             toolset._run_delegation(
-                SimpleNamespace(model=AntigravityModel("fake-high")), "worker", inheriting
+                SimpleNamespace(model=AntigravityModel("fake-neon")), "worker", inheriting
             )
         )
 
@@ -2156,13 +2170,13 @@ def _controller_app(model: AntigravityModel, tmp_path, *, extra_capabilities=())
     buffer = StringIO()
     console = Console(file=buffer, force_terminal=False, width=100)
     app = PreviewApp(
-        model="antigravity:fake-low", workspace=tmp_path, session_dir=root, console=console
+        model="antigravity:fake-flash", workspace=tmp_path, session_dir=root, console=console
     )
     app.output = _DirectOutput(console, SimpleNamespace(invalidate=lambda: None))
-    app.model = "antigravity:fake-low"
+    app.model = "antigravity:fake-flash"
     app.runtime = AgentRuntime(
         Agent(model, capabilities=list(extra_capabilities)),
-        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+        session_factory=lambda: SavedSession.create("antigravity:fake-flash", tmp_path, root),
     )
     app.controller.ready.set()
     return app, root, buffer
@@ -2173,7 +2187,7 @@ def test_active_non_execute_tool_pauses_quiet_timer_while_holding(fake_agy, tmp_
     monkeypatch.setattr(antigravity, "OPEN_REPLY_QUIET_LIMIT", 0.05)
 
     async def go():
-        model = AntigravityModel("fake-high")
+        model = AntigravityModel("fake-neon")
         return await agent_for(model, tmp_path).run("BGDELEGATE")
 
     result = run(go())
@@ -2189,7 +2203,7 @@ def test_post_settle_wake_opens_continuation_turn_end_to_end(fake_agy, tmp_path,
     from pcode.sessions import first_prompt, list_sessions, session_turns
 
     monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     app, root, buffer = _controller_app(model, tmp_path)
 
     async def exercise():
@@ -2268,7 +2282,7 @@ def test_post_settle_continuation_allows_bridged_mcp_calls(fake_agy, tmp_path, m
         def get_toolset(self):
             return toolset
 
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     app, _, buffer = _controller_app(model, tmp_path, extra_capabilities=(_PingCap(),))
 
     async def exercise():
@@ -2299,7 +2313,7 @@ def test_post_settle_continuation_supports_steering_and_cancel(fake_agy, tmp_pat
     monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
 
     # 1. Steering during a continuation turn sends a real prompt and completes.
-    model_steer = AntigravityModel("fake-low")
+    model_steer = AntigravityModel("fake-flash")
     app_steer, _, buf_steer = _controller_app(model_steer, tmp_path)
 
     async def steer_exercise():
@@ -2328,7 +2342,7 @@ def test_post_settle_continuation_supports_steering_and_cancel(fake_agy, tmp_pat
     run(steer_exercise())
 
     # 2. Cancelling a continuation turn sends session/cancel and recovers for the next turn.
-    model_cancel = AntigravityModel("fake-low")
+    model_cancel = AntigravityModel("fake-flash")
     app_cancel, _, buf_cancel = _controller_app(model_cancel, tmp_path)
 
     async def cancel_exercise():
@@ -2364,7 +2378,7 @@ def test_post_settle_continuation_supports_steering_and_cancel(fake_agy, tmp_pat
 
 def test_cancel_quarantines_trailing_updates_until_next_prompt(fake_agy, tmp_path, monkeypatch):
     monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     app, _, buffer = _controller_app(model, tmp_path)
 
     async def exercise():
@@ -2410,7 +2424,7 @@ def test_host_preserves_last_prompt_and_stays_busy_for_provider_wake(tmp_path):
     entry = HostEntry(
         id="h1",
         pid=1,
-        model="antigravity:fake-low",
+        model="antigravity:fake-flash",
         workspace=str(tmp_path),
     )
     host = SessionHost(entry, tmp_path / "hosts")
@@ -2452,7 +2466,7 @@ def test_continue_after_continuation_does_not_leak_placeholder_and_history_omits
     from pcode.sessions import list_sessions, session_records
 
     monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     app, root, buffer = _controller_app(model, tmp_path)
 
     async def exercise():
@@ -2526,7 +2540,7 @@ def test_navigate_drops_mismatched_antigravity_session_and_clears_wake(
     fake_agy, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
-    model = AntigravityModel("fake-low")
+    model = AntigravityModel("fake-flash")
     app, _, _ = _controller_app(model, tmp_path)
 
     async def exercise():
@@ -2544,3 +2558,252 @@ def test_navigate_drops_mismatched_antigravity_session_and_clears_wake(
         assert not model._wake_buffer
 
     run(exercise())
+
+
+def test_effort_sets_thought_level_across_turns_and_restores_default(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-neon")
+        agent = agent_for(model, tmp_path)
+        # Default model starts on high; asking for high sends no config RPC.
+        agent.model_settings = {CWD_SETTING: str(tmp_path), "antigravity_effort": "high"}
+        first = await agent.run("one")
+        # Lowering to low updates the live session.
+        agent.model_settings = {CWD_SETTING: str(tmp_path), "antigravity_effort": "low"}
+        second = await agent.run("two", message_history=first.all_messages())
+        # Same effort again sends no duplicate RPC.
+        third = await agent.run("three", message_history=second.all_messages())
+        # Returning to default restores the model's initial thought_level (high).
+        agent.model_settings = {CWD_SETTING: str(tmp_path)}
+        await agent.run("four", message_history=third.all_messages())
+
+    run(go())
+    thought_calls = [
+        e["params"]["value"]
+        for e in fake_agy("session/set_config_option")
+        if e["params"]["configId"] == "thought_level"
+    ]
+    assert thought_calls == ["low", "high"]
+    assert antigravity.cached_thought_levels("fake-neon") == ("low", "medium", "high", "xhigh")
+
+
+def test_effort_applies_after_session_resume(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-neon")
+        agent = agent_for(model, tmp_path)
+        agent.model_settings = {CWD_SETTING: str(tmp_path), "antigravity_effort": "low"}
+        first = await agent.run("one")
+        await antigravity.shutdown()
+        resumed = Agent(
+            AntigravityModel("fake-neon"),
+            model_settings={CWD_SETTING: str(tmp_path), "antigravity_effort": "xhigh"},
+        )
+        await resumed.run("two", message_history=first.all_messages())
+
+    run(go())
+    assert [e["params"]["sessionId"] for e in fake_agy("session/resume")] == ["s-1"]
+    configs = [
+        (e["params"]["configId"], e["params"]["value"])
+        for e in fake_agy("session/set_config_option")
+    ]
+    assert configs == [("thought_level", "low"), ("model", "fake-neon"), ("thought_level", "xhigh")]
+
+
+def test_effort_clamps_to_nearest_offered_thought_level(fake_agy, tmp_path):
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-flash"),
+            model_settings={CWD_SETTING: str(tmp_path), "antigravity_effort": "xhigh"},
+        )
+        return await agent.run("hi")
+
+    result = run(go())
+    assert result.output == "got: hi"
+    configs = [
+        (e["params"]["configId"], e["params"]["value"])
+        for e in fake_agy("session/set_config_option")
+    ]
+    # fake-flash offers low/medium/high, so xhigh clamps to high instead of failing.
+    assert configs == [("model", "fake-flash"), ("thought_level", "high")]
+    assert antigravity.cached_thought_levels("fake-flash") == ("low", "medium", "high")
+
+
+def test_model_without_thought_level_skips_rpc_and_gates_effort(fake_agy, tmp_path):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.preferences import effort_setting, model_efforts, save_model_effort
+
+    async def go():
+        model = AntigravityModel("fake-fixed")
+        agent = Agent(
+            model,
+            model_settings={CWD_SETTING: str(tmp_path), "antigravity_effort": "high"},
+        )
+        await agent.run("hi")
+        return model
+
+    model = run(go())
+    assert model.thought_levels == ()
+    assert antigravity.cached_thought_levels("fake-fixed") == ()
+    assert [
+        e
+        for e in fake_agy("session/set_config_option")
+        if e["params"]["configId"] == "thought_level"
+    ] == []
+    # Both the live model and a fresh lookup via the disk cache report no effort control.
+    assert effort_setting("antigravity:fake-fixed", model) is None
+    assert effort_setting("antigravity:fake-fixed", None) is None
+
+    save_model_effort("antigravity:fake-fixed", "high")
+    output = StringIO()
+    runtime = SimpleNamespace(
+        agent=SimpleNamespace(model=model, model_settings={"antigravity_effort": "high"})
+    )
+    app = PreviewApp(
+        model="antigravity:fake-fixed",
+        runtime=runtime,
+        console=Console(file=output, color_system=None),
+    )
+    assert app.current_effort() == "n/a"
+    app.handle("/effort high")
+    assert "has no effort control" in output.getvalue()
+    app.handle("/effort default")
+    assert model_efforts()["antigravity:fake-fixed"] == "default"
+    assert "antigravity_effort" not in runtime.agent.model_settings
+    assert "Cleared the saved effort" in output.getvalue()
+
+
+def test_side_model_and_btw_apply_antigravity_effort(fake_agy, tmp_path):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from pcode.agent import side_model, with_effort
+    from pcode.app import PreviewApp
+    from pcode.aside import SideTarget
+    from pcode.live import AgentRuntime
+
+    async def go():
+        agent = agent_for(AntigravityModel("fake-neon"), tmp_path)
+        runtime = AgentRuntime(agent)
+        # Explicit $antigravity:model+low side question.
+        chosen = side_model("antigravity:fake-flash", "low")
+        first = await runtime.aside("quick check?", model=chosen)
+        # /btw +low on the conversation's own Antigravity model (model=None).
+        own_settings = with_effort(
+            "antigravity:fake-neon", agent.model, agent.model_settings, "low"
+        )
+        second = await runtime.aside("own check?", settings=own_settings)
+        return first, second
+
+    first, second = run(go())
+    assert "Question: quick check?" in first.answer
+    assert "Question: own check?" in second.answer
+    configs = [
+        (e["params"]["configId"], e["params"]["value"])
+        for e in fake_agy("session/set_config_option")
+    ]
+    assert configs == [("model", "fake-flash"), ("thought_level", "low"), ("thought_level", "low")]
+
+    # Gated model refuses /btw +high and /btw $antigravity:fake-fixed+high.
+    antigravity._remember_thought_levels("fake-fixed", ())
+    app = PreviewApp(
+        model="antigravity:fake-fixed",
+        runtime=SimpleNamespace(agent=SimpleNamespace(model=None, model_settings={})),
+        console=Console(file=StringIO(), color_system=None),
+    )
+    with pytest.raises(ValueError, match="has no effort control"):
+        app.controller.check_effort(SideTarget("", "high"))
+    with pytest.raises(ValueError, match="has no effort control"):
+        app.controller.check_effort(SideTarget("antigravity:fake-fixed", "high"))
+
+
+def test_borrowed_turn_effort_applies_for_one_turn_then_restores(fake_agy, tmp_path):
+    from pcode.agent import with_effort
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        agent = Agent(
+            model,
+            model_settings={CWD_SETTING: str(tmp_path), "antigravity_effort": "medium"},
+        )
+        first = await agent.run("turn one")
+        borrowed = with_effort("antigravity:fake-neon", model, agent.model_settings, "xhigh")
+        with agent.override(model_settings=borrowed):
+            second = await agent.run("turn two", message_history=first.all_messages())
+        await agent.run("turn three", message_history=second.all_messages())
+
+    run(go())
+    thought_calls = [
+        e["params"]["value"]
+        for e in fake_agy("session/set_config_option")
+        if e["params"]["configId"] == "thought_level"
+    ]
+    assert thought_calls == ["medium", "xhigh", "medium"]
+
+
+def test_resume_default_effort_restores_cached_model_default(fake_agy, tmp_path):
+    async def go():
+        # Fresh session records fake-neon's built-in default ("high") and runs at "low".
+        first = await Agent(
+            AntigravityModel("fake-neon"),
+            model_settings={CWD_SETTING: str(tmp_path), "antigravity_effort": "low"},
+        ).run("one")
+        await antigravity.shutdown()
+        # Resumed session where agy preserved "low", then user clears to /effort default.
+        resumed = AntigravityModel("fake-neon")
+        second = await Agent(
+            resumed,
+            model_settings={CWD_SETTING: str(tmp_path), "antigravity_effort": "low"},
+        ).run("two", message_history=first.all_messages())
+        await Agent(
+            resumed,
+            model_settings={CWD_SETTING: str(tmp_path)},
+        ).run("three", message_history=second.all_messages())
+
+    run(go())
+    assert antigravity.cached_default_thought_level("fake-neon") == "high"
+    thought_calls = [
+        e["params"]["value"]
+        for e in fake_agy("session/set_config_option")
+        if e["params"]["configId"] == "thought_level"
+    ]
+    # Turn 1 sets low; resumed turn 2 sets low; turn 3 (/effort default) restores high.
+    assert thought_calls == ["low", "low", "high"]
+
+
+def test_fit_thought_level_and_corrupted_models_cache_self_heal(monkeypatch, tmp_path):
+    from pcode.preferences import effort_setting
+
+    assert antigravity._fit_thought_level("medium", ("low", "high")) == "low"
+    assert antigravity._fit_thought_level("xhigh", ("low", "medium", "high")) == "high"
+    assert antigravity._fit_thought_level("bogus", ("low", "high")) is None
+    assert antigravity._fit_thought_level("high", ()) is None
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cache = antigravity.models_cache()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    # Corrupted non-dict `thought_levels` must not crash cache reads or writes.
+    cache.write_text('{"models": ["fake-neon"], "thought_levels": ["bad"]}')
+    assert antigravity.cached_thought_levels("fake-neon") is None
+    antigravity._remember_thought_levels("fake-fixed", ())
+    assert antigravity.cached_thought_levels("fake-fixed") == ()
+    assert effort_setting("antigravity:fake-fixed") is None
+    # Updating the cache invalidates preferences' stat-keyed mirror immediately.
+    antigravity._remember_thought_levels("fake-fixed", ("low", "high"))
+    assert effort_setting("antigravity:fake-fixed") == "antigravity_effort"
+
+
+def test_stale_list_models_cache_is_ignored(monkeypatch, tmp_path):
+    from pcode.models import model_catalog
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cache = antigravity.models_cache()
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text('["gemini-4-neon-high", "gemini-4-neon-low"]')
+    assert cached_models() == ()
+    assert model_catalog({"antigravity"}) == ["antigravity:gemini-4-neon"]

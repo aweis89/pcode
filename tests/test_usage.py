@@ -388,12 +388,12 @@ def test_usage_command_defaults_to_current_provider_and_accepts_arguments(monkey
     monkeypatch.setattr(usage, "usage_report", fake_report)
 
     for model, command, expected in (
-        ("antigravity:gemini-4-neon-high", "/usage", "antigravity"),
+        ("antigravity:gemini-4-neon", "/usage", "antigravity"),
         ("claude:claude-sonnet-5", "/usage", "claude"),
         ("openai-codex:gpt-5", "/usage", "openai-codex"),
         ("anthropic:claude-sonnet-5", "/usage", None),
-        ("antigravity:gemini-4-neon-high", "/usage all", None),
-        ("antigravity:gemini-4-neon-high", "/usage claude", "claude"),
+        ("antigravity:gemini-4-neon", "/usage all", None),
+        ("antigravity:gemini-4-neon", "/usage claude", "claude"),
     ):
         buffer = StringIO()
         runtime = SimpleNamespace(agent=SimpleNamespace(model=None), history=[])
@@ -406,7 +406,7 @@ def test_usage_command_defaults_to_current_provider_and_accepts_arguments(monkey
     buffer = StringIO()
     runtime = SimpleNamespace(agent=SimpleNamespace(model=None), history=[])
     app = PreviewApp(
-        model="antigravity:gemini-4-neon-high", runtime=runtime, console=Console(file=buffer)
+        model="antigravity:gemini-4-neon", runtime=runtime, console=Console(file=buffer)
     )
     app.handle("/usage bogus")
     assert "Usage: /usage [claude|openai-codex|antigravity|all]" in buffer.getvalue()

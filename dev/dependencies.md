@@ -623,8 +623,9 @@ bracketed paste carries text only. Researched 2026-10-17, the options were:
 
 ### Reasoning effort
 
-`preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
-`anthropic_effort` for Anthropic and Claude Code.
+`preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex,
+`anthropic_effort` for Anthropic and Claude Code, `thinking` for Gemini, and
+`antigravity_effort` for Antigravity.
 Verified Pydantic AI 2.50.0's `AnthropicModelSettings.anthropic_effort` and
 `AnthropicModel._build_output_config` send `output_config.effort` without changing
 thinking settings. `_build_output_config` consults `anthropic_supports_effort`
@@ -840,8 +841,13 @@ finished turn) off this model. Traps found while building it:
   every later `await` in the same task is cancelled too, so the stream cannot
   wait there for `session/cancel` to settle. A background task does it while
   holding the model's lock.
-- `session/resume` returns no `models` block, so the model is set again after a
-  resume; `session/new` reports the current one.
+- `session/new` returns `configOptions` with separate `model` (base IDs such as
+  `gemini-4-neon`, `claude-opus-5-5`) and `thought_level` (`low`/`medium`/`high`/`xhigh`,
+  or absent for models without a thinking level); `session/set_config_option`
+  sets either and returns the updated `configOptions` for the active model.
+  `session/resume` returns no `configOptions`, so `model` is set again after a
+  resume and `thought_level` is checked before every prompt and sent when it
+  differs from the session's active level.
 - A rewind must not resume: the `agy` session still holds the dropped turns.
   The stamp on the history's last response therefore has to be the session's
   newest turn, which a file-locked ledger in pcode's state directory records

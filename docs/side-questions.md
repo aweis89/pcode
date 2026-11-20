@@ -362,8 +362,8 @@ stay apart. The effort is only read from the leading words, and only from the
 last `+` in a model word when a real level follows, so model ids that contain
 `+` still work. An unknown level fails the command, and so does an effort on a
 model `/effort` cannot set (it supports OpenAI/Codex models, the Anthropic
-and Claude Code models whose profile has effort control, and Gemini models that
-think). Typing `+` in the
+and Claude Code models whose profile has effort control, Gemini models that
+think, and Antigravity models that offer a thinking level). Typing `+` in the
 leading words completes the levels.
 
 ## Which context it sees

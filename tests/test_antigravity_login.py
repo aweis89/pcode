@@ -246,12 +246,12 @@ def test_controller_login_antigravity_uses_read_secret_and_resets_model(monkeypa
     agy = fake_agy(tmp_path)
     monkeypatch.setattr(al.shutil, "which", lambda _: agy)
 
-    model = AntigravityModel("gemini-4-neon-high")
+    model = AntigravityModel("gemini-4-neon")
     model.reset = Mock()
     runtime = SimpleNamespace(agent=SimpleNamespace(model=model), history=[])
     buffer = StringIO()
     app = PreviewApp(
-        model="antigravity:gemini-4-neon-high",
+        model="antigravity:gemini-4-neon",
         runtime=runtime,
         console=Console(file=buffer),
     )
@@ -283,7 +283,7 @@ def test_controller_login_antigravity_dismissed_cancels_cleanly(monkeypatch, tmp
     monkeypatch.setattr(al.shutil, "which", lambda _: agy)
 
     buffer = StringIO()
-    app = PreviewApp(model="antigravity:gemini-4-neon-high", console=Console(file=buffer))
+    app = PreviewApp(model="antigravity:gemini-4-neon", console=Console(file=buffer))
     app.read_secret = AsyncMock(return_value=None)
 
     app.handle("/login antigravity")
@@ -297,7 +297,7 @@ def test_controller_login_antigravity_refuses_when_busy_without_starting_task():
     from pcode.app import PreviewApp
 
     buffer = StringIO()
-    app = PreviewApp(model="antigravity:gemini-4-neon-high", console=Console(file=buffer))
+    app = PreviewApp(model="antigravity:gemini-4-neon", console=Console(file=buffer))
     app.controller.activity.queued_prompts.append("queued prompt")
     app.controller.login_requested = "antigravity"
 

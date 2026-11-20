@@ -75,6 +75,10 @@ PREFIX = "antigravity:"
 SYSTEM = "antigravity"
 COMMAND = "agy"
 PROTOCOL_VERSION = 1
+EFFORT_SETTING = "antigravity_effort"
+MODEL_CONFIG = "model"
+THOUGHT_LEVEL_CONFIG = "thought_level"
+EFFORT_ORDER = ("low", "medium", "high", "xhigh")
 # Credentials and endpoints that would make `agy` bill an API key or a Cloud
 # project, or send its requests somewhere else, instead of using the
 # subscription it signed in with.
@@ -182,20 +186,142 @@ def _locked(path: Path) -> Iterator[None]:
         yield
 
 
-def cached_models() -> tuple[str, ...]:
-    """Model IDs the last Antigravity session offered, for the picker."""
-    return tuple(name for name in _read_json(models_cache(), list) if isinstance(name, str))
+def _config_option(result: dict, config_id: str) -> dict | None:
+    options = result.get("configOptions")
+    if not isinstance(options, list):
+        return None
+    for option in options:
+        if isinstance(option, dict) and (
+            option.get("id") == config_id or option.get("category") == config_id
+        ):
+            return option
+    return None
+
+
+def _config_id(result: dict, default_id: str) -> str:
+    option = _config_option(result, default_id)
+    found = option.get("id") if isinstance(option, dict) else None
+    return found if isinstance(found, str) and found else default_id
+
+
+def _config_value(result: dict, config_id: str) -> str:
+    option = _config_option(result, config_id)
+    value = option.get("currentValue") if isinstance(option, dict) else None
+    return value if isinstance(value, str) else ""
+
+
+def _option_values(option: dict | None) -> list[str]:
+    if not isinstance(option, dict):
+        return []
+    raw = option.get("options")
+    if not isinstance(raw, list):
+        return []
+    values: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("value"), str) and item["value"]:
+            values.append(item["value"])
+        elif isinstance(item.get("options"), list):
+            for nested in item["options"]:
+                if (
+                    isinstance(nested, dict)
+                    and isinstance(nested.get("value"), str)
+                    and nested["value"]
+                ):
+                    values.append(nested["value"])
+    return values
 
 
 def _offered(result: dict) -> list[str]:
-    offered = (result.get("models") or {}).get("availableModels") or []
-    return [m["modelId"] for m in offered if isinstance(m, dict) and m.get("modelId")]
+    return _option_values(_config_option(result, MODEL_CONFIG))
+
+
+def _fit_thought_level(wanted: str, offered: tuple[str, ...]) -> str | None:
+    """Closest `offered` thinking level to `wanted`, or None when none are offered."""
+    if not offered:
+        return None
+    if wanted in offered:
+        return wanted
+    if wanted not in EFFORT_ORDER:
+        return None
+    target = EFFORT_ORDER.index(wanted)
+    ranked = [
+        (abs(EFFORT_ORDER.index(level) - target), EFFORT_ORDER.index(level) > target, level)
+        for level in offered
+        if level in EFFORT_ORDER
+    ]
+    return min(ranked)[2] if ranked else None
+
+
+def _read_models_cache() -> dict[str, Any]:
+    return _read_json(models_cache(), dict)
+
+
+def cached_models() -> tuple[str, ...]:
+    """Base model IDs the last Antigravity session offered, for the picker."""
+    models = _read_models_cache().get("models")
+    if not isinstance(models, list):
+        return ()
+    return tuple(name for name in models if isinstance(name, str) and name)
+
+
+def cached_thought_levels(model_name: str) -> tuple[str, ...] | None:
+    """Thinking levels Antigravity last offered for `model_name`, or None if unseen."""
+    table = _read_models_cache().get("thought_levels")
+    if not isinstance(table, dict):
+        return None
+    levels = table.get(model_name)
+    if not isinstance(levels, list):
+        return None
+    return tuple(level for level in levels if isinstance(level, str) and level)
+
+
+def cached_default_thought_level(model_name: str) -> str | None:
+    """Default thinking level Antigravity started `model_name` on, or None if unseen."""
+    table = _read_models_cache().get("default_thought_levels")
+    if not isinstance(table, dict):
+        return None
+    level = table.get(model_name)
+    return level if isinstance(level, str) and level else None
 
 
 def _remember_models(result: dict) -> None:
     names = _offered(result)
-    if names and list(cached_models()) != names:
-        _write_json(models_cache(), names)
+    if not names or list(cached_models()) == names:
+        return
+    path = models_cache()
+    with _locked(path):
+        stored = _read_json(path, dict)
+        stored["models"] = names
+        _write_json(path, stored)
+
+
+def _remember_thought_levels(
+    model_name: str, levels: tuple[str, ...], default_level: str | None = None
+) -> None:
+    if not model_name:
+        return
+    values = list(levels)
+    levels_same = cached_thought_levels(model_name) == levels
+    default_same = (
+        default_level is None or cached_default_thought_level(model_name) == default_level
+    )
+    if levels_same and default_same:
+        return
+    path = models_cache()
+    with _locked(path):
+        stored = _read_json(path, dict)
+        table = stored.get("thought_levels")
+        table = dict(table) if isinstance(table, dict) else {}
+        table[model_name] = values
+        stored["thought_levels"] = table
+        if default_level is not None:
+            defaults = stored.get("default_thought_levels")
+            defaults = dict(defaults) if isinstance(defaults, dict) else {}
+            defaults[model_name] = default_level
+            stored["default_thought_levels"] = defaults
+        _write_json(path, stored)
 
 
 def _windows_path() -> Path:
@@ -552,6 +678,14 @@ class _Session:
     # Tool call IDs marked as daemons (`IsDaemon: True`) so their late updates
     # never spuriously open a post-settle continuation turn.
     daemon_tools: set[str] = field(default_factory=set)
+    # Thinking levels `configOptions` offered for this model (`None` when
+    # `configOptions` wasn't reported, `()` when the model has no thinking control),
+    # the level it started on (for `/effort default`), its active level, and the
+    # `configId` the server advertised for it.
+    thought_levels: tuple[str, ...] | None = None
+    default_thought_level: str | None = None
+    thought_level: str | None = None
+    thought_config_id: str = THOUGHT_LEVEL_CONFIG
 
 
 def _stamp(session_id: str, turn: int) -> str:
@@ -630,6 +764,9 @@ class AntigravityModel(Model):
         self.compaction_notice: Callable[[str], None] = lambda text: None
         # Whether pcode's plan mode is on; set per request by the plan-mode extension.
         self.plan_mode = False
+        # Observed `thought_level` options for this model (`None` until a session reports
+        # `configOptions`, `()` when the model offers no thinking level).
+        self.thought_levels: tuple[str, ...] | None = None
         from pcode.antigravity_tools import ToolBridge
 
         # pcode's bridged tools, which Antigravity may call (see antigravity_tools).
@@ -901,6 +1038,8 @@ class AntigravityModel(Model):
         interrupted: list = []
         earlier: list[ModelMessage] = []
         cwd = str((model_settings or {}).get(CWD_SETTING) or os.getcwd())
+        raw_effort = (model_settings or {}).get(EFFORT_SETTING)
+        effort = raw_effort if isinstance(raw_effort, str) and raw_effort else None
         if not continuing:
             # A new user turn lifts any cancel quarantine from an earlier Ctrl+C.
             self._wake_quarantined = False
@@ -964,6 +1103,7 @@ class AntigravityModel(Model):
                 session, replay = await self._prepare(
                     earlier, _asked(interrupted), cwd, prompt_bytes=_text_bytes(prompt)
                 )
+                await self._apply_effort(session, effort)
                 if not self._side:
                     await self._ready(session, compact=session.turns > 0)
                 stream = AntigravityStream(
@@ -1007,6 +1147,70 @@ class AntigravityModel(Model):
                 finally:
                     self._lock.release()
                     self._arm_expiry()
+
+    def _sync_thought_config(
+        self, session: _Session, result: dict, *, record_default: bool, fresh: bool = False
+    ) -> None:
+        """Record `thought_level` options and current level from a `configOptions` reply."""
+        if not isinstance(result.get("configOptions"), list):
+            return
+        active_model = _config_value(result, MODEL_CONFIG)
+        if self._model_name and active_model and active_model != self._model_name:
+            return
+        option = _config_option(result, THOUGHT_LEVEL_CONFIG)
+        levels = tuple(_option_values(option))
+        current = _config_value(result, THOUGHT_LEVEL_CONFIG) or None
+        session.thought_levels = levels
+        session.thought_level = current
+        session.thought_config_id = _config_id(result, THOUGHT_LEVEL_CONFIG)
+        model_name = self._model_name or active_model
+        if record_default:
+            if fresh:
+                session.default_thought_level = current
+            else:
+                cached_default = cached_default_thought_level(model_name) if model_name else None
+                session.default_thought_level = (
+                    cached_default if cached_default in levels else current
+                )
+        self.thought_levels = levels
+        if model_name:
+            _remember_thought_levels(
+                model_name, levels, default_level=current if (record_default and fresh) else None
+            )
+
+    async def _apply_effort(self, session: _Session, effort: str | None) -> None:
+        """Align the session's ACP `thought_level` config option with `effort`."""
+        if session.thought_levels == ():
+            return
+        if effort is None:
+            target = session.default_thought_level
+        elif session.thought_levels is not None:
+            target = _fit_thought_level(effort, session.thought_levels)
+        else:
+            target = effort
+        if target is None or target == session.thought_level:
+            return
+        try:
+            updated = await session.connection.request(
+                "session/set_config_option",
+                {
+                    "sessionId": session.session_id,
+                    "configId": session.thought_config_id,
+                    "value": target,
+                },
+            )
+        except AntigravityError:
+            if not session.connection.alive:
+                self._detach_session()
+            raise
+        except BaseException:
+            # Cancelled partway: the session may be mid-command, so start it over.
+            self._detach_session()
+            raise
+        if isinstance(updated, dict) and isinstance(updated.get("configOptions"), list):
+            self._sync_thought_config(session, updated, record_default=False)
+        else:
+            session.thought_level = target
 
     async def _ready(self, session: _Session, *, compact: bool) -> None:
         """Before a prompt: put the session in pcode's mode, and make room in its context."""
@@ -1172,12 +1376,17 @@ class AntigravityModel(Model):
                 )
             _remember_models(result)
             session_id = result["sessionId"]
-            current_model = (result.get("models") or {}).get("currentModelId") or ""
+            config_source = result
+            current_model = _config_value(result, MODEL_CONFIG)
             if self._model_name and self._model_name != current_model:
                 try:
-                    await connection.request(
-                        "session/set_model",
-                        {"sessionId": session_id, "modelId": self._model_name},
+                    updated = await connection.request(
+                        "session/set_config_option",
+                        {
+                            "sessionId": session_id,
+                            "configId": _config_id(result, MODEL_CONFIG),
+                            "value": self._model_name,
+                        },
                     )
                 except AntigravityError as error:
                     offered = _offered(result) or list(cached_models())
@@ -1186,6 +1395,9 @@ class AntigravityModel(Model):
                         if offered
                         else str(error)
                     ) from error
+                # Never fall back to `result`: it describes the server's default model.
+                config_source = updated if isinstance(updated, dict) else {}
+                _remember_models(config_source)
         except BaseException:
             # Cancelled here, an await would be cancelled too; close beside it.
             _spawn(_close(connection))
@@ -1195,6 +1407,7 @@ class AntigravityModel(Model):
         connection.idle = self._idle_update
         turns = stamp[1] if not replay and stamp is not None else 0
         self._session = _Session(connection, session_id, turns, tools_signature=current_tools)
+        self._sync_thought_config(self._session, config_source, record_default=True, fresh=replay)
         if replay:
             # A new session: nothing is known about its context yet.
             self.used = self._compacted_at = None
