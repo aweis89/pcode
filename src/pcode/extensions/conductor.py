@@ -4,8 +4,8 @@ Lets a session act as a conductor over other open `/attach` hosts and saved
 historical sessions:
 - `list_hosts` / `inspect_host` (read-only, also available to workers) for
   discovering open/stopped hosts and reading live plan, job, and busy state.
-- `ask_host` (read-only headless `/btw`) for asking a session a question
-  against its full context without mutating its main thread.
+- `ask_host` (headless `/btw`) for asking a session a side question against
+  its full context without mutating its main thread or waiting behind a turn.
 - `send_to_host` / `wait_for_hosts` / `stop_host` for actively driving or
   closing other sessions.
 
@@ -19,12 +19,14 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Literal
 
 from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.capabilities import Capability
+from pydantic_ai.tools import ToolDefinition
 
 from pcode import remote, remote_profile
 from pcode.aside import ASIDE_TIMEOUT_SECONDS
@@ -33,14 +35,17 @@ from pcode.host_protocol import HostEntry, host_dir, list_stopped
 from pcode.host_protocol import list_hosts as discover_hosts
 from pcode.remote import HostError
 from pcode.rpc import RemoteError
+from pcode.worker_channel import current_worker
 
 PARENT_INSTRUCTIONS = (
     "You can inspect, query, and manage other pcode sessions. "
     "For triaging many open or historical sessions, start with list_hosts (or search_sessions) "
     "and delegate parallel read-only workers using inspect_host and read_session so this "
-    "conversation stays concise. Use ask_host for a read-only side question against a session's "
-    "full context, send_to_host (with wait=False + wait_for_hosts for parallel fan-out) to send "
-    "work, and stop_host to close finished idle sessions."
+    "conversation stays concise. Use ask_host for a side question against a session's full "
+    "context without mutating its main thread (ask it to inspect/report only if you want no "
+    "workspace edits, as side questions still have normal workspace tools), send_to_host "
+    "(with wait=False + wait_for_hosts for parallel fan-out) to send work, and stop_host to "
+    "close finished idle sessions."
 )
 
 WORKER_INSTRUCTIONS = (
@@ -48,25 +53,46 @@ WORKER_INSTRUCTIONS = (
     "activity, busy reason) alongside read_session for saved turns."
 )
 
+PARENT_ONLY_TOOLS = frozenset({"ask_host", "send_to_host", "wait_for_hosts", "stop_host"})
+
 StateFilter = Literal["all", "working", "idle", "stopped"]
 WaitMode = Literal["all", "any"]
 
-# Reap hosts spawned by auto-resume so they do not linger as zombies.
-_children: set[asyncio.Task] = set()
+# Serialize concurrent auto-resumes for the same saved session ID so parallel
+# tool calls (e.g. ask_host + send_to_host) spawn at most one host.
+_resume_locks: dict[str, asyncio.Lock] = {}
+
+
+def _resume_lock(session_id: str) -> asyncio.Lock:
+    lock = _resume_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _resume_locks[session_id] = lock
+    return lock
 
 
 def _reap(process: subprocess.Popen) -> None:
-    task = asyncio.get_running_loop().create_task(asyncio.to_thread(process.wait))
-    _children.add(task)
-    task.add_done_callback(_children.discard)
+    """Reap a long-lived resumed host when it exits without blocking asyncio shutdown."""
+    threading.Thread(target=process.wait, name="conductor-reap", daemon=True).start()
+
+
+def _current_pid() -> int:
+    return os.getpid()
 
 
 def _self_session(ctx: RunContext) -> str:
     return base_conversation(getattr(ctx, "conversation_id", None)) or ""
 
 
+def _in_worker(ctx: RunContext) -> bool:
+    return (
+        current_worker() is not None
+        or getattr(getattr(ctx, "agent", None), "name", None) == "worker"
+    )
+
+
 def _is_self(entry: HostEntry, my_session: str) -> bool:
-    return entry.pid == os.getpid() or (bool(my_session) and entry.session_id == my_session)
+    return entry.pid == _current_pid() or (bool(my_session) and entry.session_id == my_session)
 
 
 def _entry_summary(entry: HostEntry, my_session: str) -> dict:
@@ -90,6 +116,13 @@ def _entry_summary(entry: HostEntry, my_session: str) -> dict:
 
 
 def _match_entries(entries: list[HostEntry], selector: str) -> list[HostEntry]:
+    exact = [
+        entry
+        for entry in entries
+        if entry.id == selector or (entry.session_id and entry.session_id == selector)
+    ]
+    if exact:
+        return exact
     return [
         entry
         for entry in entries
@@ -106,11 +139,35 @@ def _find_running(selector: str, directory: Path | None = None) -> HostEntry | N
     return matches[0] if matches else None
 
 
+def _find_stopped(selector: str, directory: Path | None = None) -> HostEntry | None:
+    matches = _match_entries(list_stopped(directory), selector)
+    if len(matches) > 1:
+        ids = ", ".join(e.session_id or e.id for e in matches[:6])
+        raise ModelRetry(f"Selector {selector!r} matches multiple stopped sessions: {ids}.")
+    return matches[0] if matches else None
+
+
 def _older_host_message(entry: HostEntry, action: str) -> str:
     return (
         f"Host {entry.id} is running older pcode that does not support `{action}`; "
         "restart it with `/restart` in its terminal or `pcode --restart-hosts`."
     )
+
+
+def _stopped_note(session_id: str) -> str:
+    if session_id:
+        return (
+            f"Host stopped; use read_session(session_id={session_id!r}, scope='all') "
+            "to read its saved turns."
+        )
+    return "Host stopped before saving a session."
+
+
+def _different_workspace(target_workspace: str, own_workspace: Path) -> bool:
+    try:
+        return Path(target_workspace).resolve() != own_workspace.resolve()
+    except OSError:
+        return True
 
 
 async def _resume_session_host(
@@ -120,21 +177,14 @@ async def _resume_session_host(
     my_session: str,
     directory: Path | None = None,
     timeout: float = 60.0,
-) -> HostEntry:
+) -> tuple[HostEntry, bool]:
     """Start a headless host for a stopped or historical session in its original workspace."""
     from pcode.host_protocol import find_host, socket_path
     from pcode.preferences import load_preferences
     from pcode.sessions import SessionError, is_open, read_info, resolve_session
 
-    stopped_matches = _match_entries(list_stopped(directory), selector)
-    if len(stopped_matches) > 1:
-        ids = ", ".join(e.session_id or e.id for e in stopped_matches[:6])
-        raise ModelRetry(f"Selector {selector!r} matches multiple stopped sessions: {ids}.")
-    session_selector = (
-        stopped_matches[0].session_id
-        if stopped_matches and stopped_matches[0].session_id
-        else selector
-    )
+    stopped = _find_stopped(selector, directory)
+    session_selector = stopped.session_id if stopped and stopped.session_id else selector
 
     try:
         session_path = resolve_session(session_selector, session_dir)
@@ -147,59 +197,69 @@ async def _resume_session_host(
     if my_session and info.id == my_session:
         raise ModelRetry("Cannot target the current session.")
 
-    # Re-check running hosts by resolved full session ID in case a short/host prefix missed it.
-    if running := _find_running(info.id, directory):
-        return running
+    async with _resume_lock(info.id):
+        # Re-check running hosts under the per-session lock so concurrent calls
+        # for the same session share one spawned host instead of racing.
+        if running := _find_running(info.id, directory):
+            if _is_self(running, my_session):
+                raise ModelRetry("Cannot target the current session.")
+            return running, False
 
-    if is_open(session_path):
-        raise ModelRetry(
-            f"Session {info.id} is currently open in an interactive terminal without a host; "
-            "cannot resume it from here."
-        )
-
-    workspace = Path(info.workspace)
-    if not workspace.is_dir():
-        raise ModelRetry(
-            f"Session {info.id}'s workspace ({workspace}) no longer exists; "
-            f"use read_session(session_id={info.id!r}, scope='all') to inspect its saved history."
-        )
-
-    model = info.model or load_preferences().get("model")
-    if not model:
-        raise ModelRetry(f"Session {info.id} has no model recorded and no default model is set.")
-
-    identity, process, log = remote.spawn_host(
-        model=model,
-        workspace=workspace,
-        resume=info.id,
-        session_dir=session_dir,
-        directory=directory,
-        no_worktree=True,
-    )
-    _reap(process)
-    sock = socket_path(identity, directory)
-    deadline = time.monotonic() + timeout
-    while not sock.exists():
-        if process.poll() is not None:
-            tail = ""
-            try:
-                tail = "\n".join(log.read_text(errors="replace").strip().splitlines()[-8:])
-            except OSError:
-                pass
+        if is_open(session_path):
             raise ModelRetry(
-                f"Failed to resume session {info.id} (host exited {process.returncode})."
-                + (f"\n{tail}" if tail else "")
+                f"Session {info.id} is currently open in an interactive terminal without a host; "
+                "cannot resume it from here."
             )
-        if time.monotonic() > deadline:
-            raise ModelRetry(
-                f"Session {info.id} host did not start within {timeout:g}s; see {log}."
-            )
-        await asyncio.sleep(0.05)
 
-    try:
-        return find_host(identity, directory)
-    except LookupError as error:
-        raise ModelRetry(f"Resumed host {identity} disappeared: {error}") from None
+        workspace = Path(info.workspace)
+        if not workspace.is_dir():
+            raise ModelRetry(
+                f"Session {info.id}'s workspace ({workspace}) no longer exists; "
+                f"use read_session(session_id={info.id!r}, scope='all') to inspect its "
+                "saved history."
+            )
+
+        model = info.model or load_preferences().get("model")
+        if not model:
+            raise ModelRetry(
+                f"Session {info.id} has no model recorded and no default model is set."
+            )
+
+        identity, process, log = remote.spawn_host(
+            model=model,
+            workspace=workspace,
+            resume=info.id,
+            session_dir=session_dir,
+            directory=directory,
+            no_worktree=True,
+        )
+        _reap(process)
+        sock = socket_path(identity, directory)
+        deadline = time.monotonic() + timeout
+        while not sock.exists():
+            if process.poll() is not None:
+                tail = ""
+                try:
+                    tail = "\n".join(log.read_text(errors="replace").strip().splitlines()[-8:])
+                except OSError:
+                    pass
+                raise ModelRetry(
+                    f"Failed to resume session {info.id} (host exited {process.returncode})."
+                    + (f"\n{tail}" if tail else "")
+                )
+            if time.monotonic() > deadline:
+                raise ModelRetry(
+                    f"Session {info.id} host ({identity}) did not finish starting within "
+                    f"{timeout:g}s and is still starting in the background; check with "
+                    f"inspect_host({identity!r}), stop it with stop_host({identity!r}, "
+                    f"force=True), or see {log}."
+                )
+            await asyncio.sleep(0.05)
+
+        try:
+            return find_host(identity, directory), True
+        except LookupError as error:
+            raise ModelRetry(f"Resumed host {identity} disappeared: {error}") from None
 
 
 async def _ensure_host(
@@ -217,10 +277,9 @@ async def _ensure_host(
         if _is_self(entry, my_session):
             raise ModelRetry("Cannot target the current session.")
         return entry, False
-    entry = await _resume_session_host(
+    return await _resume_session_host(
         selector, session_dir=session_dir, my_session=my_session, directory=directory
     )
-    return entry, True
 
 
 def _host_is_busy(snapshot: dict) -> bool:
@@ -233,11 +292,23 @@ def _host_is_busy(snapshot: dict) -> bool:
     )
 
 
+class _ConductorCapability(Capability):
+    """Hides parent-only conductor tools when shared with a delegated worker."""
+
+    def prepare_tools(
+        self, ctx: RunContext, tool_defs: list[ToolDefinition]
+    ) -> list[ToolDefinition]:
+        if _in_worker(ctx):
+            return [td for td in tool_defs if td.name not in PARENT_ONLY_TOOLS]
+        return tool_defs
+
+
 def setup(pcode) -> None:
     if remote_profile.active() is not None:
         return
 
     session_dir = pcode.session_dir
+    own_workspace = pcode.workspace
 
     async def list_hosts(
         ctx: RunContext,
@@ -280,17 +351,17 @@ def setup(pcode) -> None:
         directory = host_dir()
         entry = _find_running(selector, directory)
         if entry is None:
-            stopped = _match_entries(list_stopped(directory), selector)
-            if stopped:
-                sid = stopped[0].session_id or stopped[0].id
+            stopped = _find_stopped(selector, directory)
+            if stopped is not None:
+                sid = stopped.session_id or stopped.id
                 return {
-                    "host_id": stopped[0].id,
+                    "host_id": stopped.id,
                     "session_id": sid,
                     "state": "stopped",
-                    "workspace": stopped[0].workspace,
-                    "title": stopped[0].title,
-                    "outcome": stopped[0].outcome,
-                    "turns": stopped[0].turns,
+                    "workspace": stopped.workspace,
+                    "title": stopped.title,
+                    "outcome": stopped.outcome,
+                    "turns": stopped.turns,
                     "note": (
                         "This session's host is stopped. Use read_session to inspect its saved "
                         "history, or ask_host / send_to_host to resume it."
@@ -317,16 +388,21 @@ def setup(pcode) -> None:
         question: str,
         model: str = "",
     ) -> dict:
-        """Ask a session a read-only side question (`/btw`) against its full context.
+        """Ask a session a side question (`/btw`) against its full context.
 
         Does not append to the target's main conversation or wait behind an active turn.
-        Accepts a running host ID or a saved session ID (auto-resuming in its workspace).
+        Note that the target's side question still has access to its workspace tools, so
+        ask for inspection/reporting only if you do not want workspace edits.
+        Accepts a running host ID or a saved session ID (auto-resuming in its workspace;
+        auto-resumed hosts inherit this conductor's environment).
 
         Args:
             target: Running host ID or saved session ID (or unique prefix).
             question: The question to ask the session.
             model: Optional model override (e.g. `anthropic:claude-sonnet-4-6+low`).
         """
+        if _in_worker(ctx):
+            raise ModelRetry("ask_host is only available to the parent session, not workers.")
         cleaned = question.strip()
         if not cleaned:
             raise ModelRetry("Provide a non-empty question.")
@@ -349,6 +425,10 @@ def setup(pcode) -> None:
         except (HostError, OSError) as error:
             raise ModelRetry(f"Could not reach host {entry.id}: {error}") from None
         reply["resumed"] = resumed
+        if resumed and _different_workspace(entry.workspace, own_workspace):
+            reply["env_note"] = (
+                "Resumed in another workspace; the host inherited this conductor's environment."
+            )
         return reply
 
     async def send_to_host(
@@ -360,7 +440,8 @@ def setup(pcode) -> None:
     ) -> dict:
         """Send a prompt as a real turn on another session host.
 
-        Accepts a running host ID or a saved session ID (auto-resuming in its workspace).
+        Accepts a running host ID or a saved session ID (auto-resuming in its workspace;
+        auto-resumed hosts inherit this conductor's environment).
         Use `wait=False` (default) to kick off work in parallel, then `wait_for_hosts`.
 
         Args:
@@ -369,6 +450,8 @@ def setup(pcode) -> None:
             wait: Wait for the turn to finish and return its reply (default False).
             timeout: Seconds to wait when `wait=True`, 1-1800.
         """
+        if _in_worker(ctx):
+            raise ModelRetry("send_to_host is only available to the parent session, not workers.")
         cleaned = prompt.strip()
         if not cleaned:
             raise ModelRetry("Provide a non-empty prompt.")
@@ -381,6 +464,12 @@ def setup(pcode) -> None:
             target, session_dir=session_dir, my_session=my_session
         )
 
+        env_note = (
+            "Resumed in another workspace; the host inherited this conductor's environment."
+            if resumed and _different_workspace(entry.workspace, own_workspace)
+            else ""
+        )
+
         if not wait:
             try:
                 await remote.request_host(entry, "send", cleaned, timeout=15.0)
@@ -390,42 +479,67 @@ def setup(pcode) -> None:
                 raise ModelRetry(f"Host {entry.id} rejected prompt: {error}") from None
             except (HostError, OSError) as error:
                 raise ModelRetry(f"Could not send to host {entry.id}: {error}") from None
-            return {
+            result = {
                 "status": "queued",
                 "host_id": entry.id,
                 "session_id": entry.session_id,
                 "workspace": entry.workspace,
+                "attached": entry.attached,
                 "resumed": resumed,
                 "turns_before": entry.turns,
             }
+            if env_note:
+                result["env_note"] = env_note
+            return result
 
         from pcode.gateway import send as gateway_send
 
+        queued = False
+
+        def mark_queued() -> None:
+            nonlocal queued
+            queued = True
+
         try:
-            result = await asyncio.wait_for(gateway_send(entry, cleaned), timeout=timeout)
+            turn = await asyncio.wait_for(
+                gateway_send(entry, cleaned, on_queued=mark_queued), timeout=timeout
+            )
         except TimeoutError:
-            return {
-                "status": "still_running",
+            status = "still_running" if queued else "timed_out_before_queue"
+            note = (
+                f"Turn is still running after {timeout:g}s; "
+                "use wait_for_hosts or inspect_host to check on it."
+                if queued
+                else f"Timed out after {timeout:g}s before the prompt was queued on host "
+                f"{entry.id}; use inspect_host to check its state before retrying."
+            )
+            result = {
+                "status": status,
                 "host_id": entry.id,
                 "session_id": entry.session_id,
                 "workspace": entry.workspace,
+                "attached": entry.attached,
                 "resumed": resumed,
-                "note": (
-                    f"Turn is still running after {timeout:g}s; "
-                    "use wait_for_hosts or inspect_host to check on it."
-                ),
+                "note": note,
             }
+            if env_note:
+                result["env_note"] = env_note
+            return result
         except (HostError, RemoteError, OSError) as error:
             raise ModelRetry(f"Failed while running turn on host {entry.id}: {error}") from None
-        return {
-            "status": result.outcome,
+        result = {
+            "status": turn.outcome,
             "host_id": entry.id,
             "session_id": entry.session_id,
             "workspace": entry.workspace,
+            "attached": entry.attached,
             "resumed": resumed,
-            "reply": result.reply,
-            "notes": result.notes,
+            "reply": turn.reply,
+            "notes": turn.notes,
         }
+        if env_note:
+            result["env_note"] = env_note
+        return result
 
     async def wait_for_hosts(
         ctx: RunContext,
@@ -440,6 +554,10 @@ def setup(pcode) -> None:
             mode: `all` waits for every host; `any` returns as soon as one finishes.
             timeout: Maximum seconds to wait, 1-1800.
         """
+        if _in_worker(ctx):
+            raise ModelRetry(
+                "wait_for_hosts is only available to the parent session, not workers."
+            )
         if not host_ids:
             raise ModelRetry("Provide at least one host_id.")
         if not 1 <= timeout <= 1800:
@@ -456,8 +574,24 @@ def setup(pcode) -> None:
                 continue
             entry = _find_running(selector, directory)
             if entry is None:
-                completed.append({"host_id": selector, "state": "stopped"})
-                continue
+                stopped = _find_stopped(selector, directory)
+                if stopped is not None:
+                    sid = stopped.session_id or stopped.id
+                    completed.append(
+                        {
+                            "host_id": stopped.id,
+                            "session_id": sid,
+                            "state": "stopped",
+                            "outcome": stopped.outcome,
+                            "turns": stopped.turns,
+                            "note": _stopped_note(sid),
+                        }
+                    )
+                    continue
+                raise ModelRetry(
+                    f"No running or recently stopped host matching {selector!r}; "
+                    "check list_hosts for valid IDs."
+                )
             if _is_self(entry, my_session):
                 raise ModelRetry("Cannot wait on the current session.")
             if entry.id not in seen_ids:
@@ -468,6 +602,8 @@ def setup(pcode) -> None:
         deadline = time.monotonic() + timeout
 
         while pending:
+            if mode == "any" and completed:
+                break
             for identity, entry in list(pending.items()):
                 current = _find_running(identity, directory)
                 if current is None:
@@ -476,6 +612,7 @@ def setup(pcode) -> None:
                             "host_id": identity,
                             "session_id": entry.session_id,
                             "state": "stopped",
+                            "note": _stopped_note(entry.session_id),
                         }
                     )
                     pending.pop(identity, None)
@@ -540,13 +677,15 @@ def setup(pcode) -> None:
     ) -> dict:
         """Stop another running session host.
 
-        When `force=False` (default), refuses if the host is busy or has an attached
-        human terminal. Never deletes the session's worktree.
+        When `force=False` (default), refuses atomically on the host if it is busy
+        or has an attached human terminal. Never deletes the session's worktree.
 
         Args:
             host_id: Running host ID or session ID prefix.
             force: Stop even if busy or a terminal is attached (default False).
         """
+        if _in_worker(ctx):
+            raise ModelRetry("stop_host is only available to the parent session, not workers.")
         selector = host_id.strip()
         if not selector:
             raise ModelRetry("Provide a host_id or session_id prefix.")
@@ -559,27 +698,20 @@ def setup(pcode) -> None:
             raise ModelRetry("Cannot stop the current session.")
 
         if not force:
-            attached = entry.attached
             try:
-                snap = await remote.request_host(entry, "peek", timeout=5.0)
-                attached = int(snap.get("attached", attached))
-            except (HostError, RemoteError, OSError):
-                pass
-            if attached > 0:
-                return {
-                    "status": "refused",
-                    "host_id": entry.id,
-                    "session_id": entry.session_id,
-                    "reason": (
-                        f"{attached} terminal(s) attached; ask the user or pass force=True "
-                        "to stop anyway."
-                    ),
-                }
-            try:
-                reason = await remote.stop_if_idle(entry)
+                reason = await remote.stop_if_idle(entry, require_detached=True)
             except (HostError, RemoteError, OSError) as error:
                 raise ModelRetry(f"Could not stop host {entry.id}: {error}") from None
             if reason:
+                if "terminal(s) attached" in reason:
+                    return {
+                        "status": "refused",
+                        "host_id": entry.id,
+                        "session_id": entry.session_id,
+                        "reason": (
+                            f"{reason}; ask the user or pass force=True to stop anyway."
+                        ),
+                    }
                 return {
                     "status": "busy",
                     "host_id": entry.id,
@@ -600,16 +732,20 @@ def setup(pcode) -> None:
 
     if pcode.is_worker:
         tools = [Tool(list_hosts, takes_ctx=True), Tool(inspect_host, takes_ctx=True)]
-        instructions = WORKER_INSTRUCTIONS
-    else:
-        tools = [
-            Tool(list_hosts, takes_ctx=True),
-            Tool(inspect_host, takes_ctx=True),
-            Tool(ask_host, takes_ctx=True),
-            Tool(send_to_host, takes_ctx=True),
-            Tool(wait_for_hosts, takes_ctx=True),
-            Tool(stop_host, takes_ctx=True),
-        ]
-        instructions = PARENT_INSTRUCTIONS
+        pcode.add_capability(Capability(id=pcode.id, tools=tools, instructions=WORKER_INSTRUCTIONS))
+        return
 
-    pcode.add_capability(Capability(id=pcode.id, tools=tools, instructions=instructions))
+    tools = [
+        Tool(list_hosts, takes_ctx=True),
+        Tool(inspect_host, takes_ctx=True),
+        Tool(ask_host, takes_ctx=True),
+        Tool(send_to_host, takes_ctx=True),
+        Tool(wait_for_hosts, takes_ctx=True),
+        Tool(stop_host, takes_ctx=True),
+    ]
+    def _instructions(ctx: RunContext) -> str:
+        return WORKER_INSTRUCTIONS if _in_worker(ctx) else PARENT_INSTRUCTIONS
+
+    pcode.add_capability(
+        _ConductorCapability(id=pcode.id, tools=tools, instructions=_instructions)
+    )

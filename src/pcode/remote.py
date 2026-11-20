@@ -716,24 +716,32 @@ async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> bool:
     return await wait_for_exit(entry.pid)
 
 
-async def stop_if_idle(entry: HostEntry) -> str:
-    """Stop a host as it would stop itself once idle, terminals or not.
+async def stop_if_idle(entry: HostEntry, *, require_detached: bool = False) -> str:
+    """Stop a host as it would stop itself once idle; else return why not.
 
-    Returns "" once it has exited, else what it is busy with. The host checks
-    for itself: its entry only says whether a turn runs, not a command,
-    compaction, side question or background command.
+    When `require_detached` is True, attached human terminals also refuse the stop
+    atomically on the host. Returns "" once it has exited, else what it is busy with.
     """
+    args = (True,) if require_detached else ()
     try:
-        reason = await request_host(entry, "stop_if_idle")
+        reason = await request_host(entry, "stop_if_idle", *args)
     except RemoteError as error:
-        if error.type_name != "PermissionError":
+        if require_detached and error.type_name == "TypeError":
+            # Host supports stop_if_idle() without require_detached: check entry best-effort.
+            if entry.attached > 0:
+                return f"{entry.attached} terminal(s) attached"
+            reason = await request_host(entry, "stop_if_idle")
+        elif error.type_name == "PermissionError":
+            # A host older than the call can only be judged by its entry, and is
+            # stopped leaving its worktree alone: nobody chose to finish it.
+            if require_detached and entry.attached > 0:
+                return f"{entry.attached} terminal(s) attached"
+            if entry.state != "idle":
+                return "a turn is running"
+            await notify_host(entry, "stop", True)
+            reason = ""
+        else:
             raise
-        # A host older than the call can only be judged by its entry, and is
-        # stopped leaving its worktree alone: nobody chose to finish it.
-        if entry.state != "idle":
-            return "a turn is running"
-        await notify_host(entry, "stop", True)
-        reason = ""
     if reason:
         return reason
     if not await wait_for_exit(entry.pid):

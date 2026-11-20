@@ -25,7 +25,10 @@ DELEGATION_TOOLS = frozenset({"delegate_task"})
 ACTION_TOOLS = frozenset({"task_worktree", "manage_worker"})
 # The local advisor tool: a consultation is the turn's to spend, not a side question's.
 ADVISOR_TOOLS = frozenset({"advisor"})
-REFUSED_TOOLS = (PLAN_TOOLS - PLAN_READS) | DELEGATION_TOOLS | ADVISOR_TOOLS
+# Cross-session conductor controls belong to the main conversation, and allowing
+# ask_host inside a side question would allow unbounded cross-host cycles.
+CONDUCTOR_TOOLS = frozenset({"ask_host", "send_to_host", "wait_for_hosts", "stop_host"})
+REFUSED_TOOLS = (PLAN_TOOLS - PLAN_READS) | DELEGATION_TOOLS | ADVISOR_TOOLS | CONDUCTOR_TOOLS
 
 
 class AsideGuard(AbstractCapability):
@@ -40,7 +43,7 @@ class AsideGuard(AbstractCapability):
             # can be corrected, and a retry would spend the tool's retry budget.
             raise ToolFailed(
                 f"{call.tool_name} is unavailable in a side question: the plan, "
-                "delegated tasks and the advisor belong to the main conversation. "
-                "Answer without it."
+                "delegated tasks, the advisor, and cross-session conductor controls "
+                "belong to the main conversation. Answer without it."
             )
         return await handler(args)

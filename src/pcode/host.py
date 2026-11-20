@@ -265,9 +265,9 @@ class _Client:
         self.host.keep_worktree = bool(keep_worktree) or remote_profile.active() is not None
         self.host.stop()
 
-    def stop_if_idle(self) -> str:
+    def stop_if_idle(self, require_detached: bool = False) -> str:
         """`pcode --kill-hosts idle`: "" once stopping, else what it is busy with."""
-        return self.host.stop_if_idle()
+        return self.host.stop_if_idle(require_detached=require_detached)
 
     def restart(self) -> dict:
         """`/restart all`: `{"id": successor}` once stopping, else `{"skipped": why not}`."""
@@ -421,6 +421,8 @@ class SessionHost:
         # Open connections, counted from hello on: a terminal mid-handshake is not
         # a client yet, and must not find the host gone.
         self.connections = 0
+        # In-flight headless `ask_aside` RPCs, counted in `busy_with()`.
+        self._host_asides = 0
         # A remote profile's per-turn wall clock, while a turn runs.
         self._turn_clock: asyncio.TimerHandle | None = None
 
@@ -498,7 +500,6 @@ class SessionHost:
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.connections += 1
-        self.active_at = time.monotonic()
         try:
             await self._handshake(reader, writer)
         finally:
@@ -546,6 +547,7 @@ class SessionHost:
     def attach(self, client: _Client) -> dict:
         from pcode.rpc import encode
 
+        self.active_at = time.monotonic()
         self.clients[client.number] = client
         client.displaced, self._latest = self._latest, client
         client.unseen_before = self.entry.unseen
@@ -633,7 +635,7 @@ class SessionHost:
             "jobs": jobs,
             "asides": {
                 "total": len(asides.items),
-                "running": asides.running,
+                "running": asides.running + self._host_asides,
                 "unread": asides.unread,
                 "recent": [
                     {
@@ -655,21 +657,27 @@ class SessionHost:
         if not cleaned:
             raise ValueError("Provide a non-empty question.")
         controller = self.controller
-        if controller.startup_pending:
-            await controller.ready.wait()
-        if controller.startup_error is not None:
-            raise RuntimeError(f"Agent startup failed: {error_message(controller.startup_error)}")
-        runtime = controller.runtime
-        if getattr(runtime, "aside", None) is None:
-            raise RuntimeError("This session host cannot answer side questions.")
-        self.active_at = time.monotonic()
-        chosen_model = model.strip()
-        options = {}
-        if chosen_model:
-            name, effort = split_effort(chosen_model)
-            options = await controller.target_options(SideTarget(name, effort))
-        async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
-            reply = await runtime.aside(cleaned, **options)
+        self._host_asides += 1
+        try:
+            async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
+                if controller.startup_pending:
+                    await controller.ready.wait()
+                if controller.startup_error is not None:
+                    raise RuntimeError(
+                        f"Agent startup failed: {error_message(controller.startup_error)}"
+                    )
+                runtime = controller.runtime
+                if getattr(runtime, "aside", None) is None:
+                    raise RuntimeError("This session host cannot answer side questions.")
+                self.active_at = time.monotonic()
+                chosen_model = model.strip()
+                options = {}
+                if chosen_model:
+                    name, effort = split_effort(chosen_model)
+                    options = await controller.target_options(SideTarget(name, effort))
+                reply = await runtime.aside(cleaned, **options)
+        finally:
+            self._host_asides -= 1
         self.active_at = time.monotonic()
         return {
             "host_id": self.entry.id,
@@ -872,17 +880,20 @@ class SessionHost:
                 "a background command is running",
             ),
             (controller.startup_pending, "it is starting up"),
-            (controller.asides.running, "a side question is running"),
+            (controller.asides.running or self._host_asides, "a side question is running"),
             # A title asked for beside the first turn, or a name /rename asked for, would be lost.
             (controller.naming(), "it is naming the session"),
         )
         return next((reason for busy, reason in work if busy), "")
 
-    def stop_if_idle(self) -> str:
-        """Stop as an idle host stops itself, terminals or not; else say what it is busy with.
+    def stop_if_idle(self, require_detached: bool = False) -> str:
+        """Stop as an idle host stops itself; else say what it is busy with.
 
+        When `require_detached` is True, attached terminals also refuse the stop.
         Checked and stopped with no await in between, so nothing starts in the gap.
         """
+        if require_detached and (attached := len(self.terminals())):
+            return f"{attached} terminal(s) attached"
         if reason := self.busy_with():
             return reason
         self.idle_stopped = True
