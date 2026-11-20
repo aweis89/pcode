@@ -65,7 +65,18 @@ RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
 HOST_CALLS = frozenset(
-    {"attach", "query", "send", "run", "stop", "stop_if_idle", "restart", "asides_read"}
+    {
+        "attach",
+        "peek",
+        "ask_aside",
+        "query",
+        "send",
+        "run",
+        "stop",
+        "stop_if_idle",
+        "restart",
+        "asides_read",
+    }
 )
 
 _MISSING = object()
@@ -230,6 +241,14 @@ class _Client:
         exactly once: in this welcome or after it.
         """
         return self.host.attach(self)
+
+    async def peek(self) -> dict:
+        """Read-only live snapshot without attaching, clearing `unseen`, or reading scrollback."""
+        return await self.host.peek()
+
+    async def ask_aside(self, question: str, model: str = "") -> dict:
+        """One-shot headless `/btw` against this host's context; records nothing."""
+        return await self.host.ask_aside(question, model)
 
     async def query(self, name: str, *args):
         return await self.host.controller.query(name, *args)
@@ -551,6 +570,113 @@ class SessionHost:
             "calls": [
                 [name, encode(list(args)), encode(kwargs)] for name, args, kwargs in self.buffer
             ],
+        }
+
+    async def peek(self) -> dict:
+        """Read-only live snapshot: state, plan, running jobs, asides, and activity.
+
+        Does not register as a terminal, change `attached`, clear `unseen`, or
+        serialize the scrollback catch-up buffer.
+        """
+        controller = self.controller
+        runtime = controller.runtime
+        plan_store = getattr(runtime, "plan_store", None)
+        plan = (
+            [item.model_dump(mode="json") for item in await plan_store.get_items()]
+            if plan_store is not None
+            else []
+        )
+        jobs_reg = getattr(runtime, "jobs", None)
+        jobs = (
+            [
+                {
+                    "id": job.id,
+                    "command": job.command,
+                    "purpose": job.purpose,
+                    "adopted": job.adopted,
+                }
+                for job in jobs_reg.running()
+            ]
+            if jobs_reg is not None
+            else []
+        )
+        asides = controller.asides
+        return {
+            "id": self.entry.id,
+            "session_id": self.entry.session_id,
+            "workspace": self.entry.workspace,
+            "model": controller.model or self.entry.model,
+            "state": self.entry.state,
+            "title": self.entry.title,
+            "last_prompt": self.entry.last_prompt,
+            "turns": self.entry.turns,
+            "outcome": self.entry.outcome,
+            "attached": len(self.terminals()),
+            "unseen": self.entry.unseen,
+            "held": self.entry.held,
+            "busy_with": self.busy_with(),
+            "startup_pending": controller.startup_pending,
+            "startup_error": (
+                error_message(controller.startup_error) if controller.startup_error else ""
+            ),
+            "activity": {
+                "busy": self.activity.busy,
+                "status": self.activity.status,
+                "queued": self.activity.queued,
+                "queued_prompts": list(self.activity.queued_prompts),
+                "prompt": self.activity.prompt,
+                "prompt_state": self.activity.prompt_state,
+                "turn_outcome": self.activity.turn_outcome,
+                "job_count": self.activity.job_count,
+            },
+            "plan": plan,
+            "jobs": jobs,
+            "asides": {
+                "total": len(asides.items),
+                "running": asides.running,
+                "unread": asides.unread,
+                "recent": [
+                    {
+                        "id": aside.id,
+                        "question": aside.question,
+                        "status": aside.status,
+                        "read": aside.read,
+                    }
+                    for aside in asides.items[-5:]
+                ],
+            },
+        }
+
+    async def ask_aside(self, question: str, model: str = "") -> dict:
+        """Answer `question` beside this conversation without recording an aside."""
+        from pcode.aside import ASIDE_TIMEOUT_SECONDS, SideTarget, split_effort
+
+        cleaned = question.strip()
+        if not cleaned:
+            raise ValueError("Provide a non-empty question.")
+        controller = self.controller
+        if controller.startup_pending:
+            await controller.ready.wait()
+        if controller.startup_error is not None:
+            raise RuntimeError(f"Agent startup failed: {error_message(controller.startup_error)}")
+        runtime = controller.runtime
+        if getattr(runtime, "aside", None) is None:
+            raise RuntimeError("This session host cannot answer side questions.")
+        self.active_at = time.monotonic()
+        chosen_model = model.strip()
+        options = {}
+        if chosen_model:
+            name, effort = split_effort(chosen_model)
+            options = await controller.target_options(SideTarget(name, effort))
+        async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
+            reply = await runtime.aside(cleaned, **options)
+        self.active_at = time.monotonic()
+        return {
+            "host_id": self.entry.id,
+            "session_id": self.entry.session_id,
+            "state": self.entry.state,
+            "model": chosen_model or controller.model or self.entry.model,
+            "answer": reply.answer,
         }
 
     def touch(self, client: _Client) -> None:
