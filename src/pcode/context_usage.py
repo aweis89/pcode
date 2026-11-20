@@ -40,9 +40,16 @@ def context_label(
     for message in reversed(history):
         if (message.metadata or {}).get(MARKER):
             return f" · ~{compact_tokens(context_estimate(history))}/{compact_tokens(window)}"
-        if isinstance(message, ModelResponse) and message.usage.input_tokens:
-            used = message.usage.input_tokens
-            break
+        if isinstance(message, ModelResponse):
+            # Multi-step ACP turns (Antigravity) report cumulative turn billing
+            # in `usage.input_tokens` and the current context fill in `context_used`.
+            context_used = (message.provider_details or {}).get("context_used")
+            if type(context_used) is int and context_used > 0:
+                used = context_used
+                break
+            if message.usage.input_tokens:
+                used = message.usage.input_tokens
+                break
     if not used:
         # Streaming providers may not report usage until the response finishes.
         # Missing usage is not an empty context (also common in resumed history).
