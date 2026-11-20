@@ -3,7 +3,7 @@
 from scene import Call, Think, launch
 
 MODEL = "claude:claude-opus-5-5"
-SIZE = (100, 30)
+SIZE = (100, 36)
 PREFERENCES = {"show_commands": "off"}
 
 FIX = "subtotal - subtotal * order.discount / 100"
@@ -44,6 +44,8 @@ STEPS = [
     ("wait", "Commands: activity-panel"),
     ("key", "C-g"),
     ("wait", "Initial commit"),
+    # Let the 5-second transient "Commands: scrollback" ack clear before capture.
+    ("sleep", 5.5),
     ("shot", "scrollback-commands"),
 ]
 
