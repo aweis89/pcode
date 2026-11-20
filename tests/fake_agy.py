@@ -17,6 +17,10 @@ LOG = os.environ["FAKE_AGY_LOG"]
 lock = threading.Lock()
 waiting: dict = {}
 cancelled = threading.Event()
+# Prompts a newer one arrived during: real agy then ends the running prompt
+# at once and carries on under the new one (steering).
+superseded: set = set()
+running: list = []
 
 
 def log(entry):
@@ -60,12 +64,21 @@ def prompt(request):
     if "AUTH" in text:
         error = {"code": -32000, "message": "Authentication required"}
         send({"jsonrpc": "2.0", "id": request["id"], "error": error})
+        running.remove(request["id"])
         return
     if "SLOW" in text:
         chunk(session, "agent_message_chunk", "working")
-        cancelled.wait(10)
-        cancelled.clear()
-        send({"jsonrpc": "2.0", "id": request["id"], "result": {"stopReason": "cancelled"}})
+        for _ in range(1000):
+            if cancelled.is_set() or request["id"] in superseded:
+                break
+            cancelled.wait(0.01)
+        stop = "end_turn" if request["id"] in superseded else "cancelled"
+        if stop == "cancelled":
+            cancelled.clear()
+        usage = {"inputTokens": 1, "outputTokens": 1}
+        result = {"stopReason": stop, "usage": usage}
+        send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        running.remove(request["id"])
         return
     if "BADLINE" in text:
         with lock:
@@ -102,10 +115,18 @@ def prompt(request):
     usage = {"inputTokens": 10, "outputTokens": 5, "cachedReadTokens": 3, "cachedWriteTokens": 0}
     result = {"stopReason": "end_turn", "usage": usage}
     send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+    running.remove(request["id"])
+    if "LATER" in text:
+        # A background sub-agent reporting back after the turn ended.
+        chunk(session, "agent_message_chunk", "The sub-agent ")
+        chunk(session, "agent_message_chunk", "found 6 files.")
+        done = {"toolCallId": "late", "title": "wc -l", "status": "completed"}
+        update(session, {"sessionUpdate": "tool_call_update", **done})
 
 
 def main():
-    log({"env": sorted(k for k in os.environ if k.startswith(("GEMINI", "GOOGLE")))})
+    google = sorted(k for k in os.environ if k.startswith(("GEMINI", "GOOGLE")))
+    log({"env": google, "argv": sys.argv[1:]})
     for line in sys.stdin:
         message = json.loads(line)
         log(message)
@@ -118,6 +139,12 @@ def main():
             cancelled.set()
             continue
         if method == "session/prompt":
+            ended = list(running)
+            superseded.update(ended)
+            # As agy does: the running prompt ends before the new one starts.
+            while any(request_id in running for request_id in ended):
+                threading.Event().wait(0.002)
+            running.append(message["id"])
             threading.Thread(target=prompt, args=(message,), daemon=True).start()
             continue
         reply: dict = {"result": {}}

@@ -81,6 +81,18 @@ ENV_PROVIDERS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
+def user_only(model) -> bool:
+    """Whether `model` may only be sent what the user wrote: no pcode notices or reminders.
+
+    `antigravity:` runs its own agent loop on a subscription Google permits
+    only for a front end the user drives (see `pcode.antigravity`). `model` is
+    a model object or a `provider:name` string.
+    """
+    if isinstance(model, str):
+        return model.startswith("antigravity:")
+    return getattr(model, "system", None) == "antigravity"
+
+
 def login_sources() -> tuple[str, ...]:
     """What `/login` accepts; the first is what a bare `/login` signs in to."""
     return ("claude", "openai-codex")

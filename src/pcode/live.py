@@ -242,6 +242,8 @@ class AgentRuntime:
         self.warning_notice = lambda text: None
         # A plain transcript note, such as the images a prompt brought along.
         self.notice = lambda text: None
+        # A note that survives redraws, for output a model sends between turns.
+        self.retained_notice = lambda text: None
         # Prompts whose images were reported this turn; see `_with_images`.
         self._images_reported: set[str] = set()
         # Shell jobs outlive both the run and the conversation, so the registry
@@ -263,6 +265,9 @@ class AgentRuntime:
             retire = getattr(previous.model, "retire", None)
             if callable(retire):
                 retire()
+        if hasattr(agent.model, "listener"):
+            # What `antigravity:` says between turns, as a transcript note.
+            agent.model.listener = lambda text: self.retained_notice(text)
         self.agent = agent
         # The agent's capabilities are flattened by Pydantic AI. A resolver
         # keeps the store conversation-scoped, including after /new. It resolves

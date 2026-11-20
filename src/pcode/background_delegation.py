@@ -136,7 +136,9 @@ class AbandonedDelegations(AbstractCapability):
         self.ids = ids
 
     async def before_model_request(self, ctx, request_context):
-        if self.ids:
+        from pcode.models import user_only
+
+        if self.ids and not user_only(request_context.model):
             note = UserPromptPart(abandoned_message(self.ids))
             run_request(ctx, request_context).parts.append(note)
             self.ids.clear()

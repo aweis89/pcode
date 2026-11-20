@@ -48,6 +48,11 @@ class JobNotices(AbstractCapability):
         self.jobs = jobs
 
     async def before_model_request(self, ctx, request_context):
+        from pcode.models import user_only
+
+        if user_only(request_context.model):
+            # Left announceable, for whichever model the conversation moves to.
+            return request_context
         # Appended to the framework's own request, so tool results stay ahead
         # of the notice and the notice is persisted with the conversation.
         for job in self.jobs.take_announcements("model"):

@@ -312,20 +312,27 @@ consequences:
   another model's turn is still running fails that turn's next step; send a
   new prompt instead. `/continue` without a message is refused for the same
   reason.
-- **Permission prompts are approved one action at a time,** as pcode's own
-  tools run without asking. A rule that denies an action still denies it, but
-  one that would ask is approved, and pcode's own guardrails don't see
-  Antigravity's tool calls. pcode never picks "always allow", so your
-  Antigravity settings are left alone.
+- **Antigravity runs without asking,** as pcode's own tools do. pcode starts
+  it with `--dangerously-skip-permissions`, since otherwise a background
+  sub-agent's permission prompt never reaches pcode and the sub-agent stalls,
+  and approves any prompt that still arrives one action at a time (never
+  "always allow", so your Antigravity settings are left alone). pcode's own
+  guardrails don't see Antigravity's tool calls.
 - **Your API keys don't apply.** `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
   `GOOGLE_APPLICATION_CREDENTIALS`, and every `GOOGLE_CLOUD_*`,
   `GOOGLE_GENAI_*`, `GOOGLE_VERTEX_*`, and `GOOGLE_GEMINI_*` variable are
   removed from its environment, so a turn always bills the subscription you
   signed in with.
 - **Prompts take text and images.** Other attachments are refused.
-- **Messages can't steer a running turn yet.** Antigravity's turn is one
-  request, so a message sent while it works can't join it the way it would on
-  another model. Wait for the turn to end, or interrupt it and send the message.
+- **Messages you send while it works steer the running turn,** as with other
+  models: Antigravity folds each into the work in progress. pcode's own
+  steering reminder isn't added.
+- **Background sub-agents report after the turn.** Antigravity's own
+  sub-agents and multi-agent commands keep working after it ends the turn, and
+  what it says or runs then shows up in the transcript as a note as soon as it
+  arrives. pcode only shows it; nothing is sent back until your next prompt.
+- **Plan mode doesn't apply.** Antigravity has its own planning, and pcode's
+  plan-mode reminder isn't sent to it.
 
 Conversations carry over: each session keeps one `agy` process, a follow-up
 continues it, and `--continue` reopens the same Antigravity session. After a

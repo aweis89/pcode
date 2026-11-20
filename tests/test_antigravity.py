@@ -33,7 +33,7 @@ def fake_agy(tmp_path, monkeypatch):
     bin_dir.mkdir()
     script = bin_dir / "agy"
     fake = Path(__file__).with_name("fake_agy.py")
-    script.write_text(f"#!/bin/sh\nexec {sys.executable} -I {fake}\n")
+    script.write_text(f'#!/bin/sh\nexec {sys.executable} -I {fake} "$@"\n')
     script.chmod(0o755)
     log = tmp_path / "agy.jsonl"
     monkeypatch.setenv("FAKE_AGY_LOG", str(log))
@@ -93,6 +93,8 @@ def test_one_turn_maps_text_thinking_tools_and_usage(fake_agy, tmp_path):
     assert answers[0]["result"]["outcome"]["optionId"] == "yes"
     # No API key, Cloud project or endpoint: those would bill or route elsewhere.
     assert fake_agy()[0]["env"] == []
+    # Background sub-agents can't forward permission requests; see `Connection.start`.
+    assert fake_agy()[0]["argv"] == ["acp", "--dangerously-skip-permissions"]
     new = fake_agy("session/new")[0]["params"]
     assert new["cwd"] == str(tmp_path) and new["mcpServers"] == []
     assert fake_agy("session/set_model")[0]["params"]["modelId"] == "fake-low"
@@ -432,6 +434,204 @@ def test_malformed_messages_do_not_stop_the_reader(fake_agy, tmp_path):
         return result.output, model._session.connection.alive
 
     assert run(go()) == ("got: BADLINE", True)
+
+
+async def streamed(agent, prompt, history=None):
+    """Run as pcode does: streamed, which is what hands the model its run context."""
+    from pydantic_ai.run import AgentRunResultEvent
+
+    async with agent.run_stream_events(prompt, message_history=history) as events:
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                result = event.result
+    return result
+
+
+def steering_agent(model, workspace, queue: list):
+    from pcode.steering import STEERING_REMINDER, Steering
+
+    def take():
+        taken = list(queue)
+        queue.clear()
+        return taken
+
+    steering = Steering(take, lambda: bool(queue), reminder=STEERING_REMINDER)
+    return Agent(model, model_settings={CWD_SETTING: str(workspace)}, capabilities=[steering])
+
+
+def test_a_message_sent_mid_turn_steers_it(fake_agy, tmp_path):
+    queue: list = []
+
+    async def go():
+        agent = steering_agent(AntigravityModel("fake-high"), tmp_path, queue)
+        run = asyncio.create_task(streamed(agent, "SLOW"))
+        for _ in range(200):
+            if prompts(fake_agy):
+                break
+            await asyncio.sleep(0.02)
+        queue.append("also do this")
+        return await run
+
+    result = run(go())
+    # A second prompt on the same session, which ends the first: agy's steering.
+    assert prompts(fake_agy) == [
+        [{"type": "text", "text": "SLOW"}],
+        [{"type": "text", "text": "also do this"}],
+    ]
+    response = result.all_messages()[-1]
+    texts = [p.content for p in response.parts if isinstance(p, TextPart)]
+    assert "".join(texts) == "workinggot: also do this"
+    # Both prompts' usage, one turn.
+    assert response.usage.output_tokens == 6 and response.provider_response_id == "s-1#1"
+    # The history records what Antigravity was told, and no pcode reminder.
+    request = result.all_messages()[-2]
+    assert [p.content for p in request.parts if isinstance(p, UserPromptPart)] == [
+        "SLOW",
+        "also do this",
+    ]
+
+
+def test_a_steered_turn_that_is_cancelled_still_continues(fake_agy, tmp_path):
+    queue: list = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = steering_agent(model, tmp_path, queue)
+        first = await agent.run("one")
+        with anyio.move_on_after(1.5):
+            run = asyncio.create_task(streamed(agent, "SLOW", first.all_messages()))
+            for _ in range(200):
+                if len(prompts(fake_agy)) == 2:
+                    break
+                await asyncio.sleep(0.02)
+            queue.append("SLOW too")
+            await run
+        kept = interrupted(first.all_messages(), "SLOW")
+        kept[-1].parts.insert(1, UserPromptPart("SLOW too"))  # Before the marker.
+        return await agent.run("after", message_history=kept)
+
+    result = run(go())
+    assert len(fake_agy("session/new")) == 1
+    assert prompts(fake_agy)[-1] == [{"type": "text", "text": "after"}]
+    assert result.output == "got: after"
+
+
+def test_a_steer_reaches_the_copy_pcode_restores_after_a_cancel(fake_agy, tmp_path):
+    from pcode.retries import RequestCheckpoint
+    from pcode.steering import Steering
+
+    queue: list = []
+    checkpoint = RequestCheckpoint()
+
+    async def go():
+        def take():
+            taken = list(queue)
+            queue.clear()
+            return taken
+
+        agent = Agent(
+            AntigravityModel("fake-high"),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[Steering(take, lambda: bool(queue)), checkpoint],
+        )
+        with anyio.move_on_after(1.5):
+            run_ = asyncio.create_task(streamed(agent, "SLOW"))
+            for _ in range(200):
+                if prompts(fake_agy):
+                    break
+                await asyncio.sleep(0.02)
+            queue.append("SLOW too")
+            await run_
+
+    run(go())
+    restored = checkpoint.messages[-1]
+    assert [p.content for p in restored.parts if isinstance(p, UserPromptPart)] == [
+        "SLOW",
+        "SLOW too",
+    ]
+
+
+def test_pcode_written_notices_are_kept_from_it():
+    from types import SimpleNamespace
+
+    from pcode.background_delegation import AbandonedDelegations
+    from pcode.job_notices import JobNotices
+
+    request = ModelRequest(parts=[UserPromptPart("hi")])
+    ctx = SimpleNamespace(messages=[request])
+    context = SimpleNamespace(model=AntigravityModel("fake-high"), messages=[request])
+
+    class Jobs:
+        def take_announcements(self, _):
+            raise AssertionError("would take a job notice for Antigravity")
+
+    asyncio.run(JobNotices(Jobs()).before_model_request(ctx, context))
+    ids = ["w1"]
+    asyncio.run(AbandonedDelegations(ids).before_model_request(ctx, context))
+    assert [p.content for p in request.parts] == ["hi"] and ids == ["w1"]
+
+
+def test_a_finished_job_never_wakes_it(monkeypatch):
+    from types import SimpleNamespace
+
+    from pcode.controller import SessionController
+
+    controller = SimpleNamespace(model="antigravity:fake", runtime=SimpleNamespace(jobs=object()))
+    assert SessionController.wake_prompt(controller) is None
+
+
+def test_retiring_drops_unshown_output_after_the_turn():
+    shown: list[str] = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.listener = shown.append
+        model._idle_update({"sessionUpdate": "agent_message_chunk", "content": {"text": "late"}})
+        model.retire()
+        await asyncio.sleep(antigravity.IDLE_QUIET + 0.2)
+
+    asyncio.run(go())
+    assert shown == []
+
+
+def test_steering_at_a_turns_start_carries_no_pcode_reminder(fake_agy, tmp_path):
+    queue = ["queued early"]
+    run(streamed(steering_agent(AntigravityModel("fake-high"), tmp_path, queue), "hello"))
+    texts = [b["text"] for b in prompts(fake_agy)[0]]
+    assert texts == ["hello", "queued early"]
+
+
+def test_output_after_the_turn_is_shown(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "IDLE_QUIET", 0.1)
+    shown: list[str] = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.listener = shown.append
+        await agent_for(model, tmp_path).run("LATER")
+        for _ in range(100):
+            if len(shown) == 2:
+                break
+            await asyncio.sleep(0.05)
+
+    run(go())
+    assert shown == [
+        "Antigravity, after the turn:\nThe sub-agent found 6 files.",
+        "Antigravity, after the turn, ran wc -l",
+    ]
+    # Shown, never answered: pcode sent no prompt of its own.
+    assert len(prompts(fake_agy)) == 1
+
+
+def test_the_runtime_shows_output_after_the_turn_as_a_lasting_note():
+    from pcode.live import AgentRuntime
+
+    model = AntigravityModel("fake-high")
+    runtime = AgentRuntime(Agent(model))
+    notes: list[str] = []
+    runtime.retained_notice = notes.append
+    model.listener("hello")
+    assert notes == ["hello"]
 
 
 def test_replay_text_lists_turns_and_tool_calls():

@@ -29,7 +29,7 @@ import contextlib
 import json
 import os
 import shutil
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -54,6 +54,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
+
+from pcode.steering import steering_pending
 
 PREFIX = "antigravity:"
 SYSTEM = "antigravity"
@@ -80,6 +82,10 @@ REPLAY_INTRO = (
 )
 # How long a cancelled turn may take to report that it stopped.
 CANCEL_GRACE = 10.0
+# How often a running turn checks for the user's steering messages.
+STEER_POLL = 0.25
+# Quiet seconds that end a stretch of text Antigravity writes between turns.
+IDLE_QUIET = 1.5
 # Sessions remembered in the ledger; older ones replay instead of resuming.
 LEDGER_SIZE = 500
 
@@ -203,6 +209,9 @@ class Connection:
         self.next_id = 0
         self.reader: asyncio.Task | None = None
         self.stderr: list[str] = []
+        # Where updates go while no turn is running: Antigravity keeps working
+        # after a turn ends (a background sub-agent's report, its follow-up).
+        self.idle: Callable[[dict], None] | None = None
 
     @property
     def alive(self) -> bool:
@@ -223,6 +232,10 @@ class Connection:
         self.process = await asyncio.create_subprocess_exec(
             COMMAND,
             "acp",
+            # pcode approves every request anyway (see `_answer`), and agy
+            # 1.5.13 never forwards a background sub-agent's permission
+            # request, which then waits about a minute and fails.
+            "--dangerously-skip-permissions",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             # Never onto the terminal UI; kept only to explain a failed start.
@@ -300,9 +313,17 @@ class Connection:
                     future.set_exception(rpc_error(message["error"]))
                 else:
                     future.set_result(message.get("result") or {})
+                if self.updates is not None:
+                    # In line, before any update read after it: agy writes a
+                    # prompt's reply and what it says after the turn back to
+                    # back, and a done-callback would run after both.
+                    self.updates.put_nowait(future)
         elif method == "session/update":
+            update = (message.get("params") or {}).get("update") or {}
             if self.updates is not None:
-                self.updates.put_nowait((message.get("params") or {}).get("update") or {})
+                self.updates.put_nowait(update)
+            elif self.idle is not None:
+                self.idle(update)
         elif "id" in message:
             with contextlib.suppress(AntigravityError, OSError):
                 await self._answer(message)
@@ -445,6 +466,43 @@ class AntigravityModel(Model):
         self._model_name = model_name
         self._session: _Session | None = None
         self._lock = asyncio.Lock()
+        # Shows what Antigravity says between turns; set by the runtime.
+        self.listener: Callable[[str], None] | None = None
+        self._after_turn: list[str] = []
+        self._quiet: asyncio.TimerHandle | None = None
+
+    def _idle_update(self, update: dict) -> None:
+        """Show output Antigravity produces on its own between turns; display only.
+
+        pcode never answers it with a prompt: that would be pcode driving
+        Antigravity. Text is gathered until it goes quiet, and each tool it
+        finishes is a line of its own.
+        """
+        kind = update.get("sessionUpdate")
+        content = update.get("content")
+        if kind == "agent_message_chunk" and isinstance(content, dict):
+            self._after_turn.append(str(content.get("text", "")))
+            if self._quiet is not None:
+                self._quiet.cancel()
+            self._quiet = asyncio.get_running_loop().call_later(IDLE_QUIET, self._flush_idle)
+        elif kind == "tool_call_update" and update.get("status") in {"completed", "failed"}:
+            self._flush_idle()
+            title = update.get("title") or update.get("name") or "a tool"
+            failed = " (failed)" if update.get("status") == "failed" else ""
+            self._show(f"Antigravity, after the turn, ran {title}{failed}")
+
+    def _flush_idle(self) -> None:
+        if self._quiet is not None:
+            self._quiet.cancel()
+            self._quiet = None
+        text, self._after_turn = "".join(self._after_turn).strip(), []
+        if text:
+            self._show(f"Antigravity, after the turn:\n{text}")
+
+    def _show(self, text: str) -> None:
+        if self.listener is not None:
+            with contextlib.suppress(Exception):  # A display failure must not stop agy.
+                self.listener(text)
 
     @property
     def model_name(self) -> str:
@@ -461,6 +519,14 @@ class AntigravityModel(Model):
             async def retire() -> None:
                 async with self._lock:
                     await self._drop()
+
+            # What this conversation's agy said after its last turn must not
+            # land in whichever conversation the view shows next.
+            self.listener = None
+            if self._quiet is not None:
+                self._quiet.cancel()
+                self._quiet = None
+            self._after_turn = []
 
             _spawn(retire())
 
@@ -489,6 +555,8 @@ class AntigravityModel(Model):
 
         # Before the lock or a process: a refusal must cost nothing.
         prompt, interrupted = user_prompt(messages)
+        # Anything said since the last turn shows before this one starts.
+        self._flush_idle()
         earlier = messages[:-1]
         if interrupted:
             earlier = [*earlier, ModelRequest(parts=interrupted)]
@@ -502,12 +570,16 @@ class AntigravityModel(Model):
                 model_id=self._model_name,
                 session=session,
                 prompt=[*replay, *prompt],
+                replayed=len(replay),
+                run_context=run_context,
+                notify=self._show,
             )
             try:
                 yield stream
             finally:
                 if stream.unfinished or (stream.failed and stream.events_seen):
-                    session.interrupted.append(_asked_blocks(prompt))
+                    # As pcode keeps the request: the prompt, then any steering.
+                    session.interrupted.append("\n".join(t for t in stream.asked if t))
                 if stream.unfinished:
                     # Stopped mid-turn. The run's cancellation is level-triggered,
                     # so waiting for Antigravity to confirm here would itself be
@@ -569,6 +641,7 @@ class AntigravityModel(Model):
             stamp is not None and _all_from(earlier, stamp[0]) and newest_turn(stamp[0]) == stamp[1]
         )
         connection = Connection(cwd)
+        connection.idle = self._idle_update
         _connections.add(connection)
         try:
             await connection.start()
@@ -673,18 +746,10 @@ def user_prompt(messages: list[ModelMessage]) -> tuple[list[dict], list]:
     blocks: list[dict] = []
     unsupported: list[str] = []
     for part in parts:
-        if not isinstance(part, UserPromptPart):
-            continue
-        items = [part.content] if isinstance(part.content, str) else list(part.content)
-        for item in items:
-            if isinstance(item, str):
-                if item.strip():
-                    blocks.append({"type": "text", "text": item})
-            elif isinstance(item, BinaryContent) and item.is_image:
-                data = base64.b64encode(item.data).decode()
-                blocks.append({"type": "image", "mimeType": item.media_type, "data": data})
-            else:
-                unsupported.append(type(item).__name__)
+        if isinstance(part, UserPromptPart):
+            more, refused = content_blocks(part.content)
+            blocks += more
+            unsupported += refused
     if unsupported:
         raise AntigravityError(
             f"Antigravity can take text and images here, not {', '.join(sorted(set(unsupported)))}."
@@ -692,6 +757,22 @@ def user_prompt(messages: list[ModelMessage]) -> tuple[list[dict], list]:
     if not blocks:
         raise AntigravityError(OWN_PROMPTS_ONLY)
     return blocks, interrupted
+
+
+def content_blocks(content) -> tuple[list[dict], list[str]]:
+    """User content as ACP blocks, and the type names of any it can't carry."""
+    blocks: list[dict] = []
+    unsupported: list[str] = []
+    for item in [content] if isinstance(content, str) else list(content):
+        if isinstance(item, str):
+            if item.strip():
+                blocks.append({"type": "text", "text": item})
+        elif isinstance(item, BinaryContent) and item.is_image:
+            data = base64.b64encode(item.data).decode()
+            blocks.append({"type": "image", "mimeType": item.media_type, "data": data})
+        else:
+            unsupported.append(type(item).__name__)
+    return blocks, unsupported
 
 
 def _clip(text: str, limit: int = 2000) -> str:
@@ -757,8 +838,19 @@ class AntigravityStream(StreamedResponse):
     model_id: str = ""
     session: _Session | None = None
     prompt: list[dict] = field(default_factory=list)
+    # How many of `prompt`'s blocks replay earlier history.
+    replayed: int = 0
+    # The run, for the user's steering messages; None outside an agent run.
+    run_context: RunContext[Any] | None = None
+    # Tells the user something about the turn (the model's `_show`).
+    notify: Callable[[str], None] = lambda text: None
     started: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # The newest prompt's reply. A steering message is a further prompt, and
+    # Antigravity ends the one before it as soon as it arrives.
     reply: asyncio.Future | None = field(default=None, init=False)
+    replies: list[asyncio.Future] = field(default_factory=list, init=False)
+    # What this turn has told Antigravity: the prompt, then each steering message.
+    asked: list[str] = field(default_factory=list, init=False)
     broken: bool = field(default=False, init=False)
     part_count: int = field(default=0, init=False)
     part_kind: str = field(default="", init=False)
@@ -805,10 +897,8 @@ class AntigravityStream(StreamedResponse):
         _record_turn(session.session_id, session.turns)
         updates: asyncio.Queue = asyncio.Queue()
         connection.updates = updates
-        self.reply = connection.begin(
-            "session/prompt", {"sessionId": session.session_id, "prompt": self.prompt}
-        )
-        self.reply.add_done_callback(lambda _: updates.put_nowait(None))
+        # What the user asked, not the replay sent ahead of it.
+        self._send_prompt(self.prompt, updates, asked=_asked_blocks(self.prompt[self.replayed :]))
         try:
             async for event in self._events(updates, session):
                 yield event
@@ -817,8 +907,12 @@ class AntigravityStream(StreamedResponse):
             raise
         finally:
             if connection.updates is updates:
-                # Anything agy says between turns has nobody to show it to.
                 connection.updates = None
+                # What came after the turn's end belongs to the time between turns.
+                while not updates.empty():
+                    leftover = updates.get_nowait()
+                    if isinstance(leftover, dict) and connection.idle is not None:
+                        connection.idle(leftover)
         if not self.text_seen:
             # A reply with no text reads as empty, and Pydantic AI would ask
             # again: that request would be pcode's, not the user's.
@@ -829,21 +923,28 @@ class AntigravityStream(StreamedResponse):
     async def _events(
         self, updates: asyncio.Queue, session: _Session
     ) -> AsyncIterator[ModelResponseStreamEvent]:
-        assert self.reply is not None
         while True:
-            update = await updates.get()
+            if self.run_context is not None and steering_pending(self.run_context):
+                await self._steer(updates)
+            try:
+                update = await asyncio.wait_for(updates.get(), STEER_POLL)
+            except TimeoutError:
+                continue
             if isinstance(update, BaseException):
                 self.broken = True
                 raise update
-            if update is None:
-                break
+            if isinstance(update, asyncio.Future):
+                if update is self.reply:
+                    break
+                continue  # A prompt a steering message took over.
             for event in self._map(update):
                 self.events_seen = True
                 yield event
+        assert self.reply is not None
         try:
             result = self.reply.result()
         except AntigravityError:
-            if not self.events_seen:
+            if not self.events_seen and len(self.replies) == 1:
                 # Refused before it started (signed out, unknown model): the
                 # session never saw this turn.
                 session.turns -= 1
@@ -851,20 +952,71 @@ class AntigravityStream(StreamedResponse):
             raise
         self._finish(result)
 
+    def _send_prompt(
+        self, blocks: list[dict], updates: asyncio.Queue, *, asked: str | None = None
+    ) -> None:
+        assert self.session is not None
+        reply = self.session.connection.begin(
+            "session/prompt", {"sessionId": self.session.session_id, "prompt": blocks}
+        )
+        # The future itself marks where its prompt's updates end.
+        reply.add_done_callback(updates.put_nowait)
+        self.reply = reply
+        self.replies.append(reply)
+        self.asked.append(_asked_blocks(blocks) if asked is None else asked)
+
+    async def _steer(self, updates: asyncio.Queue) -> None:
+        """Send the user's steering messages into the running turn, as Antigravity's own clients do.
+
+        Each is a further `session/prompt`; Antigravity folds it into the work
+        in progress. Only the messages go: never pcode's steering reminder.
+        They are added to this turn's request as well, as pcode's other
+        models get them, so the history says what Antigravity was told.
+        """
+        from pcode.retries import RequestCheckpoint
+        from pcode.steering import take_user_steering
+
+        ctx = self.run_context
+        assert ctx is not None
+        # The run's request, and the copy pcode restores if this turn is
+        # cancelled or fails: both must say what Antigravity was told.
+        requests = [ctx.messages[-1]] if ctx.messages else []
+        for capability in ctx.capabilities.values():
+            if isinstance(capability, RequestCheckpoint) and capability.messages:
+                requests.append(capability.messages[-1])
+        for message in await take_user_steering(ctx):
+            blocks, refused = content_blocks(message)  # Only text and images can go.
+            if refused:
+                self.notify(
+                    f"Antigravity can't take {', '.join(sorted(set(refused)))}; "
+                    "sent the rest of that message."
+                )
+            for request in requests:
+                if isinstance(request, ModelRequest):
+                    request.parts.append(UserPromptPart(message))
+            if blocks:
+                self._send_prompt(blocks, updates)
+
     def _finish(self, result: dict) -> None:
         stop = result.get("stopReason")
         reasons = {"end_turn": "stop", "max_tokens": "length", "refusal": "content_filter"}
         self.finish_reason = reasons.get(stop, "stop")
         self.provider_details = {"stop_reason": stop} if stop else None
-        usage = result.get("usage") or {}
-        cached = int(usage.get("cachedReadTokens") or 0)
-        written = int(usage.get("cachedWriteTokens") or 0)
-        self._usage = RequestUsage(
-            input_tokens=int(usage.get("inputTokens") or 0) + cached + written,
-            cache_read_tokens=cached,
-            cache_write_tokens=written,
-            output_tokens=int(usage.get("outputTokens") or 0),
-        )
+        # Each prompt reports its own usage; a steered turn is all of them.
+        total = RequestUsage()
+        for reply in self.replies:
+            if not reply.done() or reply.cancelled() or reply.exception():
+                continue
+            usage = reply.result().get("usage") or {}
+            cached = int(usage.get("cachedReadTokens") or 0)
+            written = int(usage.get("cachedWriteTokens") or 0)
+            total += RequestUsage(
+                input_tokens=int(usage.get("inputTokens") or 0) + cached + written,
+                cache_read_tokens=cached,
+                cache_write_tokens=written,
+                output_tokens=int(usage.get("outputTokens") or 0),
+            )
+        self._usage = total
 
     def _map(self, update: dict) -> Iterator[ModelResponseStreamEvent]:
         kind = update.get("sessionUpdate")

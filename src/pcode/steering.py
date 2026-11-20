@@ -36,19 +36,26 @@ class Steering(AbstractCapability):
         # Sent after a delivery's messages, never on its own and never journaled.
         self.reminder = reminder
 
-    async def take(self) -> list:
-        """The pending messages, consumed, each as the model is to be sent it."""
+    async def take(self, *, remind: bool = True) -> list:
+        """The pending messages, consumed, each as the model is to be sent it.
+
+        `remind=False` leaves out pcode's reminder, for an `antigravity:` model,
+        which must only ever hear what the user wrote.
+        """
         messages = self.take_messages()
         if self.prepare is not None:
             messages = [await self.prepare(message) for message in messages]
-        if messages and self.reminder:
+        if messages and self.reminder and remind:
             messages = [*messages, self.reminder]
         return messages
 
     async def before_model_request(self, ctx, request_context):
         # Append to the framework's request so tool results remain ahead of the
         # new user input and the input is included in persisted message history.
-        for content in await self.take():
+        from pcode.models import user_only
+
+        remind = not user_only(getattr(request_context, "model", None))
+        for content in await self.take(remind=remind):
             run_request(ctx, request_context).parts.append(UserPromptPart(content))
         return request_context
 
@@ -60,6 +67,13 @@ def _steering(ctx):
 
 def steering_pending(ctx) -> bool:
     return any(capability.has_messages() for capability in _steering(ctx))
+
+
+async def take_user_steering(ctx) -> list:
+    """Consume this run's steering as the user wrote it: one item per message, no reminder."""
+    return [
+        message for capability in _steering(ctx) for message in await capability.take(remind=False)
+    ]
 
 
 async def take_steering(ctx) -> list:

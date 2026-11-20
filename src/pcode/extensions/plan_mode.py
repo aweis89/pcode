@@ -260,7 +260,12 @@ def setup(pcode) -> None:
         # cached. A retried turn resends the same request, so skip one that
         # already carries the reminder or is mid-turn (holds tool results).
         current = active()
-        if current is None or is_side(ctx):
+        # Antigravity runs its own loop without pcode's plan tools, and must
+        # only hear what the user wrote (see `pcode.antigravity`).
+        from pcode.models import user_only
+
+        hears_only_user = user_only(getattr(request_context, "model", None))
+        if current is None or is_side(ctx) or hears_only_user:
             return request_context
         request = run_request(ctx, request_context)
         parts = request.parts if isinstance(request, ModelRequest) else ()

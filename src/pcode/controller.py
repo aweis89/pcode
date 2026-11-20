@@ -1022,8 +1022,11 @@ class SessionController:
         idle: a job that ended mid-turn after the last request is included,
         because nothing else is going to deliver it.
         """
+        from pcode.models import user_only
+
         registry = getattr(self.runtime, "jobs", None)
-        if registry is None or not self.model:
+        # A model that hears only the user can't be woken by pcode's notice.
+        if registry is None or not self.model or user_only(self.model):
             return None
         wakeable = [
             job
@@ -1556,6 +1559,8 @@ class SessionController:
             runtime.warning_notice = self.view.warning
         if hasattr(runtime, "notice"):
             runtime.notice = self.view.note
+        if hasattr(runtime, "retained_notice"):
+            runtime.retained_notice = self.view.retained_note
         failure = None
         cancelled = False
         chosen, prompt = (None, text) if continuing or wake else prompt_target(text)

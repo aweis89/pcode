@@ -858,8 +858,23 @@ finished turn) off this model. Traps found while building it:
 - Advertising `fs.writeTextFile` makes `agy` send whole-file client writes
   instead of diffs (per T3 Code's integration), so pcode advertises no fs or
   terminal capability.
-- `agy` may keep working after a turn ends (a backgrounded command's later
-  report). Those updates arrive between turns and are dropped.
+- `agy` keeps working after a turn ends: a background sub-agent's report and
+  its follow-up arrive as updates with no prompt pending. They go to the
+  model's `listener` as retained transcript notes, never answered. `agy`
+  writes a prompt's reply and those updates back to back, so the reader queues
+  the reply's future in line; a done-callback ran after both and folded the
+  report into the turn.
+- `agy` 1.5.13 never forwards a background sub-agent's
+  `session/request_permission` (t3code#39029); the sub-agent waits about a
+  minute and fails. Hence `--dangerously-skip-permissions`. Session modes do
+  not reach sub-agents.
+- Steering: a `session/prompt` sent while one runs makes `agy` end the running
+  prompt at once (`end_turn`) and carry on under the new one. The stream
+  follows the newest prompt and sums every prompt's usage. Only a streamed run
+  hands the model a `RunContext`, so `Agent.run` never steers.
+- The ACP server sends no `plan` updates (its message set has none; tasks live
+  in a `tasks.md` under `~/.gemini/antigravity-cli/brain/`), so pcode's plan
+  panel stays empty on Antigravity.
 
 `tests/test_antigravity.py` runs the model against `tests/fake_agy.py`, a
 scripted ACP server installed on `PATH` as `agy`.
