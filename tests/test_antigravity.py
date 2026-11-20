@@ -685,6 +685,103 @@ def test_missing_cli_is_explained(monkeypatch):
         antigravity.antigravity_model("antigravity:fake")
 
 
+def test_background_command_holds_turn_open_until_followup_ends(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.05)
+    shown: list[str] = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.listener = shown.append
+        return await agent_for(model, tmp_path).run("BGCMD")
+
+    result = run(go())
+    assert "Waiting for background work..." in result.output
+    assert "All tests passed." in result.output
+    parts = [p for m in result.all_messages() for p in m.parts]
+    assert any(
+        isinstance(p, NativeToolReturnPart)
+        and p.tool_call_id == "bg-1"
+        and p.content == "all passed"
+        for p in parts
+    )
+    assert shown == []
+
+
+def test_daemon_command_does_not_hold_turn_open(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-high")
+        return await agent_for(model, tmp_path).run("BGDAEMON")
+
+    result = run(go())
+    assert result.output == "Waiting for background work..."
+
+
+def test_schedule_tool_holds_turn_open(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.05)
+    shown: list[str] = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.listener = shown.append
+        return await agent_for(model, tmp_path).run("BGSCHED")
+
+    result = run(go())
+    assert "Waiting for background work..." in result.output
+    assert "All tests passed." in result.output
+    assert shown == []
+
+
+def test_steering_during_held_turn_resumes_prompt_lifecycle(fake_agy, tmp_path):
+    queue: list[str] = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = steering_agent(model, tmp_path, queue)
+        task = asyncio.create_task(streamed(agent, "BGHANG"))
+        for _ in range(200):
+            if (
+                model._session is not None
+                and model._session.turns == 1
+                and not model._session.connection.pending
+                and model._session.connection.updates is not None
+            ):
+                await asyncio.sleep(0.01)
+                break
+            await asyncio.sleep(0.01)
+        queue.append("COMPLETE_BG steer while held")
+        return await task
+
+    result = run(go())
+    assert "got: COMPLETE_BG steer while held" in result.output
+    assert len(prompts(fake_agy)) == 2
+
+
+def test_cancelling_held_turn_sends_session_cancel_and_recovers(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = agent_for(model, tmp_path)
+        task = asyncio.create_task(streamed(agent, "BGHANG"))
+        for _ in range(200):
+            if (
+                model._session is not None
+                and model._session.turns == 1
+                and not model._session.connection.pending
+                and model._session.connection.updates is not None
+            ):
+                await asyncio.sleep(0.01)
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Next turn still works (lock released).
+        return await agent.run("after cancel")
+
+    result = run(go())
+    assert "got: after cancel" in result.output
+    assert any(m.get("method") == "session/cancel" for m in fake_agy())
+
+
 def test_usage_update_records_context_window_and_caches_it(fake_agy, tmp_path):
     from pcode.context_usage import context_label, context_window
 

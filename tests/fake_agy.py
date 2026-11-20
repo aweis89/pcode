@@ -88,6 +88,50 @@ def prompt(request):
         chunk(session, "agent_message_chunk", "about to fail")
         sys.stdout.flush()
         os._exit(3)
+    if "BGCMD" in text or "BGDAEMON" in text or "BGSCHED" in text or "BGHANG" in text:
+        is_daemon = "BGDAEMON" in text
+        is_sched = "BGSCHED" in text
+        call = (
+            {
+                "toolCallId": "bg-1",
+                "name": "schedule",
+                "kind": "other",
+                "title": "Running schedule",
+                "rawInput": {},
+            }
+            if is_sched
+            else {
+                "toolCallId": "bg-1",
+                "name": "run_command",
+                "kind": "execute",
+                "title": "uv run pytest",
+                "rawInput": {"CommandLine": "uv run pytest", "IsDaemon": is_daemon},
+            }
+        )
+        update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **call})
+        chunk(session, "agent_message_chunk", "Waiting for background work...")
+        result = {"stopReason": "end_turn", "usage": {"inputTokens": 5, "outputTokens": 3}}
+        send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        running.remove(request["id"])
+        if is_daemon or "BGHANG" in text:
+            return
+        threading.Event().wait(0.05)
+        content = [{"type": "content", "content": {"type": "text", "text": "all passed"}}]
+        update(
+            session,
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "bg-1",
+                "status": "completed",
+                "content": content,
+            },
+        )
+        chunk(session, "agent_message_chunk", " All tests passed.")
+        update(session, {"sessionUpdate": "usage_update", "used": 100, "size": 1000})
+        return
+    if "COMPLETE_BG" in text:
+        done = {"sessionUpdate": "tool_call_update", "toolCallId": "bg-1", "status": "completed"}
+        update(session, done)
     chunk(session, "agent_thought_chunk", "pondering")
     call = {
         "toolCallId": "call-1",

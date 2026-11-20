@@ -86,6 +86,13 @@ CANCEL_GRACE = 10.0
 STEER_POLL = 0.25
 # Quiet seconds that end a stretch of text Antigravity writes between turns.
 IDLE_QUIET = 1.5
+# Quiet seconds after a held turn's background work finishes and its follow-up
+# reply closes (`usage_update`), in case Antigravity immediately starts another tool.
+DEFERRED_FINALIZE_DEBOUNCE = 3.0
+# Safety cap while waiting for an unsolicited follow-up reply's `usage_update`.
+OPEN_REPLY_QUIET_LIMIT = 120.0
+# Tool titles Antigravity leaves in_progress across `session/prompt` settlement.
+SCHEDULE_TITLES = frozenset({"Run schedule", "Running schedule"})
 # Sessions remembered in the ledger; older ones replay instead of resuming.
 LEDGER_SIZE = 500
 
@@ -897,6 +904,25 @@ def _tool_output(update: dict) -> object:
 
 
 @dataclass
+class _ToolState:
+    """Tracked metadata for a tool call in the current turn."""
+
+    kind: str = ""
+    title: str = ""
+    is_daemon: bool = False
+    status: str = ""
+
+    @property
+    def outlives_prompt(self) -> bool:
+        """Whether `agy` keeps running this tool after `session/prompt` settles."""
+        if self.status != "in_progress":
+            return False
+        if self.title in SCHEDULE_TITLES:
+            return True
+        return self.kind == "execute" and not self.is_daemon
+
+
+@dataclass
 class AntigravityStream(StreamedResponse):
     """One Antigravity turn as Pydantic AI stream events."""
 
@@ -919,9 +945,13 @@ class AntigravityStream(StreamedResponse):
     # What this turn has told Antigravity: the prompt, then each steering message.
     asked: list[str] = field(default_factory=list, init=False)
     broken: bool = field(default=False, init=False)
+    # True while `session/prompt` has settled but we are still holding the turn
+    # open for a running command/schedule and its unsolicited follow-up reply.
+    holding: bool = field(default=False, init=False)
     part_count: int = field(default=0, init=False)
     part_kind: str = field(default="", init=False)
     calls: dict[str, tuple[str, dict]] = field(default_factory=dict, init=False)
+    tools: dict[str, _ToolState] = field(default_factory=dict, init=False)
     text_seen: bool = field(default=False, init=False)
     events_seen: bool = field(default=False, init=False)
     failed: bool = field(default=False, init=False)
@@ -945,7 +975,17 @@ class AntigravityStream(StreamedResponse):
 
     @property
     def unfinished(self) -> bool:
-        return self.reply is not None and not self.reply.done()
+        return (self.reply is not None and not self.reply.done()) or self.holding
+
+    def _has_outliving_tools(self) -> bool:
+        return any(tool.outlives_prompt for tool in self.tools.values())
+
+    def _should_hold(self, reply: asyncio.Future) -> bool:
+        if reply.cancelled() or reply.exception() is not None:
+            return False
+        if reply.result().get("stopReason") == "cancelled":
+            return False
+        return self._has_outliving_tools()
 
     def _vendor(self, kind: str) -> str:
         """A part ID that starts a new part whenever the kind of output changes."""
@@ -991,23 +1031,63 @@ class AntigravityStream(StreamedResponse):
     async def _events(
         self, updates: asyncio.Queue, session: _Session
     ) -> AsyncIterator[ModelResponseStreamEvent]:
+        loop = asyncio.get_running_loop()
+        reply_open = False
+        quiet_deadline: float | None = None
         while True:
             if self.run_context is not None and steering_pending(self.run_context):
+                previous = self.reply
                 await self._steer(updates)
+                if self.reply is not previous:
+                    self.holding = False
+                    reply_open = False
+                    quiet_deadline = None
+            timeout = STEER_POLL
+            if self.holding and quiet_deadline is not None:
+                remaining = quiet_deadline - loop.time()
+                if remaining <= 0:
+                    self.holding = False
+                    break
+                timeout = min(timeout, remaining)
             try:
-                update = await asyncio.wait_for(updates.get(), STEER_POLL)
+                update = await asyncio.wait_for(updates.get(), timeout)
             except TimeoutError:
+                if self.holding and quiet_deadline is not None and loop.time() >= quiet_deadline:
+                    self.holding = False
+                    break
                 continue
             if isinstance(update, BaseException):
+                self.holding = False
                 self.broken = True
                 raise update
             if isinstance(update, asyncio.Future):
-                if update is self.reply:
-                    break
-                continue  # A prompt a steering message took over.
+                if update is self.reply and not self.holding:
+                    if not self._should_hold(update):
+                        self.holding = False
+                        break
+                    self.holding = True
+                    reply_open = False
+                    quiet_deadline = None
+                continue  # A prompt a steering message took over, or held for background work.
+            kind = update.get("sessionUpdate")
             for event in self._map(update):
                 self.events_seen = True
                 yield event
+            if self.holding:
+                if kind == "usage_update":
+                    reply_open = False
+                elif kind in {
+                    "agent_message_chunk",
+                    "agent_thought_chunk",
+                    "tool_call",
+                    "tool_call_update",
+                }:
+                    reply_open = True
+                if self._has_outliving_tools():
+                    quiet_deadline = None
+                else:
+                    limit = OPEN_REPLY_QUIET_LIMIT if reply_open else DEFERRED_FINALIZE_DEBOUNCE
+                    quiet_deadline = loop.time() + limit
         assert self.reply is not None
         try:
             result = self.reply.result()
@@ -1113,6 +1193,19 @@ class AntigravityStream(StreamedResponse):
         call_id = str(update.get("toolCallId") or "")
         if not call_id:
             return
+        state = self.tools.setdefault(call_id, _ToolState())
+        if isinstance(update.get("kind"), str) and update["kind"]:
+            state.kind = update["kind"]
+        if isinstance(update.get("title"), str) and update["title"]:
+            state.title = update["title"]
+        raw_input = update.get("rawInput")
+        if isinstance(raw_input, dict) and (
+            raw_input.get("IsDaemon") is True or raw_input.get("isDaemon") is True
+        ):
+            state.is_daemon = True
+        status = update.get("status")
+        if isinstance(status, str) and status:
+            state.status = status
         known = self.calls.get(call_id)
         args = _tool_args(update)
         # The first report may carry no arguments yet; a later one fills them in.
@@ -1127,7 +1220,6 @@ class AntigravityStream(StreamedResponse):
                     tool_name=name, args=args, tool_call_id=call_id, provider_name=SYSTEM
                 ),
             )
-        status = update.get("status")
         if status in {"completed", "failed"}:
             name, _ = self.calls[call_id]
             yield self._parts_manager.handle_part(
