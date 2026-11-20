@@ -78,7 +78,13 @@ from pcode.shell_mode import shell_command
 from pcode.startup_input import StartupInput
 from pcode.stream_display import PrintedReply, present_events, present_stream_event
 from pcode.terminal_notify import TabProgress, TabTitle
-from pcode.theme import THEMES, ambiguous_wide, replay_pending_input, terminal_background
+from pcode.theme import (
+    THEMES,
+    ambiguous_wide,
+    replay_pending_input,
+    take_initial_cursor_row,
+    terminal_background,
+)
 from pcode.tool_display import plain
 from pcode.ui import (
     WATCHED_PREFIX,
@@ -265,6 +271,7 @@ class PreviewApp:
             theme or load_preferences().get("theme", SETTINGS["theme"].default),
             activity=self.activity,
             probe_width=console is None and glyph_setting == "auto",
+            probe_cursor=console is None and not os.environ.get("PROMPT_TOOLKIT_NO_CPR"),
         )
         if console is None:
             # The editor's own terminal, which the startup probe has measured.
@@ -1908,6 +1915,8 @@ class PreviewApp:
                 f"The session host {runtime.id} has exited. /attach picks another;{session}"
             )
         self.activity.busy = False
+        if self.activity.startup_label:
+            self.activity.finish_startup(ok=False)
         self.redraw()
 
     async def stop_other_host(self, entry) -> None:
@@ -2041,7 +2050,13 @@ class PreviewApp:
         await self.adopt_controller(controller, welcome, f"{note} ({identity})" if note else what)
 
     async def adopt_controller(
-        self, controller, welcome: dict, note: str, *, handed_off: bool = False
+        self,
+        controller,
+        welcome: dict,
+        note: str,
+        *,
+        handed_off: bool = False,
+        preserve_welcome: bool = False,
     ) -> None:
         """Show the host behind `controller` in this terminal, leaving the current session.
 
@@ -2097,13 +2112,24 @@ class PreviewApp:
             controller.apply_field(name, value)
         self.commands_changed()
         journal = controller.runtime.session
-        if journal is not None:
-            end = welcome["settled_end"] if welcome["settled_end"] is not None else 0
+        end = welcome["settled_end"] if welcome["settled_end"] is not None else 0
+        if preserve_welcome and (journal is None or not journal.transcript_records(end)):
+            # Brand-new hosted session: keep the welcome banner in scrollback
+            # rather than clearing the screen to draw a single attach note.
+            if journal is not None:
+                self.activity.plan = journal.latest_plan()
+            self.activity.tools.clear()
+            self.transcript.retained_note(note)
+        elif journal is not None:
             self.replay(journal, note=note, end=end)
         else:
             with self.transcript.restore():
                 self.transcript.retained_note(note)
         await controller.start(welcome)
+        if controller.startup_pending:
+            self.activity.begin_startup("Starting agent")
+        elif self.activity.startup_label:
+            self.activity.finish_startup(ok=controller.startup_error is None)
         for text, mode in messages:
             controller.submit(text, mode)
         if self._submit_typed is not None:
@@ -2715,7 +2741,16 @@ class PreviewApp:
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
-        self.transcript.welcome(self.model, str(self.workspace))
+        # A brand-new session shows the welcome banner; attaching to an existing
+        # host or resuming a saved conversation replays directly instead of
+        # flashing a welcome block only to wipe it a moment later.
+        fresh_launch = not self.resuming and (
+            self._host_launch is None or self._host_launch.process is not None
+        )
+        welcome_rows = (
+            self.transcript.welcome(self.model, str(self.workspace)) if fresh_launch else 0
+        )
+        initial_row = take_initial_cursor_row()
         # Typed before a session host is attached; sent to it once it is.
         early: list[tuple[str, str, object]] | None = [] if self._host_launch else None
 
@@ -2733,24 +2768,18 @@ class PreviewApp:
         async def initialize_host():
             nonlocal early
             launch, self._host_launch = self._host_launch, None
-            if launch.process is not None:
-                self.transcript.note(
-                    f"Starting session host {launch.id}; quitting stops it, /detach leaves "
-                    f"it running. Log: {launch.log}"
-                )
-            label = "Starting the session host" if launch.process else "Connecting to the host"
             try:
-                with self.activity.waiting(label):
-                    controller, welcome = await launch.connect(self, self.activity)
+                controller, welcome = await launch.connect(self, self.activity)
             except Exception as error:
                 self._startup_error = error
                 self._startup_pending = False
+                self.activity.finish_startup(ok=False)
                 self.transcript.error(error_message(error), title="Session host failed")
                 early = None
                 session.app.invalidate()
                 return
             note = f"Attached to session host {launch.id}"
-            await self.adopt_controller(controller, welcome, note)
+            await self.adopt_controller(controller, welcome, note, preserve_welcome=fresh_launch)
             waiting, early = early or [], None
             for kind, text, detail in waiting:
                 if kind == "command":
@@ -2788,6 +2817,8 @@ class PreviewApp:
                 controller.start_mcp_defaults()
             finally:
                 self._startup_pending = False
+                if self.activity.startup_label:
+                    self.activity.finish_startup(ok=self._startup_error is None)
                 controller.ready.set()
                 for command in controller.startup_commands:
                     controller.commands.put_nowait(command)
@@ -2996,6 +3027,11 @@ class PreviewApp:
         def start():
             restore_stdin()
             replay_pending_input(session.app, self.follow_appearance)
+            if initial_row is not None and session.app.output.responds_to_cpr:
+                total_rows = session.app.output.get_size().rows
+                if total_rows > 0:
+                    row = min(total_rows, initial_row + welcome_rows)
+                    session.app.renderer._min_available_height = max(0, total_rows - row + 1)
             if stalls is not None:
                 session.app.create_background_task(stalls.heartbeat())
             session.app.create_background_task(watch_branch())
@@ -3009,8 +3045,23 @@ class PreviewApp:
             if self._appearance is not None:
                 session.app.create_background_task(self._appearance.run())
             if early is not None:
+                label = (
+                    "Resuming session"
+                    if self.resuming
+                    else "Starting session"
+                    if self._host_launch and self._host_launch.process
+                    else "Connecting to session"
+                )
+                self.activity.begin_startup(label)
                 session.app.create_background_task(initialize_host())
             else:
+                if self._startup_pending:
+                    self.activity.begin_startup(
+                        "Resuming session" if self.resuming else "Starting pcode"
+                    )
+                elif fresh_launch and self.transcript.console.is_terminal:
+                    # Preview mode has no backend wait: run just the brief settle sweep.
+                    self.activity.finish_startup(ok=True)
                 self.run_controller(self.controller)
                 session.app.create_background_task(initialize())
             if self.initial_prompt:
@@ -3714,6 +3765,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
         model=model,
         workspace=workspace,
         session_dir=args.session_dir,
+        resume=bool(args.resume),
         initial_prompt=args.prompt,
         host=launch,
     )

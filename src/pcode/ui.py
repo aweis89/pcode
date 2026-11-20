@@ -554,6 +554,9 @@ ASIDE_ROWS = 3
 # A wait on the session host shorter than this never gets a row: most answer
 # within a frame or two, and a row that flashes for them reads as a glitch.
 WAIT_GRACE_SECONDS = 0.25
+# Fast settle sweep along the editor's top border once startup finishes.
+STARTUP_SETTLE_SECONDS = 0.35
+STARTUP_FRAME_SECONDS = 0.04
 
 
 # The status row is redrawn several times a second while a turn runs, so a
@@ -1002,6 +1005,12 @@ class Activity:
     _held_thought: _HeldThought | None = field(default=None, init=False, repr=False, compare=False)
     # The turn's latest call on the tool row, kept there once it finishes.
     _last_call: ToolCall | None = field(default=None, init=False, repr=False, compare=False)
+    # Startup animation state in the editor's top border: non-empty while
+    # connecting or initializing, then a brief settle sweep once ready.
+    startup_label: str = field(default="", init=False, repr=False, compare=False)
+    startup_started: float = field(default=0.0, init=False, repr=False, compare=False)
+    startup_done_at: float = field(default=0.0, init=False, repr=False, compare=False)
+    startup_ok: bool = field(default=True, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -1108,6 +1117,32 @@ class Activity:
             yield wait
         finally:
             self.end_wait(wait)
+
+    def begin_startup(self, label: str) -> None:
+        """Show a startup animation in the editor's top border without adding rows."""
+        self.startup_label = label
+        if not self.startup_started:
+            self.startup_started = monotonic()
+        self.startup_done_at = 0.0
+        self.startup_ok = True
+        _invalidate()
+
+    def finish_startup(self, *, ok: bool = True) -> None:
+        """Transition the startup border into its brief settle sweep (or clear on error)."""
+        self.startup_label = ""
+        self.startup_ok = ok
+        self.startup_done_at = monotonic() if ok else 0.0
+        _invalidate()
+
+    @property
+    def startup_animating(self) -> bool:
+        if self.startup_label:
+            return True
+        if self.startup_done_at > 0:
+            if monotonic() - self.startup_done_at < STARTUP_SETTLE_SECONDS:
+                return True
+            self.startup_done_at = 0.0
+        return False
 
     def wait_fragments(self, spinner: str, width: int):
         """The newest wait past its grace period, as a system row; empty otherwise.
@@ -2643,7 +2678,10 @@ class PromptLayout:
 
     def refresh_interval(self) -> float:
         """Seconds until the next frame."""
-        return min(self.spinner.interval, self.tool_spinner.interval) / 1000
+        interval = min(self.spinner.interval, self.tool_spinner.interval) / 1000
+        if self.startup_border_active():
+            return min(interval, STARTUP_FRAME_SECONDS)
+        return interval
 
     @_per_render
     def spinner_frame(self) -> str:
@@ -3183,6 +3221,91 @@ class PromptLayout:
 
         return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
 
+    def startup_border_active(self) -> bool:
+        """Whether the editor's top border is currently showing the startup animation."""
+        if not self.activity.startup_animating or self.activity.status_shown:
+            return False
+        if self.plan_attached():
+            return False
+        if self.activity.startup_label:
+            return True
+        return not self.frame_shaded() and not self.idle_title()
+
+    def startup_border(self) -> Window:
+        """Animated top border while starting up, then a fast light sweep once ready."""
+
+        def _shimmer_rule(length: int, pos: int, pulse: int, style: str) -> list[tuple[str, str]]:
+            if length <= 0:
+                return []
+            start = max(0, pos)
+            end = min(length, pos + pulse)
+            parts: list[tuple[str, str]] = []
+            if start > 0:
+                parts.append(("class:frame.border", "─" * start))
+            if end > start:
+                parts.append((style, "─" * (end - start)))
+            if end < length:
+                parts.append(("class:frame.border", "─" * (length - end)))
+            return parts
+
+        def fragments():
+            columns = self.size().columns
+            if columns < 2:
+                return []
+            activity = self.activity
+            shaded = self.frame_shaded()
+            if activity.startup_label:
+                elapsed = max(0.0, monotonic() - activity.startup_started)
+                # Brand diamond pulses gently during startup, keeping the braille
+                # spinner reserved for active model turns.
+                mark = "◆" if int(elapsed * 4) % 2 == 0 else "◇"
+                label = plain(activity.startup_label, limit=None)
+                if shaded:
+                    lead = self.heading_lead()
+                    head = [
+                        ("", lead),
+                        ("class:activity.spinner", f"{mark} "),
+                        ("class:activity.phase", label),
+                    ]
+                    return fit_fragments(head, columns)
+                lead = self.heading_lead()
+                text = f"{mark} {label}"
+                max_text = max(0, columns - len(lead) - 2)
+                if cell_len(text) > max_text:
+                    clipped = Text(text)
+                    clipped.truncate(max_text, overflow="ellipsis")
+                    text = clipped.plain
+                rule_len = max(0, columns - len(lead) - cell_len(text) - 2)
+                if not text:
+                    return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
+                pulse = min(6, max(2, rule_len // 6))
+                span = rule_len + pulse
+                pos = int((elapsed * 48) % max(1, span)) - pulse
+                mark_len = len(mark) + 1
+                return [
+                    ("class:frame.border", lead),
+                    ("class:activity.spinner", text[:mark_len]),
+                    ("class:activity.phase", text[mark_len:]),
+                    ("class:frame.border", " "),
+                    *_shimmer_rule(rule_len, pos, pulse, "class:activity.spinner"),
+                    ("class:frame.border", "┐"),
+                ]
+            # Fast settle sweep once ready: identical border geometry, brief accent wave.
+            if shaded:
+                return [("", " " * columns)]
+            rule_len = max(0, columns - 2)
+            elapsed = max(0.0, monotonic() - activity.startup_done_at)
+            progress = min(1.0, elapsed / STARTUP_SETTLE_SECONDS)
+            pulse = max(4, rule_len // 4)
+            pos = int(progress * (rule_len + pulse)) - pulse
+            return [
+                ("class:frame.border", "┌"),
+                *_shimmer_rule(rule_len, pos, pulse, "class:plan.heading.done"),
+                ("class:frame.border", "┐"),
+            ]
+
+        return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
+
     def plan_heading(self):
         """The task heading, without permanent shortcut instructions."""
         activity = self.activity
@@ -3412,7 +3535,12 @@ class PromptLayout:
 
     def top_row_filled(self) -> bool:
         """Whether the editor's top row carries text: a status, tasks, or a title."""
-        return self.activity.status_shown or self.plan_attached() or bool(self.idle_title())
+        return (
+            self.activity.status_shown
+            or bool(self.activity.startup_label)
+            or self.plan_attached()
+            or bool(self.idle_title())
+        )
 
     def top_gap(self, attached: bool | None = None) -> int:
         """Shaded, a blank row (1) between a filled top row and the text, else 0.
@@ -3431,7 +3559,11 @@ class PromptLayout:
             self.frame_shaded()
             and not attached
             and not self.band_rows()
-            and (self.activity.status_shown or bool(self.idle_title()))
+            and (
+                self.activity.status_shown
+                or bool(self.activity.startup_label)
+                or bool(self.idle_title())
+            )
         )
 
     def frame_shaded(self) -> bool:
@@ -3478,6 +3610,7 @@ class PromptLayout:
         # heading. Attached tasks sit under it, and a divider separates them
         # from the text; frame_height counts both.
         status = Condition(lambda: self.activity.status_shown)
+        startup = Condition(self.startup_border_active)
         attached = Condition(self.plan_attached)
         shaded = Condition(self.frame_shaded)
         from pcode.btw_view import current
@@ -3509,15 +3642,16 @@ class PromptLayout:
                 HSplit(
                     [
                         ConditionalContainer(self.status_border(), filter=status),
+                        ConditionalContainer(self.startup_border(), filter=startup),
                         ConditionalContainer(self.plan_heading_border(), filter=attached & ~status),
                         ConditionalContainer(
                             top,
-                            filter=~attached & ~status & ~shaded,
+                            filter=~attached & ~status & ~startup & ~shaded,
                         ),
                         # Shaded, the session's name lines up with the prompt chevron.
                         ConditionalContainer(
                             self.heading_border(self.idle_title),
-                            filter=~attached & ~status & shaded,
+                            filter=~attached & ~status & ~startup & shaded,
                         ),
                         self.band_body(side),
                     ],
@@ -3570,6 +3704,7 @@ class PromptLayout:
         return (
             activity.busy
             or activity.status_shown
+            or self.startup_border_active()
             # Keep redrawing while a notice is live: nothing else will ask for
             # the frame that finally removes it.
             or activity.notice_shown
@@ -3783,6 +3918,7 @@ class Transcript:
         preferences: dict[str, str] | None = None,
         detected_theme: str | None = None,
         probe_width: bool = False,
+        probe_cursor: bool = False,
     ) -> None:
         # `probe_width`: also measure the terminal's ambiguous-width glyphs
         # (`pcode.theme`), for the editor's terminal only: its late replies
@@ -3805,7 +3941,9 @@ class Transcript:
         self.console = console
         self.theme = theme
         self.detected_theme = (
-            detect_theme(probe_width=probe_width) if detected_theme is None else detected_theme
+            detect_theme(probe_width=probe_width, probe_cursor=probe_cursor)
+            if detected_theme is None
+            else detected_theme
         )
         self.syntax_themes = syntax_themes(preferences)
         self._delta = delta_from_preferences(preferences)
@@ -4195,23 +4333,34 @@ class Transcript:
             else self.syntax_themes[self.resolved_theme]
         )
 
-    def welcome(self, model: str | None = None, workspace: str = "") -> None:
+    def welcome(self, model: str | None = None, workspace: str = "") -> int:
+        header = Text.assemble(
+            ("◆ ", "pcode.accent"),
+            ("pcode", "pcode.brand"),
+            (f"  /  {model or 'UI preview'}", "pcode.muted"),
+        )
+        notes = (
+            (
+                f"Coder · workspace: {workspace}",
+                "Live model · file edits and shell tools enabled · not a sandbox",
+            )
+            if model
+            else ("Local only · no model connected · no files or shell tools",)
+        ) + ("Type / for commands, /theme-preview for a sample response, /help for keys.",)
         self.print()
-        self.print(
-            Text.assemble(
-                ("pcode", "pcode.brand"),
-                (f"  /  {model or 'UI preview'}", "pcode.muted"),
+        self.print(header)
+        for text in notes:
+            self.retained_note(text)
+        self.print()
+        options = self.console.options.update(overflow="fold")
+        return (
+            2
+            + len(self.console.render_lines(header, options=options, pad=False))
+            + sum(
+                len(self.console.render_lines(Note(text), options=options, pad=False))
+                for text in notes
             )
         )
-        if model:
-            self.retained_note(f"Coder · workspace: {workspace}")
-            self.retained_note("Live model · file edits and shell tools enabled · not a sandbox")
-        else:
-            self.retained_note("Local only · no model connected · no files or shell tools")
-        self.retained_note(
-            "Type / for commands, /theme-preview for a sample response, /help for keys."
-        )
-        self.print()
 
     @recorded
     def syntax_gallery(self) -> None:

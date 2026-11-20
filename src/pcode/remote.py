@@ -393,9 +393,12 @@ class RemoteController:
         self.state = state
         self.model = state.get("model")
         self.workspace = Path(state.get("workspace") or self.workspace)
+        was_pending = self.startup_pending
         self.startup_pending = bool(state.get("startup_pending"))
         error = state.get("startup_error")
         self.startup_error = HostError(error) if error else None
+        if was_pending and not self.startup_pending:
+            self.activity.finish_startup(ok=self.startup_error is None)
         self.arguments = state.get("arguments") or {}
         self.skill_command_names = list(state.get("skills") or ())
         self.save_sessions = bool(state.get("saving"))
