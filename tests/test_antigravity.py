@@ -3376,6 +3376,8 @@ def test_session_new_appends_pcode_system_prompt_when_advertised(fake_agy, tmp_p
     full_append = new_calls[1]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
     assert PCODE_CLIENT_INSTRUCTIONS in full_append
     assert "mcp_pcode_delegate_task" in full_append
+    assert "invoke_subagent" in full_append
+    assert "task panel" in full_append
     assert "openai:gpt-5" in full_append
     assert "edit_file" not in full_append
 

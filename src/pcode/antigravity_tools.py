@@ -95,16 +95,20 @@ NO_TURN = "pcode runs this only during one of its turns, and none is running now
 # to enter `begin_turn()` before rejecting with NO_TURN.
 WAKE_TURN_WAIT = 2.0
 INTRO = (
-    "Runs a pcode sub-agent in this workspace (or an isolated worktree) and returns its report. "
+    "Preferred over `invoke_subagent`: runs a pcode sub-agent in this workspace (or an "
+    "isolated worktree), streaming its progress live in the user's task panel and `/agents`. "
     "Omit `model` to use the session's current model, or pass another provider:model (such as "
-    "Claude or OpenAI). For long-running tasks (over ~2 minutes), pass "
-    "`run_in_background=True`.\n\n"
+    "Claude or OpenAI). Set `purpose` and pass `run_in_background=True` for parallel or "
+    "long-running tasks (over ~2 minutes).\n\n"
 )
 DELEGATION_PROMPT_NOTE = (
-    "Use `mcp_pcode_delegate_task` (with `mcp_pcode_manage_worker` and "
-    "`mcp_pcode_task_worktree`) to delegate to another provider:model (such as Claude or "
-    "OpenAI) or into an isolated git worktree; pass `run_in_background=True` for tasks "
-    "over ~2 minutes."
+    "Always use `mcp_pcode_delegate_task` (with `mcp_pcode_manage_worker` and "
+    "`mcp_pcode_task_worktree`) instead of `invoke_subagent` for sub-agent delegation "
+    "(omit `model` to use the session's current model, or pass another `provider:model` "
+    "or `workspace_mode='isolated'`). Unlike `invoke_subagent`, pcode shows "
+    "`mcp_pcode_delegate_task` sub-agents live in the user's task panel and `/agents` "
+    "and keeps the turn active while they run; set `purpose` and pass "
+    "`run_in_background=True` for parallel or long-running tasks (over ~2 minutes)."
 )
 
 
