@@ -568,7 +568,9 @@ class SideModel:
     settings: dict | None
 
 
-def side_model(name: str, effort: str = "") -> SideModel:
+def side_model(
+    name: str, effort: str = "", *, allow_antigravity: bool = False, side: bool = False
+) -> SideModel:
     """Resolve `name` now, failing with a clear message rather than on first request.
 
     The settings are the ones the model would get as the conversation's model:
@@ -582,9 +584,23 @@ def side_model(name: str, effort: str = "") -> SideModel:
     from pcode.preferences import effort_for
 
     if name.startswith("antigravity:"):
-        from pcode.antigravity import SIDE_REFUSAL
+        if not allow_antigravity:
+            from pcode.antigravity import SIDE_REFUSAL
 
-        raise ValueError(f"Cannot use {name}: {SIDE_REFUSAL}")
+            raise ValueError(f"Cannot use {name}: {SIDE_REFUSAL}")
+        from pcode.antigravity import antigravity_model
+
+        try:
+            resolved = antigravity_model(name, side=side)
+        except ValueError as error:
+            raise ValueError(f"Cannot use {name}: {error}") from error
+        from pcode.openai_region import track
+
+        return SideModel(
+            name,
+            track(resolved),
+            with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
+        )
     try:
         resolved = resolve_model(name)
         if isinstance(resolved, str):

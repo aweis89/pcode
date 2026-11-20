@@ -321,11 +321,14 @@ consequences:
   running, so a background Antigravity sub-agent can't start one after the
   turn ends.
 - **Each prompt you send is one Antigravity turn.** pcode never prompts it on
-  its own, so it can't answer `/btw` questions, act as an advisor or a
-  delegate, or be summarized by `/compact`. Antigravity compacts its own
-  context. Pick another model for those. Switching to it with `/model` while
-  another model's turn is still running fails that turn's next step; send a
-  new prompt instead. `/continue` without a message is refused for the same
+  its own, so it can't act as an advisor or a delegate, or be summarized by
+  `/compact` (Antigravity compacts its own context). Pick another model for
+  those. `/btw` side questions do work: each thread runs in its own `agy acp`
+  session (without delegation tools) with the conversation replayed as context,
+  so it can run alongside an active turn without touching the main session, and
+  follow-ups continue that side session. Switching to Antigravity with `/model`
+  while another model's turn is still running fails that turn's next step; send
+  a new prompt instead. `/continue` without a message is refused for the same
   reason.
 - **Antigravity runs without asking,** as pcode's own tools do. pcode starts
   it with `--dangerously-skip-permissions`, since otherwise a background

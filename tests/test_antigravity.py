@@ -922,19 +922,149 @@ def test_replay_text_lists_turns_and_tool_calls():
 def test_side_uses_are_refused():
     from pcode.agent import side_model
     from pcode.compaction import CompactionError, summarize
+    from pcode.live import AgentRuntime
 
-    with pytest.raises(ValueError, match="only as the conversation's model"):
+    with pytest.raises(ValueError, match="prompts you send"):
         side_model("antigravity:fake-high")
     with pytest.raises(CompactionError, match="compacts its own context"):
         asyncio.run(summarize([], model=AntigravityModel("fake-high")))
+    runtime = AgentRuntime(Agent(AntigravityModel("fake-high")))
+    with pytest.raises(ValueError, match="prompts you send"):
+        asyncio.run(runtime.aside("what changed?", user_initiated=False))
 
 
-def test_side_questions_on_the_conversation_model_are_refused():
+def test_btw_runs_in_separate_session_with_replay_and_reuses_for_follow_up(fake_agy, tmp_path):
+    from pcode.antigravity import SIDE_REPLAY_INTRO
     from pcode.live import AgentRuntime
 
-    runtime = AgentRuntime(Agent(AntigravityModel("fake-high")))
-    with pytest.raises(ValueError, match="only as the conversation's model"):
-        asyncio.run(runtime.aside("what changed?"))
+    async def go():
+        runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
+        _ = [event async for event in runtime.stream("main task")]
+        reports: list[tuple[str, str]] = []
+        first = await runtime.aside("why?", report=lambda ans, act: reports.append((ans, act)))
+        follow = await runtime.aside("more?", after=first)
+        # Main conversation continues on its own session, untouched by /btw.
+        _ = [event async for event in runtime.stream("next main")]
+        return first, follow, reports
+
+    first, follow, reports = run(go())
+    assert "Question: why?" in first.answer
+    assert "Question: more?" in follow.answer
+    # Native tool call from fake_agy surfaced in the side question's activity.
+    assert any("a.txt" in act for _, act in reports)
+    # Two sessions: s-1 for main (with pcode delegation MCP), s-2 for /btw (no MCP).
+    new_sessions = fake_agy("session/new")
+    assert len(new_sessions) == 2
+    assert [s["name"] for s in new_sessions[0]["params"]["mcpServers"]] == ["pcode"]
+    assert new_sessions[1]["params"]["mcpServers"] == []
+    # Never resumed s-1 for the side question.
+    assert fake_agy("session/resume") == []
+    sent = fake_agy("session/prompt")
+    # 0: main task (s-1), 1: /btw first (s-2, replayed), 2: /btw follow-up (s-2, no replay),
+    # 3: next main (s-1, no replay).
+    assert [e["params"]["sessionId"] for e in sent] == ["s-1", "s-2", "s-2", "s-1"]
+    side_first_prompt = sent[1]["params"]["prompt"]
+    assert len(side_first_prompt) == 2
+    assert SIDE_REPLAY_INTRO in side_first_prompt[0]["text"]
+    assert "[User]\nmain task" in side_first_prompt[0]["text"]
+    assert "Question: why?" in side_first_prompt[1]["text"]
+    # Follow-up reused s-2 directly without replaying.
+    assert len(sent[2]["params"]["prompt"]) == 1
+    assert "Question: more?" in sent[2]["params"]["prompt"][0]["text"]
+    # Main turn 2 reused s-1 directly without replaying.
+    assert sent[3]["params"]["prompt"] == [{"type": "text", "text": "next main"}]
+
+
+def test_btw_runs_in_parallel_while_main_turn_is_in_flight(fake_agy, tmp_path):
+    from pcode.live import AgentRuntime
+
+    async def go():
+        runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
+        stream = runtime.stream("SLOW")
+        # Consume until the slow main turn is actively streaming (holding its lock).
+        async for event in stream:
+            if getattr(event, "text", None):
+                break
+        side = await runtime.aside("what is running?")
+        await stream.aclose()
+        return side
+
+    side = run(go())
+    assert "Question: what is running?" in side.answer
+    sent = fake_agy("session/prompt")
+    assert [e["params"]["sessionId"] for e in sent] == ["s-1", "s-2"]
+    side_prompt = sent[1]["params"]["prompt"]
+    # The in-flight main prompt ("SLOW") is in the replayed transcript, not the side prompt.
+    assert len(side_prompt) == 2
+    assert "[User]\nSLOW" in side_prompt[0]["text"]
+    assert "SLOW" not in side_prompt[1]["text"]
+    assert "Question: what is running?" in side_prompt[1]["text"]
+
+
+def test_btw_explicit_antigravity_model_handles_mid_tool_loop_context(fake_agy, tmp_path):
+    from pydantic_ai.models.function import FunctionModel
+
+    from pcode.agent import side_model
+    from pcode.live import AgentRuntime
+
+    async def dummy(messages, info):
+        yield "ok"
+
+    async def go():
+        runtime = AgentRuntime(
+            Agent(
+                FunctionModel(stream_function=dummy),
+                model_settings={CWD_SETTING: str(tmp_path)},
+            )
+        )
+        runtime.context_history = [
+            ModelRequest(parts=[UserPromptPart("fix bug")]),
+            ModelResponse(parts=[ToolCallPart("read_file", {"path": "x.py"}, "c1")]),
+            ModelRequest(parts=[ToolReturnPart("read_file", "print(1)", "c1")]),
+        ]
+        chosen = side_model("antigravity:fake-low", allow_antigravity=True, side=True)
+        return await runtime.aside("is x.py right?", model=chosen)
+
+    reply = run(go())
+    assert "Question: is x.py right?" in reply.answer
+    assert fake_agy("session/set_model")[0]["params"]["modelId"] == "fake-low"
+    side_prompt = prompts(fake_agy)[0]
+    assert len(side_prompt) == 2
+    assert "[read_file returned: print(1)]" in side_prompt[0]["text"]
+    assert "Question: is x.py right?" in side_prompt[1]["text"]
+
+
+def test_btw_retires_side_process_on_failure_close_and_summarize(fake_agy, tmp_path):
+    from pcode.agent import side_model
+    from pcode.aside import Asides, SideReply
+    from pcode.live import AgentRuntime
+
+    async def go():
+        runtime = AgentRuntime(agent_for(AntigravityModel("fake-high"), tmp_path))
+        # Explicit $antigravity: model that fails mid-turn retires its connection.
+        chosen = side_model("antigravity:fake-low", allow_antigravity=True, side=True)
+        with pytest.raises(AntigravityError):
+            await runtime.aside("CRASH", model=chosen)
+        await asyncio.gather(*list(antigravity._background), return_exceptions=True)
+        assert len(antigravity._connections) == 0
+
+        # Live thread retired on Asides.close().
+        asides = Asides()
+        aside = asides.start("ok?", lambda _: runtime.aside("ok?"))
+        await asides._tasks[aside.id]
+        assert len(antigravity._connections) == 1
+        await asides.close()
+        await asyncio.gather(*list(antigravity._background), return_exceptions=True)
+        assert len(antigravity._connections) == 0
+
+        # Summarizing a restored thread (reply.model is None) retires its fresh side model.
+        restored = SideReply(answer="ans", messages=[ModelRequest(parts=[UserPromptPart("hi")])])
+        summary = await runtime.summarize_aside(restored)
+        assert "do not use tools." in summary
+        await asyncio.gather(*list(antigravity._background), return_exceptions=True)
+        assert len(antigravity._connections) == 0
+
+    run(go())
 
 
 def test_provider_shows_when_agy_is_installed(monkeypatch, tmp_path):
@@ -1064,7 +1194,12 @@ def test_usage_update_records_context_window_and_caches_it(fake_agy, tmp_path):
     result = run(agent_for(model, tmp_path).run("hello"))
     assert context_window(model) == 1_048_576
     assert context_window("antigravity:fake-low") == 1_048_576
-    assert context_label(model, result.all_messages()) == " · 13/1.05m"
+    # Billing usage keeps the prompt reply total (13), while the footer context
+    # meter uses ACP `usage_update.used` (42) rather than the multi-call sum.
+    response = result.all_messages()[-1]
+    assert response.usage.input_tokens == 13
+    assert response.provider_details["context_used"] == 42
+    assert context_label(model, result.all_messages()) == " · 42/1.05m"
 
     # A fresh model instance (as after a restart) reloads the cached window from disk.
     antigravity._windows_loaded_path = None

@@ -3255,7 +3255,7 @@ class SessionController:
             # every later /rename, and a host's idle stop, for good.
             async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
                 # Sent as it is: the side question framing would ask for an answer.
-                reply = await self.runtime.aside(RENAME_REQUEST, framing=str)
+                reply = await self.runtime.aside(RENAME_REQUEST, framing=str, user_initiated=False)
         except Exception as error:  # noqa: BLE001 - nobody else is waiting to report it.
             # The warning is redacted as a turn's is, so the frames go where a turn's do.
             agent = getattr(self.runtime, "agent", None)
@@ -3727,7 +3727,9 @@ class SessionController:
             return follows.reply
         messages = await self.runtime.side_history(follows.id)
         chosen = (
-            await self.target_options(SideTarget(follows.model, follows.effort))
+            await self.target_options(
+                SideTarget(follows.model, follows.effort), allow_antigravity=True, side=True
+            )
             if follows.model or follows.effort
             else {}
         )
@@ -3784,7 +3786,9 @@ class SessionController:
         if effort_setting(name, resolved) is None:
             raise ValueError(effort_unavailable(name))
 
-    async def target_options(self, target: SideTarget) -> dict:
+    async def target_options(
+        self, target: SideTarget, *, allow_antigravity: bool = False, side: bool = False
+    ) -> dict:
         """How a run asks `target`: `AgentRuntime.aside`/`stream` keyword arguments.
 
         Another model is resolved now, so a bad name fails before anything is
@@ -3795,7 +3799,17 @@ class SessionController:
         from pcode.agent import side_model, with_effort
 
         if target.model not in ("", self.model):
-            return {"model": await asyncio.to_thread(side_model, target.model, target.effort)}
+            if allow_antigravity and target.model.startswith("antigravity:"):
+                resolved = await asyncio.to_thread(
+                    side_model,
+                    target.model,
+                    target.effort,
+                    allow_antigravity=True,
+                    side=side,
+                )
+            else:
+                resolved = await asyncio.to_thread(side_model, target.model, target.effort)
+            return {"model": resolved}
         if not target.effort:
             return {}
         agent = self.runtime.agent
@@ -3814,7 +3828,10 @@ class SessionController:
         """
         models = models or [SideTarget()]
         others = [target for target in models if target.model not in ("", self.model)]
-        options = [await self.target_options(target) for target in models]
+        options = [
+            await self.target_options(target, allow_antigravity=True, side=True)
+            for target in models
+        ]
         labels = model_labels(models)
         tree = getattr(self.runtime, "tree", None)
         for target, chosen in zip(models, options):
@@ -3857,15 +3874,31 @@ class SessionController:
         """
 
         async def work(aside):
+            from pcode.aside import retire_reply
+
             def report(answer: str, activity: str) -> None:
                 self.asides.update(aside, answer=answer, activity=activity)
 
             chosen = options
+            temporary_after = None
             if follows is not None:
-                chosen = {**chosen, "after": await self.side_reply(follows)}
+                restored = follows.reply is None
+                after_reply = await self.side_reply(follows)
+                if restored:
+                    temporary_after = after_reply
+                chosen = {**chosen, "after": after_reply}
             if target is not None:
-                chosen = {**chosen, **await self.target_options(target)}
-            return await self.runtime.aside(question, report=report, **chosen)
+                chosen = {
+                    **chosen,
+                    **await self.target_options(target, allow_antigravity=True, side=True),
+                }
+            try:
+                result = await self.runtime.aside(question, report=report, **chosen)
+            except BaseException:
+                retire_reply(temporary_after)
+                raise
+            retire_reply(temporary_after, keep=result)
+            return result
 
         return work
 
@@ -3991,11 +4024,18 @@ class SessionController:
         starts one when the session is idle, so the model acts on it without
         the user having to say so.
         """
+        from pcode.aside import retire_reply
+
         asked = self.asides.thread(follows.thread)
         with self.activity.waiting("Summarizing side thread"):
+            restored = follows.reply is None
             reply = await self.side_reply(follows)
-            questions = [aside.question for aside, _ in exchanges(asked, reply.messages)]
-            summary = await self.runtime.summarize_aside(reply, instructions)
+            try:
+                questions = [aside.question for aside, _ in exchanges(asked, reply.messages)]
+                summary = await self.runtime.summarize_aside(reply, instructions)
+            finally:
+                if restored:
+                    retire_reply(reply)
             # Its node may still be on its way to the journal, where the mark goes.
             await self.side_records_settled()
         try:

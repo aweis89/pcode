@@ -115,9 +115,11 @@ def call_mcp(server, name, arguments, cancel_after=None):
 def prompt(request):
     params = request["params"]
     session = params["sessionId"]
-    text = " ".join(b.get("text", "") for b in params["prompt"] if b.get("type") == "text")
-    if text.startswith("MCP "):
-        call = json.loads(text[4:])
+    blocks = [b.get("text", "") for b in params["prompt"] if b.get("type") == "text"]
+    text = " ".join(blocks)
+    trigger = blocks[-1] if blocks else ""
+    if trigger.startswith("MCP "):
+        call = json.loads(trigger[4:])
         result = call_mcp(
             servers[session][0], call["name"], call["arguments"], call.get("cancel_after")
         )
@@ -127,12 +129,12 @@ def prompt(request):
         send({"jsonrpc": "2.0", "id": request["id"], "result": result})
         running.remove(request["id"])
         return
-    if "AUTH" in text:
+    if "AUTH" in trigger:
         error = {"code": -32000, "message": "Authentication required"}
         send({"jsonrpc": "2.0", "id": request["id"], "error": error})
         running.remove(request["id"])
         return
-    if "SLOW" in text:
+    if "SLOW" in trigger:
         chunk(session, "agent_message_chunk", "working")
         for _ in range(1000):
             if cancelled.is_set() or request["id"] in superseded:
@@ -146,17 +148,17 @@ def prompt(request):
         send({"jsonrpc": "2.0", "id": request["id"], "result": result})
         running.remove(request["id"])
         return
-    if "BADLINE" in text:
+    if "BADLINE" in trigger:
         with lock:
             sys.stdout.write('not json\n[1]\n{"id": [1]}\n{"method": "session/update"}\n')
             sys.stdout.flush()
-    if "CRASH" in text:
+    if "CRASH" in trigger:
         chunk(session, "agent_message_chunk", "about to fail")
         sys.stdout.flush()
         os._exit(3)
-    if "BGCMD" in text or "BGDAEMON" in text or "BGSCHED" in text or "BGHANG" in text:
-        is_daemon = "BGDAEMON" in text
-        is_sched = "BGSCHED" in text
+    if "BGCMD" in trigger or "BGDAEMON" in trigger or "BGSCHED" in trigger or "BGHANG" in trigger:
+        is_daemon = "BGDAEMON" in trigger
+        is_sched = "BGSCHED" in trigger
         call = (
             {
                 "toolCallId": "bg-1",

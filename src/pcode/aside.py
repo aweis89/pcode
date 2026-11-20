@@ -400,6 +400,19 @@ class Aside:
         return f"{self.status} {self.elapsed:.0f}s"
 
 
+def retire_reply(reply: SideReply | None, *, keep: SideReply | None = None) -> None:
+    """Stop a side model's background process (e.g. `agy acp`) when no longer needed."""
+    side = getattr(reply, "model", None)
+    model = getattr(side, "model", None)
+    retire = getattr(model, "retire", None)
+    if retire is None:
+        return
+    kept = getattr(getattr(keep, "model", None), "model", None)
+    if kept is model:
+        return
+    retire()
+
+
 class Asides:
     """Every side question this session asked, oldest first.
 
@@ -520,6 +533,9 @@ class Asides:
             if excess <= 0:
                 break
             if not any(aside.running for aside in asked):
+                for dropped in asked:
+                    retire_reply(dropped.reply)
+                    dropped.reply = None
                 # In place: the live panel shares this list.
                 self.items[:] = [aside for aside in self.items if aside.thread != asked[0].thread]
                 excess -= 1
@@ -537,6 +553,9 @@ class Asides:
         tasks = list(self._tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for aside in self.items:
+            retire_reply(aside.reply)
+            aside.reply = None
 
     def update(self, aside: Aside, *, answer: str, activity: str) -> None:
         aside.answer = answer
@@ -564,6 +583,7 @@ class Asides:
                 # would only hold another copy of the conversation.
                 for older in self.thread(aside.thread):
                     if older is not aside:
+                        retire_reply(older.reply, keep=reply)
                         older.reply = None
         finally:
             self._tasks.pop(aside.id, None)

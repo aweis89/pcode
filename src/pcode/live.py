@@ -31,6 +31,8 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.models.anthropic import AnthropicStaleThinkingBlockWarning
@@ -477,6 +479,7 @@ class AgentRuntime:
         after: SideReply | None = None,
         fresh: bool = False,
         framing: Callable[[str], str] | None = None,
+        user_initiated: bool = True,
     ) -> SideReply:
         """Answer `question` beside the conversation, recording nothing.
 
@@ -528,10 +531,25 @@ class AgentRuntime:
             agent = agent if after.agent is None else after.agent
             model = after.model
             settings = after.settings
-        if model is None and getattr(agent.model, "system", None) == "antigravity":
-            from pcode.antigravity import SIDE_REFUSAL
+        target_model = model.model if model is not None else agent.model
+        created_side_model = None
+        if getattr(target_model, "system", None) == "antigravity":
+            from pcode.antigravity import SIDE_REFUSAL, AntigravityModel
 
-            raise ValueError(SIDE_REFUSAL)
+            if not user_initiated:
+                raise ValueError(SIDE_REFUSAL)
+            # Never share the main conversation's AntigravityModel: its lock is
+            # held mid-turn and its session would be polluted by the side chat.
+            if model is None:
+                created_side_model = AntigravityModel(target_model.model_name, side=True)
+                model = SideModel(
+                    f"antigravity:{target_model.model_name}",
+                    created_side_model,
+                    settings if settings is not None else agent.model_settings,
+                )
+            elif not getattr(target_model, "_side", False):
+                created_side_model = AntigravityModel(target_model.model_name, side=True)
+                model = SideModel(model.name, created_side_model, model.settings)
         if after is not None:
             messages = list(after.messages)
         else:
@@ -559,25 +577,34 @@ class AgentRuntime:
         if inherit:
             # A follow-up belongs to its thread's session, not a fresh one.
             conversation_id = after.conversation_id
-        with override:
-            async with (
-                agent,
-                model.model if model is not None else nullcontext(),
-                worker_toolsets([self.mcp.live()]),
-                enabled_servers(self.mcp.servers, self.mcp.unavailable),
-                agent.run_stream_events(
-                    None if joined else pending.pop(),
-                    message_history=_for_run(messages),
-                    workspace=self._run_workspace(agent),
-                    toolsets=[self.mcp.live()],
-                    conversation_id=conversation_id,
-                    capabilities=capabilities,
-                    # Explicit: left out, the library's 50-request default applies.
-                    usage_limits=UsageLimits(request_limit=None),
-                    **other,
-                ) as events,
-            ):
-                answer, messages = await self._aside_answer(events, report)
+        try:
+            with override:
+                async with (
+                    agent,
+                    model.model if model is not None else nullcontext(),
+                    worker_toolsets([self.mcp.live()]),
+                    enabled_servers(self.mcp.servers, self.mcp.unavailable),
+                    agent.run_stream_events(
+                        None if joined else pending.pop(),
+                        message_history=_for_run(messages),
+                        workspace=self._run_workspace(agent),
+                        toolsets=[self.mcp.live()],
+                        conversation_id=conversation_id,
+                        capabilities=capabilities,
+                        # Explicit: left out, the library's 50-request default applies.
+                        usage_limits=UsageLimits(request_limit=None),
+                        **other,
+                    ) as events,
+                ):
+                    answer, messages = await self._aside_answer(events, report)
+        except BaseException:
+            if created_side_model is not None:
+                created_side_model.retire()
+            elif not inherit and model is not None:
+                retire = getattr(model.model, "retire", None)
+                if callable(retire):
+                    retire()
+            raise
         return SideReply(
             answer=answer,
             messages=messages,
@@ -627,6 +654,17 @@ class AgentRuntime:
                 if event.part.content:
                     blocks.append(event.part.content)
                 partial = ""
+            elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolCallPart):
+                try:
+                    args = event.part.args_as_dict()
+                except ValueError, TypeError:
+                    args = {}
+                where = target(event.part.tool_name, args)
+                tools[event.part.tool_call_id] = event.part.tool_name
+                activity = label(event.part.tool_name) + (f" · {where}" if where else "")
+            elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolReturnPart):
+                tools.pop(event.part.tool_call_id, None)
+                activity = "Waiting for model…" if not tools else activity
             elif isinstance(event, FunctionToolCallEvent):
                 try:
                     args = event.part.args_as_dict()
@@ -774,9 +812,10 @@ class AgentRuntime:
         conversation, so it can run beside a turn; the caller sends the
         summary on as a message.
         """
-        from pcode.aside import framed_summary
+        from pcode.aside import framed_summary, retire_reply
 
         summary = await self.aside(instructions, report=report, after=reply, framing=framed_summary)
+        retire_reply(summary, keep=reply)
         return summary.answer
 
     def _open_session(self) -> SavedSession | None:

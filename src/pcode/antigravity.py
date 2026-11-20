@@ -10,9 +10,11 @@ response. (Delegation alone is offered the ACP way, as an MCP server
 Antigravity's own loop may call: see `pcode.antigravity_tools`.) A request that
 doesn't end in the user's own prompt (tool results after a mid-turn `/model`
 switch, a bare continuation) is refused rather than sent: pcode must never
-prompt Antigravity on its own. For the same reason `antigravity:` cannot be a
-side model, a delegation target, or a compaction summarizer (see `side_model`,
-`AgentRuntime.aside` and `compaction`).
+prompt Antigravity on its own. For the same reason `antigravity:` cannot be an
+advisor, a delegation target, or a compaction summarizer (see `side_model` and
+`compaction`). User-initiated `/btw` side questions are allowed: each runs in
+its own `agy acp` session (`side=True`, with no delegation tools) replaying the
+conversation as context, so it never blocks or pollutes the main session.
 
 One `agy acp` process serves one conversation. Each response is stamped
 `<session ID>#<turn>`, and a ledger in pcode's state directory records each
@@ -69,8 +71,9 @@ PROTOCOL_VERSION = 1
 SCRUBBED_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
 SCRUBBED_PREFIXES = ("GOOGLE_CLOUD_", "GOOGLE_GENAI_", "GOOGLE_VERTEX_", "GOOGLE_GEMINI_")
 SIDE_REFUSAL = (
-    "Antigravity runs only as the conversation's model, prompted by you: "
-    "it can't answer side questions, summaries or delegated work. Pick another model for those."
+    "Antigravity runs only for prompts you send (the conversation or /btw): "
+    "it can't be an advisor, a compaction summarizer, or a delegated worker. "
+    "Pick another model for those."
 )
 OWN_PROMPTS_ONLY = (
     "Antigravity only answers prompts you send: it can't take over a turn already "
@@ -81,6 +84,11 @@ LOGIN_HINT = "Sign in once by running `agy` (or `agy acp --login`) in a terminal
 REPLAY_INTRO = (
     "This conversation started elsewhere; its earlier messages are replayed below as a "
     "transcript. Treat them as having happened and continue from the final message."
+)
+SIDE_REPLAY_INTRO = (
+    "You are answering a side question beside the main conversation, which may still be "
+    "running in the same workspace. Its transcript so far is below for context; answer "
+    "only the side question that follows and do not continue or redo the main task."
 )
 # How long a cancelled turn may take to report that it stopped.
 CANCEL_GRACE = 10.0
@@ -524,9 +532,10 @@ def _parse_stamp(response: ModelResponse) -> tuple[str, int] | None:
 class AntigravityModel(Model):
     """See the module docstring. One instance serves one conversation."""
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, *, side: bool = False) -> None:
         super().__init__()
         self._model_name = model_name
+        self._side = side
         self._session: _Session | None = None
         self._lock = asyncio.Lock()
         # Shows what Antigravity says between turns; set by the runtime.
@@ -536,7 +545,8 @@ class AntigravityModel(Model):
         from pcode.antigravity_tools import ToolBridge
 
         # pcode's delegation, which Antigravity may call (see antigravity_tools).
-        self.tools = ToolBridge(notify=self._show)
+        # Side questions never get delegation tools.
+        self.tools = None if side else ToolBridge(notify=self._show)
 
     def _usage_update(self, update: dict) -> None:
         from pcode.model_metadata import positive_int, record_context_window
@@ -597,7 +607,8 @@ class AntigravityModel(Model):
             async def retire() -> None:
                 async with self._lock:
                     await self._drop()
-                    await self.tools.close()
+                    if self.tools is not None:
+                        await self.tools.close()
 
             # What this conversation's agy said after its last turn must not
             # land in whichever conversation the view shows next.
@@ -633,7 +644,7 @@ class AntigravityModel(Model):
         from pcode.claude_sdk.workspace import CWD_SETTING
 
         # Before the lock or a process: a refusal must cost nothing.
-        prompt, interrupted = user_prompt(messages)
+        prompt, interrupted = user_prompt(messages, side=self._side)
         # Anything said since the last turn shows before this one starts.
         self._flush_idle()
         earlier = messages[:-1]
@@ -643,7 +654,8 @@ class AntigravityModel(Model):
         await self._lock.acquire()
         handed_off = False
         # Set first: a new session lists the tools as this turn has them.
-        self.tools.begin_turn(run_context)
+        if self.tools is not None:
+            self.tools.begin_turn(run_context)
         try:
             session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
             stream = AntigravityStream(
@@ -672,11 +684,13 @@ class AntigravityModel(Model):
                 elif stream.broken:
                     await asyncio.shield(self._drop())
         finally:
-            self.tools.cancel_calls()
+            if self.tools is not None:
+                self.tools.cancel_calls()
             if not handed_off:
                 try:
                     # The next prompt waits for a cancelled worker's cleanup.
-                    await asyncio.shield(self.tools.drained())
+                    if self.tools is not None:
+                        await asyncio.shield(self.tools.drained())
                 finally:
                     self._lock.release()
 
@@ -688,7 +702,8 @@ class AntigravityModel(Model):
             await self._drop()
         finally:
             try:
-                await self.tools.drained()
+                if self.tools is not None:
+                    await self.tools.drained()
             finally:
                 self._lock.release()
 
@@ -728,13 +743,16 @@ class AntigravityModel(Model):
                 return session, []
             await self._drop()
         resumable = (
-            stamp is not None and _all_from(earlier, stamp[0]) and newest_turn(stamp[0]) == stamp[1]
+            not self._side
+            and stamp is not None
+            and _all_from(earlier, stamp[0])
+            and newest_turn(stamp[0]) == stamp[1]
         )
         connection = Connection(cwd)
         _connections.add(connection)
         try:
             await connection.start()
-            servers = await self.tools.servers()
+            servers = await self.tools.servers() if self.tools is not None else []
             result = None
             if resumable:
                 assert stamp is not None
@@ -774,7 +792,12 @@ class AntigravityModel(Model):
         connection.idle = self._idle_update
         turns = stamp[1] if not replay and stamp is not None else 0
         self._session = _Session(connection, session_id, turns)
-        blocks = [{"type": "text", "text": replay_text(earlier)}] if replay and earlier else []
+        intro = SIDE_REPLAY_INTRO if self._side else REPLAY_INTRO
+        blocks = (
+            [{"type": "text", "text": replay_text(earlier, intro=intro)}]
+            if replay and earlier
+            else []
+        )
         return self._session, blocks
 
 
@@ -813,7 +836,7 @@ def _asked_blocks(blocks: list[dict]) -> str:
     return "\n".join(b["text"] for b in blocks if b.get("type") == "text")
 
 
-def user_prompt(messages: list[ModelMessage]) -> tuple[list[dict], list]:
+def user_prompt(messages: list[ModelMessage], *, side: bool = False) -> tuple[list[dict], list]:
     """The user's new prompt as ACP content blocks; refuses anything else.
 
     Only a request carrying the user's own message may reach Antigravity.
@@ -824,19 +847,38 @@ def user_prompt(messages: list[ModelMessage]) -> tuple[list[dict], list]:
     markers (see `live.mark_unanswered`), and Pydantic AI merges the next prompt
     into it. Its parts up to the marker are returned second: they belong to
     the history, not the new prompt.
+
+    For a `/btw` side question (`side=True`), a mid-turn request may hold the
+    in-flight turn's prompt or tool results ahead of the side question's own
+    `UserPromptPart`; those earlier parts are returned second so they join the
+    replayed context rather than the side prompt.
     """
     request = messages[-1] if messages else None
     if not isinstance(request, ModelRequest):
         raise AntigravityError(OWN_PROMPTS_ONLY)
+    markers = _markers()
     marker = max(
         (
             i
             for i, part in enumerate(request.parts)
-            if isinstance(part, UserPromptPart) and part.content in _markers()
+            if isinstance(part, UserPromptPart) and part.content in markers
         ),
         default=-1,
     )
-    interrupted, parts = list(request.parts[: marker + 1]), request.parts[marker + 1 :]
+    if side:
+        last_user = max(
+            (
+                i
+                for i in range(marker + 1, len(request.parts))
+                if isinstance(request.parts[i], UserPromptPart)
+            ),
+            default=-1,
+        )
+        if last_user < 0:
+            raise AntigravityError(OWN_PROMPTS_ONLY)
+        interrupted, parts = list(request.parts[:last_user]), request.parts[last_user:]
+    else:
+        interrupted, parts = list(request.parts[: marker + 1]), request.parts[marker + 1 :]
     if any(isinstance(part, (ToolReturnPart, RetryPromptPart)) for part in parts):
         raise AntigravityError(OWN_PROMPTS_ONLY)
     blocks: list[dict] = []
@@ -875,9 +917,9 @@ def _clip(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + " …"
 
 
-def replay_text(messages: list[ModelMessage]) -> str:
+def replay_text(messages: list[ModelMessage], *, intro: str = REPLAY_INTRO) -> str:
     """Earlier turns as a transcript, for a session that never saw them."""
-    lines = [REPLAY_INTRO, "", "<conversation>"]
+    lines = [intro, "", "<conversation>"]
     for message in messages:
         for part in message.parts:
             if isinstance(part, UserPromptPart):
@@ -1173,7 +1215,12 @@ class AntigravityStream(StreamedResponse):
         stop = result.get("stopReason")
         reasons = {"end_turn": "stop", "max_tokens": "length", "refusal": "content_filter"}
         self.finish_reason = reasons.get(stop, "stop")
-        self.provider_details = {"stop_reason": stop} if stop else None
+        details: dict[str, Any] = {}
+        if stop:
+            details["stop_reason"] = stop
+        if self.context_used is not None:
+            details["context_used"] = self.context_used
+        self.provider_details = details or None
         # Each prompt reports its own usage; a steered turn is all of them.
         total = RequestUsage()
         for reply in self.replies:
@@ -1283,10 +1330,10 @@ class AntigravityStream(StreamedResponse):
         return True
 
 
-def antigravity_model(model: str) -> AntigravityModel:
+def antigravity_model(model: str, *, side: bool = False) -> AntigravityModel:
     name = model.removeprefix(PREFIX).strip()
     if not installed():
         raise ValueError(
             "Antigravity CLI (agy) is not installed: https://antigravity.google/docs/cli/"
         )
-    return AntigravityModel(name)
+    return AntigravityModel(name, side=side)
