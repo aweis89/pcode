@@ -610,26 +610,35 @@ class AntigravityModel(Model):
     def system(self) -> str:
         return SYSTEM
 
-    def retire(self) -> None:
-        """Stop this model's process once any turn on it ends; for a replaced agent."""
-        with contextlib.suppress(RuntimeError):  # No running loop: nothing was started.
+    def _detach_idle(self) -> None:
+        if self._session is not None:
+            self._session.connection.idle = None
+        if self._quiet is not None:
+            self._quiet.cancel()
+            self._quiet = None
+        self._after_turn = []
 
-            async def retire() -> None:
+    def reset(self) -> None:
+        """Drop the live `agy` session for a new conversation, keeping listeners wired."""
+        self._detach_idle()
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop()
+
+            async def drop() -> None:
                 async with self._lock:
                     await self._drop()
                     if self.tools is not None:
                         await self.tools.close()
 
-            # What this conversation's agy said after its last turn must not
-            # land in whichever conversation the view shows next.
-            self.listener = None
-            self.title_listener = None
-            if self._quiet is not None:
-                self._quiet.cancel()
-                self._quiet = None
-            self._after_turn = []
+            _spawn(drop())
 
-            _spawn(retire())
+    def retire(self) -> None:
+        """Stop this model's process once any turn on it ends; for a replaced agent."""
+        # What this conversation's agy said after its last turn must not
+        # land in whichever conversation the view shows next.
+        self.listener = None
+        self.title_listener = None
+        self.reset()
 
     async def request(
         self,
@@ -722,6 +731,7 @@ class AntigravityModel(Model):
     async def _drop(self) -> None:
         session, self._session = self._session, None
         if session is not None:
+            session.connection.idle = None
             await _close(session.connection)
 
     async def _prepare(

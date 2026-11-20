@@ -415,6 +415,9 @@ class AgentRuntime:
         info.cache_write_tokens = self.totals.cache_write
 
     def reset(self) -> None:
+        reset = getattr(self.agent.model, "reset", None)
+        if callable(reset):
+            reset()
         if self.session:
             self.session.close()
             self.session = None

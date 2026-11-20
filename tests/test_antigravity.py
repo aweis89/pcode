@@ -1364,12 +1364,56 @@ def test_session_info_update_after_turn_and_guards(tmp_path):
 
         # retire() clears title_listener on the model.
         assert model.title_listener is not None
-
-        async def retire():
-            model.retire()
-            await asyncio.sleep(0)
-
-        run(retire())
+        model.retire()
         assert model.title_listener is None
     finally:
         saved.close()
+
+
+def test_session_info_update_after_turn_end_to_end_and_reset(fake_agy, tmp_path):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+    from pcode.preferences import save_preferences
+    from pcode.sessions import SavedSession, list_sessions
+    from pcode.ui import TerminalOutput
+
+    save_preferences(session_naming="on")
+    root = tmp_path / "sessions"
+    model = AntigravityModel("fake-low")
+    console = Console(file=StringIO())
+    app = PreviewApp(workspace=tmp_path, session_dir=root, console=console)
+    app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
+    app.model = "antigravity:fake-low"
+    app.runtime = AgentRuntime(
+        agent_for(model, tmp_path),
+        session_factory=lambda: SavedSession.create("antigravity:fake-low", tmp_path, root),
+    )
+
+    async def exercise():
+        await app.controller.run_turn("LATER_TITLE check post-turn naming")
+        # Give the reader a moment to deliver the post-reply session_info_update.
+        for _ in range(100):
+            if app.controller.session_title():
+                break
+            await asyncio.sleep(0.01)
+        assert app.controller.session_title() == "Late idle title"
+        assert list_sessions(root)[0].title == "Late idle title"
+
+        # /new resets the runtime and detaches the old connection's idle handler
+        # immediately, while keeping title_listener wired for the next session.
+        connection = model._session.connection
+        assert connection.idle is not None
+        app.runtime.reset()
+        assert connection.idle is None
+        assert model.title_listener is not None
+
+    try:
+        run(exercise())
+    finally:
+        if app.runtime.session is not None:
+            app.runtime.session.close()
