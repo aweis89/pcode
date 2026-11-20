@@ -15,7 +15,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from scene import Call, Fail, Think, launch
 
 MODEL = "claude:claude-opus-5-5"
-SIZE = (110, 40)
+SIZE = (110, 48)
 ACTIVE = "discount"
 # Holds a running turn on its current step until the scene ends.
 HOLD = "; sleep 600"
