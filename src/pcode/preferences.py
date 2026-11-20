@@ -791,7 +791,7 @@ SETTINGS = {
     ),
     # Edits, plans, shell, and delegation stay native so their transcript display survives.
     "code_mode": Setting(
-        "off",
+        "on",
         ("on", "off"),
         description="Batch read-only tool calls through one sandboxed run_code snippet",
     ),

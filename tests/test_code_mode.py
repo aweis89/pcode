@@ -46,20 +46,22 @@ def tool_names(workspace) -> set[str]:
     return seen
 
 
-def test_code_mode_is_off_by_default(preferences, tmp_path):
+def test_code_mode_is_on_by_default(shipped_code_mode, preferences, tmp_path):
     preferences()
-    names = tool_names(tmp_path)
-    assert "run_code" not in names
-    assert {"read_file", "grep", "list_files"} <= names
-
-
-def test_enabling_code_mode_sandboxes_only_read_only_tools(preferences, tmp_path):
-    preferences(code_mode="on")
     names = tool_names(tmp_path)
     assert "run_code" in names
     assert not set(SANDBOXED_TOOLS) & names
     # Tools whose terminal display is the point keep issuing their own calls.
     assert {"edit_file", "write_file", "shell", "write_plan", "delegate_task"} <= names
+
+
+def test_disabling_code_mode_restores_plain_read_only_tools(
+    shipped_code_mode, preferences, tmp_path
+):
+    preferences(code_mode="off")
+    names = tool_names(tmp_path)
+    assert "run_code" not in names
+    assert {"read_file", "grep", "list_files"} <= names
 
 
 def test_sandboxed_code_calls_the_real_file_tools(preferences, tmp_path):

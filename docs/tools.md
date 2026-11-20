@@ -512,16 +512,16 @@ can tell it to act with your login, and nothing enforces otherwise beyond you
 watching the window. This is the bundled `browser` extension; a user file of the
 same name replaces it.
 
-## Code mode (opt-in)
+## Code mode
 
 [Code mode](https://pydantic.dev/docs/ai/harness/code-mode/) replaces individual
 tool calls with a single sandboxed Python snippet, so the model can fan out
 lookups with `asyncio.gather`, filter results, and return only what matters
-without a model turn per dependent batch.
+without a model turn per dependent batch. It is on by default:
 
 ```sh
-pcode config set code_mode on   # Applies on next launch
-pcode config unset code_mode    # Back to plain tool calling
+pcode config set code_mode off   # Back to plain tool calling (applies on next launch)
+pcode config unset code_mode     # Restore the default (on)
 ```
 
 Only read-only lookups are available inside a snippet: `read_file`,
