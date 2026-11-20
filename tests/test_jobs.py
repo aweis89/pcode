@@ -212,6 +212,55 @@ def test_released_jobs_are_adopted_though_their_owner_lives_on(tmp_path):
     terminal.reset()
 
 
+@pytest.mark.parametrize(
+    ("released_as", "host_session", "adopted"),
+    [
+        ("sess-a", "sess-a", False),  # /detach into this session's own host
+        ("sess-a", "sess-b", True),  # another session's job
+        ("", "sess-a", True),  # a terminal that could not say whose it was
+    ],
+)
+def test_a_session_takes_its_own_released_jobs_back_rather_than_adopting_them(
+    tmp_path, released_as, host_session, adopted
+):
+    """Its own jobs keep its host running and wake it; another's are only carried."""
+    root = tmp_path / "jobs"
+    terminal = JobRegistry(state=lambda: root)
+    terminal._home = root / "99999"  # Another process's, so this one may adopt.
+    terminal.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    terminal.release(released_as)
+    host = JobRegistry(state=lambda: root)
+    host.session = host_session
+    [job] = host.adopt_orphans()
+    assert job.adopted is adopted and job.session == released_as
+    # And a host stamps its own launches, so the next host of the session takes them back.
+    assert host.launch(command("pass"), cwd=tmp_path).record()["session"] == host_session
+    host.reset()
+    terminal.reset()
+
+
+def test_a_detach_does_not_make_a_job_the_terminal_adopted_its_sessions_own(tmp_path):
+    """Else a daemon some other pcode left would hold the host up and wake its model."""
+    root = tmp_path / "jobs"
+    stranger = JobRegistry(state=lambda: root)
+    stranger._home = root / "99998"
+    stranger.launch(command("import time; time.sleep(60)"), cwd=tmp_path)
+    stranger._save()
+    record = stranger._home / "registry.json"
+    record.write_text(json.dumps({**json.loads(record.read_text()), "owner_pid": 2**22 - 1}))
+    terminal = JobRegistry(state=lambda: root)
+    terminal._home = root / "99999"  # Another process's, so the host may adopt from it.
+    [carried] = terminal.adopt_orphans()
+    terminal.release("sess-a")
+    host = JobRegistry(state=lambda: root)
+    host.session = "sess-a"
+    [job] = host.adopt_orphans()
+    assert carried.adopted and job.adopted and job.session == ""
+    host.reset()
+    terminal.reset()
+    stranger.reset()
+
+
 def test_released_jobs_are_reclaimed_when_nobody_adopted_them(tmp_path):
     root = tmp_path / "jobs"
     terminal = JobRegistry(state=lambda: root)

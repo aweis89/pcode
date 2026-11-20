@@ -831,6 +831,62 @@ def test_a_host_says_what_it_is_busy_with(tmp_path, host_dir):
     asyncio.run(run())
 
 
+def _running(runtime, *jobs):
+    """The real registry reporting `jobs` as running, for what `busy_with` asks."""
+    return patch.object(runtime.jobs, "running", lambda: list(jobs))
+
+
+def _job(identity: str, *, adopted: bool):
+    from pcode.jobs import Job
+
+    return Job(identity, "serve", Path("/j"), 1, 0.0, background=True, adopted=adopted)
+
+
+def test_a_job_adopted_from_an_exited_pcode_does_not_keep_a_host_up(tmp_path, host_dir):
+    """It never wakes this session, and stopping leaves it running for the next pcode."""
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        runtime = host.controller.runtime
+        try:
+            with _running(runtime, _job("j7", adopted=True)):
+                assert host.busy_with() == ""
+            with _running(runtime, _job("j7", adopted=True), _job("j8", adopted=False)):
+                assert host.busy_with() == "a background command is running"
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_with_no_terminal_says_what_keeps_it_running(tmp_path, host_dir, capsys):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        runtime = host.controller.runtime
+        try:
+            terminal, _, _ = await attach(host)
+            with _running(runtime, _job("j8", adopted=False)):
+                watcher = asyncio.create_task(host.stop_when_idle(0, every=0.01, grace=0.05))
+                await asyncio.sleep(0.1)
+                assert list_hosts()[0].held == "", "an attached terminal is why it runs"
+                terminal.close()
+                await until(lambda: list_hosts()[0].attached == 0)
+                stamped = list_hosts()[0].updated
+                await until(lambda: list_hosts()[0].held == "a background command is running")
+                assert not host.stopped.is_set()
+                # Published without counting as activity, which /attach ages rows by.
+                assert list_hosts()[0].updated == stamped
+            await asyncio.wait_for(host.stopped.wait(), 5)
+            await watcher
+        finally:
+            await stop_host(host)
+        log = capsys.readouterr().err
+        assert "not stopping: a background command is running" in log
+        assert "nothing holds it now" in log
+
+    asyncio.run(run())
+
+
 def test_a_host_that_never_answers_hello_times_out(host_dir):
     from pcode.remote import _host_peer
 
@@ -1691,6 +1747,11 @@ def test_picker_puts_unseen_sessions_first_and_flags_old_code():
     stopped = HostEntry("stop0000", 1, "m", "/w/f", state="stopped", unseen=True, code="1")
     row = host_row(stopped, None, now=1, code="2")
     assert "✓ new" in row and row.endswith("· stopped")
+    # Running with no terminal and unable to stop itself: the row says why.
+    held = HostEntry("held0000", 1, "m", "/w/g", state="idle", code="2", held="a job")
+    assert host_row(held, None, now=1, code="2").endswith("· held: a job")
+    held.attached = 1
+    assert "held" not in host_row(held, None, now=1, code="2")
 
 
 def test_picker_nests_forks_under_their_original():

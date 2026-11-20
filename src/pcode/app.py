@@ -1656,7 +1656,7 @@ class PreviewApp:
         # jobs while it boots.
         # A title still being asked for would be written beside the host's own.
         await self.controller.stop_naming()
-        released = jobs.release() if jobs is not None else None
+        released = jobs.release(saved.info.id) if jobs is not None else None
         saved.close()
         wait = self.activity.begin_wait("Moving this session to a background host")
         process = None

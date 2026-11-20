@@ -104,6 +104,10 @@ class Job:
     # Inherited from a pcode process that exited while this command ran. The
     # model of this session never launched it, so it is never woken for it.
     adopted: bool = False
+    # The session whose model launched it, when known, so a pcode that picks it
+    # up for that same session (a /detach, a restarted host) takes it back as
+    # its own rather than as adopted.
+    session: str = ""
     # True while a tool call is blocking on this job. The terminal uses it to
     # tell "in the background" from "what the live row already shows".
     waiting: bool = False
@@ -158,6 +162,7 @@ class Job:
             "supervisor_pid": self.supervisor_pid,
             "started_at": self.started_at,
             "purpose": self.purpose,
+            "session": self.session,
         }
 
 
@@ -190,6 +195,9 @@ class JobRegistry:
         # Bumped by `release_waits`. A wait that sees it change hands back a
         # handle instead of blocking on to its timeout.
         self.release_generation = 0
+        # The one session this process runs, set by a session host; "" where a
+        # terminal may switch conversations. Stamped on each job it launches.
+        self.session = ""
 
     def launch(
         self,
@@ -233,6 +241,7 @@ class JobRegistry:
             started_at=time.time(),
             background=background,
             purpose=" ".join(purpose.split()),
+            session=self.session,
         )
         self.jobs[job.id] = job
         self._save()
@@ -257,16 +266,21 @@ class JobRegistry:
         if home is not None:
             _publish(home, os.getpid(), self.jobs)
 
-    def release(self) -> "Released | None":
+    def release(self, session: str = "") -> "Released | None":
         """Let the next pcode to start adopt the running jobs, though this process lives on.
 
         For a session moving into a session host: a living owner's jobs are
         never adopted, so they would otherwise stay with this terminal, out of
-        the session's sight. None when nothing is running.
+        the session's sight. Jobs not yet tagged are tagged `session`, so that
+        session's host takes them back as its own. None when nothing is running.
         """
         self.shutdown()
         if self._home is None or not self.jobs:
             return None
+        for job in self.jobs.values():
+            # Not one this terminal adopted itself: that stays a stranger's.
+            if not job.adopted:
+                job.session = job.session or session
         released = Released(self._home, self.jobs)
         _publish(self._home, None, self.jobs)
         self.jobs, self._home = {}, None
@@ -356,6 +370,7 @@ class JobRegistry:
             return None
         if not directory.is_dir() or not _alive(supervisor_pid):
             return None
+        session = str(entry.get("session") or "")
         counter = self._counter
         number = identity[1:] if identity.startswith("j") else ""
         if number.isdigit() and identity not in self.jobs:
@@ -373,7 +388,9 @@ class JobRegistry:
             # Nothing here is waiting on it, which is what background means.
             background=True,
             purpose=str(entry.get("purpose") or ""),
-            adopted=True,
+            # This session's own, handed over by a /detach or a host that stopped.
+            adopted=not session or session != self.session,
+            session=session,
         )
         status = self._read_status(job)
         if status is not None:

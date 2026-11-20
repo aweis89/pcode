@@ -43,6 +43,7 @@ from pcode.host_protocol import (
     socket_path,
     write_entry,
 )
+from pcode.jobs import registry as job_registry
 from pcode.rpc import Peer
 from pcode.runtime import CommandOutput, EditPreview, TextDelta, ThinkingDelta
 from pcode.ui import Activity
@@ -649,9 +650,19 @@ class SessionHost:
         if session is not None and session.info.id != self.entry.session_id:
             self.update(session_id=session.info.id, forked_from=session.info.forked_from or "")
             forget_stopped(session.info.id, self.directory)
+            self.own_jobs()
         # /attach lists the session by its name once it has one, not its first prompt.
         if (title := state.get("session_title")) and title != self.entry.title:
             self.update(title=title)
+
+    def own_jobs(self) -> None:
+        """Tag the jobs this host launches with its session, and take back that session's.
+
+        Jobs a /detach or an earlier host of this session left running are this
+        conversation's, not adopted strangers: they keep the host up and wake it.
+        """
+        jobs = getattr(self.controller.runtime, "jobs", None)
+        (job_registry() if jobs is None else jobs).session = self.entry.session_id
 
     # The entry other terminals read
 
@@ -713,8 +724,14 @@ class SessionHost:
         work = (
             (self.busy, "a turn or command is running"),
             (not controller.command_idle.is_set(), "a command is running"),
-            # A job outlives its host, but its finish would wake nobody.
-            (jobs is not None and jobs.running(), "a background command is running"),
+            # A job outlives its host, but its finish would wake nobody. Not one
+            # adopted from an exited pcode: it never wakes this session, and
+            # stopping leaves it for the next pcode to adopt. Counting it let a
+            # daemon some other session started keep a host up for days.
+            (
+                jobs is not None and any(not job.adopted for job in jobs.running()),
+                "a background command is running",
+            ),
             (controller.startup_pending, "it is starting up"),
             (controller.asides.running, "a side question is running"),
             # A title asked for beside the first turn, or a name /rename asked for, would be lost.
@@ -746,6 +763,7 @@ class SessionHost:
         limit = minutes * 60 if minutes else grace
         while not self.stopped.is_set():
             await asyncio.sleep(every)
+            self.held_by("" if self.clients or self.connections else self.busy_with())
             if not self.idle():
                 self.active_at = time.monotonic()
             elif time.monotonic() - self.active_at >= limit:
@@ -753,6 +771,20 @@ class SessionHost:
                 self.idle_stopped = True
                 self.stop()
                 return
+
+    def held_by(self, reason: str) -> None:
+        """Publish what keeps a host with no terminal from stopping, when it changes.
+
+        A host nobody is attached to is invisible otherwise: /attach shows the
+        reason on its row, and the log keeps when it started and ended.
+        """
+        if reason == self.entry.held:
+            return
+        note = f"not stopping: {reason}" if reason else "nothing holds it now"
+        print(note, file=sys.stderr, flush=True)
+        self.entry.held = reason
+        # Not activity: /attach ages and orders hosts by `updated`.
+        write_entry(self.entry, self.directory, touch=False)
 
     def stop(self) -> None:
         # At once, not in close(): a prompt an attached terminal sends before
@@ -933,6 +965,8 @@ async def _serve(args: argparse.Namespace) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, host.stop)
     print(f"serving {host.socket}", file=sys.stderr, flush=True)
+    # Before boot adopts what an earlier pcode left running.
+    host.own_jobs()
     await host.boot()
     watcher = None
     try:

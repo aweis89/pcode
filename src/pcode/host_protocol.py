@@ -152,6 +152,9 @@ class HostEntry:
     # Terminals showing it now, and whether a turn finished with none watching.
     attached: int = 0
     unseen: bool = False
+    # What keeps it running with no terminal attached ("" for nothing), so a
+    # host that should have stopped itself says why it has not.
+    held: str = ""
     # `code_fingerprint()` when the host started, to spot hosts on older code.
     code: str = ""
 
@@ -206,8 +209,9 @@ def _read(path: Path) -> HostEntry | None:
         return None
 
 
-def write_entry(entry: HostEntry, directory: Path | None = None) -> None:
-    entry.updated = time.time()
+def write_entry(entry: HostEntry, directory: Path | None = None, *, touch: bool = True) -> None:
+    if touch:
+        entry.updated = time.time()
     _write(entry, (directory or host_dir()) / f"{entry.id}.json")
 
 

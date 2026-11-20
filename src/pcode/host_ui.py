@@ -77,6 +77,8 @@ def host_row(
         old = " · stopped"  # Enter starts it again on the code installed now.
     else:
         old = " · old code" if code is not None and entry.stale(code) else ""
+        if entry.held and not entry.attached:
+            old += f" · held: {entry.held}"
     return f"{marker} {state}  {title:<{_TITLE_WIDTH}}  {where} · {age(now - entry.updated)}{old}"
 
 
