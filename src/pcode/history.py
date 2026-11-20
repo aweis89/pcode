@@ -8,6 +8,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -53,6 +54,79 @@ MIN_PREFIX = 8
 ERROR_CHARS = 500
 PHRASE_BONUS = 1.0
 _TOKEN = re.compile(r"\w+")
+
+
+def parse_timestamp(value: str) -> datetime | None:
+    """Parse a stored ISO 8601 timestamp into an aware datetime, or None if invalid."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def parse_bound(value: str, *, end: bool = False) -> datetime | None:
+    """Parse a user-supplied ISO date or datetime bound into an aware datetime.
+
+    Date-only strings (e.g. YYYY-MM-DD) use the local timezone for that date:
+    start of day for ``since`` (end=False) and end of day for ``until`` (end=True).
+    Naive datetimes also resolve in the local timezone for that date.
+    """
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        day = date.fromisoformat(text)
+    except ValueError:
+        day = None
+    if day is not None:
+        if end:
+            return datetime(day.year, day.month, day.day, 23, 59, 59, 999999, fold=1).astimezone()
+        return datetime(day.year, day.month, day.day, fold=0).astimezone()
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid timestamp {value!r}; use ISO date (YYYY-MM-DD) or datetime."
+        ) from error
+    return dt if dt.tzinfo is not None else dt.replace(fold=1 if end else 0).astimezone()
+
+
+def local_time(value: str) -> str:
+    """Format a stored ISO timestamp in the local timezone (seconds precision)."""
+    dt = parse_timestamp(value)
+    return dt.astimezone().isoformat(timespec="seconds") if dt is not None else value
+
+
+def _in_window(value: str, since: datetime | None, until: datetime | None) -> bool:
+    if since is None and until is None:
+        return True
+    dt = parse_timestamp(value)
+    if dt is None:
+        return False
+    if since is not None and dt < since:
+        return False
+    if until is not None and dt > until:
+        return False
+    return True
+
+
+def _session_in_window(info: SessionInfo, since: datetime | None, until: datetime | None) -> bool:
+    """True if a session overlaps [since, until] based on its created/updated bounds."""
+    if since is None and until is None:
+        return True
+    created = parse_timestamp(info.created)
+    updated = parse_timestamp(info.updated) or created
+    created = created or updated
+    if created is None or updated is None:
+        return False
+    if since is not None and updated < since:
+        return False
+    if until is not None and created > until:
+        return False
+    return True
 
 
 @dataclass
@@ -146,7 +220,8 @@ class Chunk:
         excerpt = redact(self.text[start : start + EXCERPT_CHARS])
         result = {
             "turn_id": self.turn.id,
-            "time": self.turn.time,
+            "turn_index": self.turn.position + 1,
+            "time": local_time(self.turn.time),
             "status": self.turn.status,
             "branch": self.turn.branch,
             "offset": self.offset + start,
@@ -468,8 +543,34 @@ class History:
             )
         return coverage
 
-    def _scope(self, db, scope: Scope, deadline: float | None):
+    def _filtered_sessions(
+        self,
+        scope: Scope,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        exclude_current: bool = True,
+    ) -> list[SessionInfo]:
         sessions = self.sessions(scope)
+        if exclude_current and scope != "session" and self.session_id:
+            sessions = [s for s in sessions if s.id != self.session_id]
+        if since is not None or until is not None:
+            sessions = [s for s in sessions if _session_in_window(s, since, until)]
+        return sessions
+
+    def _scope(
+        self,
+        db,
+        scope: Scope,
+        deadline: float | None,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        exclude_current: bool = True,
+    ):
+        sessions = self._filtered_sessions(
+            scope, since=since, until=until, exclude_current=exclude_current
+        )
         coverage = self._refresh(db, sessions, deadline)
         return {info.id: info for info in sessions}, coverage
 
@@ -485,45 +586,135 @@ class History:
     def _chunk(hit: Hit, infos: dict[str, SessionInfo]) -> Chunk:
         return Chunk(infos[hit.session], hit.turn, hit.start, hit.text, hit.chunk)
 
+    def recent(
+        self,
+        scope: Scope,
+        limit: int = 8,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        exclude_current: bool = True,
+    ) -> tuple[list[dict], Coverage]:
+        """List recent sessions in scope, newest updated first, without indexing transcripts."""
+        sessions = self._filtered_sessions(
+            scope, since=since, until=until, exclude_current=exclude_current
+        )
+        coverage = Coverage(
+            sessions_in_scope=len(sessions),
+            sessions_searched=len(sessions),
+        )
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+
+        def sort_key(info: SessionInfo) -> tuple[datetime, str]:
+            ts = parse_timestamp(info.updated) or parse_timestamp(info.created) or epoch
+            return (ts, info.id)
+
+        sessions.sort(key=sort_key, reverse=True)
+        results = [
+            {
+                "session_id": info.id,
+                "title": session_title(info),
+                "workspace": redact(info.workspace),
+                "created": local_time(info.created),
+                "updated": local_time(info.updated),
+                "current": info.id == self.session_id,
+            }
+            for info in sessions[:limit]
+        ]
+        return results, coverage
+
     def search(
-        self, scope: Scope, queries: list[str], *, exclude_turn: str | None = None
+        self,
+        scope: Scope,
+        queries: list[str],
+        *,
+        exclude_turn: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        exclude_current: bool = True,
     ) -> tuple[list[Chunk], Coverage]:
         """Chunks matching any query, fused across queries, best first."""
         with self.index.connect() as db:
-            infos, coverage = self._scope(db, scope, self._deadline())
+            infos, coverage = self._scope(
+                db,
+                scope,
+                self._deadline(),
+                since=since,
+                until=until,
+                exclude_current=exclude_current,
+            )
             exclude = self._exclude(exclude_turn)
             with self.index.snapshot(db):
-                ranked = [self._rank(db, query, infos, exclude) for query in queries]
+                ranked = [self._rank(db, query, infos, exclude, since, until) for query in queries]
         chunks = {chunk.id: chunk for ranking in ranked for chunk in ranking}
         rankings = [[chunk.id for chunk in ranking] for ranking in ranked]
         ranking = rankings[0] if len(rankings) == 1 else fuse(rankings)
         return [chunks[key] for key in ranking], coverage
 
-    def _rank(self, db, query: str, infos, exclude) -> list[Chunk]:
+    def _rank(
+        self,
+        db,
+        query: str,
+        infos,
+        exclude,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[Chunk]:
         """BM25 order, plus a bonus for chunks holding the query as an exact phrase."""
         expression = match_expression(query)
         if not expression or not infos:
             return []
         phrase = " ".join(query.casefold().split())
         scored = []
-        for hit in self.index.match(db, expression, list(infos), exclude):
+        for hit in self.index.match(
+            db,
+            expression,
+            list(infos),
+            exclude,
+            since=since.timestamp() if since is not None else None,
+            until=until.timestamp() if until is not None else None,
+        ):
             chunk = self._chunk(hit, infos)
+            if not _in_window(chunk.turn.time or chunk.session.updated, since, until):
+                continue
             bonus = PHRASE_BONUS if phrase in " ".join(chunk.text.casefold().split()) else 0
             scored.append((hit.score + bonus, len(scored), chunk))
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [chunk for _, _, chunk in scored]
 
     def chunks(
-        self, scope: Scope, *, exclude_turn: str | None = None, refresh: bool = True
+        self,
+        scope: Scope,
+        *,
+        exclude_turn: str | None = None,
+        refresh: bool = True,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        exclude_current: bool = True,
     ) -> tuple[list[Chunk], Coverage]:
         """Every indexed chunk in scope, for semantic ranking.
 
         `refresh=False` reads the index as the preceding search left it.
         """
         with self.index.connect() as db:
-            infos, coverage = self._scope(db, scope, self._deadline() if refresh else 0.0)
+            infos, coverage = self._scope(
+                db,
+                scope,
+                self._deadline() if refresh else 0.0,
+                since=since,
+                until=until,
+                exclude_current=exclude_current,
+            )
             hits = self.index.chunks(db, list(infos), self._exclude(exclude_turn))
-        return [self._chunk(hit, infos) for hit in hits], coverage
+        return [
+            chunk
+            for hit in hits
+            if _in_window(
+                (chunk := self._chunk(hit, infos)).turn.time or chunk.session.updated,
+                since,
+                until,
+            )
+        ], coverage
 
     def resolve(self, session_id: str, scope: Scope) -> SessionInfo:
         """A session by its full ID or a unique prefix, as people paste them."""
@@ -595,7 +786,8 @@ class History:
         return {
             "session_id": info.id,
             "turn_id": turn.id,
-            "time": turn.time,
+            "turn_index": turn.position + 1,
+            "time": local_time(turn.time),
             "workspace": redact(info.workspace),
             "status": turn.status,
             "branch": turn.branch,
@@ -623,7 +815,8 @@ class History:
         for turn in listed[offset : offset + OVERVIEW_TURNS]:
             entry = {
                 "turn_id": turn.id,
-                "time": turn.time,
+                "turn_index": turn.position + 1,
+                "time": local_time(turn.time),
                 "status": turn.status,
                 "branch": turn.branch,
                 "chars": len(turn.text),
@@ -643,8 +836,8 @@ class History:
             "session_id": info.id,
             "title": session_title(info),
             "workspace": redact(info.workspace),
-            "created": info.created,
-            "updated": info.updated,
+            "created": local_time(info.created),
+            "updated": local_time(info.updated),
             "turn_count": len(listed),
             "warnings": coverage.warnings,
             "scan_complete": coverage.complete,

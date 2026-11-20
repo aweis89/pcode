@@ -675,7 +675,18 @@ def test_session_search_shows_its_query_scope_and_paging():
         target("search_sessions", {"query": "x", "scope": "all", "after": "cursor"})
         == '"x" · scope all · next page'
     )
-    assert target("search_sessions", {}) == "query unavailable"
+    assert target("search_sessions", {}) == "recent"
+    assert target("search_sessions", {"queries": []}) == "recent"
+    assert target("search_sessions", {"queries": [""]}) == "query unavailable"
+    assert target("search_sessions", {"queries": [123]}) == "query unavailable"
+    assert target("search_sessions", {"since": "2026-11-19"}) == "recent · since 2026-11-19"
+    assert target("search_sessions", {"until": " 2026-11-20 "}) == "recent · until 2026-11-20"
+    assert (
+        target(
+            "search_sessions", {"queries": ["a", "b"], "since": "2026-11-19", "until": "2026-11-20"}
+        )
+        == '"a", "b" · since 2026-11-19 · until 2026-11-20'
+    )
     assert target("search_sessions", {"queries": ["a", "b"]}) == '"a", "b"'
     assert target("search_sessions", {"queries": "a"}) == "query unavailable"
 

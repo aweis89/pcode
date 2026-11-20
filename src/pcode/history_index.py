@@ -105,6 +105,7 @@ class StoredTurn:
     compacted: bool
     text: str
     conclusion: str
+    position: int = 0
 
 
 @dataclass
@@ -123,11 +124,13 @@ def signature(path: Path) -> str:
 
 
 def _turn(row, text: str) -> StoredTurn:
-    turn, parent, time_, status, branch, compacted, conclusion = row
-    return StoredTurn(turn, parent, time_, status, branch, bool(compacted), text, conclusion)
+    turn, parent, time_, status, branch, compacted, position, conclusion = row
+    return StoredTurn(
+        turn, parent, time_, status, branch, bool(compacted), text, conclusion, position
+    )
 
 
-TURN_COLUMNS = "t.turn, t.parent, t.time, t.status, t.branch, t.compacted, t.conclusion"
+TURN_COLUMNS = "t.turn, t.parent, t.time, t.status, t.branch, t.compacted, t.position, t.conclusion"
 CHUNK_TEXT = "substr(t.text, c.start + 1, c.length)"
 IN_SCOPE = (
     "t.session IN (SELECT value FROM json_each(?)) "
@@ -299,18 +302,34 @@ class HistoryIndex:
             raise
 
     def match(
-        self, db, expression: str, sessions: list[str], exclude: tuple[str, str] | None
+        self,
+        db,
+        expression: str,
+        sessions: list[str],
+        exclude: tuple[str, str] | None,
+        *,
+        since: float | None = None,
+        until: float | None = None,
     ) -> list[Hit]:
         """FTS5 BM25 candidates in scope, best first; ties go to the newer turn."""
         session, turn = exclude or ("", "")
+        clauses = [f"chunk_text MATCH ? AND {IN_SCOPE}"]
+        params: list = [expression, json.dumps(sessions), session, turn]
+        if since is not None:
+            clauses.append("(t.time = '' OR unixepoch(t.time, 'subsec') >= ?)")
+            params.append(since)
+        if until is not None:
+            clauses.append("(t.time = '' OR unixepoch(t.time, 'subsec') <= ?)")
+            params.append(until)
+        params.append(CANDIDATES)
         rows = db.execute(
             f"SELECT t.session, {TURN_COLUMNS}, c.id, c.start, {CHUNK_TEXT}, bm25(chunk_text) "
             "FROM chunk_text JOIN chunks c ON c.id = chunk_text.rowid "
-            f"JOIN turns t ON t.id = c.turn WHERE chunk_text MATCH ? AND {IN_SCOPE} "
+            f"JOIN turns t ON t.id = c.turn WHERE {' AND '.join(clauses)} "
             "ORDER BY bm25(chunk_text), t.time DESC, t.position DESC, c.start LIMIT ?",
-            (expression, json.dumps(sessions), session, turn, CANDIDATES),
+            params,
         ).fetchall()
-        return [Hit(r[0], _turn(r[1:8], ""), r[8], r[9], r[10], -r[11]) for r in rows]
+        return [Hit(r[0], _turn(r[1:9], ""), r[9], r[10], r[11], -r[12]) for r in rows]
 
     def chunks(self, db, sessions: list[str], exclude: tuple[str, str] | None) -> list[Hit]:
         """Every chunk in scope, newest turn first, for semantic ranking."""
@@ -321,11 +340,11 @@ class HistoryIndex:
             "ORDER BY t.session, t.position DESC, c.start",
             (json.dumps(sessions), session, turn),
         ).fetchall()
-        return [Hit(r[0], _turn(r[1:8], ""), r[8], r[9], r[10], 0.0) for r in rows]
+        return [Hit(r[0], _turn(r[1:9], ""), r[9], r[10], r[11], 0.0) for r in rows]
 
     def turns(self, db, session: str) -> dict[str, StoredTurn]:
         rows = db.execute(
             f"SELECT {TURN_COLUMNS}, t.text FROM turns t WHERE t.session = ? ORDER BY t.position",
             (session,),
         ).fetchall()
-        return {row[0]: _turn(row[:7], row[7]) for row in rows}
+        return {row[0]: _turn(row[:8], row[8]) for row in rows}

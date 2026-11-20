@@ -308,15 +308,28 @@ def session_recall(name: str, args: dict) -> str:
     """What a recall call looks for: the query searched, or the session being read."""
     if name == "search_sessions":
         # `query` is the single-query form older transcripts recorded.
-        queries = args.get("queries", [args.get("query")])
-        queries = [q for q in queries if isinstance(q, str)] if isinstance(queries, list) else []
-        if not queries:
+        raw_queries = args.get("queries")
+        if raw_queries is None and "query" in args:
+            raw_queries = [args.get("query")]
+        if raw_queries is not None and not isinstance(raw_queries, list):
             return "query unavailable"
-        parts = [
-            ", ".join(
-                json.dumps(plain(argument(query), 80), ensure_ascii=False) for query in queries
-            )
-        ]
+        queries = [q for q in (raw_queries or []) if isinstance(q, str) and q.strip()]
+        if raw_queries and not queries:
+            return "query unavailable"
+        if queries:
+            parts = [
+                ", ".join(
+                    json.dumps(plain(argument(query), 80), ensure_ascii=False) for query in queries
+                )
+            ]
+        else:
+            parts = ["recent"]
+        since = args.get("since")
+        if isinstance(since, str) and since.strip():
+            parts.append(f"since {plain(since.strip(), 25)}")
+        until = args.get("until")
+        if isinstance(until, str) and until.strip():
+            parts.append(f"until {plain(until.strip(), 25)}")
     else:
         session_id = args.get("session_id")
         if not isinstance(session_id, str):
