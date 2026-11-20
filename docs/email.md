@@ -77,6 +77,7 @@ without a reply and never reaches the model. Replies only ever go to you.
 | Worktree | Always a fresh one, branched from what you have checked out. It's kept afterwards and never merged automatically. |
 | Environment | Only allowlisted variables (provider API keys, `PATH`, `HOME`, locale), not your shell's full environment. |
 | MCP servers | Off, since they run outside the sandbox. `email_mcp` turns on your default servers. |
+| Conductor | The [`conductor`](sessions.md#conductor-orchestrating-other-sessions) extension is disabled, so an email-started session cannot inspect, query, or drive other local hosts. |
 | Per turn | 30 minutes, 100 model requests and 100 tool calls, sub-agents included. A turn that reaches one stops and says so. |
 | Project code | A repository's extensions and `worktree-setup` run only if you already [trusted](configuration.md#trusting-a-repositorys-own-code) it. |
 

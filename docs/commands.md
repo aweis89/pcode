@@ -1,5 +1,18 @@
 # Commands and keys
 
+## Quick reference
+
+Commands are grouped the same way `/help` lists them. See [Keys and layout](#keys-and-layout), [Activity panel](#activity-panel), [Diff browser](#diff-browser), [Tool-call inspector](#tool-call-inspector), [Popup keys](#popup-keys), and [`!command`](#running-a-command-yourself-command) for interactive controls.
+
+| Group | Commands |
+| --- | --- |
+| **App** | `/help` (`/commands`), `/config`, `/bind`, `/unbind`, `/quit` (`/exit`) |
+| **Model** | `/model`, `/effort`, `/advisor`, `/login`, `/logout`, `/mcp`, `/extensions`, `/subagents`, `/reload` |
+| **Session** | `/new`, `/delete`, `/resume`, `/rename`, `/attach` (`/switch`), `/fork`, `/restart`, `/stop`, `/detach`, `/compact`, `/autocompact`, `/jobs`, `/continue` (`/retry`), `/worktree` |
+| **Inspect** | `/status`, `/usage`, `/tools`, `/diffs`, `/links`, `/copy`, `/paste-image`, `/tree`, `/btw` (`/side`), `/agents` |
+| **Display** | `/show-activity`, `/show-tasks`, `/autohide-tasks`, `/show-thinking`, `/show-edits`, `/show-commands`, `/group-tools`, `/theme`, `/syntax`, `/theme-preview`, `/redraw` |
+| **Extensions** | `/plan`, `/manager`, `/reflect`, `/browser`, `/allow-writes`, `/ponytail`, `/skill:NAME` |
+
 ## Slash commands
 
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
@@ -123,6 +136,15 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   from what went wrong in this session (or, with a flag, across this project's or every
   project's saved sessions), apply it if you approve, and log the lesson. See
   [Learning from a session](workspace.md#learning-from-a-session-reflect).
+- `/browser [launch|attach|off|status]`: give the model a real Chrome browser to drive
+  (`launch` opens pcode's own Chrome window; `attach` joins an existing Chrome, Chromium,
+  or Edge window with remote debugging). See [Browser](tools.md#browser-per-conversation).
+- `/allow-writes [--global] [PATH]`: allow file writes to a directory or file outside the
+  workspace for this session, or `--global` for every session; bare shows the current
+  policy. See [Tool permissions](tools.md#tool-permissions).
+- `/ponytail [lite|full|ultra|off|status]`: opt-in extension (`/extensions on ponytail`)
+  that dials how hard the model resists over-building. See
+  [Ponytail](workspace.md#ponytail-opt-in).
 - `/continue` (alias `/retry`): pick a failed or cancelled turn back up from its last
   checkpoint without a new message. Finished tool calls are kept, not run again.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
@@ -170,14 +192,13 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   to edit it, or an assistant response to continue from there. Existing branches are kept.
   Browsable at any time; forking waits for the running turn.
 - `/btw QUESTION` (alias `/side`): [ask a side question](side-questions.md) against the context the model
-  is working with right now, without interrupting or queueing it. The answer is
-  [swapped in](side-questions.md#swapping-a-thread-in) for the conversation when ready
-  (`btw_auto_open`), and the main editor replies to it; bare `/btw` or **Ctrl+Q** swaps it in
-  at any time, and bare `/btw` lists the threads to pick one when there are several.
-  You can send a [follow-up](side-questions.md#following-up) to the thread, or
-  [keep it](side-questions.md#keeping-a-thread) in the conversation
-  (`btw_view popup` shows threads in a [full-screen viewer](side-questions.md#the-popup)
-  instead). `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
+  is working with right now, without interrupting or queueing it. Answers open in a
+  [full-screen viewer](side-questions.md#the-popup) by default (`btw_view popup`,
+  auto-opened when ready via `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any
+  time; `btw_view swap` [swaps a thread in](side-questions.md#swapping-a-thread-in) for
+  the conversation instead. You can send a [follow-up](side-questions.md#following-up) to
+  the thread, or [keep it](side-questions.md#keeping-a-thread) in the conversation.
+  `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
   instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
   conversation's model, sets that question's reasoning effort from the `/effort` levels.
@@ -220,9 +241,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   [Regenerating the terminal transcript](transcript.md#regenerating-the-terminal-transcript).
 - `/quit` (alias `/exit`): exit. It cancels a running turn and waits for its cleanup first.
 
-Toggles such as `/show-thinking`, `/show-activity`, `/show-edits`, `/show-commands`,
-`/group-tools`, and `/autohide-tasks` are described with the features they control,
-on this page and in [the transcript](transcript.md).
+Toggles such as `/show-thinking`, `/show-activity`, `/show-tasks`, `/show-edits`,
+`/show-commands`, `/group-tools`, and `/autohide-tasks` are described with the features
+they control, on this page and in [the transcript](transcript.md).
 
 Popups (sessions, conversation tree, models, tools) use the terminal's default
 background and text with reverse-video selection, whatever `/theme` and `/syntax`
@@ -305,6 +326,7 @@ it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Key | Action |
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
+| Ctrl+Enter | Interrupt the current turn and send the draft; send normally when idle |
 | Ctrl+/ | Browse contextual help |
 | Ctrl+S | Cycle steering → queue → interrupt for the next send only |
 | ↓ | Newline when on the last line with nothing to complete or recall (works in vi insert mode) |
@@ -317,6 +339,8 @@ it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+O | Show/hide the [activity panel](#activity-panel): thinking, tool calls, tasks and running commands (saves the default) |
 | Ctrl+T | Choose where thinking shows: `o` off, `a` activity panel, `b` scrollback (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard; with an empty editor, `/copy` chooses a response |
+| Ctrl+Q | Open or toggle [`/btw`](side-questions.md) side-question threads (`@side-threads`) |
+| Ctrl+\\ | Cycle to the next [`/btw`](side-questions.md#swapping-a-thread-in) thread in swap view (`@next-side-thread`) |
 | Ctrl+G | Cycle where shell command output shows: off, live in the activity panel, also mirrored to scrollback (`/show-commands`, saves the default) |
 | Ctrl+V | Paste an image from the system clipboard (`/paste-image`): see [images in a prompt](#images-in-a-prompt) |
 | Ctrl+Z | Show/hide edit diffs in scrollback (`/show-edits`, saves the default) |
@@ -587,7 +611,9 @@ Ctrl+/ takes over Emacs's Ctrl+_ undo chord; Ctrl+X Ctrl+U still undoes.
 
 At the prompt the default keys are `s` send mode, `l` model, `n`/`p` more/less
 effort, `o` activity panel, `t` thinking, `g` command output, `^` previous
-session, and `y` copy the draft or choose a response. Custom bindings share the same
+session, `y` copy the draft or choose a response, `q` side-question threads,
+`\` next side-question thread, `v` paste an image, `z` edit diffs, and `]`
+group tool calls. Custom bindings share the same
 menu and prefix. Each popup lists its own in contextual help; see
 [Popup keys](#popup-keys).
 
@@ -659,22 +685,24 @@ even where no chord gets through.
 ## Newlines in tmux
 
 Inside tmux, Shift+Enter arriving as a plain Enter is almost always tmux, not
-the terminal. Two things have to be true, and `extended-keys on` alone gives you
-neither:
+the terminal. Two things have to be true:
 
 - tmux only asks the outer terminal for modified keys when its terminfo
   advertises `extkeys`; Ghostty's and kitty's do not, so declare it.
-- `extended-keys on` forwards those keys only to apps that opted into the
-  protocol themselves. pcode does not, so use `always`.
+- `extended-keys` must not be `off`. pcode opts into `modifyOtherKeys` while
+  editing inside tmux (and Kitty's keyboard protocol outside tmux), restoring
+  the previous mode afterward, so `extended-keys on` and `extended-keys always`
+  both work (`always` also forwards modified keys to apps that don't opt in).
 
 ```tmux
 set -as terminal-features ',xterm-ghostty:extkeys'
-set -g extended-keys always
+set -g extended-keys on
 set -g extended-keys-format csi-u
 ```
 
 Reload, then detach and reattach: tmux works out a client's features when it
-connects. Check with `cat -v`: Shift+Enter should print `^[[13;2u`. If Ctrl+J
+connects. To verify with `cat -v` (which does not opt in), temporarily set
+`extended-keys always`: Shift+Enter should print `^[[13;2u`. If Ctrl+J
 prints `^[[B` instead, a remapper (Karabiner, a Ghostty `keybind`) is turning it
 into ↓ before tmux sees it; ↓ still inserts a newline on the last line, so that
 is usually fine.
@@ -865,6 +893,8 @@ press **Ctrl+Q** to hand the mouse to the terminal until you press it again
 scroll, in the same colors as scrollback, with notes you can send back to the
 agent. It needs a git repository; outside one it says so and points to
 `/tools edits`, which shows each file tool's edit with the call that made it.
+
+![The /diffs browser with an inline review note](assets/screenshots/diffs.svg)
 
 The net change it shows depends on the checkout:
 

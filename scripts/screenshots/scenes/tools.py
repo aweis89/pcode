@@ -3,7 +3,7 @@
 from scene import Call, launch
 
 MODEL = "claude:claude-opus-5-5"
-SIZE = (110, 32)
+SIZE = (110, 34)
 
 CHECK = (
     "python3 -c 'from acme.orders import Order, total; "

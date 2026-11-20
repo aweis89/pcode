@@ -3,6 +3,18 @@
 Live conversations save automatically when the first model prompt is submitted.
 Opening the app, using commands, or quitting without a prompt creates no session.
 
+### Session lifecycle quick reference
+
+| Action | Local session (default) | Hosted session (`--host` or after `/detach`) |
+| --- | --- | --- |
+| **Lifetime** | Runs in this terminal; ends when you quit or close it | Runs in a background host; outlives the terminal until [idle](#idle-hosts-stop) |
+| **`/detach`** | Moves the conversation, worktree, and jobs into a host (you stay on it) | Quits this terminal and leaves the host running for `pcode --attach` |
+| **`/attach`** | Opens the host picker; switching ends this session (refused mid-turn) | Opens the host picker; switches views while this host keeps running |
+| **`Ctrl+^` (`/attach -`)** | Returns to the previous session (carried on in a host) | Toggles between the last two sessions mid-turn without stopping either |
+| **`/fork PROMPT`** | Starts a copy in a new host and worktree; moves this session to a host once idle | Starts a copy in a new host and worktree; this terminal stays put |
+| **`/resume` / `--continue`** | Reopens a saved session in place (or a copy if open in another local terminal) | Reopens a saved session in a host, or attaches where it is already running |
+| **`pcode --attach ID -p`** | — | Sends one prompt or slash command to a running (or stopped) host and detaches |
+
 ## Background sessions
 
 A session starts inside its terminal: one process, quick to start, gone when
@@ -453,9 +465,34 @@ vectors are still sensitive. Old vectors stay after a session is deleted; delete
 the file with pcode stopped to clear the cache (also needed if a provider changes
 a model's vector size under the same name).
 
-To turn recall off, create `~/.config/pcode/extensions/session_history.py` with
-`def setup(pcode): pass`, then `/reload`. Recall uses the same session storage
-location as the rest of pcode.
+To turn recall off, run `/extensions off session_history`, then `/reload`.
+Recall uses the same session storage location as the rest of pcode.
+
+## Conductor: orchestrating other sessions
+
+The bundled `conductor` extension is enabled by default and lets one session
+inspect, side-query, drive, and stop other open or recently stopped `/attach`
+hosts. Tools that talk to a session (`ask_host` and `send_to_host`) also accept
+a saved session ID and automatically resume that historical session in its
+original workspace (inheriting the conductor's environment).
+
+| Tool | Who can call it | What it does |
+| --- | --- | --- |
+| `list_hosts` | Parent and workers | Lists open and recently stopped `/attach` hosts, filterable by `workspace` substring, `state` (`all`, `working`, `idle`, `stopped`), and `include_stopped`. |
+| `inspect_host` | Parent and workers | Reads a live host's in-memory state (plan, running jobs, side questions, activity, and busy reason) by host ID or session ID prefix. |
+| `ask_host` | Parent only | Runs a headless [`/btw`](side-questions.md) side question against another session's full context without mutating its main thread or waiting behind an active turn. Accepts an optional `model` override. Note that the target's side question still has access to its workspace tools, so ask for inspection or reporting only if you do not want workspace edits. |
+| `send_to_host` | Parent only | Queues a prompt as a real turn on another host (or auto-resumes a saved session). `wait=False` (the default) returns once queued so you can fan work out in parallel and then call `wait_for_hosts`; `wait=True` waits up to `timeout` seconds (1–1800, default 120) and returns the reply. |
+| `wait_for_hosts` | Parent only | Waits for one or more running hosts to finish their active and queued turns, with `mode="all"` (every host) or `mode="any"` (return as soon as one finishes), up to `timeout` seconds (1–1800, default 120). |
+| `stop_host` | Parent only | Stops another running host. With `force=False` (the default), refuses atomically on the host if it is busy or has an attached terminal; `force=True` stops it anyway. Never deletes the session's worktree. |
+
+Conductor tools cannot target the current session, and cannot auto-resume a
+session that is currently open in an unhosted local terminal or whose workspace
+no longer exists.
+
+To turn conductor off, run `/extensions off conductor`, then `/reload`. It is
+automatically disabled in unattended
+[email remote-control](email.md#the-remote-profile) hosts so a remote session
+cannot inspect or drive other local hosts.
 
 ## Where sessions are stored
 

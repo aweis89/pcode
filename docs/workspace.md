@@ -38,6 +38,22 @@ way. With `repo_context_walk_up` on, session worktrees pick up the main
 checkout's local file through the parent walk. A symlink to a file outside the
 directory (say, `~/notes/project.md`) is ignored; copy it in instead.
 
+Because the walk runs broadest-first all the way to your home directory and
+does not stop at `.git`, you can layer instructions across repositories as
+shared memory and state:
+
+```text
+~/AGENTS.md                  # global preferences across every repo
+~/work/AGENTS.md             # org conventions, service map, shared state
+~/work/api/AGENTS.md         # repo instructions (committed)
+~/work/api/AGENTS.local.md   # your local notes & overrides (untracked)
+```
+
+Every session under `~/work/`—including linked worktrees—inherits the parent
+files automatically, so cross-repo architecture notes, shared conventions, and
+personal memory stay in one place instead of being copied into every
+repository.
+
 **Subdirectories (`repo_context_nested`).** After the agent reads, lists, or
 greps inside a directory of the workspace, pcode checks that directory for an
 instruction file. `pointer` adds a note telling the agent to read it if

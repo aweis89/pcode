@@ -28,7 +28,7 @@ your environment. For Anthropic API models, use `anthropic:<model-id>` with
 `ANTHROPIC_API_KEY`; to use a Claude subscription instead, pick a
 [Claude Code model](#claude-code-provider). Use the exact model ID your account
 offers; pcode does not remap aliases. Every provider in the table below works with the default install except
-`claude:`, which needs the [`claude` extra](#claude-code-provider).
+`claude:`, which needs the [`claude` extra](#claude-code-provider), and `antigravity:`, which needs the [Antigravity CLI](#antigravity-provider) (`agy`).
 
 ## Supported providers
 
@@ -43,6 +43,7 @@ or only accepts IDs you type.
 | `openai-codex` | pcode login, then CLI credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
 | `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
 | `claude` | Claude Code config (`~/.claude`, `~/.claude.json`, or `CLAUDE_CONFIG_DIR`) or `claude` on `PATH` | yes (Anthropic IDs) |
+| `antigravity` | `agy` CLI on `PATH` (sign in with `/login antigravity`) | yes (models offered by your Google AI Pro/Ultra subscription) |
 | `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
 | `google-cloud` | `GOOGLE_CLOUD_PROJECT` or `GOOGLE_APPLICATION_CREDENTIALS` | yes |
 | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`, or `AWS_PROFILE` | yes |
@@ -74,7 +75,7 @@ what your account is entitled to. Older or preview IDs dropped from it (such as
 Gemini 2.5) still work when typed in full; Gemini before 3 searches the web
 through pcode's own tools, since it can't mix Google Search with them. Providers not in the table (for example `mistral`, `cohere`, `huggingface`,
 `litellm`) still work from `--model` once you install their Pydantic AI extra,
-but the picker does not offer them. Apart from Codex and Claude Code, every
+but the picker does not offer them. Apart from Codex, Claude Code, and Antigravity (`/login antigravity`), every
 provider is plain API-key access with no login in pcode: set the variable in your shell before launching.
 
 ## Choose a model in the terminal
@@ -100,7 +101,7 @@ same version.
 Suggestions are not an entitlement list; the provider checks access when you use
 the model. A typed `provider:model-id` is accepted for any supported provider,
 configured or not, so you can export a key after launch. If no provider is
-configured, run `/login claude` or `/login openai-codex`, or set
+configured, run `/login claude`, `/login openai-codex`, or `/login antigravity`, or set
 `ANTHROPIC_API_KEY`, first.
 
 **Changing models continues the current conversation.** History, session ID,

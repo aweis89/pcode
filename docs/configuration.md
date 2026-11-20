@@ -52,7 +52,7 @@ JSON, and `/config set theme light`, `/config get autocompact`,
 **Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme light|dark|auto`, `/effort`,
 `/model`, or `/autocompact` instead. The layout settings `attach_tasks`, `attach_activity`,
-`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `frame_style`, `tool_glyphs`, `tool_max_lines` and `tool_linger_seconds` apply immediately through `/config`. CLI overrides such as
+`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `frame_style`, `tool_glyphs`, `tool_max_lines`, `tool_linger_seconds`, `show_hints`, and `live_edits` apply immediately through `/config`. CLI overrides such as
 `--theme` and `--model` do not rewrite global defaults, and resumed sessions retain
 their own model.
 
@@ -127,7 +127,7 @@ pcode config project reset              # Drop the whole overlay
 
 A cloned repository must not be able to run code or pick credentials on your
 behalf, so `project_extensions`, `trusted_projects`, `extension_dirs`,
-`extensions_off`, and `extensions_on` are user-only: the project file cannot
+`extensions_off`, `extensions_on`, and all `email_*` keys are user-only: the project file cannot
 set them, and pcode says so at launch if it tries. `model` and `subagent_models`
 can be set, but only choose among the providers you are signed in to. When the
 repository sets `subagent_models`, `/subagents` shows that list, says it comes

@@ -1,24 +1,32 @@
 # pcode
 
-pcode is a terminal-native coding agent built for long-running and parallel
-work. Background commands wake the agent when they finish, every session can
-use its own git worktree, conversations can be rewound and forked (in the style
-of [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)),
-and every tool call stays inspectable. It runs on any model
-[Pydantic AI](https://ai.pydantic.dev/) supports, or on your ChatGPT or Claude
-subscription (Claude through Anthropic's own Agent SDK and Claude Code login,
-the route Anthropic supports).
+**A terminal-native coding agent built to run many agents in parallel—without the chaos.**
+
+Use your existing Claude, Antigravity, or ChatGPT subscriptions (through their
+official SDKs and CLIs) or 25+ API providers that
+[Pydantic AI](https://ai.pydantic.dev/) supports. Every session can run in its
+own git worktree, slow commands wake the agent when they finish, conversations
+can be rewound and forked (in the style of
+[pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)),
+and every tool call and diff stays inspectable in normal terminal scrollback.
 
 ```sh
 brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-brew install cruxwell/pcode/pcode     # or: uv tool install --python 3.15 'pcode[claude]'
-pcode -m claude:claude-sonnet-5        # or openai-codex:gpt-5.6-luna, or any API-key provider
+brew install cruxwell/pcode/pcode       # or: uv tool install --python 3.15 'pcode[claude]'
+pcode -m claude:claude-sonnet-5         # Claude subscription (/login claude)
+pcode -m antigravity:gemini-4-neon      # Antigravity subscription (/login antigravity)
+pcode -m openai-codex:gpt-5.6-luna      # ChatGPT subscription (/login openai-codex)
 ```
+
+![Five pcode sessions in terminal tabs with task titles, progress bars, inline diffs, live thinking, a nested sub-agent review tree, and a background job](assets/screenshots/tabs-light.png#only-light)
+![Five pcode sessions in terminal tabs with task titles, progress bars, inline diffs, live thinking, a nested sub-agent review tree, and a background job](assets/screenshots/tabs-dark.png#only-dark)
 
 !!! warning "Live mode edits files and runs commands"
     There is no approval prompt: the agent edits files and runs shell commands
-    with your permissions. Read [tool permissions](tools.md#tool-permissions)
-    before pointing it at anything you care about.
+    with your permissions. Turn on the opt-in OS-level sandbox (macOS Seatbelt /
+    Linux `bwrap`) anytime with `/extensions on sandbox`, and read
+    [tool permissions](tools.md#tool-permissions) before pointing it at anything
+    you care about.
 
 ## It's just your terminal
 
@@ -26,7 +34,8 @@ There's no full-screen app. The model's replies, diffs and command output are
 written into your terminal's normal scrollback, so everything you already use
 keeps working: scroll with your mouse or tmux copy mode, search with your
 terminal's find, select and copy text. Only the editor and the live activity
-panel sit at the bottom and redraw.
+panel sit at the bottom and redraw, with soft shaded frames
+(`frame_style shaded` by default) and automatic light/dark themes.
 
 ## Scrollback you can change after the fact
 
@@ -44,7 +53,7 @@ next.
 | --- | --- |
 | Ctrl+G, `/show-commands` | Show running commands' output in the activity panel, also mirror it into scrollback, or hide it |
 | Ctrl+Z, `/show-edits` | Show or hide the diff of every file edit |
-| Ctrl+T, `/show-thinking` | Show the model's reasoning on the status line, in scrollback, or not at all |
+| Ctrl+T, `/show-thinking` | Show the model's reasoning in the activity panel, in scrollback, or not at all |
 | Ctrl+], `/group-tools` | Fold each run of tool calls into one line (on by default): `✓ 15 ✗ 1 tools · Edit file ✓ 10 · Run shell ✓ 5 ✗ 1` |
 | Ctrl+O, `/show-activity` | Show or hide the activity panel: thinking, tool calls and tasks |
 
@@ -57,12 +66,23 @@ doesn't leave half-wrapped wreckage behind. Replay never reruns a tool. See
 `/tools` opens every tool call the agent has made in this conversation, newest
 first, including while a turn is still running: the exact command, its
 arguments, how long it took, and the full output it returned. Filter to
-failures with Ctrl+X, search by name or command, and copy a command (Ctrl+Y) or
-its output (Ctrl+O) to run or paste yourself. It survives resume, so you can
-audit what happened in a session from last week. See
+failures with Ctrl+X (`/tools failed`) or edits (`/tools edits`), search by
+name or command, and copy a command (Ctrl+Y) or its output (Ctrl+O) to run or
+paste yourself. It survives resume, so you can audit what happened in a session
+from last week. See
 [scrollback and transparency](guide/scrollback.md#every-command-nothing-hidden-tools).
 
 ![The /tools inspector: every call on the left, the selected command and its full output on the right](assets/screenshots/tools.svg)
+
+## Review changes and leave notes: `/diffs`
+
+`/diffs` opens the session's git diff in one scrollable view, filtered to what
+changed since your last review checkpoint (`Since review`, marked with Ctrl+A),
+all uncommitted changes, or the whole branch. Press Ctrl+N on any line to leave
+an inline review note—when you close `/diffs`, the file path, line number, diff
+context, and your notes are injected straight back into your prompt for the
+agent to address. See
+[scrollback and transparency](guide/scrollback.md#review-the-changes-diffs).
 
 ## Rewind and fork with `/tree`
 
@@ -93,24 +113,31 @@ session. See [a shell for long-running work](guide/shell.md).
 
 ![The footer below the editor shows 1 job while CI runs and the conversation carries on](assets/screenshots/jobs.svg)
 
-## Your Claude subscription, the supported way
+## Your subscriptions, the ToS-compliant way
 
-`claude:` models run through Anthropic's own
-[Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) and the
-Claude Code login. Sign-in happens in Anthropic's flow, Claude Code holds and
-refreshes the tokens, and pcode never sees them. Anthropic's
-[terms](https://code.claude.com/docs/en/legal-and-compliance) allow signing in
-to the unmodified Claude Code binary with your own subscription; they forbid
-third-party apps that collect or hold Claude.ai credentials, which is what
-most "use your Claude account" tools do.
+pcode follows provider terms of service rather than scraping or hijacking
+consumer auth, while letting you mix subscriptions and API models in one
+harness:
 
-```sh
-pcode -m claude:claude-sonnet-5   # /login claude if Claude Code isn't signed in yet
-```
+- **Claude (`claude:`):** Runs through Anthropic's official
+  [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) and the
+  unmodified Claude Code login (`/login claude`). Sign-in happens in
+  Anthropic's flow, Claude Code holds and refreshes the tokens, and pcode never
+  sees them—scrubbing API and cloud env vars so requests strictly bill your
+  subscription.
+- **Antigravity (`antigravity:`):** Runs Google's official `agy acp` CLI
+  unmodified over the Agent Client Protocol (ACP), with pcode's tools (workers,
+  `/browser`, conductor, session recall, `/advisor`) bridged over MCP and API
+  keys scrubbed. Sign in with `/login antigravity`.
+- **ChatGPT (`openai-codex:`):** PKCE OAuth via `/login openai-codex` (or
+  read-only fallback to Codex CLI).
+- **25+ API, cloud, and local providers:** Anthropic, OpenAI, Google/Gemini,
+  Vertex, Bedrock, Groq, xAI, DeepSeek, OpenRouter, Ollama, vLLM, and anything
+  else Pydantic AI supports.
 
-ChatGPT subscriptions work the same way with `/login openai-codex`, and any
-provider with an API key works too. Switch models mid-conversation with
-Ctrl+L. See [providers and models](providers.md).
+Switch models or reasoning effort mid-conversation with Ctrl+L and `/effort`,
+or pair a fast model with a frontier second opinion via
+[`/advisor`](providers.md#advisor). See [providers and models](providers.md).
 
 ## Ask while it works: `/btw`
 
@@ -125,12 +152,17 @@ the main conversation unless you choose to pull it in. See
 A session runs inside its terminal until you want it to outlive it: `/detach`
 moves it into a background host. Then close the terminal and the turn keeps
 going; `pcode --attach` picks it back up. `/attach` moves between running
-sessions and Ctrl+^ flips back to the last one. `/fork PROMPT` then sets a copy
-of the conversation on another approach in its own worktree, and Ctrl+^ flips
-between the two while both work ([parallel sessions](sessions.md#parallel-sessions)).
-Everything is saved, so
-`pcode --continue` resumes the latest conversation in a directory and `/resume`
-searches all of them. See [sessions and recovery](sessions.md).
+sessions and Ctrl+^ flips back to the last one. `/fork PROMPT` sets a copy of
+the conversation on another approach in its own worktree, and Ctrl+^ flips
+between the two while both work
+([parallel sessions](sessions.md#parallel-sessions)).
+
+When you have several hosted sessions running at once, you don't have to
+babysit every tab yourself: the built-in **Conductor** lets one session
+inspect, side-query (`ask_host`), and drive your other open or saved sessions
+([conductor](sessions.md#conductor-orchestrating-other-sessions)). Everything
+is saved, so `pcode --continue` resumes the latest conversation in a directory
+and `/resume` searches all of them. See [sessions, hosts and recall](sessions.md).
 
 ## Ask about past sessions
 
@@ -176,9 +208,15 @@ only gets their results.
 Sub-agents in most tools are a black box until they return. In pcode, the task
 panel lists each running agent with its purpose, and `/agents` opens a live
 view of all of them: each agent's assignment, plan, streamed text, every tool
-call it makes, and its reasoning if you want it. Agents can run on a
+call it makes, and its reasoning if you want it. You can also press `a` to
+answer a worker's question or `m` to steer it mid-run
+([talking to workers](tools.md#talking-to-workers)). Agents can run on a
 different model from the parent (`/subagents`), and with `worker_isolation` on
-each one edits in its own worktree and comes back as a branch to review. See
+each one edits in its own worktree and comes back as a branch to review.
+
+For larger multi-part tasks, opt-in [`/manager`](manager.md) mode
+(`/extensions on manager`) turns the main agent into a coordinator with diff
+review gates, shared `decisions.md` and `lessons.md`, and token budgets. See
 [parallel agents](guide/parallel.md#sub-agents-in-parallel).
 
 ## Hand it the browser
@@ -195,26 +233,37 @@ my email" or "file this in the tracker" possible, and it's also the risky mode:
 the agent can act as every account that browser is signed in to. See
 [the browser](tools.md#browser-per-conversation).
 
+## Plan in Obsidian, drive from Gmail
+
+- **[`/plan --obsidian`](obsidian.md):** Writes plans into org-scoped Obsidian
+  vaults with a desktop bridge plugin. Edit a plan or drop `> [!comment]`
+  callouts in Obsidian and pcode receives a diff on the next turn.
+- **[`pcode --email-listen`](email.md):** Kick off and continue locked-down,
+  sandboxed worktree sessions from Gmail on your phone, then take over at a
+  terminal with `pcode --attach`.
+
 ## Built on Pydantic AI
 
 The agent underneath is a [Pydantic AI](https://ai.pydantic.dev/)
 [Harness](https://pydantic.dev/docs/ai/harness/) coder: the same filesystem,
 shell, sub-agent, planning, compaction, MCP and browser capabilities you'd use
 in your own agent. pcode adds the terminal and the parts a library leaves to
-you: MCP servers with OAuth sign-in and deferred tool search, saved sessions you
-can search, fork and ask about, background jobs, a worktree per session,
+you: hybrid [`code_mode`](tools.md#code-mode) to batch read-only lookups in one
+turn, MCP servers with OAuth sign-in and deferred tool search, saved sessions
+you can search, fork and ask about, background jobs, a worktree per session,
 observable sub-agents, and subscription sign-in. Any model Pydantic AI supports
-works with `--model` (and so do your Claude Code and ChatGPT subscriptions,
-through their own sign-in flows), and an extension is a Pydantic AI capability,
-so there's nothing pcode does that your own code can't hook into. See
+works with `--model`, and an extension is a Pydantic AI capability, so there's
+nothing pcode does that your own code can't hook into. See
 [extending pcode](guide/extending.md).
 
 ## Make it yours
 
 An extension is one Python file that can add slash commands, tools, guardrails
 on tool calls, or extra instructions, and `/reload` picks up changes without a
-restart. Skills in your repository become slash commands. There are themes, vi
-mode, a configurable shortcut prefix, and per-repository settings. See
+restart. Skills in your repository become slash commands, and
+[`/reflect`](workspace.md#learning-from-a-session-reflect) turns recurring
+session friction into `AGENTS.md` or skill updates. There are themes, vi mode,
+custom [keybindings](keybindings.md), and per-repository settings. See
 [extending pcode](guide/extending.md).
 
 ## Where to go next
@@ -223,12 +272,17 @@ mode, a configurable shortcut prefix, and per-repository settings. See
 - Guide: [scrollback and transparency](guide/scrollback.md),
   [a shell for long-running work](guide/shell.md),
   [parallel agents](guide/parallel.md), [extending pcode](guide/extending.md).
+- Workflows: [manager mode](manager.md),
+  [planning in Obsidian](obsidian.md),
+  [email remote control](email.md),
+  [conversation tree](conversation-tree.md),
+  [side questions](side-questions.md).
 - Reference: [providers and models](providers.md),
   [configuration](configuration.md), [commands and keys](commands.md),
-  [tools](tools.md), [MCP servers](mcp.md),
-  [working in a repository](workspace.md), [sessions](sessions.md),
-  [conversation tree](conversation-tree.md),
-  [side questions](side-questions.md),
+  [keybindings](keybindings.md), [terminal setup](terminal.md),
+  [tools and sandbox](tools.md), [MCP servers](mcp.md),
+  [working in a repository](workspace.md),
+  [sessions, hosts and recall](sessions.md),
   [context, limits and caching](context.md), [the transcript](transcript.md).
 
 Working on pcode itself? The contributor notes live in

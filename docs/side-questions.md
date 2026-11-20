@@ -6,6 +6,8 @@ question runs as a separate request alongside the turn, against the same
 context. The turn is not interrupted or steered, and the question stays out of
 the conversation unless you choose to keep it.
 
+![A /btw side question running in parallel against the conversation's context](assets/screenshots/btw.svg)
+
 ```text
 ❯ refactor the parser and make the tests pass
   ◜ Running shell · uv run pytest

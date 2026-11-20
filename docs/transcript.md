@@ -133,7 +133,7 @@ title rather than the prose under it.
 
 Each mode asks the provider for the text that suits it:
 
-- **Opus 5.5, Sonnet 5.5, Fable 5 and Mythos 5.1 over `anthropic:`**: `activity-panel`
+- **Opus 5.5, Sonnet 5.5, Fable 5, Mythos 5.1 and Mythos 5.2 over `anthropic:`**: `activity-panel`
   asks for progress updates, the short notes these models write between tool
   calls for whoever is watching. The row stays empty while the model reasons
   and fills in as it moves between tools. `scrollback` asks for full summaries.
@@ -150,6 +150,9 @@ Each mode asks the provider for the text that suits it:
 - **`google:` and `google-cloud:`**: summaries in either mode, at the model's
   own thinking level. An `/effort` level asks for summaries too, so with one set
   they still arrive under `off`; `/effort default` stops them.
+- **`antigravity:`**: streams whatever thought text `agy` exposes for the active
+  model; `/effort` sets the ACP session's thinking level (matched to the nearest
+  level the model offers).
 
 ```sh
 pcode config set show_thinking scrollback   # Default is activity-panel

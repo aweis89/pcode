@@ -1,5 +1,25 @@
 # Tools
 
+## Tools and bundled extensions at a glance
+
+| Built-in / extension | Default | Provides | How to toggle |
+| --- | --- | --- | --- |
+| **Core tools** | On | `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, `shell` + job tools, planning, `delegate_task` / `manage_worker` / `task_worktree` | Always on ([sandbox](#write-policy-and-shell-sandbox-opt-in) restricts writes) |
+| **Code mode** | On | `run_code` sandboxed Python batching for read-only lookups | `pcode config set code_mode off` |
+| `web_research` | On | `web_search` and `get_page` (or provider-native search/fetch) | `/extensions off web_research` or `web_search off` |
+| `session_history` | On | `search_sessions` and `read_session` for [recalling earlier sessions](sessions.md#recalling-earlier-sessions) | `/extensions off session_history` |
+| `conductor` | On | `list_hosts`, `inspect_host`, `ask_host`, `send_to_host`, `wait_for_hosts`, `stop_host` for [orchestrating other sessions](sessions.md#conductor-orchestrating-other-sessions) | `/extensions off conductor` |
+| `browser` | On (idle until launched) | `/browser launch\|attach\|off\|status` Playwright browser tools | `/browser launch` / `/browser off` (or `/extensions off browser`) |
+| `plan_mode` | On | `/plan` plan-first workflow before implementing | `/extensions off plan_mode` |
+| `reflect` | On | `/reflect` turn session failures into harness improvements | `/extensions off reflect` |
+| `sandbox` | Opt-in | Write policy and OS-level shell sandbox (`/allow-writes`) | `/extensions on sandbox` |
+| `manager` | Opt-in | Multi-worker coordination and review ([Manager mode](manager.md)) | `/extensions on manager` |
+| `workflows` | Opt-in | `run_workflow` scripted sub-agent fan-out ([below](#workflows-opt-in)) | `/extensions on workflows` |
+| `ponytail` | Opt-in | `/ponytail` minimal-diff discipline ruleset | `/extensions on ponytail` |
+
+Run `/reload` after `/extensions on|off` to apply the change to the running
+session.
+
 ## Tool permissions
 
 **The agent edits files and runs shell commands for real. There is no approval
@@ -312,6 +332,28 @@ for the built-in worker.
 
 While [manager mode](manager.md) is on, `worktree=on` alone is enough: workers
 are isolated for the session without changing `worker_isolation`.
+
+### Workflows (opt-in)
+
+`/extensions on workflows` (then `/reload`) enables an experimental
+`run_workflow` tool for fanning work out to many sub-agents from a single
+Python script. Inside the script, `worker(task=...)` is an async function, so
+the model can gather a batch, chain one result into the next, and filter in
+plain Python. The whole script runs as one tool call and only its last
+expression returns to the conversation, keeping large batches from flooding
+context the way dozens of `delegate_task` reports would.
+
+- **Limits:** up to 200 sub-agent calls per turn. When `worker_concurrency` is
+  `0` (unlimited), `run_workflow` caps concurrent workflow workers at **8**; a
+  positive `worker_concurrency` sets the cap instead.
+- **Capabilities:** workflow workers inherit the session's model, file and
+  shell tools, MCP tools, and extension guardrails. Progress arrives as a notice
+  each time a worker finishes rather than streaming every tool call.
+- **Differences from `delegate_task`:** workflow workers always share the
+  parent's checkout (no worktree isolation, so concurrent workers must not edit
+  the same files), have no worker ID (no `ask_parent`, `manage_worker`, or
+  detach on steering), and `run_workflow` is only available to the parent
+  session, not to delegated workers.
 
 ## File and shell tools
 

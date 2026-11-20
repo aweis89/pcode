@@ -29,7 +29,10 @@ remain.
 
 `/jobs` lists them beside each one's live output. Ctrl+W pins a job's output
 into the preview and Ctrl+K stops it. Jobs outlive the turn and even pcode: if
-you quit with a job running, the next pcode adopts it.
+you quit with a job running, the next pcode adopts it. Inside a `/detach`
+[background session](../sessions.md#background-sessions), jobs and job-wake
+keep running even after you close the terminal, so a finished CI run or build
+can still wake the hosted agent while you're away.
 
 ![The /jobs popup: the job list on the left, the command and its live output on the right](../assets/screenshots/jobs-popup.svg)
 
@@ -62,6 +65,11 @@ The same pattern works for anything slow:
 - `pcode config set job_wake off` turns off waking; the agent then hears about
   finished jobs at your next message.
 - Stopping a job stops everything it started, so a server releases its port.
+- `/extensions on sandbox` enforces an OS-level read/write sandbox (macOS
+  Seatbelt / Linux `bwrap`) on both file tools and agent shell commands—protecting
+  SSH keys, credentials, and `.git/hooks/` while letting you grant extra paths
+  with `/allow-writes` ([write policy and shell sandbox](../tools.md#write-policy-and-shell-sandbox-opt-in)).
+  Commands you run yourself with `!command` run unsandboxed.
 
 For the details, see [shell jobs](../tools.md#shell-jobs). To run a command
 yourself without asking the agent, prefix it with `!` in the editor; see

@@ -5,7 +5,7 @@
 
 [project]
 site_name = "pcode"
-site_description = "A streaming terminal for a Pydantic AI Coder agent"
+site_description = "A terminal-native coding agent built to run many agents in parallel—without the chaos"
 site_url = "https://cruxwell.github.io/pcode/"
 repo_url = "https://github.com/cruxwell/pcode"
 repo_name = "cruxwell/pcode"
@@ -22,21 +22,23 @@ nav = [
     { "Parallel agents" = "guide/parallel.md" },
     { "Extending pcode" = "guide/extending.md" },
   ] },
+  { "Workflows" = [
+    { "Manager mode" = "manager.md" },
+    { "Planning in Obsidian" = "obsidian.md" },
+    { "Email remote control" = "email.md" },
+    { "Conversation tree" = "conversation-tree.md" },
+    { "Side questions" = "side-questions.md" },
+  ] },
   { "Reference" = [
     { "Providers and models" = "providers.md" },
     { "Configuration" = "configuration.md" },
     { "Commands and keys" = "commands.md" },
     { "Keybindings" = "keybindings.md" },
     { "Terminal setup" = "terminal.md" },
-    { "Tools" = "tools.md" },
-    { "Manager mode" = "manager.md" },
+    { "Tools and sandbox" = "tools.md" },
     { "MCP servers" = "mcp.md" },
     { "Working in a repository" = "workspace.md" },
-    { "Sessions and recovery" = "sessions.md" },
-    { "Planning in Obsidian" = "obsidian.md" },
-    { "Email remote control" = "email.md" },
-    { "Conversation tree" = "conversation-tree.md" },
-    { "Side questions" = "side-questions.md" },
+    { "Sessions, hosts and recall" = "sessions.md" },
     { "Context, limits and caching" = "context.md" },
     { "The transcript" = "transcript.md" },
   ] },

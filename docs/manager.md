@@ -61,6 +61,8 @@ whether it's been reviewed, and its token count. A worker that gets stuck can
 ask the agent a question; you can answer it from there, or send a worker a
 message. See [talking to workers](tools.md#talking-to-workers).
 
+![The /agents live dashboard showing running workers, their plans, and tool calls](assets/screenshots/agents.svg)
+
 ## Workers in their own worktrees
 
 If [`worktree`](workspace.md#one-git-worktree-per-session) is on, manager mode

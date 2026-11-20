@@ -44,13 +44,19 @@ The toggles, each saved as your default:
 | --- | --- |
 | Ctrl+G, `/show-commands scrollback` | Each shell command and its output |
 | Ctrl+Z, `/show-edits` | The diff of each file edit |
-| `/show-thinking scrollback` | The model's readable reasoning |
+| Ctrl+T, `/show-thinking` | The model's readable reasoning in the activity panel, in scrollback, or not at all |
 | Ctrl+], `/group-tools` | One line per run of tool calls (the default) or one per call |
 | Ctrl+O, `/show-activity` | The activity panel in the editor box: thinking, tool calls and tasks |
 
 Hidden isn't deleted. Thinking, diffs and command results are kept even while
 hidden, including in resumed sessions, so turning a toggle on later shows them
 for the whole conversation. Rebuilding never reruns a tool.
+
+By default, blocks use soft shaded backgrounds (`frame_style shaded`) rather
+than box-drawing borders, and edit diffs render through
+[delta](https://dandavison.github.io/delta/) when installed—with smart dedent
+so deeply indented hunks stay readable in narrow panes
+([diffs with delta](../transcript.md#diffs-with-delta)).
 
 The same rebuild runs when you resize the terminal, so narrowing a pane doesn't
 leave half-wrapped copies of the old layout behind, and `/redraw` does it on
@@ -72,8 +78,9 @@ while a turn is still running:
 ![The /tools inspector with a passing check selected](../assets/screenshots/tools.svg)
 
 Type to search, press Ctrl+X to show only failures, and Ctrl+T to filter by
-tool. Ctrl+Y copies the command so you can run it yourself, and Ctrl+O copies
-the output.
+tool. You can also jump straight into a filtered view with `/tools failed` or
+`/tools edits`. Ctrl+Y copies the command so you can run it yourself, and
+Ctrl+O copies the output.
 
 ![/tools filtered to failures with Ctrl+X, showing the traceback the model saw](../assets/screenshots/tools-failed.svg)
 
@@ -83,7 +90,21 @@ did last week. Opening it never reruns anything. See the
 
 ## Review the changes: `/diffs`
 
-`/diffs` shows the session's work as a git diff, every file in one scroll. It
-opens on what changed since you last marked it reviewed, and notes you leave on
-a line go back to the agent in your prompt when you close it. See the
-[diff browser](../commands.md#diff-browser).
+`/diffs` opens the session's git diff, every file in one scroll, with three
+views you can cycle through:
+
+- **`Since review`**: only what changed since you last marked the diff reviewed
+  (the default once you've set a checkpoint).
+- **`Uncommitted`**: staged and unstaged changes in the working tree.
+- **`All changes`**: everything on the branch since it diverged from main.
+
+Press **Ctrl+A** to mark the current state reviewed—that checkpoint persists
+with the session, so on the next round of edits `/diffs` shows only what's new.
+Press **Ctrl+N** on any diff line to attach an inline review note; when you
+close `/diffs`, every note is injected into your prompt with its `path:line`
+and surrounding diff context so you can send the agent straight to the lines
+you flagged.
+
+![The /diffs browser with an inline review note](../assets/screenshots/diffs.svg)
+
+See the [diff browser](../commands.md#diff-browser).
