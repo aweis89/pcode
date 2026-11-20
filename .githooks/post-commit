@@ -1,0 +1,28 @@
+#!/bin/sh
+# After a commit lands directly on the mainline branch (master/main), push it.
+#
+# Linked worktrees and feature branches are skipped, and a failed push only
+# warns so the commit itself never fails.
+#
+# Enable with `git config core.hooksPath .githooks`; skip the push with
+# PCODE_NO_AUTOPUSH=1.
+
+# In a linked worktree the per-worktree git dir differs from the common one.
+[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] || exit 0
+
+branch=$(git symbolic-ref --quiet --short HEAD) || exit 0
+case "$branch" in
+	master|main) ;;
+	*) exit 0 ;;
+esac
+
+if [ "${PCODE_NO_AUTOPUSH:-0}" = "0" ]; then
+	upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || upstream=
+	if [ -n "$upstream" ] && [ "$(git rev-list --count "$upstream"..HEAD)" -gt 0 ]; then
+		# Never block on a credential prompt, and never fail the commit over a push.
+		if ! GIT_TERMINAL_PROMPT=0 git push --quiet; then
+			echo "post-commit: push to $upstream failed; push by hand" >&2
+		fi
+	fi
+fi
+exit 0
