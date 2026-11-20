@@ -31,6 +31,7 @@ from pathlib import Path
 
 from iterm import Look, profile_look, progress_bar_svg
 from rich.console import Console
+from rich.terminal_theme import SVG_EXPORT_THEME
 from rich.text import Text
 
 HERE = Path(__file__).resolve().parent
@@ -413,7 +414,7 @@ def play(
         if tab not in tabs:
             raise SystemExit(f"--live {name} plays one tab: --tab {' or '.join(tabs)}")
         root, steps, command = DEMO_ROOT / tab, tabs[tab].steps, [*command, tab]
-    background = look.theme.background_color.hex if look.theme else None
+    background = (look.theme or SVG_EXPORT_THEME).background_color.hex
     with session(command, root, (width, height), preferences, background) as pane:
         if not live:
             return play_steps(pane, steps, out, width, text=text, look=look, live=False)
