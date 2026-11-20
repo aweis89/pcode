@@ -85,6 +85,7 @@ OWN_HELPERS = {
     "pcode.background_delegation.BackgroundDelegation": {
         "_drain_while_waiting",
         "_ending",
+        "_interleave_buffered",
         "_node",
         "_wait_step",
     },

@@ -616,13 +616,12 @@ def side_model(name: str, effort: str = "") -> SideModel:
 
 
 def worker_model(name: str) -> SideModel:
-    """`side_model`, for a model that runs a worker: never one that runs its own loop."""
-    from pcode.models import runs_own_loop
+    """`side_model`, for a model that runs a worker.
 
-    if runs_own_loop(name):
-        from pcode.antigravity import WORKER_REFUSAL
-
-        raise ValueError(f"Cannot use {name}: {WORKER_REFUSAL}")
+    An `antigravity:` worker gets a fresh isolated `agy` session per worker in
+    `WorkspaceSubAgentToolset._run_delegation` so concurrent workers never share
+    one process or deadlock the parent's session.
+    """
     return side_model(name)
 
 

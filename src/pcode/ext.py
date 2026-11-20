@@ -233,12 +233,7 @@ class ExtensionAPI:
         from pydantic_ai_harness.sub_agents import SubAgent
 
         from pcode.agent import SUBAGENT_USAGE_LIMITS
-        from pcode.models import runs_own_loop
 
-        if runs_own_loop(getattr(agent, "model", None)):
-            from pcode.antigravity import WORKER_REFUSAL
-
-            raise ValueError(f"Cannot register sub-agent on Antigravity: {WORKER_REFUSAL}")
         options.setdefault("usage_limits", SUBAGENT_USAGE_LIMITS)
         self.subagents.append(SubAgent(agent, **options))
 

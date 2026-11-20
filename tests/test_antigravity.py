@@ -645,22 +645,16 @@ def test_antigravity_can_delegate_to_a_worker_on_another_provider(
     fake_agy, tmp_path, subagent_models
 ):
     ran: list = []
-    shown: list = []
-    subagent_models("antigravity:fake-flash", "claude:fable")
 
     async def go():
         model = AntigravityModel("fake-neon")
-        model.listener = shown.append
         agent = delegating_agent(model, tmp_path, ran)
-        prompt = mcp_prompt("delegate_task", {"task": "review", "run_in_background": True})
+        prompt = mcp_prompt(
+            "delegate_task", {"task": "review", "model": "claude:fable", "run_in_background": True}
+        )
         return await streamed(agent, prompt)
 
     result = run(go())
-    assert shown == [
-        "Antigravity started a pcode worker on claude:fable: review",
-        "The pcode worker on claude:fable finished; Antigravity has its report.",
-    ]
-    # The first default it may use, never Antigravity's own.
     assert ran == [{"task": "review", "model": "claude:fable", "background": True}]
     assert result.output == "tool said: report on review from claude:fable"
     [listed] = [e for e in fake_agy() if "mcp_tools" in e]
@@ -670,13 +664,16 @@ def test_antigravity_can_delegate_to_a_worker_on_another_provider(
     assert "run_in_background" in tool["inputSchema"]["properties"]
     schema = tool["inputSchema"]
     assert schema["properties"]["model"]["description"] == (
-        "The model to run the sub-agent on, as provider:model, one of: "
-        "claude:fable, openai-codex:gpt. Defaults to claude:fable."
+        "Optional model to run the sub-agent on, as provider:model, one of: "
+        "claude:fable, openai-codex:gpt. Omit it to use the session's current model "
+        "(antigravity:fake-neon)."
     )
     assert schema["required"] == ["task"]
 
 
-def test_with_no_default_antigravity_must_name_the_model(fake_agy, tmp_path, subagent_models):
+def test_omitted_model_defaults_to_antigravitys_own_current_model(
+    fake_agy, tmp_path, subagent_models
+):
     ran: list = []
 
     async def go():
@@ -684,16 +681,14 @@ def test_with_no_default_antigravity_must_name_the_model(fake_agy, tmp_path, sub
         return await streamed(agent, mcp_prompt("delegate_task", {"task": "x"}))
 
     result = run(go())
-    assert ran == []
-    assert result.output == f"tool said (error): {antigravity_tools.NO_MODEL}"
+    assert ran == [{"task": "x", "model": None, "background": False}]
+    assert result.output == "tool said: report on x from None"
     [listed] = [e for e in fake_agy() if "mcp_tools" in e]
-    assert listed["mcp_tools"][0]["inputSchema"]["required"] == ["task", "model"]
+    assert listed["mcp_tools"][0]["inputSchema"]["required"] == ["task"]
 
 
-@pytest.mark.parametrize("default", [(), ("claude:fable",)])
-def test_a_worker_never_runs_on_antigravity(fake_agy, tmp_path, subagent_models, default):
+def test_explicit_antigravity_worker_model_is_passed_through(fake_agy, tmp_path, subagent_models):
     ran: list = []
-    subagent_models(*default)
 
     async def go():
         agent = delegating_agent(AntigravityModel("fake-neon"), tmp_path, ran)
@@ -701,8 +696,8 @@ def test_a_worker_never_runs_on_antigravity(fake_agy, tmp_path, subagent_models,
         return await streamed(agent, mcp_prompt("delegate_task", arguments))
 
     result = run(go())
-    assert ran == []
-    assert result.output.startswith("tool said (error): Cannot use antigravity:fake-flash")
+    assert ran == [{"task": "x", "model": "antigravity:fake-flash", "background": False}]
+    assert result.output == "tool said: report on x from antigravity:fake-flash"
 
 
 def test_only_delegation_is_offered_and_only_during_a_turn(fake_agy, tmp_path, subagent_models):
@@ -1137,14 +1132,13 @@ def test_a_plain_side_job_is_sent_its_instructions_and_its_process_expires(
     assert [block["text"] for block in prompts(fake_agy)[0]] == ["Write a title.", "hello"]
 
 
-def test_side_uses_get_a_session_of_their_own_but_it_is_never_a_worker():
+def test_side_uses_and_workers_get_sessions_of_their_own():
     from pcode.agent import side_model, subagent_menu, worker_model
     from pcode.compaction import CompactionError, summarize
 
     assert side_model("antigravity:fake-neon").model._side
-    with pytest.raises(ValueError, match="delegated worker"):
-        worker_model("antigravity:fake-neon")
-    assert subagent_menu(["antigravity:fake-neon"])[0] == {}
+    assert worker_model("antigravity:fake-neon").model.system == "antigravity"
+    assert "antigravity:fake-neon" in subagent_menu(["antigravity:fake-neon"])[0]
     # The conversation's own session compacts itself instead (`/compact`).
     with pytest.raises(CompactionError, match="use /compact"):
         asyncio.run(summarize([], model=AntigravityModel("fake-neon")))
@@ -1847,9 +1841,7 @@ def test_core_tools_bridged_extensions_and_opt_in_extension_are_exposed(fake_agy
     assert "Use ticket_lookup for issue IDs." in instructions
 
 
-def test_delegate_task_lists_browser_subagent_and_notifies_role(
-    fake_agy, tmp_path, subagent_models
-):
+def test_delegate_task_lists_browser_subagent_without_notes(fake_agy, tmp_path, subagent_models):
     from types import SimpleNamespace
 
     from pydantic_ai.capabilities import Capability
@@ -1883,11 +1875,8 @@ def test_delegate_task_lists_browser_subagent_and_notifies_role(
 
     result = run(go())
     assert result.output == "tool said: done"
-    assert ran == [{"agent_name": "browser", "task": "check login", "model": "claude:fable"}]
-    assert shown == [
-        "Antigravity started a pcode browser worker on claude:fable: check login",
-        "The pcode browser worker on claude:fable finished; Antigravity has its report.",
-    ]
+    assert ran == [{"agent_name": "browser", "task": "check login", "model": None}]
+    assert shown == []
     [listed] = [e for e in fake_agy() if "mcp_tools" in e]
     agent_desc = listed["mcp_tools"][0]["inputSchema"]["properties"]["agent_name"]["description"]
     assert "worker, browser" in agent_desc
@@ -2075,32 +2064,217 @@ def test_content_conversion_handles_image_only_and_non_image_binary():
     assert pdf == [{"type": "text", "text": "[binary content: application/pdf, 8 bytes]"}]
 
 
-def test_extension_subagent_and_direct_delegation_refuse_antigravity(tmp_path):
-    from types import SimpleNamespace
-
-    from pydantic_ai import ModelRetry
+def test_antigravity_workers_run_in_isolated_sessions_and_allow_extension_subagents(
+    fake_agy, tmp_path
+):
     from pydantic_ai_harness.sub_agents import SubAgent
 
+    from pcode.background_delegation import BackgroundDelegation
+    from pcode.delegation import DelegationReporting, stream_child_activity
     from pcode.ext import ExtensionAPI
-    from pcode.isolated_delegation import WorkspaceSubAgentToolset
+    from pcode.isolated_delegation import WorkspaceSubAgents
+    from pcode.live import AgentRuntime
+    from pcode.runtime import ToolStarted, ToolSummary, WorkerStatus
+    from pcode.tool_panel import ToolHistory
+    from pcode.workers import Workers
 
     api = ExtensionAPI("test", tmp_path, None)
-    with pytest.raises(ValueError, match="delegated worker"):
-        api.subagent(Agent(AntigravityModel("fake-neon"), name="ext_worker"))
+    api.subagent(Agent(AntigravityModel("fake-neon"), name="ext_worker"))
+    assert [sub.resolved_name for sub in api.subagents] == ["ext_worker"]
 
-    toolset = WorkspaceSubAgentToolset.__new__(WorkspaceSubAgentToolset)
-    toolset._models = {}
-    sub = SubAgent(Agent(AntigravityModel("fake-neon"), name="ext_worker"))
-    with pytest.raises(ModelRetry, match="delegated worker"):
-        asyncio.run(toolset._run_delegation(SimpleNamespace(model=None), "ext_worker", sub))
-    # Inheriting an Antigravity parent model with model=None is also refused.
-    inheriting = SubAgent(Agent(None, name="worker"))
-    with pytest.raises(ModelRetry, match="delegated worker"):
-        asyncio.run(
-            toolset._run_delegation(
-                SimpleNamespace(model=AntigravityModel("fake-neon")), "worker", inheriting
-            )
+    async def go():
+        parent_model = AntigravityModel("fake-neon")
+        worker = Agent(None, name="worker", model_settings={CWD_SETTING: str(tmp_path)})
+        sub_agents = WorkspaceSubAgents(
+            workspace=tmp_path,
+            worker_factory=None,
+            agents=[SubAgent(worker)],
+            agent_folders=None,
+            event_stream_handler=stream_child_activity,
         )
+        parent = Agent(
+            parent_model,
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[sub_agents, DelegationReporting(), BackgroundDelegation()],
+        )
+        runtime = AgentRuntime(parent)
+        panel = ToolHistory()
+        workers = Workers()
+        live_panel_seen: list[int] = []
+        live_workers_seen: list[int] = []
+        events = []
+        prompt = mcp_prompt("delegate_task", {"task": "check repo", "purpose": "checking repo"})
+        async for event in runtime.stream(prompt):
+            events.append(event)
+            if isinstance(event, ToolStarted | ToolSummary):
+                panel.record(event)
+                workers.record(event)
+            elif isinstance(event, WorkerStatus):
+                workers.record(event)
+            if panel.delegates:
+                live_panel_seen.append(len(panel.delegates))
+            if any(w.running for w in workers.items):
+                live_workers_seen.append(workers.running())
+        return events, panel, workers, live_panel_seen, live_workers_seen
+
+    events, panel, workers, live_panel_seen, live_workers_seen = run(go())
+    # Parent session (s-1) and isolated worker session (s-2): never deadlocked on parent's lock.
+    new_sessions = fake_agy("session/new")
+    assert len(new_sessions) == 2
+    assert [s["name"] for s in new_sessions[0]["params"]["mcpServers"]] == ["pcode"]
+    assert new_sessions[1]["params"]["mcpServers"] == []
+    # Worker appeared live in BOTH the panel and /agents during the turn, then settled.
+    assert live_panel_seen and live_workers_seen
+    assert panel.delegates == []
+    assert len(workers.items) == 1
+    assert workers.items[0].worker_id == "w1"
+    assert not workers.items[0].running
+    assert not workers.items[0].failed
+    # Native mcp_pcode_delegate_task rows are suppressed (no duplicate tool summaries).
+    started_names = [e.name for e in events if isinstance(e, ToolStarted)]
+    summary_names = [e.name for e in events if isinstance(e, ToolSummary)]
+    assert "delegate_task" in started_names and "mcp_pcode_delegate_task" not in started_names
+    assert "delegate_task" in summary_names and "mcp_pcode_delegate_task" not in summary_names
+    # Antigravity worker's own native tool call surfaced through stream_child_activity.
+    assert any(entry.kind == "tool" for entry in workers.items[0].entries)
+
+
+def test_antigravity_foreground_worker_auto_detaches_before_mcp_timeout(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
+
+    from pcode import background_delegation
+    from pcode.background_delegation import BackgroundDelegation
+    from pcode.delegation import DelegationReporting, stream_child_activity
+    from pcode.isolated_delegation import WorkspaceSubAgents
+    from pcode.live import AgentRuntime
+    from pcode.runtime import RunStatus, ToolStarted, ToolSummary, WorkerStatus
+    from pcode.tool_panel import ToolHistory
+    from pcode.workers import Workers
+
+    monkeypatch.setattr(background_delegation, "MCP_DETACH_SECONDS", 0.05)
+    monkeypatch.setattr(background_delegation, "POLL_SECONDS", 0.01)
+
+    release = asyncio.Event()
+
+    async def slow_worker(messages, info):
+        await release.wait()
+        yield "slow worker finished"
+
+    async def go():
+        parent_model = AntigravityModel("fake-neon")
+        worker = Agent(FunctionModel(stream_function=slow_worker), name="worker")
+        sub_agents = WorkspaceSubAgents(
+            workspace=tmp_path,
+            worker_factory=None,
+            agents=[SubAgent(worker)],
+            models={"slow:m": ModelOption(FunctionModel(stream_function=slow_worker))},
+            agent_folders=None,
+            event_stream_handler=stream_child_activity,
+        )
+        parent = Agent(
+            parent_model,
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[sub_agents, DelegationReporting(), BackgroundDelegation()],
+        )
+        runtime = AgentRuntime(parent)
+        panel = ToolHistory()
+        workers = Workers()
+        saw_still_live_after_detach = False
+        prompt = mcp_prompt("delegate_task", {"task": "long job", "model": "slow:m"})
+
+        async for event in runtime.stream(prompt):
+            if isinstance(event, ToolStarted | ToolSummary):
+                panel.record(event)
+                workers.record(event)
+            elif isinstance(event, WorkerStatus):
+                workers.record(event)
+            elif (
+                isinstance(event, RunStatus) and "sub-agent" in event.text and not release.is_set()
+            ):
+                # Reached DelegatesPending AFTER auto-detach; worker must still be live.
+                saw_still_live_after_detach = bool(panel.delegates) and workers.running() == 1
+                release.set()
+        return panel, workers, saw_still_live_after_detach
+
+    panel, workers, saw_still_live = run(go())
+    assert saw_still_live
+    assert panel.delegates == []
+    assert len(workers.items) == 1 and not workers.items[0].running
+    # Antigravity received the detach receipt first, then the delivered result as the next prompt.
+    sent = prompts(fake_agy)
+    assert len(sent) == 2
+    assert "slow worker finished" in "\n".join(b.get("text", "") for b in sent[1])
+    [mcp_res] = [e["mcp_result"] for e in fake_agy() if "mcp_result" in e]
+    assert "client tool timeout" in mcp_res["result"]["content"][0]["text"]
+
+
+def test_antigravity_worker_events_stream_live_while_turn_is_running(fake_agy, tmp_path):
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
+
+    from pcode.background_delegation import BackgroundDelegation
+    from pcode.delegation import DelegationReporting, stream_child_activity
+    from pcode.isolated_delegation import WorkspaceSubAgents
+    from pcode.live import AgentRuntime
+    from pcode.runtime import ChildText, ToolStarted, ToolSummary, WorkerStatus
+    from pcode.tool_panel import ToolHistory
+    from pcode.workers import Workers
+
+    release = asyncio.Event()
+    saw_live_while_blocked = False
+
+    async def gated_worker(messages, info):
+        yield "working on it..."
+        await release.wait()
+        yield " all done"
+
+    async def go():
+        nonlocal saw_live_while_blocked
+        parent_model = AntigravityModel("fake-neon")
+        worker = Agent(FunctionModel(stream_function=gated_worker), name="worker")
+        sub_agents = WorkspaceSubAgents(
+            workspace=tmp_path,
+            worker_factory=None,
+            agents=[SubAgent(worker)],
+            models={"fast:m": ModelOption(FunctionModel(stream_function=gated_worker))},
+            agent_folders=None,
+            event_stream_handler=stream_child_activity,
+        )
+        parent = Agent(
+            parent_model,
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[sub_agents, DelegationReporting(), BackgroundDelegation()],
+        )
+        runtime = AgentRuntime(parent)
+        panel = ToolHistory()
+        workers = Workers()
+        prompt = mcp_prompt(
+            "delegate_task", {"task": "inspect", "purpose": "inspecting", "model": "fast:m"}
+        )
+        async for event in runtime.stream(prompt):
+            if isinstance(event, ToolStarted | ToolSummary):
+                panel.record(event)
+                workers.record(event)
+            elif isinstance(event, WorkerStatus | ChildText):
+                workers.record(event)
+            # Only release the worker AFTER its start and prose reached the live UI!
+            if (
+                not release.is_set()
+                and panel.delegates
+                and workers.items
+                and any(e.kind == "text" for e in workers.items[0].entries)
+            ):
+                saw_live_while_blocked = True
+                release.set()
+        return panel, workers
+
+    panel, workers = run(go())
+    assert saw_live_while_blocked
+    assert panel.delegates == []
+    assert len(workers.items) == 1 and not workers.items[0].running
 
 
 def test_non_tool_data_capability_parts_are_not_sent_to_antigravity():
@@ -2136,16 +2310,253 @@ def test_asked_matches_rendered_non_user_and_continue_segments():
     ]
 
 
-def test_delegation_arguments_replace_empty_or_none_agent_name(subagent_models):
-    subagent_models("claude:fable")
+def test_delegation_arguments_replace_empty_or_none_agent_name():
     assert (
         antigravity_tools._delegation_arguments({"agent_name": None, "task": "x"})["agent_name"]
         == "worker"
     )
     assert (
-        antigravity_tools._delegation_arguments({"agent_name": "", "task": "x"})["agent_name"]
+        antigravity_tools._delegation_arguments({"agent_name": "   ", "task": "x"})["agent_name"]
         == "worker"
     )
+    assert "model" not in antigravity_tools._delegation_arguments({"model": "  ", "task": "x"})
+
+
+def test_non_antigravity_parent_can_delegate_to_antigravity_worker(fake_agy, tmp_path):
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
+
+    from pcode.delegation import DelegationReporting, stream_child_activity
+    from pcode.isolated_delegation import WorkspaceSubAgents
+
+    calls = 0
+
+    def parent_fn(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "delegate_task",
+                        {
+                            "agent_name": "worker",
+                            "task": "inspect files",
+                            "model": "antigravity:fake-neon",
+                        },
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("parent done")])
+
+    async def go():
+        worker = Agent(None, name="worker", model_settings={CWD_SETTING: str(tmp_path)})
+        sub_agents = WorkspaceSubAgents(
+            workspace=tmp_path,
+            worker_factory=None,
+            agents=[SubAgent(worker)],
+            models={"antigravity:fake-neon": ModelOption(AntigravityModel("fake-neon"))},
+            agent_folders=None,
+            event_stream_handler=stream_child_activity,
+        )
+        parent = Agent(
+            FunctionModel(parent_fn),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[sub_agents, DelegationReporting()],
+        )
+        return await parent.run("delegate to agy")
+
+    result = run(go())
+    assert result.output == "parent done"
+    new_sessions = fake_agy("session/new")
+    assert len(new_sessions) == 1
+    assert new_sessions[0]["params"]["mcpServers"] == []
+
+
+def test_continue_worker_reuses_antigravity_session_and_retires_on_switch(fake_agy, tmp_path):
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
+
+    from pcode.background_delegation import BackgroundDelegation
+    from pcode.delegation import DelegationReporting, stream_child_activity
+    from pcode.isolated_delegation import WorkspaceSubAgents
+    from pcode.live import AgentRuntime
+    from pcode.worker_channel import WorkerHub
+
+    retired: list[AntigravityModel] = []
+    orig_retire = AntigravityModel.retire
+
+    def track_retire(self):
+        retired.append(self)
+        orig_retire(self)
+
+    async def other_model(messages, info):
+        yield "switched reply"
+
+    AntigravityModel.retire = track_retire  # type: ignore[method-assign]
+    try:
+
+        async def go():
+            hub = WorkerHub()
+            parent_model = AntigravityModel("fake-neon")
+            worker = Agent(None, name="worker", model_settings={CWD_SETTING: str(tmp_path)})
+            sub_agents = WorkspaceSubAgents(
+                workspace=tmp_path,
+                worker_factory=None,
+                agents=[SubAgent(worker)],
+                models={"other:m": ModelOption(FunctionModel(stream_function=other_model))},
+                agent_folders=None,
+                event_stream_handler=stream_child_activity,
+                hub=hub,
+            )
+            parent = Agent(
+                parent_model,
+                model_settings={CWD_SETTING: str(tmp_path)},
+                capabilities=[sub_agents, DelegationReporting(), BackgroundDelegation()],
+            )
+            runtime = AgentRuntime(parent)
+            # Turn 1: initial antigravity worker -> opens worker session s-2.
+            async for _ in runtime.stream(mcp_prompt("delegate_task", {"task": "step one"})):
+                pass
+            handle = hub.get("w1")
+            assert handle is not None and isinstance(handle.worker_model, AntigravityModel)
+            first_model = handle.worker_model
+            # Turn 2: continue_worker on same antigravity model -> reuses s-2 (no new session).
+            async for _ in runtime.stream(
+                mcp_prompt("delegate_task", {"task": "step two", "continue_worker": "w1"})
+            ):
+                pass
+            assert handle.worker_model is first_model
+            assert len(fake_agy("session/new")) == 2
+            # Turn 3: continue_worker switching to a non-Antigravity model -> retires first_model.
+            async for _ in runtime.stream(
+                mcp_prompt(
+                    "delegate_task",
+                    {"task": "step three", "continue_worker": "w1", "model": "other:m"},
+                )
+            ):
+                pass
+            assert handle.worker_model is None
+            assert first_model in retired
+
+        run(go())
+    finally:
+        AntigravityModel.retire = orig_retire  # type: ignore[method-assign]
+
+
+def test_bridged_delegate_task_cancel_settles_as_interrupted(fake_agy, tmp_path):
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
+
+    from pcode.background_delegation import BackgroundDelegation
+    from pcode.delegation import DelegationReporting, stream_child_activity
+    from pcode.isolated_delegation import WorkspaceSubAgents
+    from pcode.live import AgentRuntime
+    from pcode.runtime import ToolStarted, ToolSummary, WorkerStatus
+    from pcode.tool_panel import ToolHistory
+    from pcode.workers import Workers
+
+    async def blocking_worker(messages, info):
+        await asyncio.Future()
+        yield "never"
+
+    async def go():
+        parent_model = AntigravityModel("fake-neon")
+        worker = Agent(FunctionModel(stream_function=blocking_worker), name="worker")
+        sub_agents = WorkspaceSubAgents(
+            workspace=tmp_path,
+            worker_factory=None,
+            agents=[SubAgent(worker)],
+            models={"hang:m": ModelOption(FunctionModel(stream_function=blocking_worker))},
+            agent_folders=None,
+            event_stream_handler=stream_child_activity,
+        )
+        parent = Agent(
+            parent_model,
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[sub_agents, DelegationReporting(), BackgroundDelegation()],
+        )
+        runtime = AgentRuntime(parent)
+        panel = ToolHistory()
+        workers = Workers()
+        summaries: list[ToolSummary] = []
+        prompt = "MCP " + json.dumps(
+            {
+                "name": "delegate_task",
+                "arguments": {"task": "wait forever", "model": "hang:m"},
+                "cancel_after": 0.05,
+            }
+        )
+        async for event in runtime.stream(prompt):
+            if isinstance(event, ToolStarted):
+                panel.record(event)
+                workers.record(event)
+            elif isinstance(event, ToolSummary):
+                panel.record(event)
+                workers.record(event)
+                summaries.append(event)
+            elif isinstance(event, WorkerStatus):
+                workers.record(event)
+        return panel, workers, summaries
+
+    panel, workers, summaries = run(go())
+    assert panel.delegates == []
+    assert len(workers.items) == 1 and not workers.items[0].running
+    delegation_summaries = [s for s in summaries if s.name == "delegate_task"]
+    assert len(delegation_summaries) == 1
+    assert delegation_summaries[0].outcome == "interrupted"
+    assert delegation_summaries[0].failed
+
+
+def test_post_settle_continuation_streams_bridged_delegate_task(fake_agy, tmp_path, monkeypatch):
+    from pydantic_ai_harness.sub_agents import SubAgent
+
+    from pcode.background_delegation import BackgroundDelegation
+    from pcode.delegation import DelegationReporting, stream_child_activity
+    from pcode.isolated_delegation import WorkspaceSubAgents
+
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    model = AntigravityModel("fake-flash")
+    worker = Agent(None, name="worker", model_settings={CWD_SETTING: str(tmp_path)})
+    sub_agents = WorkspaceSubAgents(
+        workspace=tmp_path,
+        worker_factory=None,
+        agents=[SubAgent(worker)],
+        agent_folders=None,
+        event_stream_handler=stream_child_activity,
+    )
+    app, _, buffer = _controller_app(
+        model,
+        tmp_path,
+        extra_capabilities=[sub_agents, DelegationReporting(), BackgroundDelegation()],
+    )
+
+    async def exercise():
+        consumer = asyncio.create_task(app.controller.consume())
+        try:
+            payload = json.dumps(
+                {"name": "delegate_task", "arguments": {"task": "check late", "purpose": "late"}}
+            )
+            app.controller.submit(f"LATER_MCP {payload}", "queue")
+            for _ in range(250):
+                if (
+                    "late mcp:" in buffer.getvalue()
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            assert "late mcp:" in buffer.getvalue()
+            assert "got: check late" in buffer.getvalue()
+            assert len(app.activity.workers.items) == 1
+            assert not app.activity.workers.items[0].running
+        finally:
+            app.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(exercise())
 
 
 def _controller_app(model: AntigravityModel, tmp_path, *, extra_capabilities=()):

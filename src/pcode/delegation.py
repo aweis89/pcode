@@ -20,7 +20,10 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     PartDeltaEvent,
+    PartEndEvent,
     PartStartEvent,
     TextPart,
     TextPartDelta,
@@ -45,6 +48,8 @@ from pcode.tool_display import (
     command_error,
     execution_mode,
     invocation,
+    native_result_detail,
+    native_result_projection,
     result_detail,
     stated_purpose,
     stored_source,
@@ -109,7 +114,13 @@ class ResumableAgent(WrapperAgent):
     already ran is run twice. A drop anywhere else still ends the child.
     """
 
+    def __init__(self, wrapped, *, model=None):
+        super().__init__(wrapped)
+        self.override_model = model
+
     async def run(self, user_prompt=None, *, message_history=None, capabilities=None, **kwargs):
+        if self.override_model is not None:
+            kwargs["model"] = self.override_model
         attempts = int(load_preferences().get("retry_attempts", SETTINGS["retry_attempts"].default))
         attempt = 0
         handle = current_worker()
@@ -248,11 +259,50 @@ async def stream_child_activity(_ctx, events):
                 parent_call_id=parent_id,
             )
             activity = "Working" if tools else "Waiting for model"
+        elif isinstance(event, PartEndEvent) and isinstance(event.part, NativeToolCallPart):
+            part = event.part
+            try:
+                args = part.args_as_dict()
+            except TypeError, ValueError:
+                args = {}
+            tools[part.tool_call_id] = (part.tool_name, args, monotonic())
+            agent, task = assignment(part.tool_name, args)
+            child = ToolStarted(
+                part.tool_name,
+                target(part.tool_name, args),
+                f"{parent_id}:{part.tool_call_id}",
+                arguments=capture(args if args else part.args),
+                run_id=parent.run_id or "",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                parent_call_id=parent_id,
+                agent=agent,
+                task=task,
+            )
+            activity = "Working"
+        elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolReturnPart):
+            part = event.part
+            name, args, started = tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
+            provider = part.provider_name or ""
+            detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
+            child = ToolSummary(
+                name,
+                detail,
+                failed=failed,
+                call_id=f"{parent_id}:{part.tool_call_id}",
+                elapsed_seconds=max(0, monotonic() - started),
+                result=capture(native_result_projection(part.content, provider)),
+                run_id=parent.run_id or "",
+                outcome=part.outcome if not failed else "error",
+                parent_call_id=parent_id,
+            )
+            activity = "Working" if tools else "Waiting for model"
         elif isinstance(event, PartStartEvent):
             if isinstance(event.part, ThinkingPart):
                 activity = "Thinking"
             elif isinstance(event.part, TextPart):
                 activity = "Responding"
+            elif isinstance(event.part, NativeToolCallPart):
+                activity = "Working"
         if child is not None or activity != phase:
             await parent.emit(ChildActivity(activity=activity, child=child))
             phase = activity

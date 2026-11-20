@@ -135,6 +135,8 @@ class WorkerHandle:
     previous: tuple | None = None
     # Whether `delegate_task` got as far as running it since the last claim.
     started: bool = False
+    # Dedicated `AntigravityModel(worker=True)` for this worker, reused across `continue_worker`.
+    worker_model: Any = None
 
     @property
     def running(self) -> bool:
@@ -261,6 +263,9 @@ class WorkerHub:
         for handle in finished[: max(0, len(self._handles) - HISTORY)]:
             # Forgotten workers still count against a token budget.
             self._trimmed_tokens += handle.tokens
+            if handle.worker_model is not None:
+                handle.worker_model.retire()
+                handle.worker_model = None
             del self._handles[handle.id]
             self._by_call = {c: w for c, w in self._by_call.items() if w != handle.id}
 

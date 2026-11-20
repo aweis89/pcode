@@ -20,9 +20,11 @@ Each session's `agy` starts `antigravity_relay.py`, which joins this bridge's
 Unix socket. A call made while no pcode turn is running (a background
 sub-agent after the turn ended) is refused: there is no run to execute it in.
 
-Workers never run on `antigravity:` (`WORKER_REFUSAL`): a `delegate_task` call
-always names a model, the first `subagent_models` entry when Antigravity names
-none, since an omitted model means the session's own.
+When Antigravity omits `model` in `delegate_task`, the worker defaults to the
+session's own current Antigravity model (running in an isolated `agy` session),
+matching how every other provider in pcode delegates. Bridged `delegate_task`
+calls emit `BridgedToolStarted`/`BridgedToolFinished` into the run's event
+stream so workers appear live in the tool panel and `/agents`.
 """
 
 from __future__ import annotations
@@ -42,16 +44,24 @@ import tempfile
 import time
 import weakref
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic_ai import ModelRetry, RunContext
-from pydantic_ai.messages import BinaryContent, TextContent, ToolCallPart, ToolReturn
+import anyio
+from pydantic_ai import CustomEvent, ModelRetry, RunContext
+from pydantic_ai.exceptions import UserError
+from pydantic_ai.messages import (
+    BinaryContent,
+    TextContent,
+    ToolCallPart,
+    ToolReturn,
+    ToolReturnPart,
+)
 from pydantic_ai.tools import ToolDenied
 
-from pcode.antigravity import WORKER_REFUSAL
-from pcode.models import runs_own_loop
+from pcode.antigravity import PREFIX, unwrap
 
 SERVER_NAME = "pcode"
 # Core pcode tools exposed whenever the turn's tool manager offers them.
@@ -84,14 +94,28 @@ NO_TURN = "pcode runs this only during one of its turns, and none is running now
 # Seconds a bridged MCP call waits for a pending post-settle continuation turn
 # to enter `begin_turn()` before rejecting with NO_TURN.
 WAKE_TURN_WAIT = 2.0
-NO_MODEL = (
-    "Name the model to run the sub-agent on, as provider:model; it can't run on "
-    "Antigravity. The user can set a default in pcode's `subagent_models` setting (/config)."
-)
 INTRO = (
-    "Runs a pcode sub-agent on another model provider (such as Claude or OpenAI), "
-    "in this workspace with pcode's own tools, and returns its report.\n\n"
+    "Runs a pcode sub-agent in this workspace (or an isolated worktree) and returns its report. "
+    "Omit `model` to use the session's current model, or pass another provider:model (such as "
+    "Claude or OpenAI). For long-running tasks (over ~2 minutes), pass "
+    "`run_in_background=True`.\n\n"
 )
+
+
+@dataclass(kw_only=True)
+class BridgedToolStarted(CustomEvent):
+    """A pcode tool (`delegate_task`) started via the ACP MCP bridge."""
+
+    call: ToolCallPart
+
+
+@dataclass(kw_only=True)
+class BridgedToolFinished(CustomEvent):
+    """A bridged pcode tool call finished (or failed / was cancelled)."""
+
+    result: ToolReturnPart
+
+
 # Added eagerly to `navigate` so Antigravity sees the sign-in safety rule even
 # if it never reads this MCP server's `instructions.md`.
 BROWSER_NAVIGATE_NOTE = (
@@ -340,9 +364,8 @@ class ToolBridge:
         self._context: contextvars.Context | None = None
         self._wake_starting = wake_starting
         self._turn_ready = asyncio.Event()
-        # Tells the user about the workers Antigravity runs: they reach pcode's
-        # event stream only after the turn, and never the worker panel, since
-        # no pcode tool call of the parent's starts them.
+        # Retained for callers passing `notify=`; bridged `delegate_task` calls
+        # now stream directly into the live panel and `/agents` via `ctx.emit`.
         self.notify = notify
         self._server: asyncio.Server | None = None
         self._dir: str | None = None
@@ -581,40 +604,58 @@ class ToolBridge:
 
         if name != "delegate_task":
             return _content(await handle())
-        about = arguments.get("purpose") or " ".join(str(arguments.get("task", "")).split())
-        agent_name = arguments["agent_name"]
-        role = "worker" if agent_name == DEFAULT_AGENT else f"{agent_name} worker"
-        worker = f"pcode {role} on {arguments['model']}"
-        self.notify(f"Antigravity started a {worker}: {about[:100]}")
+        await _emit_bridged(ctx, BridgedToolStarted(call=call))
         try:
-            blocks = _content(await handle())
-        except BaseException:
-            self.notify(f"The {worker} stopped without a report.")
+            raw = await handle()
+        except BaseException as error:
+            if isinstance(error, asyncio.CancelledError):
+                outcome = "interrupted"
+                message = "Cancelled"
+            elif isinstance(error, ModelRetry):
+                outcome = "retried"
+                message = _error_text(error)
+            else:
+                outcome = "failed"
+                message = _error_text(error)
+            failed = ToolReturnPart(
+                tool_name=name,
+                content=message,
+                tool_call_id=call.tool_call_id,
+                outcome=outcome,
+            )
+            with anyio.CancelScope(shield=True):
+                await _emit_bridged(ctx, BridgedToolFinished(result=failed))
             raise
-        from pcode.worker_channel import hub_for
-
-        hub = hub_for(ctx)
-        still_running = hub is not None and any(
-            handle.call_id == call.tool_call_id and handle.running for handle in hub.handles()
+        content_value = raw.return_value if isinstance(raw, ToolReturn) else raw
+        await _emit_bridged(
+            ctx,
+            BridgedToolFinished(
+                result=ToolReturnPart(name, content_value, tool_call_id=call.tool_call_id)
+            ),
         )
-        # In the background or detached, its result reaches Antigravity later.
-        if not still_running:
-            self.notify(f"The {worker} finished; Antigravity has its report.")
-        return blocks
+        return _content(raw)
+
+
+async def _emit_bridged(ctx: RunContext[Any], event: CustomEvent) -> None:
+    if getattr(ctx, "_event_stream_buffer", None) is None:
+        return
+    with contextlib.suppress(UserError):
+        await ctx.emit(event)
 
 
 def offered_models() -> list[str]:
-    """The models a sub-agent may run on: the /model picker's, less Antigravity's."""
+    """The models a sub-agent may run on: everything in the /model picker."""
     from pcode.models import active_providers, model_catalog
 
-    return [name for name in model_catalog(active_providers(None)) if not runs_own_loop(name)]
+    return list(model_catalog(active_providers(None)))
 
 
-def default_model() -> str | None:
-    """The first `subagent_models` entry Antigravity may delegate to."""
-    from pcode.preferences import subagent_models
-
-    return next((name for name in subagent_models() if not runs_own_loop(name)), None)
+def _session_model(ctx: RunContext[Any] | None) -> str:
+    """The session's current `antigravity:<model>` name, or "" when unknown."""
+    if ctx is None:
+        return ""
+    native = unwrap(getattr(ctx, "model", None))
+    return f"{PREFIX}{native.model_name}" if native is not None and native.model_name else ""
 
 
 def _subagent_names(ctx: RunContext[Any] | None) -> list[str]:
@@ -631,7 +672,7 @@ def _subagent_names(ctx: RunContext[Any] | None) -> list[str]:
 def _delegation_schema(schema: dict, ctx: RunContext[Any] | None = None) -> dict:
     properties = schema.setdefault("properties", {})
     # Antigravity never sees pcode's list of sub-agents, and guesses a name.
-    required = [key for key in schema.get("required", []) if key != "agent_name"]
+    required = [key for key in schema.get("required", []) if key not in {"agent_name", "model"}]
     agents = _subagent_names(ctx)
     available = f", one of: {', '.join(agents)}" if len(agents) > 1 else ""
     properties["agent_name"] = {
@@ -641,31 +682,29 @@ def _delegation_schema(schema: dict, ctx: RunContext[Any] | None = None) -> dict
             f"Which pcode sub-agent runs it{available}; {DEFAULT_AGENT!r} is the general one."
         ),
     }
-    default = default_model()
+    current = _session_model(ctx)
+    default_note = (
+        f" Omit it to use the session's current model ({current})."
+        if current
+        else " Omit it to use the session's current model."
+    )
     offered = ", ".join(offered_models())
     properties["model"] = {
         "type": "string",
         "description": (
-            "The model to run the sub-agent on, as provider:model"
+            "Optional model to run the sub-agent on, as provider:model"
             + (f", one of: {offered}." if offered else ".")
-            + (f" Defaults to {default}." if default else "")
+            + default_note
         ),
     }
-    if default is None:
-        required.append("model")
     schema["required"] = list(dict.fromkeys(required))
     return schema
 
 
 def _delegation_arguments(arguments: dict) -> dict:
-    """`arguments` with a model the worker may run on: never Antigravity's own."""
-    if not arguments.get("agent_name"):
+    """Fill in the default agent name; an omitted model uses the session's own."""
+    if not str(arguments.get("agent_name") or "").strip():
         arguments["agent_name"] = DEFAULT_AGENT
-    model = arguments.get("model") or default_model()
-    if not model:
-        # Omitted, the worker would run on the session's model: Antigravity.
-        raise RuntimeError(NO_MODEL)
-    if runs_own_loop(model):
-        raise RuntimeError(f"Cannot use {model}: {WORKER_REFUSAL}")
-    arguments["model"] = model
+    if not str(arguments.get("model") or "").strip():
+        arguments.pop("model", None)
     return arguments

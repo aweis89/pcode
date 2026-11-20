@@ -17,13 +17,24 @@ and result framing; `tests/test_background_delegation.py` pins them.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 
 import anyio
 import anyio.lowlevel
 from pydantic import ValidationError
-from pydantic_ai import CallToolsNode, CapabilityEvent
+from pydantic_ai import (
+    CallToolsNode,
+    CapabilityEvent,
+    FinalResultEvent,
+    ModelRequestNode,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+)
 from pydantic_ai._run_context import dispatch_event_stream
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import (
@@ -52,6 +63,21 @@ from pcode.worker_channel import hub_for
 DELEGATE = "delegate_task"
 # How often a waiting delegation checks for steering; `shell` polls as often.
 POLL_SECONDS = 0.2
+# Detach a foreground `delegate_task` before `agy` 1.5.13's 3m0s MCP tool-call
+# timeout kills it (`notifications/cancelled: context deadline exceeded`).
+MCP_DETACH_SECONDS = 150.0
+_MODEL_STREAM_EVENTS = (PartStartEvent, PartDeltaEvent, PartEndEvent, FinalResultEvent)
+
+
+async def _take_buffered(buffer: list):
+    while buffer:
+        yield buffer.pop(0)
+
+
+async def _close_stream(stream) -> None:
+    if callable(close := getattr(stream, "aclose", None)):
+        with contextlib.suppress(Exception):
+            await close()
 
 
 @dataclass(kw_only=True)
@@ -104,6 +130,14 @@ def background_message(task_id: str, worker_id: str = "") -> str:
     return (
         f"Started in the background ({_named(task_id, worker_id)}). {WAIT_ADVICE} "
         "Dispatch other independent work, talk to the user, or end your response to wait."
+    )
+
+
+def timeout_detached_message(task_id: str, worker_id: str = "") -> str:
+    return (
+        f"This delegation ({_named(task_id, worker_id)}) is still running, so it moved "
+        f"to the background to avoid the client tool timeout. {WAIT_ADVICE} "
+        "Continue independent work or end your response to wait for it."
     )
 
 
@@ -300,8 +334,12 @@ class BackgroundDelegation(BackgroundTools):
 
         # Steering already pending still starts the child (steering never skips
         # a requested tool); the first check below detaches it at once.
+        from pcode.models import runs_own_loop
+
         self._task_group.start_soon(run, name=f"delegation ({task_id})")
         background = bool(args.get("run_in_background"))
+        own_loop = runs_own_loop(getattr(ctx, "model", None))
+        started = monotonic()
         try:
             while not child.done.is_set():
                 # No await between this check and `detached`: the child either
@@ -309,7 +347,8 @@ class BackgroundDelegation(BackgroundTools):
                 # A worker's question needs a parent model request, which a
                 # waiting call would block, so it detaches like steering.
                 question = hub is not None and hub.has_undelivered()
-                if background or question or steering_pending(ctx):
+                timed_out = own_loop and (monotonic() - started >= MCP_DETACH_SECONDS)
+                if background or question or timed_out or steering_pending(ctx):
                     child.detached = True
                     self._live += 1
                     if handle is not None:
@@ -319,6 +358,8 @@ class BackgroundDelegation(BackgroundTools):
                         return background_message(task_id, worker_id)
                     if question:
                         return question_detached_message(task_id, worker_id)
+                    if timed_out:
+                        return timeout_detached_message(task_id, worker_id)
                     return detached_message(task_id, worker_id)
                 with anyio.move_on_after(POLL_SECONDS):
                     await child.done.wait()
@@ -390,14 +431,98 @@ class BackgroundDelegation(BackgroundTools):
             self._node = None
 
     async def wrap_run_event_stream(self, ctx, *, stream):
-        async for event in super().wrap_run_event_stream(ctx, stream=stream):
-            yield event
+        from pcode.models import runs_own_loop
+
         node = self._node
+        wrapped = super().wrap_run_event_stream(ctx, stream=stream)
+        if isinstance(node, ModelRequestNode) and runs_own_loop(getattr(ctx, "model", None)):
+            async for event in self._interleave_buffered(ctx, wrapped):
+                yield event
+        else:
+            async for event in wrapped:
+                yield event
         # Set by the time the stream is exhausted (private to Pydantic AI; pinned).
         ending = getattr(node, "_next_node", None) if isinstance(node, CallToolsNode) else None
         if self._ending(ctx, ending):
             async for event in dispatch_event_stream(ctx, self._drain_while_waiting(ctx)):
                 yield event
+
+    async def _interleave_buffered(self, ctx, stream):
+        """Yield `stream` while draining `ctx._event_stream_buffer` live as events arrive.
+
+        During a `ModelRequestNode`, Pydantic AI only drains the run's event
+        buffer between pulls of the model stream. An `antigravity:` model runs
+        bridged pcode delegations while that pull is in flight, so watching
+        the buffer's waiters lets worker start, activity, plan and prose reach
+        the panel and `/agents` immediately instead of after the turn ends.
+        """
+        buffer = ctx._event_stream_buffer
+        waiters = getattr(buffer, "waiters", None)
+        if buffer is None or waiters is None:
+            async for event in stream:
+                yield event
+            return
+        iterator = aiter(stream)
+        signal = asyncio.Event()
+        waiters.append(signal)
+        next_task: asyncio.Task | None = None
+        try:
+            while True:
+                while buffer:
+                    async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                        yield emitted
+                signal.clear()
+                if next_task is None:
+                    next_task = asyncio.create_task(anext(iterator))
+                wait_task = asyncio.create_task(signal.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {next_task, wait_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    if not wait_task.done():
+                        wait_task.cancel()
+                        with anyio.CancelScope(shield=True):
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await wait_task
+                if next_task in done:
+                    task, next_task = next_task, None
+                    try:
+                        event = task.result()
+                    except StopAsyncIteration:
+                        while buffer:
+                            async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                                yield emitted
+                        break
+                    if isinstance(event, _MODEL_STREAM_EVENTS):
+                        while buffer:
+                            async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                                yield emitted
+                        yield event
+                    else:
+                        # A buffered event popped ahead of anything still in `buffer`.
+                        yield event
+                        while buffer:
+                            async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                                yield emitted
+                else:
+                    while buffer:
+                        async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                            yield emitted
+        finally:
+            if signal in waiters:
+                waiters.remove(signal)
+            with anyio.CancelScope(shield=True):
+                try:
+                    if next_task is not None and not next_task.done():
+                        next_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await next_task
+                    elif next_task is not None and not next_task.cancelled():
+                        with contextlib.suppress(BaseException):
+                            next_task.exception()
+                finally:
+                    await _close_stream(iterator)
 
     async def _drain_while_waiting(self, ctx):
         buffer = ctx._event_stream_buffer

@@ -830,9 +830,8 @@ client. Unlike `claude:`, pcode does **not** serve its tools or run the loop:
 Google permits subscription use only from a front end talking to the
 unmodified server ([forum ruling](https://discuss.ai.google.dev/t/tos-clarification-is-t3-code-official-antigravity-acp-agent-permitted-under-the-antigravity-terms-of-service/192027)),
 and suspends accounts whose tokens or `agy -p` feed another agent loop. So do
-not "improve" this into a `claude:`-style adapter, and keep anything pcode
-generates by itself (side questions, summaries, delegation, retries of a
-finished turn) off this model. Traps found while building it:
+not "improve" this into a `claude:`-style adapter; see the ruling note below
+for what pcode sends and spawns via `agy acp`. Traps found while building it:
 
 - `agy` keeps its OAuth login over a `GEMINI_API_KEY` in its environment, but
   falls back to the key when signed out, which would silently bill a work
@@ -906,16 +905,33 @@ finished turn) off this model. Traps found while building it:
   to vision models. `_Session.tools_signature` drops and resumes the session
   when dynamic tools or instructions change (such as `/advisor`) so `agy`
   re-runs `initialize` and `tools/list`.
+- MCP per-tool-call timeout: measured on `agy` 1.5.13 at `3m0s` (`MCP tool call
+  to server "<name>" timed out after 3m0s: context deadline exceeded`), at which
+  point `agy` sends `notifications/cancelled` for that request ID. To avoid
+  killing long-running foreground workers, `BackgroundDelegation` automatically
+  detaches a foreground `delegate_task` on `runs_own_loop` models after
+  `MCP_DETACH_SECONDS` (150s) and delivers its result as a later prompt.
+- Live worker UI during `ModelRequestNode`: Pydantic AI's `AgentStream` only
+  drains `ctx._event_stream_buffer` between model-stream pulls, so while `agy`
+  waits on a bridged `delegate_task` call, worker events would sit buffered
+  until the turn ended. `ToolBridge._run` emits `BridgedToolStarted` /
+  `BridgedToolFinished` (`CustomEvent`), `BackgroundDelegation.wrap_run_event_stream`
+  interleaves `ctx._event_stream_buffer` live via its `waiters`, and
+  `EventTranslator` translates those events while skipping the duplicate native
+  `mcp_pcode_delegate_task` parts so workers appear live in the panel and
+  `/agents`.
 
 - What pcode may send (decided 2026-11): the forum ruling asks for single-user,
   interactive use of the unmodified binary with its own sign-in, and bans token
   proxying and wrapping `agy` in another agent's loop. It does not ban a client
-  prompting on the session's own events, which T3 Code (the client it approves
-  by name) does. So job and worker notices, wake turns, background results,
-  `/continue` and side sessions (`/btw`, titles, summaries, advisor) are all
-  sent. The one refusal left is `WORKER_REFUSAL`: Antigravity as a worker under
-  another model. T3 runs the same `agy` CLI (managed install or a manual
-  `agy` path), not the registry's separate `agy_acp_server.par`.
+  prompting on the session's own events or spawning child `agy acp` sessions,
+  which T3 Code (the client it approves by name) does in both directions. So
+  job and worker notices, wake turns, background results, `/continue`, side
+  sessions (`/btw`, titles, summaries, advisor), and delegated `antigravity:`
+  workers (each in its own isolated `AntigravityModel(..., worker=True)`
+  session, never sharing the parent's locked session) are all supported. T3
+  runs the same `agy` CLI (managed install or a manual `agy` path), not the
+  registry's separate `agy_acp_server.par`.
 - `/compact` sent as a prompt runs agy's own compaction (no reply text; the
   session keeps its memory). It is not counted in pcode's turn stamps. The
   `usage_update` right after reports the compaction request itself, which in a

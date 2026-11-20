@@ -365,6 +365,11 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             unread = len(handle.inbox)
             handle.inbox.clear()
             if handle.status != "running":
+                if (
+                    handle.status != "done" or handle.workspace_mode == "isolated"
+                ) and handle.worker_model is not None:
+                    handle.worker_model.retire()
+                    handle.worker_model = None
                 with anyio.move_on_after(NOTIFY_SECONDS, shield=True):
                     await notify(handle, ctx, status=handle.status, tokens=handle.tokens)
         result = labelled(handle, result)
@@ -465,8 +470,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         }
 
     async def _run_delegation(self, ctx, agent_name, sub_agent, **kwargs):
-        from pcode.antigravity import WORKER_REFUSAL
-        from pcode.models import runs_own_loop
+        from pcode.antigravity import AntigravityModel, unwrap
 
         key = kwargs.get("key")
         effective = (
@@ -476,12 +480,30 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             if sub_agent.agent.model is not None
             else getattr(ctx, "model", None)
         )
-        if runs_own_loop(effective):
-            raise ModelRetry(
-                f"Cannot run sub-agent {agent_name!r} on Antigravity: {WORKER_REFUSAL}"
-            )
-        resumable = replace(sub_agent, agent=ResumableAgent(sub_agent.agent))
-        return await super()._run_delegation(ctx, agent_name, resumable, **kwargs)
+        override_model = None
+        handle = current_worker()
+        if (native := unwrap(effective)) is not None:
+            # Each Antigravity worker runs in its own isolated `agy` session,
+            # never sharing the parent's (which holds `_lock` during its turn)
+            # or a sibling worker's process.
+            reusable = handle.worker_model if handle is not None else None
+            if isinstance(reusable, AntigravityModel) and reusable.model_name == native.model_name:
+                override_model = reusable
+            else:
+                if isinstance(reusable, AntigravityModel):
+                    reusable.retire()
+                override_model = AntigravityModel(native.model_name, worker=True)
+                if handle is not None:
+                    handle.worker_model = override_model
+        elif handle is not None and handle.worker_model is not None:
+            handle.worker_model.retire()
+            handle.worker_model = None
+        resumable = replace(sub_agent, agent=ResumableAgent(sub_agent.agent, model=override_model))
+        try:
+            return await super()._run_delegation(ctx, agent_name, resumable, **kwargs)
+        finally:
+            if override_model is not None and handle is None:
+                override_model.retire()
 
     def _crash_outcome(self, agent_name, sub_agent, exc):
         """Harness's containment, minus the raw exception text and the traceback.

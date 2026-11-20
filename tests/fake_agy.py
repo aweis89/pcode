@@ -175,12 +175,34 @@ def prompt(request):
         return
     if trigger.startswith("MCP "):
         call = json.loads(trigger[4:])
+        call_id = f"mcp-{request['id']}"
+        update(
+            session,
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": call_id,
+                "name": f"mcp_pcode_{call['name']}",
+                "kind": "other",
+                "title": f"Run {call['name']}",
+                "status": "in_progress",
+                "rawInput": call["arguments"],
+            },
+        )
         result = call_mcp(
             servers[session][0], call["name"], call["arguments"], call.get("cancel_after")
         )
         failed = " (error)" if result.get("isError") else ""
         first = result["content"][0]
         summary = first["text"] if first.get("type") == "text" else f"<{first.get('type')}>"
+        update(
+            session,
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": call_id,
+                "status": "failed" if failed else "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": summary}}],
+            },
+        )
         chunk(session, "agent_message_chunk", f"tool said{failed}: {summary}")
         result = {"stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
         send({"jsonrpc": "2.0", "id": request["id"], "result": result})

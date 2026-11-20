@@ -314,19 +314,21 @@ consequences:
   handles (`read_tool_result`, `grep_tool_result`), and any extension that sets
   `pcode.bridge_to_acp = True` — is offered to Antigravity through pcode's ACP
   MCP server whenever enabled.
-- **It can hand work to pcode workers on other providers.** pcode offers
-  Antigravity its `delegate_task`, `manage_worker`, and `task_worktree` tools,
-  so Antigravity can ask for, say, a Claude reviewer, an OpenAI second opinion,
-  or pcode's `browser` sub-agent. The worker
-  runs in pcode with pcode's tools, and its report goes back to Antigravity.
-  A worker can run in the background: when it finishes, or asks a question,
-  pcode tells Antigravity, which picks the work up again. The transcript notes
-  when a worker starts and finishes; these workers don't appear in `/agents`.
-  When Antigravity names no model, the worker uses the first entry in your
-  `subagent_models` setting; with none set, Antigravity has to name one.
-- **It is never a worker itself.** A sub-agent that another model delegates
-  to can't run on `antigravity:`. That would be Antigravity driven by another
-  agent's loop, which Google suspends accounts for.
+- **It can delegate to pcode workers on its own model or other providers.** pcode
+  offers Antigravity its `delegate_task`, `manage_worker`, and `task_worktree`
+  tools, so Antigravity can spin up a worker on its own current model (when
+  `model` is omitted), ask for a Claude reviewer or OpenAI second opinion, or
+  call pcode's `browser` sub-agent. Each `antigravity:` worker runs in an
+  isolated `agy` session of its own; workers on other providers run in pcode
+  with pcode's tools. Workers appear live in the task panel and in `/agents`
+  with their activity, plan, and transcript, just like workers started by any
+  other model. A worker can run in the background (and long foreground workers
+  automatically move to the background before `agy`'s 3-minute MCP tool-call
+  timeout): when it finishes, or asks a question, pcode tells Antigravity,
+  which picks the work up again.
+- **Other models can delegate to `antigravity:` too.** Passing an `antigravity:`
+  model to `delegate_task` (or adding one to `subagent_models`) runs that worker
+  in its own isolated `agy acp` session.
 - **pcode tells it what it tells any model.** A finished background job, a
   worker's result or question, and a message you queued all reach Antigravity
   as prompts, and a finished job can wake it. `/continue` sends "Continue."

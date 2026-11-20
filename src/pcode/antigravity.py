@@ -14,11 +14,9 @@ What pcode sends is what it would send any model in the user's session, as
 other ACP clients do: the user's prompts, and the session's own events (a
 finished background job or worker, a worker's question, a continuation),
 written out as text since Antigravity has no pcode tool calls for them to
-answer. Side uses (`/btw`, titles, summaries, an advisor) each run in their
-own `agy acp` session (`side=True`, with no delegation tools), so they never
-block or pollute the conversation's. The one thing it is never used for is a
-worker under another model's loop (`WORKER_REFUSAL`): that is the "agy
-wrapped in a third-party agent loop" Google suspends accounts for.
+answer. Side uses (`/btw`, titles, summaries, an advisor) and delegated workers
+each run in their own `agy acp` session (`side=True` or `worker=True`, with no
+bridged pcode tools), so they never block or pollute the conversation's.
 
 Context is Antigravity's own: `/compact` and automatic compaction send its
 `/compact` command, and pcode's plan mode switches the session to its `plan`
@@ -84,10 +82,6 @@ EFFORT_ORDER = ("low", "medium", "high", "xhigh")
 # subscription it signed in with.
 SCRUBBED_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS")
 SCRUBBED_PREFIXES = ("GOOGLE_CLOUD_", "GOOGLE_GENAI_", "GOOGLE_VERTEX_", "GOOGLE_GEMINI_")
-WORKER_REFUSAL = (
-    "Antigravity can't run as a delegated worker under another model's loop. "
-    "Pick another model for the worker."
-)
 NO_PROMPT = "Antigravity has nothing to answer here: send a prompt."
 # Sent for a continuation that carries no message of its own (`/continue`).
 CONTINUE = "Continue."
@@ -732,10 +726,11 @@ def _is_wake_update(
 class AntigravityModel(Model):
     """See the module docstring. One instance serves one conversation."""
 
-    def __init__(self, model_name: str, *, side: bool = False) -> None:
+    def __init__(self, model_name: str, *, side: bool = False, worker: bool = False) -> None:
         super().__init__()
         self._model_name = model_name
         self._side = side
+        self._worker = worker
         self._session: _Session | None = None
         self._lock = asyncio.Lock()
         # Shows what Antigravity says between turns; set by the runtime.
@@ -770,10 +765,10 @@ class AntigravityModel(Model):
         from pcode.antigravity_tools import ToolBridge
 
         # pcode's bridged tools, which Antigravity may call (see antigravity_tools).
-        # Side questions never get bridged pcode MCP tools.
+        # Side questions and delegated workers never get bridged pcode MCP tools.
         self.tools = (
             None
-            if side
+            if (side or worker)
             else ToolBridge(
                 notify=self._show,
                 wake_starting=lambda: self._wake_pending or self._continuing_wake,
@@ -897,13 +892,13 @@ class AntigravityModel(Model):
             # continuation settles in DEFERRED_FINALIZE_DEBOUNCE instead of 120s.
             if (
                 self.wake_listener is not None
-                and not self._side
+                and not (self._side or self._worker)
                 and not self._wake_quarantined
                 and self._wake_buffer
             ):
                 self._wake_buffer.append(update)
             return
-        if self.wake_listener is not None and not self._side:
+        if self.wake_listener is not None and not (self._side or self._worker):
             if self._wake_quarantined:
                 return
             daemons = self._session.daemon_tools if self._session is not None else None
@@ -947,7 +942,7 @@ class AntigravityModel(Model):
         return SYSTEM
 
     def _arm_expiry(self) -> None:
-        if not self._side or self._waiters:
+        if not (self._side or self._worker) or self._waiters:
             return
         if self._expiry is not None:
             self._expiry.cancel()
@@ -1104,7 +1099,7 @@ class AntigravityModel(Model):
                     earlier, _asked(interrupted), cwd, prompt_bytes=_text_bytes(prompt)
                 )
                 await self._apply_effort(session, effort)
-                if not self._side:
+                if not (self._side or self._worker):
                     await self._ready(session, compact=session.turns > 0)
                 stream = AntigravityStream(
                     model_request_parameters=model_request_parameters,
@@ -1350,7 +1345,7 @@ class AntigravityModel(Model):
                 return session, []
             await self._drop()
         resumable = (
-            not self._side
+            not (self._side or self._worker)
             and stamp is not None
             and _all_from(earlier, stamp[0])
             and newest_turn(stamp[0]) == stamp[1]
@@ -2125,10 +2120,10 @@ def unwrap(model: Any) -> AntigravityModel | None:
     return None
 
 
-def antigravity_model(model: str, *, side: bool = False) -> AntigravityModel:
+def antigravity_model(model: str, *, side: bool = False, worker: bool = False) -> AntigravityModel:
     name = model.removeprefix(PREFIX).strip()
     if not installed():
         raise ValueError(
             "Antigravity CLI (agy) is not installed: https://antigravity.google/docs/cli/"
         )
-    return AntigravityModel(name, side=side)
+    return AntigravityModel(name, side=side, worker=worker)

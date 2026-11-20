@@ -39,6 +39,7 @@ from pydantic_ai_harness.shell import (
 )
 from pydantic_ai_harness.sub_agents import DelegationFinishedEvent, DelegationStartedEvent
 
+from pcode.antigravity_tools import BridgedToolFinished, BridgedToolStarted
 from pcode.background_delegation import (
     DelegatesPending,
     DelegationDelivered,
@@ -144,6 +145,9 @@ class EventTranslator:
             # The only handler that awaits: it rereads the plan store.
             async for out in self.on_tool_result(event):
                 yield out
+        elif isinstance(event, BridgedToolFinished):
+            async for out in self.on_tool_result(FunctionToolResultEvent(event.result)):
+                yield out
         else:
             for out in self._dispatch(event):
                 yield out
@@ -184,6 +188,8 @@ class EventTranslator:
                 return self.on_part_end(event)
             case FunctionToolCallEvent():
                 return self.on_tool_call(event)
+            case BridgedToolStarted():
+                return self.on_tool_call(FunctionToolCallEvent(event.call))
             case AgentRunResultEvent():
                 return self.on_run_result(event)
             case _:
@@ -347,6 +353,10 @@ class EventTranslator:
             yield from self.on_native_tool_return(event.part)
 
     def on_native_tool_return(self, part: NativeToolReturnPart) -> Iterator[Event]:
+        if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
+            # `ToolBridge` emits `BridgedToolStarted`/`BridgedToolFinished` for the
+            # real `delegate_task` call so it joins the live panel and `/agents`.
+            return
         # Provider-executed tools (native web search/fetch) return
         # inside the response stream; there is no function event.
         name, args, started = self.tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
@@ -382,6 +392,8 @@ class EventTranslator:
             yield from self.on_native_tool_call(event.part)
 
     def on_native_tool_call(self, part: NativeToolCallPart) -> Iterator[Event]:
+        if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
+            return
         try:
             args = part.args_as_dict()
         except ValueError, TypeError:
