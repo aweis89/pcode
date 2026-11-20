@@ -2,7 +2,7 @@
 
 ## Hard rules
 
-- **Always commit after changes.** The global `pcode` is an editable install pointing at the mainline `src/`, so a merged change is live on the next start with no reinstall.
+- **Always commit and merge to `master` when done.** The global `pcode` is an editable install pointing at the mainline `src/`, so a merged change is live on the next start with no reinstall. When working in a worktree, merge the finished branch into `master` once tests and review pass (as long as `master` is clean); only leave it unmerged if `master` has uncommitted changes or the user asked to hold off, and call that out prominently at the top of your final message.
 - **Never `git stash` here.** Dozens of worktrees share one stash ref, so a concurrent session's push or pop can hijack yours and land as conflicts. Commit to a scratch branch instead.
 - **Never run `make install` from a worktree** — it repoints the global `pcode` at that branch.
 - **Never bypass `make install` with bare `uv tool install`.** `uv tool install` ignores `uv.lock` and resolves afresh (anthropic 2.x once broke every turn while `make test` passed); `make install` constrains it to `uv.lock`.
