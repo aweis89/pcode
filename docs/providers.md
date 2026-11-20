@@ -303,12 +303,18 @@ Antigravity runs the whole turn with its own tools, rules, and skills, and
 pcode shows its tool calls, edits, and replies as they stream. That has a few
 consequences:
 
-- **pcode's own tools mostly aren't used.** No plans or pcode shell jobs:
-  Antigravity's built-in versions take their place. The exception is
-  delegation, described below.
+- **pcode's own coding tools aren't duplicated.** Files, shell jobs, web
+  search, and plans stay on Antigravity's built-in versions. Everything that
+  belongs to pcode itself — delegation (`delegate_task`, `manage_worker`,
+  `task_worktree`), `/advisor`, `/browser` (both `launch` and `attach`,
+  including screenshots), `session_history`, `conductor`, spilled tool-output
+  handles (`read_tool_result`, `grep_tool_result`), and any extension that sets
+  `pcode.bridge_to_acp = True` — is offered to Antigravity through pcode's ACP
+  MCP server whenever enabled.
 - **It can hand work to pcode workers on other providers.** pcode offers
-  Antigravity its `delegate_task` tool (and `manage_worker`), so Antigravity
-  can ask for, say, a Claude reviewer or an OpenAI second opinion. The worker
+  Antigravity its `delegate_task`, `manage_worker`, and `task_worktree` tools,
+  so Antigravity can ask for, say, a Claude reviewer, an OpenAI second opinion,
+  or pcode's `browser` sub-agent. The worker
   runs in pcode with pcode's tools, and its report goes back to Antigravity.
   A worker can run in the background: when it finishes, or asks a question,
   pcode tells Antigravity, which picks the work up again. The transcript notes
@@ -327,7 +333,7 @@ consequences:
   the other model was waiting on, as text.
 - **Side uses run in sessions of their own.** `/btw`, session titles,
   summaries, and an advisor on an `antigravity:` model each get a separate
-  `agy acp` session (without delegation tools), so they run alongside a turn
+  `agy acp` session (without bridged pcode MCP tools), so they run alongside a turn
   without touching the conversation's session. A `/btw` thread's follow-ups
   continue its side session.
 - **`/compact` and `/autocompact` use Antigravity's own compaction.** pcode

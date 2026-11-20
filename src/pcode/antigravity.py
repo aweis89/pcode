@@ -6,9 +6,9 @@ tools and its sign-in, and pcode sends prompts and shows the turn. One pcode
 request is one whole Antigravity turn. Its tool calls come back as
 provider-executed (native) tool parts, and pcode's own tools are never offered
 to it as function tools, so pcode's agent loop ends after every response
-unless pcode has something to tell it. (Delegation alone is offered the ACP
-way, as an MCP server Antigravity's own loop may call: see
-`pcode.antigravity_tools`.)
+unless pcode has something to tell it. (pcode-owned tools such as delegation,
+`/browser`, `/advisor`, and opt-in extensions are offered the ACP way, as an
+MCP server Antigravity's own loop may call: see `pcode.antigravity_tools`.)
 
 What pcode sends is what it would send any model in the user's session, as
 other ACP clients do: the user's prompts, and the session's own events (a
@@ -532,6 +532,10 @@ class _Session:
     # pcode's plan mode was last applied to it as on.
     first_mode: str | None = None
     planning: bool = False
+    # Fingerprint of the MCP tools and instructions this `agy` process loaded.
+    # A change (e.g. `/advisor` toggled mid-session) drops and resumes the session
+    # so `agy` re-runs `initialize` and `tools/list`.
+    tools_signature: tuple[Any, str] | None = None
 
 
 def _stamp(session_id: str, turn: int) -> str:
@@ -573,8 +577,8 @@ class AntigravityModel(Model):
         self.plan_mode = False
         from pcode.antigravity_tools import ToolBridge
 
-        # pcode's delegation, which Antigravity may call (see antigravity_tools).
-        # Side questions never get delegation tools.
+        # pcode's bridged tools, which Antigravity may call (see antigravity_tools).
+        # Side questions never get bridged pcode MCP tools.
         self.tools = None if side else ToolBridge(notify=self._show)
 
     def _title_update(self, update: dict) -> None:
@@ -898,6 +902,7 @@ class AntigravityModel(Model):
         last = next((m for m in reversed(earlier) if isinstance(m, ModelResponse)), None)
         stamp = _parse_stamp(last) if last is not None else None
         session = self._session
+        current_tools = self.tools.signature() if self.tools is not None else None
         if session is not None:
             current = (session.session_id, session.turns)
             # The session's extra turns are the interrupted requests this
@@ -912,7 +917,15 @@ class AntigravityModel(Model):
             # Another process (a fork resumed elsewhere) may have moved it on.
             # No entry at all means the ledger can't be kept, not that it moved.
             ours = newest_turn(session.session_id) in (None, session.turns)
-            if session.connection.alive and session.connection.cwd == cwd and same and ours:
+            # None means no turn context (e.g. `/compact` or unstreamed): keep the session.
+            tools_match = current_tools is None or session.tools_signature == current_tools
+            if (
+                session.connection.alive
+                and session.connection.cwd == cwd
+                and same
+                and ours
+                and tools_match
+            ):
                 if stamp == current:
                     # A kept reply: nothing after it is unanswered any more.
                     session.interrupted = []
@@ -967,7 +980,7 @@ class AntigravityModel(Model):
         # `usage_update` for `session/new`'s default model isn't cached under it.
         connection.idle = self._idle_update
         turns = stamp[1] if not replay and stamp is not None else 0
-        self._session = _Session(connection, session_id, turns)
+        self._session = _Session(connection, session_id, turns, tools_signature=current_tools)
         if replay:
             # A new session: nothing is known about its context yet.
             self.used = self._compacted_at = None

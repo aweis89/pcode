@@ -115,6 +115,8 @@ def _build(name: str, model_id: str | None):
     from pydantic_ai_harness.advisor import Advisor
 
     class Guidance(AbstractCapability):
+        bridge_to_acp = True
+
         def get_instructions(self):
             return GUIDANCE.format(name=name)
 

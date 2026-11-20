@@ -84,11 +84,11 @@ def call_mcp(server, name, arguments, cancel_after=None):
         return json.loads(child.stdout.readline())
 
     discover = ask(1, "server/discover")  # agy 1.5.13 tries this first.
-    ask(2, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
+    initialized = ask(2, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
     child.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))
     child.stdin.write("\n")
     tools = ask(3, "tools/list")["result"]["tools"]
-    log({"mcp_discover": discover, "mcp_tools": tools})
+    log({"mcp_discover": discover, "mcp_initialize": initialized["result"], "mcp_tools": tools})
     if cancel_after is not None:
         call = {"name": name, "arguments": arguments}
         child.stdin.write(
@@ -132,7 +132,9 @@ def prompt(request):
             servers[session][0], call["name"], call["arguments"], call.get("cancel_after")
         )
         failed = " (error)" if result.get("isError") else ""
-        chunk(session, "agent_message_chunk", f"tool said{failed}: {result['content'][0]['text']}")
+        first = result["content"][0]
+        summary = first["text"] if first.get("type") == "text" else f"<{first.get('type')}>"
+        chunk(session, "agent_message_chunk", f"tool said{failed}: {summary}")
         result = {"stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
         send({"jsonrpc": "2.0", "id": request["id"], "result": result})
         running.remove(request["id"])

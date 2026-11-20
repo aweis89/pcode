@@ -885,7 +885,12 @@ finished turn) off this model. Traps found while building it:
   handshake where a server answering `-32601` worked. Tools appear to the model
   as `mcp_<server>_<tool>`. Hence the stdlib-only `antigravity_relay.py`, run
   with `python -I`, relaying to a Unix socket in the pcode process, where calls
-  run through the live turn's `tool_manager.handle_call`.
+  run through the live turn's `tool_manager.handle_call`. `agy` 1.5.13 writes
+  MCP `initialize.result.instructions` to `~/.gemini/antigravity-cli/mcp/<server>/instructions.md`
+  and forwards MCP `{"type": "image", ...}` tool-call content blocks natively
+  to vision models. `_Session.tools_signature` drops and resumes the session
+  when dynamic tools or instructions change (such as `/advisor`) so `agy`
+  re-runs `initialize` and `tools/list`.
 
 - What pcode may send (decided 2026-11): the forum ruling asks for single-user,
   interactive use of the unmodified binary with its own sign-in, and bans token

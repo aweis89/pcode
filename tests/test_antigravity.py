@@ -1494,6 +1494,398 @@ def test_bare_rename_works_on_antigravity_and_retires_side_model(fake_agy, tmp_p
             app.runtime.session.close()
 
 
+def test_browser_tools_screenshots_and_instructions_are_bridged_when_enabled(fake_agy, tmp_path):
+    import base64
+
+    from pydantic_ai.capabilities import Capability
+    from pydantic_ai.messages import ToolReturn
+
+    png = b"\x89PNG\r\n\x1a\nfake"
+    started: list[str] = []
+
+    def navigate(url: str) -> str:
+        """Open a URL."""
+        return f"opened {url}"
+
+    def screenshot(full_page: bool = False) -> ToolReturn:
+        """Capture a screenshot."""
+        return ToolReturn(
+            "Screenshot captured (CSS pixels). URL: https://example.com",
+            content=[BinaryContent(data=png, media_type="image/png")],
+        )
+
+    def read_file(path: str) -> str:
+        """Read a file."""
+        return path
+
+    class FakeBrowser(Capability):
+        async def before_tool_execute(self, ctx, *, call, tool_def, args):
+            if tool_def.name in {"navigate", "screenshot"}:
+                started.append(tool_def.name)
+            return args
+
+    browser_cap = FakeBrowser(
+        id="browser",
+        tools=[navigate, screenshot],
+        instructions="Use browser_open for sign-in pages.",
+    )
+    ext_browser = Capability(id="ext.browser", instructions="Delegate multi-step flows to browser.")
+    file_cap = Capability(id="file_tools", tools=[read_file], instructions="Never bridged.")
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-high"),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[browser_cap, ext_browser, file_cap],
+        )
+        return await streamed(agent, mcp_prompt("screenshot", {}))
+
+    result = run(go())
+    assert started == ["screenshot"]
+    assert result.output == "tool said: Screenshot captured (CSS pixels). URL: https://example.com"
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e]
+    by_name = {t["name"]: t for t in listed["mcp_tools"]}
+    assert set(by_name) == {"navigate", "screenshot"}
+    assert "browser_open" in by_name["navigate"]["description"]
+    instructions = listed["mcp_initialize"]["instructions"]
+    assert "Use browser_open for sign-in pages." in instructions
+    assert "Delegate multi-step flows to browser." in instructions
+    assert "Never bridged." not in instructions
+    [called] = [e for e in fake_agy() if "mcp_result" in e]
+    content = called["mcp_result"]["result"]["content"]
+    assert content == [
+        {"type": "text", "text": "Screenshot captured (CSS pixels). URL: https://example.com"},
+        {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"},
+    ]
+
+
+def test_core_tools_bridged_extensions_and_opt_in_extension_are_exposed(fake_agy, tmp_path):
+    from pydantic_ai.capabilities import Capability
+
+    from pcode.ext import ExtensionAPI, ExtensionUI
+
+    def task_worktree(action: str) -> dict:
+        """Manage task worktrees."""
+        return {"action": action}
+
+    def advisor(question: str) -> str:
+        """Consult advisor."""
+        return f"advice: {question}"
+
+    def read_tool_result(handle: str) -> str:
+        """Read spilled output."""
+        return f"slice:{handle}"
+
+    def search_sessions(query: str) -> list:
+        """Search sessions."""
+        return [query]
+
+    def list_hosts() -> list:
+        """List hosts."""
+        return ["h1"]
+
+    def shell(command: str) -> str:
+        """Run shell."""
+        return command
+
+    ext_opt_in = ExtensionAPI("custom_on", tmp_path, ExtensionUI())
+    ext_opt_in.bridge_to_acp = True
+    ext_opt_in.instructions("Use ticket_lookup for issue IDs.")
+
+    @ext_opt_in.tool
+    def ticket_lookup(ticket_id: str) -> str:
+        """Look up a ticket."""
+        return f"ticket:{ticket_id}"
+
+    ext_opt_out = ExtensionAPI("custom_off", tmp_path, ExtensionUI())
+
+    @ext_opt_out.tool
+    def local_only() -> str:
+        """Not bridged."""
+        return "nope"
+
+    advisor_guidance = Capability(id="advisor_guidance", instructions="Consult advisor wisely.")
+    advisor_guidance.bridge_to_acp = True
+
+    caps = [
+        Capability(id="sub_agents", tools=[task_worktree]),
+        Capability(id="advisor", tools=[advisor]),
+        advisor_guidance,
+        Capability(
+            id="tool_output_limits",
+            tools=[read_tool_result],
+            instructions="Read spilled handles with read_tool_result.",
+        ),
+        Capability(
+            id="ext.session_history",
+            tools=[search_sessions],
+            instructions="Search saved history.",
+        ),
+        Capability(id="ext.conductor", tools=[list_hosts], instructions="Inspect hosts."),
+        Capability(id="shell_tools", tools=[shell]),
+        *ext_opt_in.capabilities(),
+        *ext_opt_out.capabilities(),
+    ]
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-high"),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=caps,
+        )
+        ok = await streamed(agent, mcp_prompt("ticket_lookup", {"ticket_id": "ENG-7"}))
+        denied = await streamed(agent, mcp_prompt("local_only", {}), ok.all_messages())
+        return ok.output, denied.output
+
+    ok_out, denied_out = run(go())
+    assert ok_out == "tool said: ticket:ENG-7"
+    assert "no tool named 'local_only'" in denied_out
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e][:1]
+    names = {t["name"] for t in listed["mcp_tools"]}
+    assert names == {
+        "task_worktree",
+        "advisor",
+        "read_tool_result",
+        "search_sessions",
+        "list_hosts",
+        "ticket_lookup",
+    }
+    instructions = listed["mcp_initialize"]["instructions"]
+    assert "Consult advisor wisely." in instructions
+    assert "Read spilled handles with read_tool_result." in instructions
+    assert "Search saved history." in instructions
+    assert "Inspect hosts." in instructions
+    assert "Use ticket_lookup for issue IDs." in instructions
+
+
+def test_delegate_task_lists_browser_subagent_and_notifies_role(
+    fake_agy, tmp_path, subagent_models
+):
+    from types import SimpleNamespace
+
+    from pydantic_ai.capabilities import Capability
+
+    subagent_models("claude:fable")
+    shown: list[str] = []
+    ran: list[dict] = []
+
+    def delegate_task(agent_name: str, task: str, model: str | None = None) -> str:
+        """Delegate."""
+        ran.append({"agent_name": agent_name, "task": task, "model": model})
+        return "done"
+
+    sub_cap = Capability(id="sub_agents", tools=[delegate_task])
+    sub_cap.agents = [
+        SimpleNamespace(resolved_name="worker"),
+        SimpleNamespace(resolved_name="browser"),
+    ]
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.listener = shown.append
+        agent = Agent(
+            model,
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[sub_cap],
+        )
+        return await streamed(
+            agent, mcp_prompt("delegate_task", {"agent_name": "browser", "task": "check login"})
+        )
+
+    result = run(go())
+    assert result.output == "tool said: done"
+    assert ran == [{"agent_name": "browser", "task": "check login", "model": "claude:fable"}]
+    assert shown == [
+        "Antigravity started a pcode browser worker on claude:fable: check login",
+        "The pcode browser worker on claude:fable finished; Antigravity has its report.",
+    ]
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e]
+    agent_desc = listed["mcp_tools"][0]["inputSchema"]["properties"]["agent_name"]["description"]
+    assert "worker, browser" in agent_desc
+
+
+def test_dynamic_tool_change_resumes_session_while_compact_reuses(fake_agy, tmp_path):
+    from pydantic_ai.capabilities import Capability, DynamicCapability
+
+    advisor_on = [False]
+
+    def advisor(question: str) -> str:
+        """Ask advisor."""
+        return f"advisor:{question}"
+
+    def resolve(ctx):
+        if not advisor_on[0]:
+            return None
+        cap = Capability(id="advisor", tools=[advisor], instructions="Advisor is on.")
+        cap.bridge_to_acp = True
+        return cap
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = Agent(
+            model,
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=[DynamicCapability(resolve)],
+        )
+        first = await streamed(agent, "turn one")
+        second = await streamed(agent, "turn two", first.all_messages())
+        # /compact runs without a turn RunContext: must reuse the live session.
+        await model.compact(second.all_messages(), str(tmp_path))
+        assert len(fake_agy("session/resume")) == 0
+        # Turning advisor on mid-session changes the bridged tool signature, so
+        # the next turn resumes the same ACP session to reload MCP tools.
+        advisor_on[0] = True
+        third = await streamed(
+            agent,
+            mcp_prompt("advisor", {"question": "plan?"}),
+            second.all_messages(),
+        )
+        return third.output
+
+    out = run(go())
+    assert out == "tool said: advisor:plan?"
+    assert len(fake_agy("session/new")) == 1
+    resumes = fake_agy("session/resume")
+    assert len(resumes) == 1
+    assert resumes[0]["params"]["sessionId"] == "s-1"
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e]
+    assert [t["name"] for t in listed["mcp_tools"]] == ["advisor"]
+    assert "Advisor is on." in listed["mcp_initialize"]["instructions"]
+
+
+def test_dynamic_toggle_off_and_non_core_dynamic_combined_and_prefixed_capabilities(
+    fake_agy, tmp_path
+):
+    from dataclasses import dataclass, replace
+
+    from pydantic_ai.capabilities import (
+        AbstractCapability,
+        Capability,
+        CombinedCapability,
+        DynamicCapability,
+        PrefixTools,
+    )
+    from pydantic_ai.messages import InstructionPart
+
+    from pcode.ext import ExtensionAPI, ExtensionUI
+
+    enabled = [True]
+
+    def dyn_ping(label: str) -> str:
+        """Dynamic non-core tool."""
+        return f"pong:{label}"
+
+    def comb_tool() -> str:
+        """Combined tool."""
+        return "comb"
+
+    def prefixed_tool() -> str:
+        """Prefixed tool."""
+        return "pref"
+
+    @dataclass
+    class ReplacingCap(AbstractCapability):
+        step: int = 0
+
+        async def for_run(self, ctx):
+            return replace(self, step=self.step + 1)
+
+        def get_instructions(self):
+            return [
+                InstructionPart(content="InstructionPart guidance."),
+                lambda: "Zero-arg callable guidance.",
+            ]
+
+    ext = ExtensionAPI("rich", tmp_path, ExtensionUI())
+    ext.bridge_to_acp = True
+    ext.add_capability(
+        DynamicCapability(
+            lambda ctx: (
+                Capability(id="dyn", tools=[dyn_ping], instructions="Dynamic guidance.")
+                if enabled[0]
+                else None
+            ),
+            id="rich.dyn",
+        )
+    )
+    ext.add_capability(
+        CombinedCapability([Capability(id="comb", tools=[comb_tool])], id="rich.comb")
+    )
+    ext.add_capability(
+        PrefixTools(Capability(id="pref", tools=[prefixed_tool]), prefix="extp", id="rich.pref")
+    )
+    ext.add_capability(ReplacingCap(id="rich.rep"))
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-high"),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=ext.capabilities(),
+        )
+        first = await streamed(agent, mcp_prompt("dyn_ping", {"label": "ok"}))
+        # Toggle the dynamic capability off: next turn must resume and drop `dyn_ping`.
+        enabled[0] = False
+        second = await streamed(agent, mcp_prompt("extp_prefixed_tool", {}), first.all_messages())
+        return first.output, second.output
+
+    first_out, second_out = run(go())
+    assert first_out == "tool said: pong:ok"
+    assert second_out == "tool said: pref"
+    assert len(fake_agy("session/new")) == 1
+    assert len(fake_agy("session/resume")) == 1
+    listed = [e for e in fake_agy() if "mcp_tools" in e]
+    assert {t["name"] for t in listed[0]["mcp_tools"]} == {
+        "dyn_ping",
+        "comb_tool",
+        "extp_prefixed_tool",
+    }
+    assert {t["name"] for t in listed[1]["mcp_tools"]} == {"comb_tool", "extp_prefixed_tool"}
+    inst0 = listed[0]["mcp_initialize"]["instructions"]
+    assert "Dynamic guidance." in inst0
+    assert "InstructionPart guidance." in inst0
+    assert "Zero-arg callable guidance." in inst0
+    inst1 = listed[1]["mcp_initialize"]["instructions"]
+    assert "Dynamic guidance." not in inst1
+    assert "InstructionPart guidance." in inst1
+
+
+def test_cold_compact_then_streamed_turn_resumes_to_load_mcp_tools(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = delegating_agent(model, tmp_path, [])
+        # Turn 1 unstreamed (no RunContext -> tools_signature=None), then cold /compact,
+        # then a streamed turn (with RunContext and tools -> must resume to load MCP tools).
+        first = await agent.run("hello")
+        await model.compact(first.all_messages(), str(tmp_path))
+        assert len(fake_agy("session/resume")) == 0
+        second = await streamed(
+            agent,
+            mcp_prompt("delegate_task", {"task": "check", "model": "claude:fable"}),
+            first.all_messages(),
+        )
+        return second.output
+
+    out = run(go())
+    assert out == "tool said: report on check from claude:fable"
+    assert len(fake_agy("session/resume")) == 1
+
+
+def test_content_conversion_handles_image_only_and_non_image_binary():
+    import base64
+
+    from pydantic_ai.messages import ToolReturn
+
+    png = b"\x89PNG\r\n"
+    image_only = antigravity_tools._content(
+        ToolReturn(return_value=None, content=[BinaryContent(data=png, media_type="image/png")])
+    )
+    assert image_only == [
+        {"type": "image", "data": base64.b64encode(png).decode(), "mimeType": "image/png"}
+    ]
+    pdf = antigravity_tools._content(BinaryContent(data=b"%PDF-1.7", media_type="application/pdf"))
+    assert pdf == [{"type": "text", "text": "[binary content: application/pdf, 8 bytes]"}]
+
+
 def test_extension_subagent_and_direct_delegation_refuse_antigravity(tmp_path):
     from types import SimpleNamespace
 

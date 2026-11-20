@@ -64,6 +64,7 @@ Every class in `src/pcode` that derives from
 | `AutoCompaction` | `compaction.py` | `AbstractCapability` | `get_ordering`, `before_model_request` | Per-run, when autocompact is on and the turn uses the conversation's model | Compact history before a request that would overflow the window, including mid-turn. |
 | `AsideGuard` | `aside_guard.py` | `AbstractCapability` | `wrap_tool_execute` | Per-run, side questions only | A side question shares the conversation's capabilities, so refuse the tools that would change its plan or start workers. |
 | `Browser` | `extensions/browser.py` | `Capability` | `before_tool_execute` | Extension (defined inside `_capability`) | Launch Chrome lazily on the first browser tool call, for the parent and the browser sub-agent alike. |
+| `_ACPBridged` | `ext.py` | `WrapperCapability` | — | Extension (`bridge_to_acp = True`, defined inside `_wrap_acp_bridge`) | Mark an extension capability for Antigravity's ACP MCP bridge so opt-in survives `for_run`, `CombinedCapability`, and frozen/slotted capabilities. |
 
 Harness capabilities pcode uses unchanged (`LocalWorkspace`, `StepPersistence`,
 code mode, `RepairToolArguments`, `PrepareTools` for strict mode) are not listed. Two

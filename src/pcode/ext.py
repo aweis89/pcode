@@ -177,6 +177,7 @@ class ExtensionAPI:
         self._instructions: list[str] = []
         self._capabilities: list = []
         self._hooks = None
+        self.bridge_to_acp: bool = False
         self.commands: list[Command] = []
         self.subagents: list = []
         self.closers: list[Callable[[], Awaitable[None]]] = []
@@ -310,9 +311,30 @@ class ExtensionAPI:
                     instructions="\n\n".join(self._instructions) or None,
                 )
             )
+        if self.bridge_to_acp:
+            result = [_wrap_acp_bridge(capability) for capability in result]
         if self._hooks is not None and self._hooks._registry:
             result.append(self._hooks)
         return result
+
+
+_ACP_BRIDGED_CLASS = None
+
+
+def _wrap_acp_bridge(capability):
+    """Wrap `capability` so `bridge_to_acp` survives `for_run`, `CombinedCapability`, and slots."""
+    global _ACP_BRIDGED_CLASS
+    if _ACP_BRIDGED_CLASS is None:
+        from dataclasses import dataclass
+
+        from pydantic_ai.capabilities import WrapperCapability
+
+        @dataclass
+        class _ACPBridged(WrapperCapability):
+            bridge_to_acp: bool = True
+
+        _ACP_BRIDGED_CLASS = _ACPBridged
+    return _ACP_BRIDGED_CLASS(wrapped=capability, id=getattr(capability, "id", None))
 
 
 @dataclass
