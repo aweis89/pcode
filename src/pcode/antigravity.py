@@ -156,6 +156,57 @@ def _remember_models(result: dict) -> None:
         _write_json(models_cache(), names)
 
 
+def _windows_path() -> Path:
+    return _state_dir() / "antigravity-windows.json"
+
+
+# In-memory mirror of `_windows_path()`, keyed by path so rendering hits disk
+# at most once per state dir and tests that swap `XDG_STATE_HOME` reload cleanly.
+_windows_loaded_path: Path | None = None
+_windows: dict[str, int] = {}
+
+
+def _load_windows() -> dict[str, int]:
+    global _windows_loaded_path, _windows
+    from pcode.model_metadata import positive_int
+
+    path = _windows_path()
+    if _windows_loaded_path != path:
+        raw = _read_json(path, dict)
+        _windows = {
+            name: size
+            for name, value in raw.items()
+            if isinstance(name, str) and (size := positive_int(value)) is not None
+        }
+        _windows_loaded_path = path
+    return _windows
+
+
+def cached_window(model_name: str) -> int | None:
+    """Last context window size Antigravity reported for `model_name`, if any."""
+    return _load_windows().get(model_name)
+
+
+def _remember_window(model_name: str, size: int) -> None:
+    from pcode.model_metadata import positive_int
+
+    valid = positive_int(size)
+    if not model_name or valid is None:
+        return
+    if _load_windows().get(model_name) == valid:
+        return
+    path = _windows_path()
+    with _locked(path):
+        stored = {
+            name: value
+            for name, value in _read_json(path, dict).items()
+            if isinstance(name, str) and positive_int(value) is not None
+        }
+        stored[model_name] = valid
+        _write_json(path, stored)
+    _windows[model_name] = valid
+
+
 def _ledger_path() -> Path:
     return _state_dir() / "antigravity-sessions.json"
 
@@ -471,6 +522,15 @@ class AntigravityModel(Model):
         self._after_turn: list[str] = []
         self._quiet: asyncio.TimerHandle | None = None
 
+    def _usage_update(self, update: dict) -> None:
+        from pcode.model_metadata import positive_int, record_context_window
+
+        size = positive_int(update.get("size"))
+        if size is not None:
+            record_context_window(self, size, source=SYSTEM)
+            if self._model_name:
+                _remember_window(self._model_name, size)
+
     def _idle_update(self, update: dict) -> None:
         """Show output Antigravity produces on its own between turns; display only.
 
@@ -480,7 +540,9 @@ class AntigravityModel(Model):
         """
         kind = update.get("sessionUpdate")
         content = update.get("content")
-        if kind == "agent_message_chunk" and isinstance(content, dict):
+        if kind == "usage_update":
+            self._usage_update(update)
+        elif kind == "agent_message_chunk" and isinstance(content, dict):
             self._after_turn.append(str(content.get("text", "")))
             if self._quiet is not None:
                 self._quiet.cancel()
@@ -573,6 +635,7 @@ class AntigravityModel(Model):
                 replayed=len(replay),
                 run_context=run_context,
                 notify=self._show,
+                on_usage=self._usage_update,
             )
             try:
                 yield stream
@@ -641,7 +704,6 @@ class AntigravityModel(Model):
             stamp is not None and _all_from(earlier, stamp[0]) and newest_turn(stamp[0]) == stamp[1]
         )
         connection = Connection(cwd)
-        connection.idle = self._idle_update
         _connections.add(connection)
         try:
             await connection.start()
@@ -676,6 +738,9 @@ class AntigravityModel(Model):
             # Cancelled here, an await would be cancelled too; close beside it.
             _spawn(_close(connection))
             raise
+        # Attach only once the session is on `self._model_name`, so an early
+        # `usage_update` for `session/new`'s default model isn't cached under it.
+        connection.idle = self._idle_update
         turns = stamp[1] if not replay and stamp is not None else 0
         self._session = _Session(connection, session_id, turns)
         blocks = [{"type": "text", "text": replay_text(earlier)}] if replay and earlier else []
@@ -844,6 +909,8 @@ class AntigravityStream(StreamedResponse):
     run_context: RunContext[Any] | None = None
     # Tells the user something about the turn (the model's `_show`).
     notify: Callable[[str], None] = lambda text: None
+    # Records context window sizes reported by ACP `usage_update` notifications.
+    on_usage: Callable[[dict], None] = lambda update: None
     started: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # The newest prompt's reply. A steering message is a further prompt, and
     # Antigravity ends the one before it as soon as it arrives.
@@ -858,6 +925,7 @@ class AntigravityStream(StreamedResponse):
     text_seen: bool = field(default=False, init=False)
     events_seen: bool = field(default=False, init=False)
     failed: bool = field(default=False, init=False)
+    context_used: int | None = field(default=None, init=False)
 
     @property
     def model_name(self) -> str:
@@ -1016,13 +1084,20 @@ class AntigravityStream(StreamedResponse):
                 cache_write_tokens=written,
                 output_tokens=int(usage.get("outputTokens") or 0),
             )
+        if not total.input_tokens and self.context_used:
+            total += RequestUsage(input_tokens=self.context_used)
         self._usage = total
 
     def _map(self, update: dict) -> Iterator[ModelResponseStreamEvent]:
         kind = update.get("sessionUpdate")
         content = update.get("content")
         text = content.get("text", "") if isinstance(content, dict) else ""
-        if kind == "agent_message_chunk" and text:
+        if kind == "usage_update":
+            self.on_usage(update)
+            used = update.get("used")
+            if type(used) is int and used >= 0:
+                self.context_used = used
+        elif kind == "agent_message_chunk" and text:
             self.text_seen = self.text_seen or bool(text.strip())
             yield from self._parts_manager.handle_text_delta(
                 vendor_part_id=self._vendor("text"), content=text

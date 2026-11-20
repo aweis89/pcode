@@ -683,3 +683,78 @@ def test_missing_cli_is_explained(monkeypatch):
     monkeypatch.setattr("pcode.antigravity.shutil.which", lambda _: None)
     with pytest.raises(ValueError, match="not installed"):
         antigravity.antigravity_model("antigravity:fake")
+
+
+def test_usage_update_records_context_window_and_caches_it(fake_agy, tmp_path):
+    from pcode.context_usage import context_label, context_window
+
+    model = AntigravityModel("fake-low")
+    assert context_window(model) is None
+    assert context_window("antigravity:fake-low") is None
+
+    result = run(agent_for(model, tmp_path).run("hello"))
+    assert context_window(model) == 1_048_576
+    assert context_window("antigravity:fake-low") == 1_048_576
+    assert context_label(model, result.all_messages()) == " · 13/1.05m"
+
+    # A fresh model instance (as after a restart) reloads the cached window from disk.
+    antigravity._windows_loaded_path = None
+    antigravity._windows = {}
+    fresh = AntigravityModel("fake-low")
+    assert context_window(fresh) == 1_048_576
+    assert context_label(fresh, []) == " · 0/1.05m"
+
+
+def test_usage_update_used_fallback_when_reply_omits_usage(fake_agy, tmp_path):
+    from pcode.context_usage import context_label
+
+    model = AntigravityModel("fake-low")
+    result = run(agent_for(model, tmp_path).run("NO_REPLY_USAGE"))
+    response = result.all_messages()[-1]
+    assert response.usage.input_tokens == 42
+    assert context_label(model, result.all_messages()) == " · 42/1.05m"
+
+
+def test_usage_update_ignores_malformed_and_handles_idle_updates(monkeypatch):
+    from pydantic_ai.models import ModelRequestParameters
+
+    from pcode.antigravity import AntigravityStream
+    from pcode.context_usage import context_window
+
+    model = AntigravityModel("fake-idle")
+    stream = AntigravityStream(model_request_parameters=ModelRequestParameters())
+    for bad in (0, -1, True, "1048576", 1.5, None):
+        model._idle_update({"sessionUpdate": "usage_update", "size": bad})
+    for bad in (-1, True, "42", 1.5, None):
+        list(stream._map({"sessionUpdate": "usage_update", "used": bad}))
+    assert context_window(model) is None
+    assert stream.context_used is None
+
+    model._idle_update({"sessionUpdate": "usage_update", "size": 200_000, "used": 1000})
+    assert context_window(model) == 200_000
+    monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "100000")
+    assert context_window(model) == 100_000
+
+
+def test_compact_cap_is_ignored_for_antigravity_footer():
+    from types import SimpleNamespace
+
+    from pcode.controller import SessionController
+
+    model = AntigravityModel("fake-low")
+    model._usage_update({"size": 1_048_576})
+    runtime = SimpleNamespace(
+        agent=SimpleNamespace(model=model),
+        auto_compact=True,
+        auto_compact_limit=100_000,
+        history=[],
+        context_history=None,
+    )
+    controller = object.__new__(SessionController)
+    controller.model = "antigravity:fake-low"
+    controller.runtime = runtime
+    controller.startup_pending = False
+    controller.startup_error = None
+    assert controller.compact_cap() is None
+    assert controller.autocompact_state() == "managed by Antigravity"
+    assert controller.context_label() == " · 0/1.05m"

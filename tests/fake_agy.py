@@ -112,8 +112,15 @@ def prompt(request):
     body = {"sessionUpdate": "tool_call_update", "status": "completed", "content": content, **call}
     update(session, body)
     chunk(session, "agent_message_chunk", f"got: {text[-40:]}")
-    usage = {"inputTokens": 10, "outputTokens": 5, "cachedReadTokens": 3, "cachedWriteTokens": 0}
-    result = {"stopReason": "end_turn", "usage": usage}
+    update(session, {"sessionUpdate": "usage_update", "used": 42, "size": 1_048_576})
+    result: dict = {"stopReason": "end_turn"}
+    if "NO_REPLY_USAGE" not in text:
+        result["usage"] = {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "cachedReadTokens": 3,
+            "cachedWriteTokens": 0,
+        }
     send({"jsonrpc": "2.0", "id": request["id"], "result": result})
     running.remove(request["id"])
     if "LATER" in text:

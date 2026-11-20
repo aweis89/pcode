@@ -2349,11 +2349,20 @@ class SessionController:
         """The token cap automatic compaction honors right now, if any."""
         if not getattr(self.runtime, "auto_compact", False):
             return None
+        from pcode.models import user_only
+
+        resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
+        if user_only(resolved or self.model):
+            return None
         return getattr(self.runtime, "auto_compact_limit", None)
 
     def autocompact_state(self) -> str:
         from pcode.context_usage import compact_tokens
+        from pcode.models import user_only
 
+        resolved = getattr(getattr(self.runtime, "agent", None), "model", None)
+        if user_only(resolved or self.model):
+            return "managed by Antigravity"
         if not getattr(self.runtime, "auto_compact", False):
             return "off"
         cap = self.compact_cap()

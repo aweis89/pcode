@@ -354,11 +354,23 @@ class ContextCatalog:
                 except OSError:
                     pass
 
+    def record_limits(self, model: Model, limits: ModelLimits) -> None:
+        self.state(model).limits = limits
+
     def limits(self, model: str | Model) -> ModelLimits | None:
         if not isinstance(model, str) and (native := self.state(model).limits) is not None:
             return native
         key = catalog_key(model, self.routes)
-        return self.public.get(key) if key else None
+        if key and (entry := self.public.get(key)) is not None:
+            return entry
+        identity = model if isinstance(model, str) else model.model_id
+        provider, _, name = identity.partition(":")
+        if provider == "antigravity" and name:
+            from pcode.antigravity import cached_window
+
+            if (size := cached_window(name)) is not None:
+                return ModelLimits(context=size, source="antigravity")
+        return None
 
     def window(self, model: str | Model) -> int | None:
         override = configured_window()
@@ -463,6 +475,15 @@ class ContextCatalog:
 
 
 catalog = ContextCatalog()
+
+
+def record_context_window(model: Model, context: int, *, source: str) -> None:
+    """Record a context window the provider reported directly for this model instance."""
+    size = positive_int(context)
+    if size is not None:
+        catalog.record_limits(
+            model, ModelLimits(context=size, source=source, fetched_at=time.time())
+        )
 
 
 def context_window(model: str | Model) -> int | None:

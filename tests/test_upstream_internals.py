@@ -56,6 +56,7 @@ OWN_HELPERS = {
         "_prepare",
         "_settle",
         "_show",
+        "_usage_update",
     },
     "pcode.antigravity.AntigravityStream": {
         "_cancel",
