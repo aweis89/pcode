@@ -110,8 +110,33 @@ from pcode.turn import TurnContext
 warnings.filterwarnings("ignore", category=AnthropicStaleThinkingBlockWarning)
 
 
+_SIGNING_PROVIDERS = frozenset({"anthropic", "claude"})
+
+
+def _drop_interrupted_thinking(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """`messages` without unsigned thinking from providers that always sign it.
+
+    Anthropic only leaves a thinking block unsigned when its stream was cut
+    off. Pydantic AI replays such a block as `<assistant_thinking>` text in a
+    user turn, which Anthropic's classifier refuses as `reasoning_extraction`
+    on every later request, so one dropped connection bricked the session.
+    Other providers' thinking is legitimately unsigned and stays.
+    """
+    cleaned = []
+    for message in messages:
+        if isinstance(message, ModelResponse) and message.provider_name in _SIGNING_PROVIDERS:
+            parts = [
+                p for p in message.parts if not (isinstance(p, ThinkingPart) and not p.signature)
+            ]
+            if len(parts) != len(message.parts):
+                message = replace(message, parts=parts)
+        cleaned.append(message)
+    return cleaned
+
+
 def _for_run(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """`messages`, with `claude:` responses from older saves restamped; see `restamp`."""
+    """`messages` ready to replay: interrupted thinking dropped, older `claude:` saves restamped."""
+    messages = _drop_interrupted_thinking(messages)
     # Imported only when needed: the `claude:` package is otherwise unused.
     if any(isinstance(m, ModelResponse) and m.provider_name == "claude" for m in messages):
         from pcode.claude_sdk.model import restamp

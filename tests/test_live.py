@@ -463,3 +463,24 @@ def test_thinking_block_boundaries_reach_events():
             runtime.close()
 
     asyncio.run(run())
+
+
+def test_for_run_drops_interrupted_anthropic_thinking():
+    # An interrupted stream leaves Anthropic thinking unsigned; replayed as
+    # text it gets every later request refused as `reasoning_extraction`.
+    from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart
+
+    from pcode.live import _for_run
+
+    cut = ModelResponse(parts=[ThinkingPart("half", signature="")], provider_name="claude")
+    signed = ModelResponse(
+        parts=[ThinkingPart("whole", signature="sig"), TextPart("hi")], provider_name="anthropic"
+    )
+    other = ModelResponse(parts=[ThinkingPart("theirs")], provider_name="openai")
+
+    out = _for_run([cut, signed, other])
+
+    assert out[0].parts == []
+    assert out[1] is signed
+    assert out[2] is other
+    assert cut.parts  # the saved history is not mutated
