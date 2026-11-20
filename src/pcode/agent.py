@@ -502,6 +502,26 @@ def codex_model(model: str) -> OpenAICodexModel:
     )
 
 
+def google_cloud_model(model: str) -> Model | str:
+    """Resolve `google-cloud:` with an explicit project so ADC beats `GEMINI_API_KEY`.
+
+    Without an explicit `project`, `GoogleCloudProvider()` falls back to
+    `GOOGLE_API_KEY`/`GEMINI_API_KEY` (Vertex AI Express Mode) whenever
+    `GOOGLE_APPLICATION_CREDENTIALS` is unset, ignoring `GOOGLE_CLOUD_PROJECT`.
+    """
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project:
+        return model
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip() or "us-central1"
+    return GoogleModel(
+        model.removeprefix("google-cloud:"),
+        provider=GoogleCloudProvider(project=project, location=location),
+    )
+
+
 def resolve_model(model: str) -> Model | str:
     """The model object for a name, on pcode's own logins where it manages them.
 
@@ -515,6 +535,8 @@ def resolve_model(model: str) -> Model | str:
         from pcode.claude_sdk import claude_model
 
         return claude_model(model)
+    if model.startswith("google-cloud:"):
+        return google_cloud_model(model)
     if not model.startswith("anthropic:"):
         return model
     from pcode.auth import anthropic_model
