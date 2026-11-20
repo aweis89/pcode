@@ -783,6 +783,27 @@ class PreviewApp:
         except _PopupSuperseded:
             pass
 
+    async def read_secret(self, title: str, prompt: str, detail: str = "") -> str | None:
+        """Masked single-line secret popup; returns the value, or None when dismissed."""
+        from pcode.secret_ui import SecretPrompt
+
+        output, session = self.output, self.prompt_session
+        if output is None or session is None:
+            return None
+        try:
+            async with self.popup(output, session) as modal_input:
+                dialog = SecretPrompt(
+                    title,
+                    prompt,
+                    detail=detail,
+                    input=modal_input,
+                    output=session.app.output,
+                    style=session.app.style,
+                )
+                return await dialog.run()
+        except _PopupSuperseded:
+            return None
+
     def prompt_bindings(self):
         bindings = getattr(self.prompt_session, "command_bindings", None)
         if bindings is None:

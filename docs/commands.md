@@ -22,8 +22,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   defaults to the current model's provider, or `claude`). `claude` runs
   `claude auth login` for the login `claude:` models use ([details](providers.md#signing-in));
   `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `antigravity` runs
-  `agy acp --login`, opens the Google sign-in link, and forwards the pasted authorization
-  code or callback URL to `agy` (needs an idle conversation). `anthropic:` models use
+  `agy acp --login`, opens the Google sign-in link, and opens a masked prompt to forward
+  the pasted authorization code or callback URL to `agy` (needs no active work or queued
+  messages). `anthropic:` models use
   `ANTHROPIC_API_KEY` and have no sign-in.
   `/logout [openai-codex]` removes pcode's stored Codex login, leaving CLI credentials
   untouched; it needs an idle conversation. `/login claude` and `/login openai-codex`

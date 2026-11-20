@@ -241,6 +241,30 @@ def test_antigravity_lines():
         "Gemini Models (5h): 20% used, resets in 2h",
         "Claude and GPT models (5h): 14% used, resets in 2h 40m",
     ]
+    # Z-suffixed ISO timestamps and malformed bucket fields are handled cleanly.
+    z_reset = datetime.fromtimestamp(NOW + 3600, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert usage.antigravity_lines(
+        {
+            "command": {
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Weird",
+                            "buckets": [
+                                {
+                                    "window": {"not": "hashable"},
+                                    "name": "Custom",
+                                    "remaining_fraction": float("nan"),
+                                    "reset_time": z_reset,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        },
+        now=NOW,
+    ) == ["Weird (Custom): unknown, resets in 1h"]
     assert usage.antigravity_lines({"response": "Line one\n\n  Line two  \n"}) == [
         "Line one",
         "Line two",
@@ -267,10 +291,14 @@ def test_antigravity_usage_runs_agy_with_scrubbed_env(monkeypatch, tmp_path):
 
 
 def test_antigravity_usage_bails_early_when_logged_out(monkeypatch, tmp_path):
-    # Simulates `agy -p /usage` printing an auth prompt on stderr and waiting 60s.
+    # Simulates `agy -p /usage` printing an auth prompt across separate chunks on
+    # stderr and waiting 60s.
     agy = _script(
         tmp_path / "agy",
-        'echo "Authentication required. Please visit the URL to log in:" >&2\nexec sleep 30\n',
+        'printf "Authenti" >&2\n'
+        "sleep 0.05\n"
+        'printf "cation required. Please visit the URL to log in:\\n" >&2\n'
+        "exec sleep 30\n",
     )
     monkeypatch.setattr(usage.shutil, "which", lambda _: agy)
     monkeypatch.setattr(usage, "ANTIGRAVITY_USAGE_TIMEOUT", 10)
@@ -344,6 +372,8 @@ def test_report_for_single_provider_does_not_query_others(monkeypatch):
         "  Gemini Models (5h): 10% used",
     ]
     assert called == ["antigravity"]
+    with pytest.raises(ValueError, match="Unknown usage provider"):
+        usage.usage_report("bogus")
 
 
 def test_usage_command_defaults_to_current_provider_and_accepts_arguments(monkeypatch):
@@ -372,6 +402,14 @@ def test_usage_command_defaults_to_current_provider_and_accepts_arguments(monkey
         assert f"Report:{expected or 'all'}" in buffer.getvalue()
 
     assert seen == ["antigravity", "claude", "openai-codex", None, None, "claude"]
+
+    buffer = StringIO()
+    runtime = SimpleNamespace(agent=SimpleNamespace(model=None), history=[])
+    app = PreviewApp(
+        model="antigravity:gemini-4-neon-high", runtime=runtime, console=Console(file=buffer)
+    )
+    app.handle("/usage bogus")
+    assert "Usage: /usage [claude|openai-codex|antigravity|all]" in buffer.getvalue()
 
 
 def test_duration():

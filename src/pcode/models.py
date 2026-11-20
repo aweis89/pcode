@@ -94,7 +94,7 @@ def runs_own_loop(model) -> bool:
 
 
 def login_sources() -> tuple[str, ...]:
-    """What `/login` accepts; the first is what a bare `/login` signs in to."""
+    """What `/login` accepts; bare `/login` prefers the current model's provider, else the first."""
     return ("claude", "openai-codex", "antigravity")
 
 

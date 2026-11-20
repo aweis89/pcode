@@ -20,15 +20,6 @@ class Logins:
 
     def __init__(self, controller: SessionController) -> None:
         self.controller = controller
-        self._code_waiter: asyncio.Future[str] | None = None
-
-    def accept_input(self, text: str) -> bool:
-        """Deliver a pasted sign-in code if a login flow is waiting for one."""
-        waiter = self._code_waiter
-        if waiter is not None and not waiter.done():
-            waiter.set_result(text)
-            return True
-        return False
 
     @property
     def view(self):
@@ -73,8 +64,8 @@ class Logins:
         elif source == "antigravity":
             if beside:
                 self.view.warning(
-                    "Wait for the current turn to finish before running /login antigravity "
-                    "(it needs you to paste a code)."
+                    "Wait for active work and queued messages to finish before running "
+                    "/login antigravity (it opens a code-entry prompt)."
                 )
                 return
             await self.login_antigravity(cancel)
@@ -152,21 +143,29 @@ class Logins:
         from pcode.antigravity_login import antigravity_login
         from pcode.auth import LoginError
 
-        async def read_code() -> str:
-            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            self._code_waiter = future
-            try:
-                return await future
-            finally:
-                if self._code_waiter is future:
-                    self._code_waiter = None
+        seen_url = ""
+
+        def on_notice(text: str) -> None:
+            nonlocal seen_url
+            if text.startswith("https://") and not seen_url:
+                seen_url = text
+            self.view.note(text)
+
+        async def read_code() -> str | None:
+            detail = (
+                f"Finish signing in at:\n{seen_url}\n\n"
+                "Then paste the authorization code or callback URL below."
+                if seen_url
+                else "Paste the authorization code or callback URL below."
+            )
+            return await self.view.read_secret("Antigravity sign-in", "Code: ", detail)
 
         self.view.note(
             "Signing in to Antigravity with `agy acp --login`. "
             f"Open the link in your browser ({cancel}):"
         )
         try:
-            await antigravity_login(self.view.note, read_code, cancel=cancel)
+            await antigravity_login(on_notice, read_code, cancel=cancel)
             model = getattr(getattr(self.controller.runtime, "agent", None), "model", None)
             if isinstance(model, AntigravityModel):
                 model.reset()

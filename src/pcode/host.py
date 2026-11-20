@@ -384,6 +384,9 @@ class HostView:
     async def browse_jobs(self) -> None:
         await self._ask("browse_jobs")
 
+    async def read_secret(self, title: str, prompt: str, detail: str = "") -> str | None:
+        return await self._ask("read_secret", title, prompt, detail)
+
 
 class SessionHost:
     """Serves one controller to the terminals attached to it."""

@@ -13,6 +13,7 @@ All three come from the logins pcode already runs on, so no admin key is involve
 
 import asyncio
 import json
+import math
 import os
 import selectors
 import shutil
@@ -57,8 +58,10 @@ def usage_report(provider: str | None = None) -> list[str]:
     )
     if provider is None or provider == "all":
         sources = all_sources
-    else:
+    elif provider in USAGE_PROVIDERS:
         sources = tuple(entry for entry in all_sources if entry[0] == provider)
+    else:
+        raise ValueError(f"Unknown usage provider: {provider!r}")
     for _key, title, fetch in sources:
         try:
             body = fetch()
@@ -231,10 +234,14 @@ def _run_antigravity_usage(
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
     selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    needle = b"authentication required"
+    stderr_tail = b""
     deadline = time.monotonic() + timeout
     try:
+        os.set_blocking(process.stdout.fileno(), False)
+        os.set_blocking(process.stderr.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -243,7 +250,10 @@ def _run_antigravity_usage(
             if not events:
                 raise subprocess.TimeoutExpired(executable, timeout)
             for key, _ in events:
-                chunk = os.read(key.fd, 4096)
+                try:
+                    chunk = os.read(key.fd, 4096)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
@@ -252,8 +262,10 @@ def _run_antigravity_usage(
                 else:
                     stderr_chunks.append(chunk)
                     # Without a login, `agy -p` prints an auth URL and waits 60s on stdin.
-                    if b"authentication required" in b"".join(stderr_chunks).lower():
+                    window = stderr_tail + chunk.lower()
+                    if needle in window:
                         raise UsageUnavailable("No Antigravity login; run /login antigravity.")
+                    stderr_tail = window[-(len(needle) - 1) :]
         remaining = max(0.1, deadline - time.monotonic())
         returncode = process.wait(timeout=remaining)
     finally:
@@ -327,13 +339,19 @@ def antigravity_lines(data: dict, now: float | None = None) -> list[str]:
                 if not isinstance(bucket, dict):
                     continue
                 window = bucket.get("window")
+                window_str = window if isinstance(window, str) else None
                 window_label = (
-                    ANTIGRAVITY_WINDOW_LABELS.get(window) or bucket.get("name") or window or "Limit"
+                    (ANTIGRAVITY_WINDOW_LABELS.get(window_str) if window_str else None)
+                    or bucket.get("name")
+                    or window_str
+                    or "Limit"
                 )
                 remaining = bucket.get("remaining_fraction")
                 used = (
                     max(0.0, min(100.0, (1.0 - float(remaining)) * 100.0))
-                    if isinstance(remaining, (int, float)) and not isinstance(remaining, bool)
+                    if isinstance(remaining, (int, float))
+                    and not isinstance(remaining, bool)
+                    and math.isfinite(remaining)
                     else None
                 )
                 resets = _iso_timestamp(bucket.get("reset_time"))

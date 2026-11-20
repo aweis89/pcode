@@ -458,6 +458,7 @@ class SessionView(Protocol):
     async def browse_jobs(self) -> None: ...
     async def choose_model(self, values, providers, current: str | None) -> str | None: ...
     async def read_asides(self): ...
+    async def read_secret(self, title: str, prompt: str, detail: str = "") -> str | None: ...
 
 
 # What a host may call on an attached terminal: its view, and the mirrors of
@@ -1066,13 +1067,6 @@ class SessionController:
         than being spliced into a running one. `owner` hears when it starts,
         or that it was dropped; a steering message never starts a turn.
         """
-        if (
-            owner is None
-            and mode != "shell"
-            and not self.turn_running()
-            and self.logins.accept_input(text)
-        ):
-            return
         if mode == "steering" and prompt_target(text)[0] is not None:
             # A turn cannot change models mid-request: a prompt naming one gets
             # its own turn on it, never spliced into one that starts first.
@@ -1319,10 +1313,10 @@ class SessionController:
                 await self.run_command(text, before_queue=before_queue)
             finally:
                 self.view.command_finished()
-        await self.follow_up()
+        await self.follow_up(tag)
         self.view.session_changed()
 
-    async def follow_up(self) -> None:
+    async def follow_up(self, tag=None) -> None:
         """Do what the command just handled asked for once its handler returned."""
         if self.job_requested is not None:
             await self.perform_job()
@@ -1354,11 +1348,11 @@ class SessionController:
             # Deferred by busy work that was not a turn, which `consume` would wait out.
             await self.apply_pending_reload()
         if self.login_requested:
-            await self.perform_login()
+            await self.perform_login(tag)
         if self.logout_requested:
             await self.logins.perform_logout()
 
-    async def perform_login(self) -> None:
+    async def perform_login(self, tag=None) -> None:
         """Run the requested sign-in as cancellable work, so Ctrl+C abandons it.
 
         Waiting on a browser holds the session busy, which is what routes
@@ -1383,18 +1377,28 @@ class SessionController:
             return
         # Queued prompts count: the next turn would otherwise wait on the browser.
         beside = self.working() or bool(self.activity.queued_prompts)
+        if source == "antigravity" and beside:
+            self.view.warning(
+                "Wait for active work and queued messages to finish before running "
+                "/login antigravity (it opens a code-entry prompt)."
+            )
+            return
         task = asyncio.create_task(self.logins.perform_login(source, beside=beside))
         self.login_task = task
         self.activity.busy = True
         if beside:
             task.add_done_callback(self._login_finished)
             return
+        if tag is not None:
+            self.view.command_started(tag)
         try:
             await asyncio.wait({task})
         except asyncio.CancelledError:
             task.cancel()
             raise
         finally:
+            if tag is not None:
+                self.view.command_finished()
             self.login_task = None
             self.refresh_busy()
         if not task.cancelled():
