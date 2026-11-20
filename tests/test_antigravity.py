@@ -863,6 +863,181 @@ def test_replay_text_lists_turns_and_tool_calls():
     )
     assert "[User]\nfix it" in text and "[Assistant]\ndone" in text
     assert '[Assistant ran run_command: {"command": "make"}]' in text
+    assert antigravity.REPLAY_OMITTED not in text
+    assert text.endswith("</conversation>")
+
+
+def test_replay_text_caps_total_bytes_and_keeps_newest_turns():
+    history = []
+    for i in range(40):
+        history.append(ModelRequest(parts=[UserPromptPart(f"turn-{i:02d} " + "u" * 120)]))
+        history.append(ModelResponse(parts=[TextPart(f"reply-{i:02d} " + "a" * 120)]))
+
+    capped = replay_text(history, max_bytes=1200)
+    assert len(capped.encode("utf-8")) <= 1200
+    assert antigravity.REPLAY_OMITTED in capped
+    assert capped.endswith("</conversation>")
+    assert "turn-39" in capped and "reply-39" in capped
+    assert "turn-00" not in capped and "reply-00" not in capped
+    # Kept entries remain in chronological order.
+    assert capped.index("turn-39") < capped.index("reply-39")
+
+
+def test_replay_text_clips_oversized_entry_safely_for_multibyte_utf8():
+    # Single newest entry larger than the entire budget, containing 4-byte emoji.
+    huge = "🔥" * 500
+    history = [
+        ModelRequest(parts=[UserPromptPart("old turn")]),
+        ModelRequest(parts=[UserPromptPart(huge)]),
+    ]
+    capped = replay_text(history, max_bytes=600)
+    assert len(capped.encode("utf-8")) <= 600
+    assert antigravity.REPLAY_OMITTED in capped
+    assert "[User]\n🔥" in capped
+    assert " …\n</conversation>" in capped
+    assert "old turn" not in capped
+
+    # Oversized entry right before a short newest entry keeps the newest entry
+    # and clips the oversized entry into the remaining budget.
+    history_with_tail = [*history, ModelResponse(parts=[TextPart("short tail")])]
+    capped_tail = replay_text(history_with_tail, max_bytes=600)
+    assert len(capped_tail.encode("utf-8")) <= 600
+    assert "short tail" in capped_tail
+    assert "[User]\n🔥" in capped_tail
+    assert capped_tail.endswith("</conversation>")
+
+    # Budget too small even for the wrapper returns empty string.
+    assert replay_text(history, max_bytes=20) == ""
+
+    # Bare ellipsis is never returned when a multi-byte char can't fit ahead of " …".
+    assert antigravity._clip_bytes("🔥" * 10, 5) == ""
+
+    # Tiny budget just above omitted_header + footer falls back cleanly to
+    # REPLAY_OMITTED without emitting mangled role-tag stubs like "[Use" or "[Ass".
+    header = f"{antigravity.REPLAY_INTRO}\n\n<conversation>\n"
+    footer = "\n</conversation>"
+    minimal_bytes = len(f"{header}{antigravity.REPLAY_OMITTED}{footer}".encode("utf-8"))
+    omitted_base = len(f"{header}{antigravity.REPLAY_OMITTED}\n\n{footer}".encode("utf-8"))
+    # Minimal-only band (budget <= 0, minimal <= max_bytes).
+    minimal_only = replay_text(history, max_bytes=minimal_bytes)
+    assert minimal_only == f"{header}{antigravity.REPLAY_OMITTED}{footer}"
+    # Tiny positive budget below MIN_CLIP_BYTES also omits cleanly.
+    tiny_budget = replay_text(history, max_bytes=omitted_base + 8)
+    assert tiny_budget == f"{header}{antigravity.REPLAY_OMITTED}{footer}"
+
+    # Oversized entry right before a kept tail that leaves < MIN_CLIP_BYTES is
+    # dropped whole instead of prepending a stub.
+    tail = "[Assistant]\nshort tail"
+    exact_tail_budget = omitted_base + len(tail.encode("utf-8")) + 10
+    no_stub = replay_text(history_with_tail, max_bytes=exact_tail_budget)
+    assert len(no_stub.encode("utf-8")) <= exact_tail_budget
+    assert tail in no_stub
+    assert "[User]" not in no_stub
+
+    # max_bytes=None disables the cap completely.
+    unbounded = replay_text(history, max_bytes=None)
+    assert "old turn" in unbounded and huge in unbounded
+    assert antigravity.REPLAY_OMITTED not in unbounded
+
+
+def test_non_side_huge_prompt_and_images_replay_budget(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "REPLAY_MAX_BYTES", 1200)
+    monkeypatch.setattr(antigravity, "PROMPT_BUDGET_BYTES", 2000)
+    earlier = [
+        ModelRequest(parts=[UserPromptPart("earlier context")]),
+        ModelResponse(parts=[TextPart("noted")], provider_name="google"),
+    ]
+
+    async def go():
+        # Huge text prompt omits replay on a brand-new session and never triggers
+        # auto-compaction on the 0-turn session.
+        model = AntigravityModel("fake-high")
+        model.compact_at, model.used = 10, 500
+        await agent_for(model, tmp_path).run("x" * 2100, message_history=earlier)
+
+        # A large image attachment beside short text does not wipe out replay.
+        img = BinaryContent(b"\x89PNG" + b"\x00" * 5000, media_type="image/png")
+        await agent_for(AntigravityModel("fake-high"), tmp_path).run(
+            ["look", img], message_history=earlier
+        )
+
+    run(go())
+    sent = prompts(fake_agy)
+    # First prompt: no `/compact`, no replay block, just the huge prompt.
+    assert len(sent) == 2
+    assert sent[0] == [{"type": "text", "text": "x" * 2100}]
+    # Second prompt: replay + text + image all present.
+    assert len(sent[1]) == 3
+    assert "[User]\nearlier context" in sent[1][0]["text"]
+    assert sent[1][1] == {"type": "text", "text": "look"}
+    assert sent[1][2]["type"] == "image"
+
+
+def test_btw_caps_replayed_transcript_and_shrinks_for_large_prompts(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pydantic_ai.models.function import FunctionModel
+
+    from pcode.agent import side_model
+    from pcode.live import AgentRuntime
+
+    monkeypatch.setattr(antigravity, "REPLAY_MAX_BYTES", 1200)
+    monkeypatch.setattr(antigravity, "PROMPT_BUDGET_BYTES", 2000)
+
+    async def dummy(messages, info):
+        yield "ok"
+
+    async def go():
+        runtime = AgentRuntime(
+            Agent(
+                FunctionModel(stream_function=dummy),
+                model_settings={CWD_SETTING: str(tmp_path)},
+            )
+        )
+        runtime.context_history = [
+            msg
+            for i in range(30)
+            for msg in (
+                ModelRequest(parts=[UserPromptPart(f"ask-{i:02d} " + "x" * 100)]),
+                ModelResponse(parts=[TextPart(f"ans-{i:02d} " + "y" * 100)]),
+            )
+        ]
+        short_reply = await runtime.aside("status update", model=side_model("antigravity:fake-low"))
+        # A medium-large question shrinks replay so replay + question stays within
+        # PROMPT_BUDGET_BYTES.
+        medium_question = ("m" * 600) + " mid-end"
+        medium_reply = await runtime.aside(
+            medium_question, model=side_model("antigravity:fake-low")
+        )
+        # A question larger than PROMPT_BUDGET_BYTES omits replay rather than
+        # pushing the prompt itself over the ceiling.
+        huge_question = ("z" * 2100) + " big-end"
+        huge_reply = await runtime.aside(huge_question, model=side_model("antigravity:fake-low"))
+        return short_reply, medium_reply, huge_reply
+
+    short_reply, medium_reply, huge_reply = run(go())
+    assert "Question: status update" in short_reply.answer
+    assert "mid-end" in medium_reply.answer
+    assert "big-end" in huge_reply.answer
+    sent = prompts(fake_agy)
+    # First /btw: capped replay + intact side question.
+    assert len(sent[0]) == 2
+    replayed_block, question_block = sent[0][0]["text"], sent[0][1]["text"]
+    assert len(replayed_block.encode("utf-8")) <= 1200
+    assert antigravity.REPLAY_OMITTED in replayed_block
+    assert "ans-29" in replayed_block and "ask-00" not in replayed_block
+    assert replayed_block.endswith("</conversation>")
+    assert "Question: status update" in question_block
+    # Second /btw: replay shrunk below REPLAY_MAX_BYTES so total stays <= PROMPT_BUDGET_BYTES.
+    assert len(sent[1]) == 2
+    mid_replay, mid_question = sent[1][0]["text"], sent[1][1]["text"]
+    assert len(mid_replay.encode("utf-8")) < 1200
+    assert len(mid_replay.encode("utf-8")) + len(mid_question.encode("utf-8")) <= 2000
+    assert mid_replay.endswith("</conversation>")
+    assert "mid-end" in mid_question
+    # Third /btw: prompt alone exceeded PROMPT_BUDGET_BYTES, so replay was omitted.
+    assert len(sent[2]) == 1
+    assert "big-end" in sent[2][0]["text"]
 
 
 def test_compact_asks_antigravity_and_is_not_a_turn(fake_agy, tmp_path):

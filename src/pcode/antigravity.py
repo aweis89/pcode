@@ -103,6 +103,16 @@ SIDE_REPLAY_INTRO = (
     "running in the same workspace. Its transcript so far is below for context; answer "
     "only the side question that follows and do not continue or redo the main task."
 )
+# `agy acp` tail-truncates oversized `session/prompt` payloads (observed around
+# ~180 KB in agy 1.5.13), which drops `</conversation>` and the user's prompt
+# when a replayed transcript runs past the limit. Keep replays well under that
+# ceiling so the newest turns and the prompt always arrive intact.
+REPLAY_MAX_BYTES = 100_000
+PROMPT_BUDGET_BYTES = 140_000
+# Minimum byte budget needed before clipping an oversized replay entry, so a
+# clipped entry always keeps its role tag and real content instead of a stub.
+MIN_CLIP_BYTES = 64
+REPLAY_OMITTED = "[Earlier conversation omitted to fit the replay limit.]"
 # Seconds a side session's process is kept for a follow-up.
 SIDE_IDLE = 120.0
 # How long a cancelled turn may take to report that it stopped.
@@ -951,9 +961,11 @@ class AntigravityModel(Model):
                     on_title=self._title_update,
                 )
             else:
-                session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
+                session, replay = await self._prepare(
+                    earlier, _asked(interrupted), cwd, prompt_bytes=_text_bytes(prompt)
+                )
                 if not self._side:
-                    await self._ready(session, compact=not replay)
+                    await self._ready(session, compact=session.turns > 0)
                 stream = AntigravityStream(
                     model_request_parameters=model_request_parameters,
                     model_id=self._model_name,
@@ -1090,7 +1102,12 @@ class AntigravityModel(Model):
             await _close(session.connection)
 
     async def _prepare(
-        self, earlier: list[ModelMessage], interrupted: list[str], cwd: str
+        self,
+        earlier: list[ModelMessage],
+        interrupted: list[str],
+        cwd: str,
+        *,
+        prompt_bytes: int = 0,
     ) -> tuple[_Session, list[dict]]:
         """The session to prompt, and any replay to send before the new prompt.
 
@@ -1191,12 +1208,13 @@ class AntigravityModel(Model):
                 if current != PLAN_MODE
                 else next((m for m in available if m != PLAN_MODE), None)
             )
-        intro = SIDE_REPLAY_INTRO if self._side else REPLAY_INTRO
-        blocks = (
-            [{"type": "text", "text": replay_text(earlier, intro=intro)}]
-            if replay and earlier
-            else []
-        )
+        blocks: list[dict] = []
+        if replay and earlier:
+            budget = min(REPLAY_MAX_BYTES, PROMPT_BUDGET_BYTES - prompt_bytes)
+            intro = SIDE_REPLAY_INTRO if self._side else REPLAY_INTRO
+            text = replay_text(earlier, intro=intro, max_bytes=budget) if budget > 0 else ""
+            if text:
+                blocks = [{"type": "text", "text": text}]
         return self._session, blocks
 
 
@@ -1355,9 +1373,31 @@ def _clip(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[:limit] + " …"
 
 
-def replay_text(messages: list[ModelMessage], *, intro: str = REPLAY_INTRO) -> str:
-    """Earlier turns as a transcript, for a session that never saw them."""
-    lines = [intro, "", "<conversation>"]
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _text_bytes(blocks: list[dict]) -> int:
+    return sum(_utf8_len(b["text"]) for b in blocks if b.get("type") == "text")
+
+
+def _clip_bytes(text: str, limit: int) -> str:
+    """Clip `text` so its UTF-8 encoding is at most `limit` bytes."""
+    if limit <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    suffix = " …"
+    suffix_bytes = _utf8_len(suffix)
+    if limit <= suffix_bytes:
+        return encoded[:limit].decode("utf-8", errors="ignore")
+    prefix = encoded[: limit - suffix_bytes].decode("utf-8", errors="ignore")
+    return f"{prefix}{suffix}" if prefix else ""
+
+
+def _replay_entries(messages: list[ModelMessage]) -> list[str]:
+    entries: list[str] = []
     for message in messages:
         for part in message.parts:
             if isinstance(part, UserPromptPart):
@@ -1368,21 +1408,66 @@ def replay_text(messages: list[ModelMessage], *, intro: str = REPLAY_INTRO) -> s
                     if isinstance(item, (str, TextContent))
                 )
                 if content.strip() and content.strip() != PROVIDER_CONTINUATION_PROMPT:
-                    lines += [f"[User]\n{content}", ""]
+                    entries.append(f"[User]\n{content}")
             elif isinstance(part, DataCapabilityPart) and getattr(part, "tool_name", None):
                 blocks, _ = _data_blocks(part)
                 text = _asked_blocks(blocks)
                 if text.strip():
-                    lines += [f"[User]\n{_clip(text)}", ""]
+                    entries.append(f"[User]\n{_clip(text)}")
             elif isinstance(part, TextPart) and part.content.strip():
-                lines += [f"[Assistant]\n{part.content}", ""]
+                entries.append(f"[Assistant]\n{part.content}")
             elif isinstance(part, (NativeToolCallPart, ToolCallPart)):
                 args = _clip(json.dumps(part.args, default=str), 500)
-                lines += [f"[Assistant ran {part.tool_name}: {args}]", ""]
+                entries.append(f"[Assistant ran {part.tool_name}: {args}]")
             elif isinstance(part, (NativeToolReturnPart, ToolReturnPart)):
-                lines += [f"[{part.tool_name} returned: {_clip(part.model_response_str())}]", ""]
-    lines.append("</conversation>")
-    return "\n".join(lines)
+                entries.append(f"[{part.tool_name} returned: {_clip(part.model_response_str())}]")
+    return entries
+
+
+def replay_text(
+    messages: list[ModelMessage],
+    *,
+    intro: str = REPLAY_INTRO,
+    max_bytes: int | None = REPLAY_MAX_BYTES,
+) -> str:
+    """Earlier turns as a transcript, for a session that never saw them.
+
+    When `max_bytes` is set and the full transcript would exceed it, drops the
+    oldest entries first so the newest turns stay intact within the budget.
+    """
+    entries = _replay_entries(messages)
+    header = f"{intro}\n\n<conversation>\n"
+    footer = "\n</conversation>"
+    body = "\n\n".join(entries)
+    full = f"{header}{body}{footer}" if body else f"{header}</conversation>"
+    if max_bytes is None or _utf8_len(full) <= max_bytes:
+        return full
+
+    omitted_header = f"{header}{REPLAY_OMITTED}\n\n"
+    budget = max_bytes - _utf8_len(omitted_header) - _utf8_len(footer)
+    if budget <= 0:
+        minimal = f"{header}{REPLAY_OMITTED}{footer}"
+        return minimal if _utf8_len(minimal) <= max_bytes else ""
+
+    kept: list[str] = []
+    used = 0
+    for entry in reversed(entries):
+        sep = 2 if kept else 0
+        size = _utf8_len(entry) + sep
+        if used + size > budget:
+            remaining = budget - used - sep
+            if _utf8_len(entry) > budget and remaining >= MIN_CLIP_BYTES:
+                clipped = _clip_bytes(entry, remaining)
+                if clipped:
+                    kept.append(clipped)
+            break
+        kept.append(entry)
+        used += size
+
+    if kept:
+        kept.reverse()
+        return f"{omitted_header}{'\n\n'.join(kept)}{footer}"
+    return f"{header}{REPLAY_OMITTED}{footer}"
 
 
 def _tool_args(update: dict) -> dict:

@@ -922,6 +922,13 @@ finished turn) off this model. Traps found while building it:
 - A request's `BackgroundToolResultPart` (a detached or background worker's
   result) and tool results left by another model are rendered as text in
   `user_prompt`; agy made none of those calls.
+- `agy` 1.5.13 tail-truncates oversized `session/prompt` payloads (observed
+  around ~180 KB), which drops `</conversation>` and the user's prompt when a
+  replayed transcript runs past the limit (e.g. `/btw` or a model switch on a
+  long conversation). `replay_text` caps the replay in UTF-8 bytes
+  (`REPLAY_MAX_BYTES`, further shrunk against `PROMPT_BUDGET_BYTES` when the new
+  prompt itself is large), dropping the oldest entries first so the newest turns
+  and the prompt always arrive intact.
 
 `tests/test_antigravity.py` runs the model against `tests/fake_agy.py`, a
 scripted ACP server installed on `PATH` as `agy`.
