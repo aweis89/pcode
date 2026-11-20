@@ -177,7 +177,12 @@ class WorkspaceSubAgents(SubAgents):
 
     async def before_model_request(self, ctx, request_context):
         # A worker's question rides the parent's next request, like steering.
+        from pcode.models import user_only
+
         request_context = await super().before_model_request(ctx, request_context)
+        if user_only(request_context.model):
+            # Shown to the user instead (`antigravity_tools`), who may answer it.
+            return request_context
         for message in self.hub.take_questions():
             run_request(ctx, request_context).parts.append(UserPromptPart(message))
         return request_context

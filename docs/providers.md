@@ -303,8 +303,23 @@ Antigravity runs the whole turn with its own tools, rules, and skills, and
 pcode shows its tool calls, edits, and replies as they stream. That has a few
 consequences:
 
-- **pcode's own tools aren't used.** No plans, delegated workers, or pcode
-  shell jobs. Antigravity's built-in versions take their place.
+- **pcode's own tools mostly aren't used.** No plans or pcode shell jobs:
+  Antigravity's built-in versions take their place. The exception is
+  delegation, described below.
+- **It can hand work to pcode workers on other providers.** pcode offers
+  Antigravity its `delegate_task` tool (and `manage_worker`), so Antigravity
+  can ask for, say, a Claude reviewer or an OpenAI second opinion. The worker
+  runs in pcode with pcode's tools, and its report goes back to Antigravity.
+  The transcript notes when one starts and finishes. These workers don't
+  appear in `/agents`, and a worker's question shows up as a note for you
+  rather than going to Antigravity. You can reply with `Answer for w1: …`
+  for Antigravity to pass on; unanswered, the worker goes with its own
+  fallback after a while. A worker never runs on `antigravity:`
+  itself. When Antigravity names no model, the worker uses the first entry in
+  your `subagent_models` setting; with none set, Antigravity has to name one.
+  These workers always run in the foreground, and only while a pcode turn is
+  running, so a background Antigravity sub-agent can't start one after the
+  turn ends.
 - **Each prompt you send is one Antigravity turn.** pcode never prompts it on
   its own, so it can't answer `/btw` questions, act as an advisor or a
   delegate, or be summarized by `/compact`. Antigravity compacts its own

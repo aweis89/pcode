@@ -89,7 +89,7 @@ def user_only(model) -> bool:
     a model object or a `provider:name` string.
     """
     if isinstance(model, str):
-        return model.startswith("antigravity:")
+        return model.strip().lower().startswith("antigravity:")
     return getattr(model, "system", None) == "antigravity"
 
 

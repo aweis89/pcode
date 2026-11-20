@@ -21,7 +21,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from pcode import antigravity
+from pcode import antigravity, antigravity_tools
 from pcode.antigravity import AntigravityError, AntigravityModel, cached_models, replay_text
 from pcode.claude_sdk.workspace import CWD_SETTING
 
@@ -96,7 +96,9 @@ def test_one_turn_maps_text_thinking_tools_and_usage(fake_agy, tmp_path):
     # Background sub-agents can't forward permission requests; see `Connection.start`.
     assert fake_agy()[0]["argv"] == ["acp", "--dangerously-skip-permissions"]
     new = fake_agy("session/new")[0]["params"]
-    assert new["cwd"] == str(tmp_path) and new["mcpServers"] == []
+    assert new["cwd"] == str(tmp_path)
+    # pcode's delegation, as an MCP server agy may call; see antigravity_tools.
+    assert [server["name"] for server in new["mcpServers"]] == ["pcode"]
     assert fake_agy("session/set_model")[0]["params"]["modelId"] == "fake-low"
     # pcode's own tools are never offered: the agent loop ends after one request.
     assert len(prompts(fake_agy)) == 1
@@ -592,6 +594,276 @@ def test_retiring_drops_unshown_output_after_the_turn():
 
     asyncio.run(go())
     assert shown == []
+
+
+@pytest.fixture
+def subagent_models(monkeypatch):
+    """Set the `subagent_models` default, and a fixed /model catalog."""
+    monkeypatch.setattr(
+        antigravity_tools,
+        "offered_models",
+        lambda: ["claude:fable", "openai-codex:gpt"],
+    )
+
+    def use(*names):
+        monkeypatch.setattr("pcode.preferences.subagent_models", lambda: list(names))
+
+    use()
+    return use
+
+
+def delegating_agent(model, workspace, ran: list):
+    """An agent whose `delegate_task` records its calls, shaped like pcode's."""
+    agent = Agent(model, model_settings={CWD_SETTING: str(workspace)})
+
+    @agent.tool_plain
+    def delegate_task(task: str, model: str | None = None, run_in_background: bool = False):
+        """Delegate a task."""
+        ran.append({"task": task, "model": model, "background": run_in_background})
+        return f"report on {task} from {model}"
+
+    @agent.tool_plain
+    def read_file(path: str):
+        """Not offered to Antigravity."""
+        raise AssertionError("read_file is not offered")
+
+    return agent
+
+
+def mcp_prompt(name: str, arguments: dict) -> str:
+    return "MCP " + json.dumps({"name": name, "arguments": arguments})
+
+
+def test_antigravity_can_delegate_to_a_worker_on_another_provider(
+    fake_agy, tmp_path, subagent_models
+):
+    ran: list = []
+    shown: list = []
+    subagent_models("antigravity:fake-low", "claude:fable")
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        model.listener = shown.append
+        agent = delegating_agent(model, tmp_path, ran)
+        prompt = mcp_prompt("delegate_task", {"task": "review", "run_in_background": True})
+        return await streamed(agent, prompt)
+
+    result = run(go())
+    assert shown == [
+        "Antigravity started a pcode worker on claude:fable: review",
+        "The pcode worker on claude:fable finished; Antigravity has its report.",
+    ]
+    # The first default it may use, never Antigravity's own, and never in the background.
+    assert ran == [{"task": "review", "model": "claude:fable", "background": False}]
+    assert result.output == "tool said: report on review from claude:fable"
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e]
+    assert listed["mcp_discover"]["error"]["code"] == -32601
+    [tool] = listed["mcp_tools"]
+    assert tool["name"] == "delegate_task"
+    assert "run_in_background" not in tool["inputSchema"]["properties"]
+    schema = tool["inputSchema"]
+    assert schema["properties"]["model"]["description"] == (
+        "The model to run the sub-agent on, as provider:model, one of: "
+        "claude:fable, openai-codex:gpt. Defaults to claude:fable."
+    )
+    assert schema["required"] == ["task"]
+
+
+def test_with_no_default_antigravity_must_name_the_model(fake_agy, tmp_path, subagent_models):
+    ran: list = []
+
+    async def go():
+        agent = delegating_agent(AntigravityModel("fake-high"), tmp_path, ran)
+        return await streamed(agent, mcp_prompt("delegate_task", {"task": "x"}))
+
+    result = run(go())
+    assert ran == []
+    assert result.output == f"tool said (error): {antigravity_tools.NO_MODEL}"
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e]
+    assert listed["mcp_tools"][0]["inputSchema"]["required"] == ["task", "model"]
+
+
+@pytest.mark.parametrize("default", [(), ("claude:fable",)])
+def test_a_worker_never_runs_on_antigravity(fake_agy, tmp_path, subagent_models, default):
+    ran: list = []
+    subagent_models(*default)
+
+    async def go():
+        agent = delegating_agent(AntigravityModel("fake-high"), tmp_path, ran)
+        arguments = {"task": "x", "model": "antigravity:fake-low"}
+        return await streamed(agent, mcp_prompt("delegate_task", arguments))
+
+    result = run(go())
+    assert ran == []
+    assert result.output.startswith("tool said (error): Cannot use antigravity:fake-low")
+
+
+def test_only_delegation_is_offered_and_only_during_a_turn(fake_agy, tmp_path, subagent_models):
+    ran: list = []
+
+    async def go():
+        agent = delegating_agent(AntigravityModel("fake-high"), tmp_path, ran)
+        hidden = await streamed(agent, mcp_prompt("read_file", {"path": "x"}))
+        # Unstreamed, the model has no run to execute a call in.
+        unstreamed = await agent.run(mcp_prompt("delegate_task", {"task": "x"}))
+        return hidden.output, unstreamed.output
+
+    hidden, unstreamed = run(go())
+    assert "no tool named 'read_file'" in hidden
+    assert antigravity_tools.NO_TURN in unstreamed
+    assert ran == []
+
+
+def test_retiring_closes_the_tool_bridge(fake_agy, tmp_path, subagent_models):
+    async def go():
+        model = AntigravityModel("fake-high")
+        await streamed(delegating_agent(model, tmp_path, []), "hello")
+        socket_dir = Path(model.tools._dir)
+        assert (socket_dir / "mcp.sock").exists()
+        model.retire()
+        for _ in range(100):
+            if not socket_dir.exists():
+                break
+            await asyncio.sleep(0.02)
+        return socket_dir
+
+    assert not run(go()).exists()
+
+
+def test_each_turns_calls_run_in_that_turns_context(fake_agy, tmp_path, subagent_models):
+    from contextvars import ContextVar
+
+    turn: ContextVar[str] = ContextVar("turn", default="none")
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = Agent(model, model_settings={CWD_SETTING: str(tmp_path)})
+
+        @agent.tool_plain
+        def delegate_task(task: str, model: str | None = None):
+            """Delegate."""
+            return turn.get()
+
+        outputs = []
+        history = None
+        for name in ("one", "two"):
+            turn.set(name)
+            result = await streamed(
+                agent, mcp_prompt("delegate_task", {"task": "x", "model": "claude:fable"}), history
+            )
+            history = result.all_messages()
+            outputs.append(result.output)
+        return outputs
+
+    # The server started in turn one, but turn two's call sees turn two.
+    assert run(go()) == ["tool said: one", "tool said: two"]
+
+
+def test_a_call_agy_cancels_stops_its_worker(fake_agy, tmp_path, subagent_models):
+    stopped: list = []
+
+    async def go():
+        model = AntigravityModel("fake-high")
+        agent = Agent(model, model_settings={CWD_SETTING: str(tmp_path)})
+
+        @agent.tool_plain
+        async def delegate_task(task: str, model: str | None = None):
+            """Delegate."""
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                stopped.append(task)
+                raise
+
+        arguments = {"task": "slow", "model": "claude:fable"}
+        call = {"name": "delegate_task", "arguments": arguments, "cancel_after": 0.3}
+        return await streamed(agent, "MCP " + json.dumps(call))
+
+    result = run(go())
+    assert stopped == ["slow"] and result.output == "tool said: gave up"
+    # No reply to a call agy cancelled.
+    assert [e["mcp_after_cancel"] for e in fake_agy() if "mcp_after_cancel" in e] == [""]
+
+
+def test_shutdown_removes_the_socket(fake_agy, tmp_path, subagent_models):
+    async def go():
+        model = AntigravityModel("fake-high")
+        await streamed(delegating_agent(model, tmp_path, []), "hello")
+        return Path(model.tools._dir)
+
+    assert not run(go()).exists()
+
+
+def test_a_crashed_sessions_socket_directory_is_swept(tmp_path, monkeypatch):
+    import os
+    import time
+
+    monkeypatch.setattr(antigravity_tools, "_socket_root", lambda: tmp_path)
+    stale, fresh = tmp_path / "pcode-agy-old", tmp_path / "pcode-agy-new"
+    stale.mkdir()
+    fresh.mkdir()
+    old = time.time() - antigravity_tools.STALE_AFTER - 5
+    os.utime(stale, (old, old))
+    antigravity_tools.sweep_stale()
+    # Nothing answers on the old one; the new one may still be starting.
+    assert not stale.exists() and fresh.exists()
+
+
+def test_a_workers_question_is_shown_to_the_user_once():
+    from types import SimpleNamespace
+
+    from pcode.worker_channel import Question, WorkerHub
+
+    hub = WorkerHub()
+    handle = hub.claim("c1", {"task": "t"})
+    handle.question = Question("Which file?", "edit a.txt")
+    shown: list = []
+    bridge = antigravity_tools.ToolBridge(notify=shown.append)
+    ctx = SimpleNamespace(capabilities={"delegation": SimpleNamespace(hub=hub)})
+    bridge._relay_questions(ctx)
+    bridge._relay_questions(ctx)
+    assert shown == [
+        f"Worker {handle.id} asks: Which file? Without an answer it goes with: edit a.txt\n"
+        f"To answer, send: Answer for {handle.id}: <your answer>"
+    ]
+
+
+def test_a_workers_question_is_not_added_to_its_prompt():
+    from types import SimpleNamespace
+
+    from pcode.isolated_delegation import WorkspaceSubAgents
+
+    class Hub:
+        def take_questions(self):
+            raise AssertionError("would deliver a worker's question to Antigravity")
+
+    request = ModelRequest(parts=[UserPromptPart("hi")])
+    context = SimpleNamespace(model=AntigravityModel("fake-high"), messages=[request])
+    capability = WorkspaceSubAgents.__new__(WorkspaceSubAgents)
+    capability.hub = Hub()
+    asyncio.run(capability.before_model_request(SimpleNamespace(messages=[request]), context))
+    assert [p.content for p in request.parts] == ["hi"]
+
+
+def test_a_delegation_from_antigravity_is_never_detached(monkeypatch):
+    from types import SimpleNamespace
+
+    from pcode.background_delegation import DELEGATE, BackgroundDelegation
+
+    async def go():
+        ctx = SimpleNamespace(model=AntigravityModel("fake-high"))
+
+        async def handler(args):
+            return "inline"
+
+        call = SimpleNamespace(tool_name=DELEGATE, tool_call_id="c1")
+        capability = BackgroundDelegation()
+        return await capability.wrap_tool_execute(
+            ctx, call=call, tool_def=None, args={}, handler=handler
+        )
+
+    # No task group, no steering check: it simply runs.
+    assert asyncio.run(go()) == "inline"
 
 
 def test_steering_at_a_turns_start_carries_no_pcode_reminder(fake_agy, tmp_path):

@@ -875,6 +875,17 @@ finished turn) off this model. Traps found while building it:
 - The ACP server sends no `plan` updates (its message set has none; tasks live
   in a `tasks.md` under `~/.gemini/antigravity-cli/brain/`), so pcode's plan
   panel stays empty on Antigravity.
+- Client MCP servers (`src/pcode/antigravity_tools.py`): `agy` advertises no
+  `mcpCapabilities`, so only stdio servers in `session/new`/`session/resume`
+  `mcpServers` work, in the default mode as well as `--process-per-session`.
+  It preloads them with a deadline of about six seconds ("Failed to preload the
+  session's MCP servers: context deadline exceeded" in `acp-*.log`), and the
+  model then just reports no such tool. It opens with `server/discover`
+  (protocol 2026-07-28) before `initialize`: a FastMCP 4.1 server failed that
+  handshake where a server answering `-32601` worked. Tools appear to the model
+  as `mcp_<server>_<tool>`. Hence the stdlib-only `antigravity_relay.py`, run
+  with `python -I`, relaying to a Unix socket in the pcode process, where calls
+  run through the live turn's `tool_manager.handle_call`.
 
 `tests/test_antigravity.py` runs the model against `tests/fake_agy.py`, a
 scripted ACP server installed on `PATH` as `agy`.

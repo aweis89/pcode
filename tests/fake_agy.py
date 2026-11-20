@@ -5,11 +5,14 @@ message is appended to `$FAKE_AGY_LOG` as a JSON line, after a first line
 naming the environment's Google variables. A prompt's text picks a script:
 `SLOW` streams until cancelled, `CRASH` exits mid-turn, `AUTH` fails before
 starting, `ALWAYS` offers only "always allow" or "reject", and `BADLINE`
-writes malformed messages before a normal reply.
+writes malformed messages before a normal reply. `MCP {"name": ..., "arguments":
+...}` starts the session's first MCP server as agy does, logs `mcp_tools` and
+`mcp_result`, and replies with the call's result.
 """
 
 import json
 import os
+import subprocess
 import sys
 import threading
 
@@ -21,6 +24,8 @@ cancelled = threading.Event()
 # at once and carries on under the new one (steering).
 superseded: set = set()
 running: list = []
+# Each session's `mcpServers`, from session/new or session/resume.
+servers: dict = {}
 
 
 def log(entry):
@@ -57,10 +62,71 @@ def ask_permission(session, call, options):
     answered.wait(10)
 
 
+def call_mcp(server, name, arguments, cancel_after=None):
+    """Start `server`, list its tools and call one, with agy's opening moves.
+
+    With `cancel_after`, give up on the call after that many seconds instead.
+    """
+    env = {**os.environ, **{e["name"]: e["value"] for e in server.get("env", [])}}
+    child = subprocess.Popen(
+        [server["command"], *server["args"]],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+
+    def ask(request_id, method, params=None):
+        message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
+        child.stdin.write(json.dumps(message) + "\n")
+        child.stdin.flush()
+        return json.loads(child.stdout.readline())
+
+    discover = ask(1, "server/discover")  # agy 1.5.13 tries this first.
+    ask(2, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}})
+    child.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+    child.stdin.write("\n")
+    tools = ask(3, "tools/list")["result"]["tools"]
+    log({"mcp_discover": discover, "mcp_tools": tools})
+    if cancel_after is not None:
+        call = {"name": name, "arguments": arguments}
+        child.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": call})
+        )
+        child.stdin.write("\n")
+        child.stdin.flush()
+        threading.Event().wait(cancel_after)
+        cancel = {"method": "notifications/cancelled", "params": {"requestId": 4}}
+        child.stdin.write(json.dumps({"jsonrpc": "2.0", **cancel}) + "\n")
+        child.stdin.flush()
+        threading.Event().wait(0.5)  # Long enough for a reply that must not come.
+        child.stdin.close()
+        leftover = child.stdout.read()
+        child.wait(10)
+        log({"mcp_after_cancel": leftover})
+        return {"content": [{"type": "text", "text": "gave up"}]}
+    result = ask(4, "tools/call", {"name": name, "arguments": arguments})
+    log({"mcp_result": result})
+    child.stdin.close()
+    child.wait(10)
+    return result["result"]
+
+
 def prompt(request):
     params = request["params"]
     session = params["sessionId"]
     text = " ".join(b.get("text", "") for b in params["prompt"] if b.get("type") == "text")
+    if text.startswith("MCP "):
+        call = json.loads(text[4:])
+        result = call_mcp(
+            servers[session][0], call["name"], call["arguments"], call.get("cancel_after")
+        )
+        failed = " (error)" if result.get("isError") else ""
+        chunk(session, "agent_message_chunk", f"tool said{failed}: {result['content'][0]['text']}")
+        result = {"stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1}}
+        send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        running.remove(request["id"])
+        return
     if "AUTH" in text:
         error = {"code": -32000, "message": "Authentication required"}
         send({"jsonrpc": "2.0", "id": request["id"], "error": error})
@@ -204,9 +270,13 @@ def main():
         elif method == "session/new":
             models = [{"modelId": "fake-high"}, {"modelId": "fake-low"}]
             current = {"availableModels": models, "currentModelId": "fake-high"}
-            reply = {"result": {"sessionId": f"s-{started_sessions()}", "models": current}}
+            session_id = f"s-{started_sessions()}"
+            servers[session_id] = message["params"].get("mcpServers", [])
+            reply = {"result": {"sessionId": session_id, "models": current}}
         elif method == "session/resume" and message["params"]["sessionId"].startswith("gone"):
             reply = {"error": {"code": -32002, "message": "Session not found"}}
+        elif method == "session/resume":
+            servers[message["params"]["sessionId"]] = message["params"].get("mcpServers", [])
         elif method == "session/set_model" and message["params"]["modelId"] == "missing":
             reply = {"error": {"code": -32602, "message": "Unknown model"}}
         send({"jsonrpc": "2.0", "id": message["id"], **reply})

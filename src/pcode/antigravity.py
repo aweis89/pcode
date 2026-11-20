@@ -5,7 +5,9 @@ for subscription use: the unmodified `agy acp` server owns the agent loop, its
 tools and its sign-in, and pcode only sends the user's prompt and shows the
 turn. One pcode request is one whole Antigravity turn. Its tool calls come back
 as provider-executed (native) tool parts, and pcode's own tools are never
-offered to it, so pcode's agent loop ends after every response. A request that
+offered to it as function tools, so pcode's agent loop ends after every
+response. (Delegation alone is offered the ACP way, as an MCP server
+Antigravity's own loop may call: see `pcode.antigravity_tools`.) A request that
 doesn't end in the user's own prompt (tool results after a mid-turn `/model`
 switch, a bare continuation) is refused rather than sent: pcode must never
 prompt Antigravity on its own. For the same reason `antigravity:` cannot be a
@@ -485,6 +487,9 @@ async def shutdown() -> None:
     connections = list(_connections)
     _connections.clear()
     await asyncio.gather(*(c.close() for c in connections), return_exceptions=True)
+    from pcode.antigravity_tools import close_all
+
+    await close_all()
     for task in list(_background):
         task.cancel()
 
@@ -528,6 +533,10 @@ class AntigravityModel(Model):
         self.listener: Callable[[str], None] | None = None
         self._after_turn: list[str] = []
         self._quiet: asyncio.TimerHandle | None = None
+        from pcode.antigravity_tools import ToolBridge
+
+        # pcode's delegation, which Antigravity may call (see antigravity_tools).
+        self.tools = ToolBridge(notify=self._show)
 
     def _usage_update(self, update: dict) -> None:
         from pcode.model_metadata import positive_int, record_context_window
@@ -588,6 +597,7 @@ class AntigravityModel(Model):
             async def retire() -> None:
                 async with self._lock:
                     await self._drop()
+                    await self.tools.close()
 
             # What this conversation's agy said after its last turn must not
             # land in whichever conversation the view shows next.
@@ -632,6 +642,8 @@ class AntigravityModel(Model):
         cwd = str((model_settings or {}).get(CWD_SETTING) or os.getcwd())
         await self._lock.acquire()
         handed_off = False
+        # Set first: a new session lists the tools as this turn has them.
+        self.tools.begin_turn(run_context)
         try:
             session, replay = await self._prepare(earlier, _asked(interrupted), cwd)
             stream = AntigravityStream(
@@ -660,8 +672,13 @@ class AntigravityModel(Model):
                 elif stream.broken:
                     await asyncio.shield(self._drop())
         finally:
+            self.tools.cancel_calls()
             if not handed_off:
-                self._lock.release()
+                try:
+                    # The next prompt waits for a cancelled worker's cleanup.
+                    await asyncio.shield(self.tools.drained())
+                finally:
+                    self._lock.release()
 
     async def _settle(self, stream: AntigravityStream) -> None:
         try:
@@ -670,7 +687,10 @@ class AntigravityModel(Model):
         except Exception:
             await self._drop()
         finally:
-            self._lock.release()
+            try:
+                await self.tools.drained()
+            finally:
+                self._lock.release()
 
     async def _drop(self) -> None:
         session, self._session = self._session, None
@@ -714,17 +734,21 @@ class AntigravityModel(Model):
         _connections.add(connection)
         try:
             await connection.start()
+            servers = await self.tools.servers()
             result = None
             if resumable:
                 assert stamp is not None
                 with contextlib.suppress(AntigravityError):
                     result = await connection.request(
-                        "session/resume", {"sessionId": stamp[0], "cwd": cwd, "mcpServers": []}
+                        "session/resume",
+                        {"sessionId": stamp[0], "cwd": cwd, "mcpServers": servers},
                     )
                     result = {**result, "sessionId": stamp[0]}
             replay = result is None
             if result is None:
-                result = await connection.request("session/new", {"cwd": cwd, "mcpServers": []})
+                result = await connection.request(
+                    "session/new", {"cwd": cwd, "mcpServers": servers}
+                )
             _remember_models(result)
             session_id = result["sessionId"]
             current_model = (result.get("models") or {}).get("currentModelId") or ""
