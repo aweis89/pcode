@@ -716,19 +716,22 @@ async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> bool:
     return await wait_for_exit(entry.pid)
 
 
-async def stop_if_idle(entry: HostEntry, *, require_detached: bool = False) -> str:
+async def stop_if_idle(
+    entry: HostEntry, *, require_detached: bool = False, keep_worktree: bool = False
+) -> str:
     """Stop a host as it would stop itself once idle; else return why not.
 
     When `require_detached` is True, attached human terminals also refuse the stop
-    atomically on the host. Returns "" once it has exited, else what it is busy with.
+    atomically on the host. When `keep_worktree` is True, the session's worktree
+    is left untouched. Returns "" once it has exited, else what it is busy with.
     """
-    args = (True,) if require_detached else ()
+    args = (require_detached, keep_worktree) if (require_detached or keep_worktree) else ()
     try:
         reason = await request_host(entry, "stop_if_idle", *args)
     except RemoteError as error:
-        if require_detached and error.type_name == "TypeError":
-            # Host supports stop_if_idle() without require_detached: check entry best-effort.
-            if entry.attached > 0:
+        if args and error.type_name == "TypeError":
+            # Host supports an older stop_if_idle signature: check entry best-effort.
+            if require_detached and entry.attached > 0:
                 return f"{entry.attached} terminal(s) attached"
             reason = await request_host(entry, "stop_if_idle")
         elif error.type_name == "PermissionError":

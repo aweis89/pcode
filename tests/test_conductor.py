@@ -237,6 +237,7 @@ def test_host_ask_aside_waits_for_startup_and_supports_model_override(tmp_path):
                     assert target.effort == "low"
                     return {"model": SimpleNamespace(model=override_model, settings=None)}
 
+                host.controller.check_effort = lambda target: None
                 host.controller.target_options = fake_target_options
 
                 task = asyncio.create_task(
@@ -297,7 +298,7 @@ def test_conductor_worker_scoping_and_aside_guard(tmp_path):
             ("wait_for_hosts", (["h1"],)),
             ("stop_host", ("h1",)),
         ):
-            with pytest.raises(ModelRetry, match="not workers"):
+            with pytest.raises(ToolFailed, match="not workers"):
                 await parent_tools[name](worker_ctx, *args)
 
         # AsideGuard refuses mutating/recursive conductor tools, allows read-only ones.
@@ -469,13 +470,19 @@ def test_conductor_inspect_ask_send_wait_and_stop(tmp_path):
                     assert waited["status"] == "completed"
                     assert waited["reply"] == "all done"
 
-                    # Self-targeting and shell mode refused.
+                    # Self-targeting refused across active tools.
+                    with pytest.raises(ModelRetry, match="current session"):
+                        await tools["ask_host"](_ctx("sess-aaaa1111"), "h-run", "hi")
                     with pytest.raises(ModelRetry, match="current session"):
                         await tools["send_to_host"](_ctx("sess-aaaa1111"), "h-run", "hi")
                     with pytest.raises(ModelRetry, match="current session"):
+                        await tools["wait_for_hosts"](_ctx("sess-aaaa1111"), ["h-run"])
+                    with pytest.raises(ModelRetry, match="current session"):
                         await tools["stop_host"](_ctx("sess-aaaa1111"), "h-run")
-                    with pytest.raises(ModelRetry, match="Shell mode"):
-                        await tools["send_to_host"](ctx, "h-run", "!rm -rf /")
+
+                    # Leading "!" is allowed as a normal queued prompt (never shell mode).
+                    bang = await tools["send_to_host"](ctx, "h-run", "!important note", wait=True)
+                    assert bang["status"] == "completed"
 
                     # stop_host refuses atomically on the host when a terminal is attached.
                     with patch.object(host, "terminals", return_value=[object()]):
@@ -483,11 +490,12 @@ def test_conductor_inspect_ask_send_wait_and_stop(tmp_path):
                         assert refused["status"] == "refused"
                         assert "terminal" in refused["reason"]
 
-                    # stop_host(force=False) on idle host calls host.stop_if_idle(True).
+                    # stop_host(force=False) on idle host preserves the worktree.
                     with patch("pcode.remote.wait_for_exit", new=AsyncMock(return_value=True)):
                         stopped_idle = await tools["stop_host"](ctx, "h-run", force=False)
                         assert stopped_idle["status"] == "stopped"
                         assert host.stopped.is_set()
+                        assert host.keep_worktree is True
 
                     # stop_host(force=True) passes keep_worktree=True.
                     with patch(
@@ -497,9 +505,23 @@ def test_conductor_inspect_ask_send_wait_and_stop(tmp_path):
                         assert stopped["status"] == "stopped"
                         mock_stop.assert_awaited_once_with(entry, keep_worktree=True)
 
-                    # Already stopped host returns already_stopped cleanly.
-                    gone = await tools["stop_host"](ctx, "no-such-host")
-                    assert gone["status"] == "already_stopped"
+                    # Stopped session returns already_stopped; unknown typo raises ModelRetry.
+                    remember_stopped(
+                        HostEntry(
+                            id="s-done",
+                            pid=os.getpid(),
+                            model="test:fake",
+                            workspace=str(tmp_path),
+                            session_id="sess-stopped1",
+                            state="idle",
+                        ),
+                        directory,
+                    )
+                    already = await tools["stop_host"](ctx, "sess-stopped1")
+                    assert already["status"] == "already_stopped"
+                    assert already["session_id"] == "sess-stopped1"
+                    with pytest.raises(ModelRetry, match="No running or recently stopped"):
+                        await tools["stop_host"](ctx, "no-such-host")
 
     asyncio.run(run())
 
@@ -562,18 +584,18 @@ def test_conductor_refuses_open_non_hosted_session_and_missing_workspace(tmp_pat
         async with _short_host_dir():
             session_dir = tmp_path / "sessions"
 
-            # Open in an interactive terminal without a host -> refused cleanly.
+            # Open in an interactive terminal without a host -> refused cleanly with ToolFailed.
             open_ws = tmp_path / "open-ws"
             open_ws.mkdir()
             open_saved = SavedSession.create("test:fake", open_ws, session_dir)
             try:
                 _, tools = _load_conductor(tmp_path, session_dir=session_dir)
-                with pytest.raises(ModelRetry, match="interactive terminal"):
+                with pytest.raises(ToolFailed, match="interactive terminal"):
                     await tools["ask_host"](_ctx("parent-00000000"), open_saved.info.id, "Hi?")
             finally:
                 open_saved.close()
 
-            # Deleted workspace -> points to read_session.
+            # Deleted workspace -> points to read_session with ToolFailed.
             gone_ws = tmp_path / "deleted-worktree"
             gone_ws.mkdir()
             gone_saved = SavedSession.create("test:fake", gone_ws, session_dir)
@@ -582,7 +604,7 @@ def test_conductor_refuses_open_non_hosted_session_and_missing_workspace(tmp_pat
             gone_ws.rmdir()
 
             _, tools = _load_conductor(tmp_path, session_dir=session_dir)
-            with pytest.raises(ModelRetry, match="read_session"):
+            with pytest.raises(ToolFailed, match="read_session"):
                 await tools["ask_host"](_ctx("parent-00000000"), gone_sid, "Where were you?")
 
     asyncio.run(run())
@@ -609,7 +631,7 @@ def test_conductor_older_host_permission_error_is_friendly(tmp_path):
                     new=AsyncMock(side_effect=RemoteError("PermissionError", "not allowed")),
                 ),
             ):
-                with pytest.raises(ModelRetry, match="older pcode"):
+                with pytest.raises(ToolFailed, match="older pcode"):
                     await tools["inspect_host"](_ctx(), "h-old")
 
     asyncio.run(run())
@@ -642,5 +664,197 @@ def test_conductor_auto_resumes_real_historical_session(tmp_path):
             finally:
                 if queued is not None:
                     await tools["stop_host"](ctx, queued["host_id"], force=True)
+
+    asyncio.run(run())
+
+
+def test_host_ask_aside_validates_effort_and_surfaces_startup_error(tmp_path):
+    async def run():
+        async with _short_host_dir() as directory:
+            async with _running_host(tmp_path, directory, host_id="err1") as (host, entry):
+                loaded, tools = _load_conductor(tmp_path)
+                mod = _conductor_mod(loaded)
+                with patch.object(mod, "_current_pid", return_value=-1):
+                    # Invalid +effort is rejected by check_effort -> ModelRetry in ask_host.
+                    with pytest.raises(ModelRetry, match="Effort control"):
+                        await tools["ask_host"](
+                            _ctx("parent-00000000"), "err1", "Status?", model="test:fake+high"
+                        )
+
+                    # Startup error surfaces as ToolFailed in ask_host.
+                    host.controller.startup_error = RuntimeError("bad api key")
+                    with pytest.raises(ToolFailed, match="Agent startup failed"):
+                        await tools["ask_host"](_ctx("parent-00000000"), "err1", "Status?")
+
+    asyncio.run(run())
+
+
+def test_wait_for_hosts_startup_error_older_fallback_and_mid_wait_stop(tmp_path):
+    async def run():
+        async with _short_host_dir() as directory:
+            async with _running_host(tmp_path, directory, host_id="w-err") as (host, entry):
+                host.controller.startup_error = RuntimeError("mcp init failed")
+                loaded, tools = _load_conductor(tmp_path)
+                mod = _conductor_mod(loaded)
+                with patch.object(mod, "_current_pid", return_value=-1):
+                    res = await tools["wait_for_hosts"](_ctx(), ["w-err"], timeout=2.0)
+                    assert res["timed_out"] is False
+                    assert len(res["completed"]) == 1
+                    assert res["completed"][0]["state"] == "error"
+                    assert res["completed"][0]["outcome"] == "failed"
+                    assert "RuntimeError" in res["completed"][0]["startup_error"]
+
+            # Older-host fallback: peek raises PermissionError, on-disk entry is idle.
+            old = HostEntry(
+                id="w-old",
+                pid=os.getpid(),
+                model="test:fake",
+                workspace=str(tmp_path),
+                session_id="sess-old22222",
+                state="idle",
+                outcome="done",
+                turns=3,
+            )
+            write_entry(old, directory)
+            loaded, tools = _load_conductor(tmp_path)
+            mod = _conductor_mod(loaded)
+            with (
+                patch.object(mod, "_current_pid", return_value=-1),
+                patch(
+                    "pcode.remote.request_host",
+                    new=AsyncMock(side_effect=RemoteError("PermissionError", "not allowed")),
+                ),
+            ):
+                res = await tools["wait_for_hosts"](_ctx(), ["w-old"], timeout=2.0)
+                assert res["timed_out"] is False
+                assert res["completed"][0]["host_id"] == "w-old"
+                assert res["completed"][0]["turns"] == 3
+
+            # Host disappears mid-wait -> reported as stopped cleanly.
+            dying = HostEntry(
+                id="w-die",
+                pid=os.getpid(),
+                model="test:fake",
+                workspace=str(tmp_path),
+                session_id="sess-die33333",
+                state="working",
+            )
+            write_entry(dying, directory)
+            calls = 0
+
+            async def peek_then_vanish(e, method, *args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    (directory / "w-die.json").unlink(missing_ok=True)
+                    return {"id": e.id, "session_id": e.session_id, "state": "working"}
+                return {}
+
+            with (
+                patch.object(mod, "_current_pid", return_value=-1),
+                patch("pcode.remote.request_host", side_effect=peek_then_vanish),
+            ):
+                res = await tools["wait_for_hosts"](_ctx(), ["w-die"], timeout=5.0)
+                assert res["timed_out"] is False
+                assert res["completed"][0]["state"] == "stopped"
+                assert res["completed"][0]["host_id"] == "w-die"
+
+    asyncio.run(run())
+
+
+def test_send_to_host_wait_timeout_returns_still_running(tmp_path):
+    async def run():
+        async with _short_host_dir() as directory:
+            gate = asyncio.Event()
+            async with _running_host(
+                tmp_path, directory, host_id="slow1", turn_gate=gate
+            ) as (host, entry):
+                loaded, tools = _load_conductor(tmp_path)
+                mod = _conductor_mod(loaded)
+                with patch.object(mod, "_current_pid", return_value=-1):
+                    res = await tools["send_to_host"](
+                        _ctx(), "slow1", "Take a while", wait=True, timeout=1.0
+                    )
+                    assert res["status"] == "still_running"
+                    assert res["host_id"] == "slow1"
+                gate.set()
+
+    asyncio.run(run())
+
+
+def test_resume_timeout_terminates_child_and_fork_mismatch_stops_host(tmp_path):
+    async def run():
+        async with _short_host_dir() as directory:
+            session_dir = tmp_path / "sessions"
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            saved = SavedSession.create("test:fake", ws, session_dir)
+            sid = saved.info.id
+            saved.close()
+
+            loaded, _ = _load_conductor(tmp_path, session_dir=session_dir)
+            mod = _conductor_mod(loaded)
+
+            # 1) Timeout kills spawned child process and raises ToolFailed.
+            terminated = False
+
+            def mark_term():
+                nonlocal terminated
+                terminated = True
+
+            def spawn_hanging(**kwargs):
+                proc = SimpleNamespace(
+                    poll=lambda: None,
+                    wait=lambda: 0,
+                    terminate=mark_term,
+                    returncode=0,
+                )
+                return "hang-1", proc, directory / "hang-1.log"
+
+            with (
+                patch.object(mod, "_current_pid", return_value=-1),
+                patch("pcode.remote.spawn_host", side_effect=spawn_hanging),
+            ):
+                with pytest.raises(ToolFailed, match="terminated"):
+                    await mod._resume_session_host(
+                        sid,
+                        session_dir=session_dir,
+                        my_session="parent-0",
+                        directory=directory,
+                        timeout=0.05,
+                    )
+                assert terminated is True
+
+            # 2) Forked session_id mismatch stops the host and raises ToolFailed.
+            def spawn_forked(**kwargs):
+                identity = "forked-1"
+                entry = HostEntry(
+                    id=identity,
+                    pid=os.getpid(),
+                    model=kwargs["model"],
+                    workspace=str(ws),
+                    session_id="some-other-forked-session",
+                    state="idle",
+                )
+                write_entry(entry, directory)
+                (directory / f"{identity}.sock").touch()
+                proc = SimpleNamespace(poll=lambda: None, wait=lambda: 0, returncode=0)
+                return identity, proc, directory / f"{identity}.log"
+
+            stop_mock = AsyncMock(return_value=True)
+            with (
+                patch.object(mod, "_current_pid", return_value=-1),
+                patch("pcode.remote.spawn_host", side_effect=spawn_forked),
+                patch("pcode.remote.stop_entry", new=stop_mock),
+            ):
+                with pytest.raises(ToolFailed, match="forked session"):
+                    await mod._resume_session_host(
+                        sid,
+                        session_dir=session_dir,
+                        my_session="parent-0",
+                        directory=directory,
+                        timeout=2.0,
+                    )
+                stop_mock.assert_awaited_once()
 
     asyncio.run(run())

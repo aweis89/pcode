@@ -265,9 +265,11 @@ class _Client:
         self.host.keep_worktree = bool(keep_worktree) or remote_profile.active() is not None
         self.host.stop()
 
-    def stop_if_idle(self, require_detached: bool = False) -> str:
+    def stop_if_idle(self, require_detached: bool = False, keep_worktree: bool = False) -> str:
         """`pcode --kill-hosts idle`: "" once stopping, else what it is busy with."""
-        return self.host.stop_if_idle(require_detached=require_detached)
+        return self.host.stop_if_idle(
+            require_detached=require_detached, keep_worktree=keep_worktree
+        )
 
     def restart(self) -> dict:
         """`/restart all`: `{"id": successor}` once stopping, else `{"skipped": why not}`."""
@@ -674,7 +676,9 @@ class SessionHost:
                 options = {}
                 if chosen_model:
                     name, effort = split_effort(chosen_model)
-                    options = await controller.target_options(SideTarget(name, effort))
+                    target = SideTarget(name, effort)
+                    controller.check_effort(target)
+                    options = await controller.target_options(target)
                 reply = await runtime.aside(cleaned, **options)
         finally:
             self._host_asides -= 1
@@ -886,16 +890,19 @@ class SessionHost:
         )
         return next((reason for busy, reason in work if busy), "")
 
-    def stop_if_idle(self, require_detached: bool = False) -> str:
+    def stop_if_idle(self, require_detached: bool = False, keep_worktree: bool = False) -> str:
         """Stop as an idle host stops itself; else say what it is busy with.
 
         When `require_detached` is True, attached terminals also refuse the stop.
+        When `keep_worktree` is True, the session's worktree is left untouched.
         Checked and stopped with no await in between, so nothing starts in the gap.
         """
         if require_detached and (attached := len(self.terminals())):
             return f"{attached} terminal(s) attached"
         if reason := self.busy_with():
             return reason
+        if keep_worktree:
+            self.keep_worktree = True
         self.idle_stopped = True
         self.stop()
         return ""

@@ -26,6 +26,7 @@ from typing import Literal
 
 from pydantic_ai import ModelRetry, RunContext, Tool
 from pydantic_ai.capabilities import Capability
+from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.tools import ToolDefinition
 
 from pcode import remote, remote_profile
@@ -206,14 +207,14 @@ async def _resume_session_host(
             return running, False
 
         if is_open(session_path):
-            raise ModelRetry(
+            raise ToolFailed(
                 f"Session {info.id} is currently open in an interactive terminal without a host; "
                 "cannot resume it from here."
             )
 
         workspace = Path(info.workspace)
         if not workspace.is_dir():
-            raise ModelRetry(
+            raise ToolFailed(
                 f"Session {info.id}'s workspace ({workspace}) no longer exists; "
                 f"use read_session(session_id={info.id!r}, scope='all') to inspect its "
                 "saved history."
@@ -221,7 +222,7 @@ async def _resume_session_host(
 
         model = info.model or load_preferences().get("model")
         if not model:
-            raise ModelRetry(
+            raise ToolFailed(
                 f"Session {info.id} has no model recorded and no default model is set."
             )
 
@@ -243,23 +244,35 @@ async def _resume_session_host(
                     tail = "\n".join(log.read_text(errors="replace").strip().splitlines()[-8:])
                 except OSError:
                     pass
-                raise ModelRetry(
+                raise ToolFailed(
                     f"Failed to resume session {info.id} (host exited {process.returncode})."
                     + (f"\n{tail}" if tail else "")
                 )
             if time.monotonic() > deadline:
-                raise ModelRetry(
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+                raise ToolFailed(
                     f"Session {info.id} host ({identity}) did not finish starting within "
-                    f"{timeout:g}s and is still starting in the background; check with "
-                    f"inspect_host({identity!r}), stop it with stop_host({identity!r}, "
-                    f"force=True), or see {log}."
+                    f"{timeout:g}s and was terminated; see {log}."
                 )
             await asyncio.sleep(0.05)
 
         try:
-            return find_host(identity, directory), True
+            entry = find_host(identity, directory)
         except LookupError as error:
-            raise ModelRetry(f"Resumed host {identity} disappeared: {error}") from None
+            raise ToolFailed(f"Resumed host {identity} disappeared: {error}") from None
+        if entry.session_id and entry.session_id != info.id:
+            try:
+                await remote.stop_entry(entry, keep_worktree=True)
+            except (HostError, RemoteError, OSError):
+                pass
+            raise ToolFailed(
+                f"Resumed host {identity} opened forked session {entry.session_id} "
+                f"instead of {info.id} and was stopped."
+            )
+        return entry, True
 
 
 async def _ensure_host(
@@ -375,10 +388,10 @@ def setup(pcode) -> None:
             snapshot = await remote.request_host(entry, "peek", timeout=10.0)
         except RemoteError as error:
             if error.type_name == "PermissionError":
-                raise ModelRetry(_older_host_message(entry, "peek")) from None
-            raise ModelRetry(f"Host {entry.id} error: {error}") from None
+                raise ToolFailed(_older_host_message(entry, "peek")) from None
+            raise ToolFailed(f"Host {entry.id} error: {error}") from None
         except (HostError, OSError) as error:
-            raise ModelRetry(f"Could not inspect host {entry.id}: {error}") from None
+            raise ToolFailed(f"Could not inspect host {entry.id}: {error}") from None
         snapshot["is_self"] = _is_self(entry, my_session)
         return snapshot
 
@@ -402,7 +415,7 @@ def setup(pcode) -> None:
             model: Optional model override (e.g. `anthropic:claude-sonnet-4-6+low`).
         """
         if _in_worker(ctx):
-            raise ModelRetry("ask_host is only available to the parent session, not workers.")
+            raise ToolFailed("ask_host is only available to the parent session, not workers.")
         cleaned = question.strip()
         if not cleaned:
             raise ModelRetry("Provide a non-empty question.")
@@ -420,10 +433,12 @@ def setup(pcode) -> None:
             )
         except RemoteError as error:
             if error.type_name == "PermissionError":
-                raise ModelRetry(_older_host_message(entry, "ask_aside")) from None
-            raise ModelRetry(f"Host {entry.id} failed to answer: {error}") from None
+                raise ToolFailed(_older_host_message(entry, "ask_aside")) from None
+            if error.type_name == "ValueError":
+                raise ModelRetry(f"Host {entry.id} rejected request: {error}") from None
+            raise ToolFailed(f"Host {entry.id} failed to answer: {error}") from None
         except (HostError, OSError) as error:
-            raise ModelRetry(f"Could not reach host {entry.id}: {error}") from None
+            raise ToolFailed(f"Could not reach host {entry.id}: {error}") from None
         reply["resumed"] = resumed
         if resumed and _different_workspace(entry.workspace, own_workspace):
             reply["env_note"] = (
@@ -451,12 +466,10 @@ def setup(pcode) -> None:
             timeout: Seconds to wait when `wait=True`, 1-1800.
         """
         if _in_worker(ctx):
-            raise ModelRetry("send_to_host is only available to the parent session, not workers.")
+            raise ToolFailed("send_to_host is only available to the parent session, not workers.")
         cleaned = prompt.strip()
         if not cleaned:
             raise ModelRetry("Provide a non-empty prompt.")
-        if cleaned.startswith("!"):
-            raise ModelRetry("Shell mode (`!command`) is not allowed remotely.")
         if not 1 <= timeout <= 1800:
             raise ModelRetry("Provide timeout between 1 and 1800 seconds.")
         my_session = _self_session(ctx)
@@ -475,10 +488,10 @@ def setup(pcode) -> None:
                 await remote.request_host(entry, "send", cleaned, timeout=15.0)
             except RemoteError as error:
                 if error.type_name == "PermissionError":
-                    raise ModelRetry(_older_host_message(entry, "send")) from None
-                raise ModelRetry(f"Host {entry.id} rejected prompt: {error}") from None
+                    raise ToolFailed(_older_host_message(entry, "send")) from None
+                raise ToolFailed(f"Host {entry.id} rejected prompt: {error}") from None
             except (HostError, OSError) as error:
-                raise ModelRetry(f"Could not send to host {entry.id}: {error}") from None
+                raise ToolFailed(f"Could not send to host {entry.id}: {error}") from None
             result = {
                 "status": "queued",
                 "host_id": entry.id,
@@ -526,7 +539,7 @@ def setup(pcode) -> None:
                 result["env_note"] = env_note
             return result
         except (HostError, RemoteError, OSError) as error:
-            raise ModelRetry(f"Failed while running turn on host {entry.id}: {error}") from None
+            raise ToolFailed(f"Failed while running turn on host {entry.id}: {error}") from None
         result = {
             "status": turn.outcome,
             "host_id": entry.id,
@@ -555,7 +568,7 @@ def setup(pcode) -> None:
             timeout: Maximum seconds to wait, 1-1800.
         """
         if _in_worker(ctx):
-            raise ModelRetry(
+            raise ToolFailed(
                 "wait_for_hosts is only available to the parent session, not workers."
             )
         if not host_ids:
@@ -605,7 +618,7 @@ def setup(pcode) -> None:
             if mode == "any" and completed:
                 break
             for identity, entry in list(pending.items()):
-                current = _find_running(identity, directory)
+                current = await asyncio.to_thread(_find_running, identity, directory)
                 if current is None:
                     completed.append(
                         {
@@ -633,6 +646,21 @@ def setup(pcode) -> None:
                             }
                         )
                         pending.pop(identity, None)
+                    continue
+                if snap.get("startup_error"):
+                    completed.append(
+                        {
+                            "host_id": snap["id"],
+                            "session_id": snap["session_id"],
+                            "state": "error",
+                            "outcome": "failed",
+                            "startup_error": snap["startup_error"],
+                            "turns": snap["turns"],
+                            "last_prompt": snap["last_prompt"],
+                            "busy_with": snap["busy_with"],
+                        }
+                    )
+                    pending.pop(identity, None)
                     continue
                 if not _host_is_busy(snap):
                     completed.append(
@@ -685,7 +713,7 @@ def setup(pcode) -> None:
             force: Stop even if busy or a terminal is attached (default False).
         """
         if _in_worker(ctx):
-            raise ModelRetry("stop_host is only available to the parent session, not workers.")
+            raise ToolFailed("stop_host is only available to the parent session, not workers.")
         selector = host_id.strip()
         if not selector:
             raise ModelRetry("Provide a host_id or session_id prefix.")
@@ -693,15 +721,27 @@ def setup(pcode) -> None:
         directory = host_dir()
         entry = _find_running(selector, directory)
         if entry is None:
-            return {"status": "already_stopped", "host_id": selector}
+            stopped = _find_stopped(selector, directory)
+            if stopped is not None:
+                return {
+                    "status": "already_stopped",
+                    "host_id": stopped.id,
+                    "session_id": stopped.session_id,
+                }
+            raise ModelRetry(
+                f"No running or recently stopped host matching {selector!r}; "
+                "check list_hosts for valid IDs."
+            )
         if _is_self(entry, my_session):
             raise ModelRetry("Cannot stop the current session.")
 
         if not force:
             try:
-                reason = await remote.stop_if_idle(entry, require_detached=True)
+                reason = await remote.stop_if_idle(
+                    entry, require_detached=True, keep_worktree=True
+                )
             except (HostError, RemoteError, OSError) as error:
-                raise ModelRetry(f"Could not stop host {entry.id}: {error}") from None
+                raise ToolFailed(f"Could not stop host {entry.id}: {error}") from None
             if reason:
                 if "terminal(s) attached" in reason:
                     return {
@@ -723,7 +763,7 @@ def setup(pcode) -> None:
         try:
             stopped = await remote.stop_entry(entry, keep_worktree=True)
         except (HostError, RemoteError, OSError) as error:
-            raise ModelRetry(f"Could not stop host {entry.id}: {error}") from None
+            raise ToolFailed(f"Could not stop host {entry.id}: {error}") from None
         return {
             "status": "stopped" if stopped else "stopping",
             "host_id": entry.id,
