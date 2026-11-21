@@ -2543,6 +2543,13 @@ class TerminalOutput:
         the reserved row under it, the region's hidden bottom row.
         """
         top = layout_top_row(app)
+        screen = app.renderer._last_screen
+        if top is not None and screen is not None and self._editor_pinned():
+            # Pinned, the layout fills the bottom ``screen.height`` rows. Not
+            # `layout_top_row`: after a write that scrolled, it rests on the
+            # handoff's guess, one row off until the cursor report lands, and
+            # a bottom flipping in and out under the typing row jolts it.
+            top = app.output.get_size().rows - screen.height + 1
         if self.view is None and top is not None and not app._running_in_terminal:
             self._declare(top)
         elif self.view is not None:
@@ -3109,7 +3116,10 @@ class PromptLayout:
         the layout calculation.
         """
         transcript = self.transcript
-        if transcript is None:
+        if transcript is None or self.gliding():
+            # Gliding, the reserved row below the typing row is the gap. One
+            # that came and went with each line would resize the layout
+            # under the glide region and jolt it.
             return False
         if not transcript.ends_blank:
             return True
@@ -3191,7 +3201,8 @@ class PromptLayout:
         unboxed = not self.activity.attach_activity
         return (
             len(self.conversation_rows())
-            + bool(self.typing_row())
+            # Gliding, the typing row and the reserved row are always there.
+            + (2 if self.gliding() else bool(self.typing_row()))
             + (len(self.thought_rows()) if unboxed else 0)
             + len(self.tool_rows())
             + len(self.group_rows())
