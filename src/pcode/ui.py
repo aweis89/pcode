@@ -38,7 +38,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Label
 from rich.cells import cell_len
 from rich.console import Console
-from rich.markdown import Markdown
+from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
 from rich.spinner import SPINNERS as RICH_SPINNERS
 from rich.spinner import Spinner
@@ -66,6 +66,7 @@ from pcode.jobs import WATCHED_PREFIX
 from pcode.keyboard_protocol import keyboard_output
 from pcode.keymap import PromptKeymap
 from pcode.layout_speed import install_fast_layout_division
+from pcode.markdown import Markdown
 from pcode.popup_ui import shortcut_hint
 from pcode.preferences import (
     COMMAND_MODES,
@@ -1939,7 +1940,7 @@ def typed_prose(objects: tuple) -> bool:
     if not objects:
         return False
     for obj in objects:
-        if isinstance(obj, Markdown):
+        if isinstance(obj, RichMarkdown):
             tokens = obj.parsed
         elif isinstance(obj, ThinkingMarkdown):
             tokens = Markdown(obj.source).parsed
@@ -4010,7 +4011,7 @@ class Transcript:
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(safe_text(obj.markup), code_theme=self.code_theme)
-            if isinstance(obj, (Markdown, RetainedMarkdown))
+            if isinstance(obj, (RichMarkdown, RetainedMarkdown))
             else replace(obj, code_theme=self.code_theme, delta=self.delta, dedent=self.diff_dedent)
             if isinstance(obj, EditTranscript)
             else replace(obj, code_theme=self.code_theme)

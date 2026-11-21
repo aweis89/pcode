@@ -2,9 +2,9 @@
 
 from dataclasses import dataclass
 
-from rich.markdown import Markdown
 from rich.segment import Segment
 
+from pcode.markdown import Markdown
 from pcode.terminal_text import safe_text
 
 

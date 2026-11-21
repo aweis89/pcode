@@ -15,11 +15,12 @@ from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import ConditionalContainer, DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
-from rich.markdown import Markdown
+from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from rich.theme import Theme
 
 from pcode.frame import Frame
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -93,7 +94,7 @@ def question_text(worker: Worker) -> str:
 def report_index(blocks: list) -> int | None:
     """Where the worker's last prose starts: its final report once it has finished."""
     return next(
-        (i for i in range(len(blocks) - 1, -1, -1) if isinstance(blocks[i], Markdown)), None
+        (i for i in range(len(blocks) - 1, -1, -1) if isinstance(blocks[i], RichMarkdown)), None
     )
 
 

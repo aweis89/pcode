@@ -12,14 +12,11 @@ up, so its rows anchor to the hunk's first line instead.
 """
 
 import asyncio
-import os
 import re
-import shlex
 import subprocess
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.document import Document
@@ -33,6 +30,7 @@ from pcode.edit_transcript import DiffLexer, text_fragments
 from pcode.edits import edit_text, patch_text
 from pcode.frame import Frame
 from pcode.git_diff import Review
+from pcode.links import editor_command
 from pcode.popup_ui import (
     bind_list_paging,
     fuzzy_match,
@@ -295,19 +293,6 @@ def notes_prompt(notes: list[Note]) -> str:
         block.append(note.text)
         parts.append("\n".join(block))
     return "\n\n".join(parts)
-
-
-def editor_command(path: Path, line: int | None, environ=os.environ) -> list[str]:
-    """$VISUAL or $EDITOR opening `path`, at `line` where the editor can be told it."""
-    args = shlex.split(environ.get("VISUAL") or environ.get("EDITOR") or "vi")
-    name = Path(args[0]).name
-    if not line:
-        return [*args, str(path)]
-    if name in {"code", "code-insiders", "codium", "cursor", "windsurf"}:
-        return [*args, "--goto", f"{path}:{line}"]
-    if name in {"subl", "zed", "hx", "helix"}:
-        return [*args, f"{path}:{line}"]
-    return [*args, f"+{line}", str(path)]
 
 
 def render_review(

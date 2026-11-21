@@ -1,8 +1,8 @@
 """Presentation-only event routing, shared by live streaming and offline benchmarks."""
 
 from rich.console import Console
-from rich.markdown import Markdown
 
+from pcode.markdown import Markdown
 from pcode.runtime import (
     CacheBust,
     ChildPlan,

@@ -10,7 +10,6 @@ from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.lexers import Lexer
 from pygments.token import Generic, Token
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
@@ -19,6 +18,7 @@ from rich.text import Text
 from pcode.block import DONE, block_heading, block_rule
 from pcode.delta import Delta, preview_patch
 from pcode.edits import edit_text, patch_text
+from pcode.markdown import Markdown
 from pcode.runtime import EditCompleted
 from pcode.syntax import transparent_theme
 from pcode.terminal_text import safe_text

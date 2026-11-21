@@ -6,10 +6,12 @@ thread into the conversation is returned as a `Bridge` for the app to run.
 """
 
 import asyncio
+import subprocess
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from time import monotonic
 
-from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.application import Application, get_app, run_in_terminal
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
@@ -27,7 +29,6 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
-from rich.markdown import Markdown
 from rich.text import Text
 from rich.theme import Theme
 
@@ -36,8 +37,9 @@ from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
 from pcode.copy_ui import Snippet, snippets
 from pcode.frame import Frame
-from pcode.links import Link, extract_links, open_link, remember_link
+from pcode.links import Link, extract_links, link_editor_command, open_link, remember_link
 from pcode.links_ui import LinkPicker
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     PopupCommand,
     PopupInput,
@@ -208,10 +210,12 @@ class AsideBrowser:
         color_system: str | None = "truecolor",
         key_prefix: str | None = None,
         pick: bool = False,
+        handoff: Callable[[], AbstractContextManager] = nullcontext,
         **app_options,
     ) -> None:
         self.asides = asides
         self.pick = pick
+        self.handoff = handoff
         self.picked: str | None = None
         self.ask = ask
         self.edit = edit and ask is not None
@@ -698,7 +702,7 @@ class AsideBrowser:
         return thread_links(self.current())
 
     def choose_link(self) -> None:
-        """Pick a URL from the selected thread and open it in the browser, as `/links` does."""
+        """Pick a URL from the selected thread and open it in the editor or browser."""
         links = self.links()
         if not links:
             self.notice = "No links in this side thread"
@@ -706,6 +710,29 @@ class AsideBrowser:
 
         def pick(close, url: str) -> None:
             close()
+            try:
+                command = link_editor_command(url)
+            except RuntimeError as error:
+                self.notice = f"Could not open {url}: {error}"
+                return
+            if command is not None:
+
+                async def edit() -> None:
+                    try:
+                        with self.handoff():
+                            await run_in_terminal(
+                                lambda: subprocess.run(command, check=False),
+                                in_executor=True,
+                            )
+                    except OSError as error:
+                        self.notice = f"Could not start {command[0]}: {error}"
+                        self.app.invalidate()
+                        return
+                    self.notice = f"Opened {url}"
+                    self.app.invalidate()
+
+                self.app.create_background_task(edit())
+                return
             try:
                 open_link(url)
             except (OSError, RuntimeError) as error:
