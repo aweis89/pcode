@@ -2121,6 +2121,11 @@ class TerminalOutput:
         self.smooth = False
         self._glide_pacer = smooth_scroll.Pacer()
         self._glide = smooth_scroll.Glide()
+        # The layout's drawn height and whether it was pinned (no filler rows),
+        # after the last render; and whether that render was a handoff's, whose
+        # scroll `flush` already sent.
+        self._last_layout: tuple[int, bool] | None = None
+        self._handoff_render = False
         self._declared: tuple[tuple[int, int], float] | None = None
 
     def regenerate(self, replay) -> None:
@@ -2483,6 +2488,8 @@ class TerminalOutput:
                         counter.flush()
                         handoff.rows_written = counter.rows
                         scrolled = self._scrolled(drawn, counter.rows)
+                        # The exit repaint's growth is in ``scrolled`` already.
+                        self._handoff_render = True
                         if scrolled and self._declared is not None:
                             # Same frame as the rows: the terminal draws the
                             # region that much lower and springs it back.
@@ -2579,7 +2586,8 @@ class TerminalOutput:
             return 0
         size = self.app.output.get_size()
         needed = self.app.layout.container.preferred_height(size.columns, size.rows).preferred
-        scrolled = max(0, min(written, written + min(needed, size.rows) - drawn))
+        # Rows written, plus any the live panel grew by in the same frame.
+        scrolled = max(0, min(size.rows, written + min(needed, size.rows) - drawn))
         if os.environ.get("PCODE_SMOOTH_SCROLL_DEBUG"):
             with open(os.environ["PCODE_SMOOTH_SCROLL_DEBUG"], "a") as log:
                 log.write(
@@ -2587,12 +2595,28 @@ class TerminalOutput:
                 )
         return scrolled
 
+    def _before_render(self, app) -> None:
+        """Hold the terminal's frame for the repaint and what `_after_render` adds.
+
+        A region declaration, or a glide for a scroll the repaint caused, must
+        land in the same frame as the repaint, or the terminal draws the
+        moved rows unglided for a frame first.
+        """
+        app.output.write_raw(SYNC_START)
+
     def _after_render(self, app) -> None:
-        """Keep the glide region's bottom on the reserved row as the layout moves.
+        """Keep the glide region's bottom on the reserved row, glide panel growth, end the frame.
 
         The layout starts with the typing row (0-based row ``top - 1``) and
         the reserved row under it, the region's hidden bottom row.
         """
+        try:
+            self._track_layout(app)
+        finally:
+            app.output.write_raw(SYNC_END)
+            app.output.flush()
+
+    def _track_layout(self, app) -> None:
         top = layout_top_row(app)
         screen = app.renderer._last_screen
         if os.environ.get("PCODE_SMOOTH_SCROLL_DEBUG") and screen is not None:
@@ -2614,15 +2638,41 @@ class TerminalOutput:
             self._declare(top)
         elif self.view is not None:
             self._declare(None)
+        self._glide_growth(app)
+
+    def _glide_growth(self, app) -> None:
+        """Glide the transcript up when the live panel grows while pinned.
+
+        A pinned layout has no filler rows to grow into, so a command or task
+        row appearing scrolls the transcript up, which the terminal would show
+        as a jump. Only growth from pinned to pinned counts: a layout with
+        filler rows (or a height that only reflects a corrected cursor report)
+        moves nothing on screen.
+        """
+        screen = app.renderer._last_screen
+        handoff, self._handoff_render = self._handoff_render, False
+        if screen is None or app.renderer._in_alternate_screen or self.view is not None:
+            self._last_layout = None
+            return
+        pinned = self._editor_pinned()
+        last, self._last_layout = self._last_layout, (screen.height, pinned)
+        if handoff or last is None or not (pinned and last[1]):
+            return
+        grown = screen.height - last[0]
+        if grown > 0 and self._declared is not None:
+            app.output.write_raw(smooth_scroll.advance(grown))
+            self._glide.advance(grown, monotonic())
 
     async def run(self) -> None:
         if not self.smooth or not isinstance(self.app, Application):
             await self._run_frames()
             return
+        self.app.before_render += self._before_render
         self.app.after_render += self._after_render
         try:
             await self._run_frames()
         finally:
+            self.app.before_render -= self._before_render
             self.app.after_render -= self._after_render
             self._declare(None)
 
