@@ -121,6 +121,25 @@ Cases the design must cover:
   defaults that do not collide, and document how to change both.
 - **Own name and icon.** The bundle uses no Ghostty branding. Keep the upstream
   licence notice.
+- **Gate on the probe, not a mode (2026-11-21).** One setting,
+  `smooth_scroll` (`off` while experimental, `auto`), plus the startup query.
+  There is deliberately no `cli`/`app` mode and no capabilities object yet:
+  - A launch marker such as `PCODE_HOST=app` leaks. The environment is
+    inherited by the session host the client spawns, by any `pcode` a shell
+    tool runs, and by a tmux started inside the app. The probe answers "can
+    this terminal glide" for exactly the process drawing on it.
+  - It would lock out the patched terminal used standalone, which is the only
+    setup that exists today.
+  - "Host" already means session host (`host.py`, `PCODE_HOST_DIR`,
+    `list_hosts`), and `output.app` is the prompt_toolkit `Application`. Say
+    "terminal" for this layer, and `PCODE_FRONTEND` if a launch marker is
+    ever needed.
+  - Webview features would not be terminal capabilities. A GUI attaches over
+    the session host protocol, which has its own `hello` handshake. Add a
+    capabilities type when a second terminal-level feature exists, and make
+    any future mode a preset of per-feature defaults, not a gate.
+  - Capabilities are per client process, never per session: one session can be
+    attached from the app now and from tmux later.
 
 ## Phases
 
@@ -233,7 +252,7 @@ Before wiring pcode, two checks in the spike:
 
 ### Phase 1: pcode support (experiment)
 
-In a worktree, behind `PCODE_SMOOTH_SCROLL=1`:
+In a worktree, behind the `smooth_scroll` setting (first `PCODE_SMOOTH_SCROLL=1`):
 
 - Capability query at startup alongside the existing terminal queries
   (`theme.py` shows the rule: never query while prompt_toolkit owns input).
@@ -248,6 +267,24 @@ In a worktree, behind `PCODE_SMOOTH_SCROLL=1`:
 Then, if it holds up: a `smooth_scroll` preference (`auto`, `off`), tests that
 assert the bytes written, `make test-all` (this touches the editor and
 streaming), a review, and a docs page saying which terminal to run.
+
+#### How the probe works (branch `feat/smooth-scroll`)
+
+- `ESC _ smooth;? ESC \` goes in the same write as the OSC 11 background
+  query, before it. A terminal answers in order, so once the background reply
+  is in, a missing glide reply is final: no extra wait or timeout.
+- It is only sent when `smooth_scroll` is `auto`, to the editor's own terminal
+  (not the `/dev/tty` fallback `--print` uses), when the environment says
+  Ghostty (`TERM=xterm-ghostty`, which survives ssh, or
+  `GHOSTTY_RESOURCES_DIR`), and never under tmux.
+- The version must match exactly (`PROTOCOL`, now 5: 4 added `advance`, 5 the
+  no-overscan flag), because pcode mirrors the terminal's spring constants
+  to time typing. The row rate is a constant for the same reason, not a
+  setting.
+- A reply that lands after the probe stops waiting (slow ssh) is filtered out
+  of typed input by `startup_input`, like a late background reply.
+- Popups clear the regions (`TerminalOutput.release_screen`); full-screen
+  views clear them by switching to the alternate screen.
 
 ### Phase 2: fork patch, only if needed
 
