@@ -170,8 +170,10 @@ plugin must keep working; that is the acceptance test.
 - Terminal pane: `node-pty` and xterm.js running a shell or `pcode --attach ID`.
   `node-pty` is a native module and must be rebuilt for Electron's ABI.
 - Themes: one token set as CSS custom properties, mapped onto Dockview's
-  variables, the highlighter theme, and the terminal's 16 colors. Start from
-  the palettes in `theme.py` so both frontends match.
+  variables, the highlighter theme, and the terminal's 16 colors. The terminal
+  app has no palette of its own: it derives chrome colors from the selected
+  Pygments style (`syntax_colors.py`). Decide here whether the app follows that
+  setting, so both frontends match, or keeps separate presets.
 
 ### Phase 4: packaging
 
