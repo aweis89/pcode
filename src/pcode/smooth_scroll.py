@@ -4,9 +4,9 @@ Behind ``PCODE_SMOOTH_SCROLL=1``; see dev/ghostty-app-plan.md. Needs the
 tlpinney/ghostty fork with the ``advance`` command (smooth-scroll protocol 4,
 the `pcode-glide` patch). Other terminals ignore the sequences.
 
-The transcript rows above the editor are declared as one region whose last row
-is the empty live row directly under scrollback (the typing row, kept as the
-region's hidden overscan row). When pcode writes rows to scrollback while the
+The transcript rows above the editor and the typing row under them (where prose
+types out) are declared as one region, with one reserved blank row below as
+the region's hidden overscan row. When pcode writes rows to scrollback while the
 editor is pinned to the bottom, the screen scrolls, and pcode sends
 ``advance`` in the same synchronized frame. The terminal then draws the region
 that many rows lower and springs it back into place on its own frame clock,
@@ -34,8 +34,11 @@ class Pacer:
         self.credit = 1.0
         self.last: float | None = None
 
-    def due(self, backlog: int, now: float) -> int:
-        """Rows to write now of ``backlog``; the first after a pause goes at once."""
+    def allowance(self, backlog: int, now: float) -> int:
+        """Rows ``backlog`` may write now (0 or 1); the first after a pause goes at once.
+
+        Call `spend` with what was written.
+        """
         if not backlog:
             self.credit, self.last = 1.0, None
             return 0
@@ -43,9 +46,10 @@ class Pacer:
         if self.last is not None:
             self.credit = min(self.credit + rate * (now - self.last), 1.0)
         self.last = now
-        due = min(int(self.credit), backlog)
-        self.credit -= due
-        return due
+        return int(self.credit)
+
+    def spend(self, rows: int) -> None:
+        self.credit -= rows
 
 
 def enabled() -> bool:

@@ -2114,8 +2114,10 @@ class TerminalOutput:
         # Absolute index of ``rows[0]``: rows written or dropped so far.
         self._row_base = 0
         # Experimental glide (`pcode.smooth_scroll`). The typing row is then
-        # always reserved and empty, as the glide region's hidden bottom row.
-        # ``_declared`` is the region last sent and when (None: cleared).
+        # always reserved, the glide region's last visible row, with a blank
+        # reserved row below it as the region's hidden bottom row. Rows reach
+        # scrollback no faster than ``_glide_pacer`` allows. ``_declared`` is
+        # the region last sent and when (None: cleared).
         self.smooth = False
         self._glide_pacer = smooth_scroll.Pacer()
         self._declared: tuple[tuple[int, int], float] | None = None
@@ -2382,7 +2384,7 @@ class TerminalOutput:
 
     def typing_fragments(self) -> StyleAndTextTuples:
         """The prose row being typed out, as far as it has got."""
-        if self.smooth or not self._typed or not self.rows:
+        if not self._typed or not self.rows:
             return []
         row = self.rows[0]
         key = (row.text, self._typed)
@@ -2412,10 +2414,10 @@ class TerminalOutput:
                 if self._queue():
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.smooth:
-                    due = self._glide_pacer.due(len(self.rows), monotonic())
-                elif self.rows:
+                if self.rows:
                     due, typed = self._advance()
+                if self.smooth:
+                    due, typed = self._glide_limit(due, typed)
                 if not due and typed != self._typed:
                     self._typed = typed
                     self.app.invalidate()
@@ -2485,6 +2487,19 @@ class TerminalOutput:
             else:
                 self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
 
+    def _glide_limit(self, due: int, typed: int) -> tuple[int, int]:
+        """Hold this frame's reveal to the glide's row rate.
+
+        Rows beyond the allowance wait. A typed row they reached is then
+        complete, so it stays shown whole until its turn to be written.
+        """
+        allowed = self._glide_pacer.allowance(len(self.rows), monotonic())
+        if due > allowed:
+            row = self.rows[allowed]
+            due, typed = allowed, row.visible if row.typed else 0
+        self._glide_pacer.spend(due)
+        return due, typed
+
     def _declare(self, bottom: int | None) -> None:
         """Declare the glide region down to row ``bottom`` (0-based), or clear it.
 
@@ -2522,10 +2537,14 @@ class TerminalOutput:
         return screen.height <= needed.preferred
 
     def _after_render(self, app) -> None:
-        """Keep the glide region's bottom on the typing row as the layout moves."""
+        """Keep the glide region's bottom on the reserved row as the layout moves.
+
+        The layout starts with the typing row (0-based row ``top - 1``) and
+        the reserved row under it, the region's hidden bottom row.
+        """
         top = layout_top_row(app)
         if self.view is None and top is not None and not app._running_in_terminal:
-            self._declare(top - 1)
+            self._declare(top)
         elif self.view is not None:
             self._declare(None)
 
@@ -3550,6 +3569,13 @@ class PromptLayout:
             filter=Condition(lambda: bool(self.activity.queued_prompts)),
         )
 
+    def glide_reserve(self) -> ConditionalContainer:
+        """Gliding, a blank row under the typing row: the region's hidden bottom row."""
+        return ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
+            filter=Condition(self.gliding),
+        )
+
     def typing(self) -> ConditionalContainer:
         # Flush left like the scrollback row it becomes, and placed above the
         # layout's justifying filler so it sits directly beneath scrollback rather
@@ -3561,8 +3587,8 @@ class PromptLayout:
                 wrap_lines=False,
                 dont_extend_height=True,
             ),
-            # Gliding, the row is reserved as the region's hidden bottom row,
-            # so the layout's height never changes under the region.
+            # Gliding, the row is always reserved, so the layout's height
+            # never changes under the region.
             filter=Condition(lambda: bool(self.typing_row()) or self.gliding()),
         )
 
@@ -3765,7 +3791,7 @@ class PromptLayout:
             self.editor_frame(),
         ]
         if self.transcript is not None:
-            children[:0] = [self.typing(), Window()]
+            children[:0] = [self.typing(), self.glide_reserve(), Window()]
         if self.session.bottom_toolbar is not None:
             children.append(self.bottom_toolbar())
         return Layout(
@@ -4075,9 +4101,8 @@ class Transcript:
                 and self.console.is_terminal
                 and isinstance(output.app, Application)
             )
-            # Experimental glide: rows roll in whole, so no typing.
             output.smooth = output.paced and smooth_scroll.enabled()
-            output.typed = output.paced and self.paced_scrollback == "typed" and not output.smooth
+            output.typed = output.paced and self.paced_scrollback == "typed"
             if self.replays_on_resize:
                 output.resize_replay = self.replay
 
