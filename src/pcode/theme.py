@@ -7,6 +7,10 @@ The same window measures how wide the terminal draws `─`: Unicode calls it
 ambiguous, and a terminal set to draw those two cells wide (a CJK locale,
 iTerm2's option) shifts every row pcode lays out with one. `pcode.glyphs`
 switches to ASCII when it does.
+
+It can also ask whether the terminal glides (`pcode.smooth_scroll`). That query
+goes first: a terminal answers in order, so once the background reply is in,
+no glide reply means none is coming.
 """
 
 import os
@@ -36,6 +40,8 @@ _ambiguous_wide: bool | None = None
 # CPR answered in time. Pre-seeding prompt_toolkit's renderer with it avoids
 # the first-frame jump when CPR arrives after the initial draw.
 _cursor_row: int | None = None
+# The smooth-scroll protocol version the terminal reported; None if it didn't.
+_glide_protocol: int | None = None
 
 
 # The last background the terminal reported, as `#rrggbb` with the theme it
@@ -54,6 +60,24 @@ def terminal_background() -> tuple[str, str] | None:
 def ambiguous_wide() -> bool | None:
     """Whether the startup probe saw `─` drawn two cells wide; None if it didn't measure."""
     return _ambiguous_wide
+
+
+def glide_supported() -> bool:
+    """Whether the startup probe found a terminal that speaks pcode's glide protocol."""
+    from pcode import smooth_scroll
+
+    return _glide_protocol == smooth_scroll.PROTOCOL
+
+
+def _take_glide_reply(response: bytearray) -> None:
+    """Record and remove a smooth-scroll reply from `response`."""
+    global _glide_protocol
+    from pcode import smooth_scroll
+
+    match = smooth_scroll.REPLY.search(response)
+    if match is not None:
+        _glide_protocol = int(match[1])
+        del response[match.start() : match.end()]
 
 
 def take_initial_cursor_row() -> int | None:
@@ -126,9 +150,13 @@ def _terminal():
 
 
 def _query_background(
-    timeout: float = 0.15, *, probe_width: bool = False, probe_cursor: bool = False
+    timeout: float = 0.15,
+    *,
+    probe_width: bool = False,
+    probe_cursor: bool = False,
+    probe_glide: bool = False,
 ) -> str | None:
-    global _unanswered_cprs, _cursor_row
+    global _unanswered_cprs, _cursor_row, _glide_protocol
     _cursor_row = None
     # Nothing will be colored, so there is no palette to match: stay quiet
     # rather than write an escape sequence into whatever stdout is.
@@ -146,6 +174,13 @@ def _query_background(
     # fallback serves `--print`, which lays nothing out.
     probe_width = probe_width and handle is None
     probe_cursor = (probe_cursor and not probe_width) and handle is None
+    from pcode import smooth_scroll
+
+    glide_query = (
+        smooth_scroll.QUERY
+        if probe_glide and handle is None and smooth_scroll.worth_asking()
+        else b""
+    )
     expected_cprs = 2 if probe_width else 1 if probe_cursor else 0
     measured = expected_cprs == 0
     detected = None
@@ -168,7 +203,7 @@ def _query_background(
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
             probe = _WIDTH_PROBE if probe_width else _CURSOR_PROBE if probe_cursor else b""
-            os.write(query_fd, b"\x1b]11;?\x1b\\" + probe)
+            os.write(query_fd, glide_query + b"\x1b]11;?\x1b\\" + probe)
             deadline = time.monotonic() + timeout
             while detected is None or not measured:
                 remaining = deadline - time.monotonic()
@@ -186,6 +221,9 @@ def _query_background(
                     measured = (
                         _measure_width(response) if probe_width else _measure_cursor(response)
                     )
+            if glide_query:
+                _glide_protocol = None
+                _take_glide_reply(response)
             if not measured:
                 _unanswered_cprs = expected_cprs - len(_CPR.findall(response))
                 response[:] = _CPR.sub(b"", response)
@@ -224,13 +262,18 @@ def replay_pending_input(app, on_theme=None) -> None:
     _unanswered_cprs = 0
 
 
-def detect_theme(*, probe_width: bool = False, probe_cursor: bool = False) -> str:
+def detect_theme(
+    *, probe_width: bool = False, probe_cursor: bool = False, probe_glide: bool = False
+) -> str:
     """Use OSC 11, then COLORFGBG (when supplied by the terminal), then dark.
 
     `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`);
-    `probe_cursor` records the starting cursor row (`take_initial_cursor_row`).
+    `probe_cursor` records the starting cursor row (`take_initial_cursor_row`);
+    `probe_glide` asks whether the terminal glides (`glide_supported`).
     """
-    detected = _query_background(probe_width=probe_width, probe_cursor=probe_cursor)
+    detected = _query_background(
+        probe_width=probe_width, probe_cursor=probe_cursor, probe_glide=probe_glide
+    )
     if detected is not None:
         return detected
     try:

@@ -532,6 +532,12 @@ SETTINGS = {
         ("typed", "rows", "off"),
         description="Type settled prose out, or roll blocks in by row, instead of landing at once",
     ),
+    "smooth_scroll": Setting(
+        "off",
+        ("auto", "off"),
+        description="Experimental: glide new rows into view; auto uses it in terminals that "
+        "answer for it (a patched Ghostty) and needs paced_scrollback on",
+    ),
     "show_edits": Setting(
         "on",
         ("on", "off"),

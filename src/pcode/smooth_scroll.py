@@ -1,8 +1,9 @@
 """Experimental: glide new scrollback rows into view in a patched Ghostty Smooth.
 
-Behind ``PCODE_SMOOTH_SCROLL=1``; see dev/ghostty-app-plan.md. Needs the
-tlpinney/ghostty fork with the ``advance`` command (smooth-scroll protocol 4,
-the `pcode-glide` patch). Other terminals ignore the sequences.
+The ``smooth_scroll`` setting turns it on (``auto``); see dev/ghostty-app-plan.md.
+It needs the tlpinney/ghostty fork with the `pcode-glide` patch, which answers
+the startup query (`pcode.theme`) with exactly ``PROTOCOL``. Anything else,
+including tmux, which does not relay the sequences, gets none of them.
 
 The transcript rows above the editor and the typing row under them (where prose
 types out) are declared as one region, with one reserved blank row below as
@@ -15,13 +16,20 @@ so pcode's busy event loop cannot make the motion stutter.
 
 import math
 import os
+import re
 
 # How fast rows are written while gliding, in rows per second: slow enough
 # that each glides in before the next arrives. A backlog speeds it up to
 # finish in about CATCH_UP_SECONDS, never past the maximum.
 MIN_ROWS_PER_SECOND = 5.0
-MAX_ROWS_PER_SECOND = float(os.environ.get("PCODE_SMOOTH_SCROLL_MAX_RATE") or 10)
+MAX_ROWS_PER_SECOND = 10.0
 CATCH_UP_SECONDS = 3.0
+
+# The smooth-scroll protocol version pcode speaks: 4 added `advance`, 5 the
+# no-overscan flag. Exact, since `Glide` mirrors the terminal's spring.
+PROTOCOL = 5
+QUERY = b"\x1b_smooth;?\x1b\\"
+REPLY = re.compile(rb"\x1b_smooth;ok;(\d{1,4})\x1b\\")
 
 # Region ids are per app; any constants will do. The transcript region, and
 # the live panel's rows above a row just added to it.
@@ -93,9 +101,16 @@ class Pacer:
         self.credit -= rows
 
 
-def enabled() -> bool:
-    """Opted in, and not under tmux, which does not relay the sequences."""
-    return os.environ.get("PCODE_SMOOTH_SCROLL") == "1" and not os.environ.get("TMUX")
+def worth_asking(env=os.environ) -> bool:
+    """Whether the terminal may be Ghostty Smooth, so the query is worth sending.
+
+    Only Ghostty is asked: an unknown terminal might echo the query, and a
+    reply that arrives after the startup probe gives up would otherwise be
+    typed into the editor. tmux does not relay the sequences.
+    """
+    if env.get("TMUX"):
+        return False
+    return env.get("TERM") == "xterm-ghostty" or bool(env.get("GHOSTTY_RESOURCES_DIR"))
 
 
 def declaration(bottom: int, columns: int) -> str:

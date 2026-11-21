@@ -272,6 +272,7 @@ class PreviewApp:
             activity=self.activity,
             probe_width=console is None and glyph_setting == "auto",
             probe_cursor=console is None and not os.environ.get("PROMPT_TOOLKIT_NO_CPR"),
+            probe_glide=console is None,
         )
         if console is None:
             # The editor's own terminal, which the startup probe has measured.
@@ -1102,6 +1103,7 @@ class PreviewApp:
         try:
             async with output.lock:
                 async with suspended_editor(session.app):
+                    output.release_screen()
                     # A separate parser prevents the editor's escape-flush timer
                     # from stealing the modal's first Escape key.
                     stdin = getattr(session.app.input, "stdin", None)

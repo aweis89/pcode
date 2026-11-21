@@ -86,7 +86,7 @@ from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
 from pcode.terminal_color import color_depth, true_color
 from pcode.terminal_text import safe_text
-from pcode.theme import detect_theme, terminal_background
+from pcode.theme import detect_theme, glide_supported, terminal_background
 from pcode.theme_gallery import SyntaxGallery
 from pcode.thinking_markdown import ThinkingMarkdown
 from pcode.tool_display import (
@@ -2118,7 +2118,7 @@ class TerminalOutput:
         # reserved row below it as the region's hidden bottom row. Rows reach
         # scrollback no faster than ``_glide_pacer`` allows. ``_declared`` is
         # the region last sent and when (None: cleared).
-        self.smooth = False
+        self.gliding = False
         self._glide_pacer = smooth_scroll.Pacer()
         self._glide = smooth_scroll.Glide()
         # The layout's drawn height and whether it was pinned (no filler rows),
@@ -2414,24 +2414,24 @@ class TerminalOutput:
         async with self.lock:
             paced = self.paced and not drain
             due = typed = 0
-            if self.smooth and (drain or self._regenerate is not None):
+            if self.gliding and (drain or self._regenerate is not None):
                 # A popup or a rebuilt screen must not be drawn gliding.
                 self._declare(None)
             # The layout's drawn height before this write, to work out how far
             # the write scrolls the screen (see `_scrolled`).
-            drawn = self._drawn_height() if self.smooth and self._regenerate is None else None
+            drawn = self._drawn_height() if self.gliding and self._regenerate is None else None
             if paced and self._regenerate is None:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
                 if self._queue():
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.smooth and self._typing_held():
+                if self.gliding and self._typing_held():
                     due, typed = 0, self._typed
                 else:
                     if self.rows:
                         due, typed = self._advance()
-                    if self.smooth:
+                    if self.gliding:
                         due, typed = self._glide_limit(due, typed)
                 if not due and typed != self._typed:
                     self._typed = typed
@@ -2554,6 +2554,15 @@ class TerminalOutput:
             self.app.output.write_raw(smooth_scroll.declaration(bottom, columns))
         self.app.output.flush()
 
+    def release_screen(self) -> None:
+        """Clear the glide regions before a popup or program takes the screen.
+
+        A region hides its bottom row; whatever draws there next must show.
+        The next render declares it again.
+        """
+        if self.gliding and isinstance(self.app, Application):
+            self._declare(None)
+
     def _editor_pinned(self) -> bool:
         """Whether the editor sits at the bottom, so written rows scroll the screen.
 
@@ -2591,11 +2600,6 @@ class TerminalOutput:
         needed = self.app.layout.container.preferred_height(size.columns, size.rows).preferred
         # Rows written, plus any the live panel grew by in the same frame.
         scrolled = max(0, min(size.rows, written + min(needed, size.rows) - drawn))
-        if os.environ.get("PCODE_SMOOTH_SCROLL_DEBUG"):
-            with open(os.environ["PCODE_SMOOTH_SCROLL_DEBUG"], "a") as log:
-                log.write(
-                    f"write written={written} scrolled={scrolled} drawn={drawn} needed={needed}\n"
-                )
         return scrolled
 
     def _before_render(self, app) -> None:
@@ -2622,15 +2626,6 @@ class TerminalOutput:
     def _track_layout(self, app) -> None:
         top = layout_top_row(app)
         screen = app.renderer._last_screen
-        if os.environ.get("PCODE_SMOOTH_SCROLL_DEBUG") and screen is not None:
-            size = app.output.get_size()
-            needed = app.layout.container.preferred_height(size.columns, size.rows).preferred
-            with open(os.environ["PCODE_SMOOTH_SCROLL_DEBUG"], "a") as log:
-                log.write(
-                    f"{monotonic():.3f} rows={size.rows} top={top} screen={screen.height}"
-                    f" needed={needed} pinned={self._editor_pinned()}"
-                    f" cursor={app.renderer._cursor_pos.y}\n"
-                )
         if top is not None and screen is not None and self._editor_pinned():
             # Pinned, the layout fills the bottom ``screen.height`` rows. Not
             # `layout_top_row`: after a write that scrolled, it rests on the
@@ -2700,7 +2695,7 @@ class TerminalOutput:
         app.output.write_raw(smooth_scroll.advance(grown, smooth_scroll.PANEL_ID))
 
     async def run(self) -> None:
-        if not self.smooth or not isinstance(self.app, Application):
+        if not self.gliding or not isinstance(self.app, Application):
             await self._run_frames()
             return
         self.app.before_render += self._before_render
@@ -3751,7 +3746,7 @@ class PromptLayout:
 
     def gliding(self) -> bool:
         output = self.transcript.output if self.transcript is not None else None
-        return output is not None and output.smooth
+        return output is not None and output.gliding
 
     def session_name(self) -> str:
         """The session's /rename name or model-given title, on one line; else empty.
@@ -4181,10 +4176,12 @@ class Transcript:
         detected_theme: str | None = None,
         probe_width: bool = False,
         probe_cursor: bool = False,
+        probe_glide: bool = False,
     ) -> None:
         # `probe_width`: also measure the terminal's ambiguous-width glyphs
         # (`pcode.theme`), for the editor's terminal only: its late replies
-        # need the editor's input to take them out.
+        # need the editor's input to take them out. `probe_glide`, the same
+        # for whether it glides (the ``smooth_scroll`` setting).
         preferences = load_preferences() if preferences is None else preferences
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
@@ -4202,8 +4199,14 @@ class Transcript:
         self.activity = activity
         self.console = console
         self.theme = theme
+        # Experimental, and only for Ghostty Smooth, which the probe asks after.
+        self.smooth_scroll = preferences.get("smooth_scroll", SETTINGS["smooth_scroll"].default)
         self.detected_theme = (
-            detect_theme(probe_width=probe_width, probe_cursor=probe_cursor)
+            detect_theme(
+                probe_width=probe_width,
+                probe_cursor=probe_cursor,
+                probe_glide=probe_glide and self.smooth_scroll == "auto",
+            )
             if detected_theme is None
             else detected_theme
         )
@@ -4258,7 +4261,7 @@ class Transcript:
                 and self.console.is_terminal
                 and isinstance(output.app, Application)
             )
-            output.smooth = output.paced and smooth_scroll.enabled()
+            output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
             if self.replays_on_resize:
                 output.resize_replay = self.replay

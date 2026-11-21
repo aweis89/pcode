@@ -279,6 +279,13 @@ def _live(args, parser):
         parser.error("no turns in the selected range")
     runtime = JournalRuntime(turns, speed=args.speed)
     stats = dict(turns=len(turns), speed=args.speed, renders=0, flushes=0)
+    from pcode.preferences import load_preferences
+
+    if load_preferences().get("smooth_scroll") == "auto":
+        # The preview gets its own console, so it never probes; ask here.
+        from pcode.theme import detect_theme
+
+        detect_theme(probe_glide=True)
 
     app = PreviewApp(
         model="journal-replay",
