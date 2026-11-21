@@ -1,7 +1,6 @@
 """Editable prompt with replayable output in the terminal's normal scrollback."""
 
 import asyncio
-import math
 import os
 import re
 from asyncio import Future
@@ -2114,14 +2113,11 @@ class TerminalOutput:
         self._queued_transient: list[tuple[tuple, int]] = []
         # Absolute index of ``rows[0]``: rows written or dropped so far.
         self._row_base = 0
-        # Experimental glide (`pcode.smooth_scroll`): the spring, when on. The
-        # typing row then always shows ``rows[0]`` whole, hidden as the region's
-        # overscan row; ``_overscan`` is the row text last drawn there, and
-        # ``_declared`` the region last sent (None: cleared).
-        self.smooth: smooth_scroll.Spring | None = None
-        self._overscan: str | None = None
-        self._declared: tuple[int, int, int] | None = None
-        self._pinned: tuple[float, bool] = (0.0, False)
+        # Experimental glide (`pcode.smooth_scroll`). The typing row is then
+        # always reserved and empty, as the glide region's hidden bottom row.
+        # ``_declared`` is the region last sent and when (None: cleared).
+        self.smooth = False
+        self._declared: tuple[tuple[int, int], float] | None = None
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -2384,23 +2380,13 @@ class TerminalOutput:
         return due, 0
 
     def typing_fragments(self) -> StyleAndTextTuples:
-        """The prose row being typed out, as far as it has got.
-
-        Gliding, the next row waiting for scrollback, whole.
-        """
-        if self.smooth is not None:
-            self._overscan = self.rows[0].text if self.rows else None
-            if not self.rows:
-                return []
-            shown = len(self.rows[0].text)
-        elif not self._typed or not self.rows:
+        """The prose row being typed out, as far as it has got."""
+        if self.smooth or not self._typed or not self.rows:
             return []
-        else:
-            shown = self._typed
         row = self.rows[0]
-        key = (row.text, shown)
+        key = (row.text, self._typed)
         if self._preview is None or self._preview[0] != key:
-            fragments, left = [], shown
+            fragments, left = [], self._typed
             for style, text in ANSI(OSC.sub("", row.text.rstrip("\n"))).__pt_formatted_text__():
                 if left <= 0:
                     break
@@ -2409,31 +2395,23 @@ class TerminalOutput:
             self._preview = (key, fragments)
         return self._preview[1]
 
-    def _width(self) -> int:
-        columns = self.app.output.get_size().columns
-        # The glide region hides the rightmost column; keep text out of it.
-        return max(1, columns - 1 if self.smooth is not None else columns)
-
-    async def flush(self, *, drain: bool = False, glide: int = 0, region: bool = False) -> None:
-        """Write queued output; ``drain`` writes it all, as before a popup or exit.
-
-        ``glide`` writes that many rows for `_glide`, re-declaring its region
-        (``region``) in the same frame.
-        """
+    async def flush(self, *, drain: bool = False) -> None:
+        """Write queued output; ``drain`` writes it all, as before a popup or exit."""
         async with self.lock:
             paced = self.paced and not drain
             due = typed = 0
-            if self.smooth is not None and (drain or self._regenerate is not None):
-                # A popup or a rebuilt screen must not be drawn shifted.
+            if self.smooth and (drain or self._regenerate is not None):
+                # A popup or a rebuilt screen must not be drawn gliding.
                 self._declare(None)
+            # Only a pinned editor scrolls the screen when rows are written.
+            pinned = self.smooth and self._regenerate is None and self._editor_pinned()
             if paced and self._regenerate is None:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
                 if self._queue():
-                    self._enqueue(self._take_pending(), self._width())
-                if self.smooth is not None:
-                    due = min(glide, len(self.rows))
-                elif self.rows:
+                    width = max(1, self.app.output.get_size().columns)
+                    self._enqueue(self._take_pending(), width)
+                if self.rows:
                     due, typed = self._advance()
                 if not due and typed != self._typed:
                     self._typed = typed
@@ -2446,7 +2424,7 @@ class TerminalOutput:
                     async with suspended_editor(self.app, atomic=True) as handoff:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
-                        width = self._width()
+                        width = max(1, self.app.output.get_size().columns)
                         if self._regenerate is not None:
                             # Transient writes are not in the replay; keep those
                             # still queued as rows as well as those not rendered.
@@ -2492,11 +2470,10 @@ class TerminalOutput:
                         counter.write("".join(row.text for row in chunk))
                         counter.flush()
                         handoff.rows_written = counter.rows
-                        if glide and self.smooth is not None:
-                            # Same frame as the rows: the region carries on from
-                            # the spring's remaining fraction, not from zero.
-                            top = handoff.top_row if region else None
-                            self._declare(None if top is None else top - 1, self.smooth.shift())
+                        if pinned and counter.rows and self._declared is not None:
+                            # Same frame as the rows: the terminal draws the
+                            # region that much lower and springs it back.
+                            self.app.output.write_raw(smooth_scroll.advance(counter.rows))
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
             if self.rows:
@@ -2505,88 +2482,60 @@ class TerminalOutput:
             else:
                 self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
 
-    def _declare(self, bottom: int | None, oy: int = 0) -> None:
-        """Declare the glide region down to row ``bottom`` (0-based), or clear it."""
+    def _declare(self, bottom: int | None) -> None:
+        """Declare the glide region down to row ``bottom`` (0-based), or clear it.
+
+        Re-sent at least every second, since switching to the alternate
+        screen (a popup) clears it on the terminal's side.
+        """
         columns = self.app.output.get_size().columns
-        key = None if bottom is None or bottom < 1 else (bottom, columns, oy)
-        if key == self._declared:
-            return
-        self._declared = key
-        self.app.output.write_raw(
-            smooth_scroll.OFF if key is None else smooth_scroll.declaration(bottom, columns, oy)
-        )
+        key = None if bottom is None or bottom < 1 else (bottom, columns)
+        now = monotonic()
+        if key is None:
+            if self._declared is None:
+                return
+            self._declared = None
+            self.app.output.write_raw(smooth_scroll.OFF)
+        else:
+            if self._declared is not None and self._declared[0] == key:
+                if now - self._declared[1] < 1.0:
+                    return
+            self._declared = (key, now)
+            self.app.output.write_raw(smooth_scroll.declaration(bottom, columns))
         self.app.output.flush()
 
-    def _pinned_now(self, now: float) -> bool:
-        """Whether the editor sits at the bottom, so a written row scrolls the screen.
+    def _editor_pinned(self) -> bool:
+        """Whether the editor sits at the bottom, so written rows scroll the screen.
 
-        The layout's filler takes any rows below scrollback; none are left once
-        the drawn height is no more than the layout needs. Rechecked at most
-        every 50 ms, since it measures the whole layout.
+        The layout's filler takes any rows left below scrollback; none are
+        left once the drawn height is no more than the layout needs.
         """
-        checked, pinned = self._pinned
-        if now - checked < 0.05:
-            return pinned
         renderer = self.app.renderer
         screen = renderer._last_screen
-        pinned = False
-        if screen is not None and not renderer._in_alternate_screen:
-            size = self.app.output.get_size()
-            needed = self.app.layout.container.preferred_height(size.columns, size.rows)
-            pinned = screen.height <= needed.preferred
-        self._pinned = (now, pinned)
-        return pinned
+        if screen is None or renderer._in_alternate_screen or not self.app._is_running:
+            return False
+        size = self.app.output.get_size()
+        needed = self.app.layout.container.preferred_height(size.columns, size.rows)
+        return screen.height <= needed.preferred
 
-    async def _glide(self) -> None:
-        """Slide each new row up out of the hidden typing row, then commit it."""
-        spring = self.smooth
-        assert spring is not None
-        log = smooth_scroll.debug_log()
-        last = monotonic()
-        while True:
-            await asyncio.sleep(smooth_scroll.TICK_SECONDS)
-            now = monotonic()
-            gap, last = now - last, now
-            dt = min(gap, 0.1)
-            app = self.app
-            if self.lock.locked() or app._running_in_terminal or not app._is_running:
-                continue
-            spring.floor_at(self._row_base)
-            # Count rows only once the next is drawn in the hidden row, or the
-            # region would slide up into a blank one.
-            ready = bool(self.rows) and self._overscan == self.rows[0].text
-            if self.rows and not ready:
-                app.invalidate()
-            top = layout_top_row(app)
-            region = (
-                self.view is None
-                and top is not None
-                and app.renderer._last_size == app.output.get_size()
-                and self._pinned_now(now)
-            )
-            spring.step(self._row_base + (len(self.rows) if ready else 0), dt)
-            due = math.floor(spring.position) - self._row_base
-            if log is not None and (self.rows or due):
-                log.write(
-                    f"{now:.4f} gap={gap * 1000:.1f}ms rows={len(self.rows)} ready={ready}"
-                    f" region={region} top={top} pos={spring.position - self._row_base:.3f}"
-                    f" due={due}\n"
-                )
-            if due > 0:
-                await self.flush(glide=due, region=region)
-            else:
-                self._declare(top - 1 if region and top else None, spring.shift())
+    def _after_render(self, app) -> None:
+        """Keep the glide region's bottom on the typing row as the layout moves."""
+        top = layout_top_row(app)
+        if self.view is None and top is not None and not app._running_in_terminal:
+            self._declare(top - 1)
+        elif self.view is not None:
+            self._declare(None)
 
     async def run(self) -> None:
-        glide = None
-        if self.smooth is not None:
-            glide = asyncio.create_task(self._glide())
+        if not self.smooth or not isinstance(self.app, Application):
+            await self._run_frames()
+            return
+        self.app.after_render += self._after_render
         try:
             await self._run_frames()
         finally:
-            if glide is not None:
-                glide.cancel()
-                self._declare(None)
+            self.app.after_render -= self._after_render
+            self._declare(None)
 
     async def _run_frames(self) -> None:
         size = self.app.output.get_size()
@@ -3609,14 +3558,14 @@ class PromptLayout:
                 wrap_lines=False,
                 dont_extend_height=True,
             ),
-            # Gliding, the row is the region's hidden overscan row, kept even
-            # when empty so the layout's height never changes under it.
+            # Gliding, the row is reserved as the region's hidden bottom row,
+            # so the layout's height never changes under the region.
             filter=Condition(lambda: bool(self.typing_row()) or self.gliding()),
         )
 
     def gliding(self) -> bool:
         output = self.transcript.output if self.transcript is not None else None
-        return output is not None and output.smooth is not None
+        return output is not None and output.smooth
 
     def session_name(self) -> str:
         """The session's /rename name or model-given title, on one line; else empty.
@@ -4123,13 +4072,9 @@ class Transcript:
                 and self.console.is_terminal
                 and isinstance(output.app, Application)
             )
-            # Experimental glide: rows slide in whole, so no typing.
-            output.smooth = (
-                smooth_scroll.Spring() if output.paced and smooth_scroll.enabled() else None
-            )
-            output.typed = (
-                output.paced and self.paced_scrollback == "typed" and output.smooth is None
-            )
+            # Experimental glide: rows roll in whole, so no typing.
+            output.smooth = output.paced and smooth_scroll.enabled()
+            output.typed = output.paced and self.paced_scrollback == "typed" and not output.smooth
             if self.replays_on_resize:
                 output.resize_replay = self.replay
 
