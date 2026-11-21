@@ -44,11 +44,14 @@ REUSE_RATIO = 0.75
 # A prefix that never advances while the conversation grows is the signature of
 # a rewritten tail: reads pin to one value for request after request.
 MAX_PINNED_READS = 8
+# Providers whose single stored response aggregates an entire multi-tool turn
+# rather than one HTTP model request.
+TURN_AGGREGATED_PROVIDERS = frozenset({"antigravity"})
 
 
 @dataclass
 class Request:
-    """One model request, as the provider reported it."""
+    """One model request (or aggregated turn), as the provider reported it."""
 
     index: int
     timestamp: str
@@ -58,6 +61,10 @@ class Request:
     uncached: int
     total_input: int
     output: int
+    provider: str = ""
+    context_used: int | None = None
+    session_id: str = ""
+    unbilled: bool = False
 
 
 @dataclass
@@ -76,6 +83,7 @@ class Report:
     prefix_rewrites: int
     delegated: list[Request] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    unbilled_turns: int = 0
 
     @property
     def totals(self) -> dict[str, int]:
@@ -203,24 +211,65 @@ def _plan_reminders(database: Path) -> list[str]:
     return reminders
 
 
-def _requests(database: Path, *, delegated: bool | None = None) -> list[Request]:
-    requests = []
-    for index, message in enumerate(_responses(database, delegated=delegated)):
+def _is_unbilled_turn(request: Request) -> bool:
+    """Whether a turn-aggregated response carries no provider billing usage.
+
+    Antigravity continuation turns (unsolicited wake-ups with no `session/prompt`
+    reply) have no per-turn billing usage: newer sessions leave `total_input=0`,
+    while older ones copied `context_used` into `input_tokens` with zero reads
+    and zero output.
+    """
+    if request.provider not in TURN_AGGREGATED_PROVIDERS:
+        return False
+    if request.read != 0 or request.write != 0 or request.output != 0:
+        return False
+    if request.total_input == 0:
+        return True
+    return request.context_used is not None and request.total_input == request.context_used
+
+
+def _requests(
+    database: Path, *, delegated: bool | None = None
+) -> tuple[list[Request], list[Request], int]:
+    """Return `(billed_requests, timeline, unbilled_count)`.
+
+    `timeline` keeps unbilled turn-aggregated continuations in order so prefix
+    tracking still observes their `context_used` changes without including them
+    in billing totals or read share.
+    """
+    billed: list[Request] = []
+    timeline: list[Request] = []
+    unbilled = 0
+    for message in _responses(database, delegated=delegated):
         usage = message.get("usage") or {}
         details = usage.get("details") or {}
-        requests.append(
-            Request(
-                index=index,
-                timestamp=(message.get("timestamp") or "")[11:19],
-                model=message.get("model_name") or "",
-                read=usage.get("cache_read_tokens", 0),
-                write=usage.get("cache_write_tokens", 0),
-                uncached=details.get("input_tokens", 0),
-                total_input=usage.get("input_tokens", 0),
-                output=usage.get("output_tokens", 0),
-            )
+        provider_details = message.get("provider_details") or {}
+        raw_ctx = provider_details.get("context_used")
+        context_used = raw_ctx if type(raw_ctx) is int and raw_ctx > 0 else None
+        provider = message.get("provider_name") or ""
+        prid = message.get("provider_response_id") or ""
+        session_id = prid.partition("#")[0] if provider in TURN_AGGREGATED_PROVIDERS else ""
+        req = Request(
+            index=len(billed),
+            timestamp=(message.get("timestamp") or "")[11:19],
+            model=message.get("model_name") or "",
+            read=usage.get("cache_read_tokens", 0),
+            write=usage.get("cache_write_tokens", 0),
+            uncached=details.get("input_tokens", 0),
+            total_input=usage.get("input_tokens", 0),
+            output=usage.get("output_tokens", 0),
+            provider=provider,
+            context_used=context_used,
+            session_id=session_id,
         )
-    return requests
+        if _is_unbilled_turn(req):
+            req.unbilled = True
+            unbilled += 1
+            timeline.append(req)
+            continue
+        billed.append(req)
+        timeline.append(req)
+    return billed, timeline, unbilled
 
 
 def _pinned_streak(requests: Sequence[Request]) -> tuple[int, int]:
@@ -233,13 +282,52 @@ def _pinned_streak(requests: Sequence[Request]) -> tuple[int, int]:
     return best_length + 1 if best_length else 0, best_value
 
 
-def _reuse_findings(requests: Sequence[Request]) -> list[Finding]:
-    eligible = [
+def _reuse_findings(
+    requests: Sequence[Request], *, timeline: Sequence[Request] | None = None
+) -> list[Finding]:
+    """Score cache reuse for both single-request and turn-aggregated providers."""
+    full = requests if timeline is None else timeline
+    direct_eligible = [
         (previous, current)
         for previous, current in zip(requests, requests[1:])
-        if previous.total_input >= MIN_CACHEABLE_INPUT and current.model == previous.model
+        if previous.total_input >= MIN_CACHEABLE_INPUT
+        and current.model == previous.model
+        and current.provider not in TURN_AGGREGATED_PROVIDERS
+        and previous.provider not in TURN_AGGREGATED_PROVIDERS
     ]
-    if not eligible:
+    aggregated_timeline = [r for r in full if r.provider in TURN_AGGREGATED_PROVIDERS]
+    findings: list[Finding] = []
+    if direct_eligible:
+        reused = sum(
+            1
+            for previous, current in direct_eligible
+            if current.read >= previous.total_input * REUSE_RATIO
+        )
+        share = reused / len(direct_eligible)
+        level = "ok" if share >= 0.9 else "warn" if share >= 0.5 else "fail"
+        findings.append(
+            Finding(
+                level,
+                f"{reused}/{len(direct_eligible)} eligible requests reused at least "
+                f"{REUSE_RATIO:.0%} of the previous request's input.",
+            )
+        )
+    if aggregated_timeline:
+        turn_finding = _turn_aggregated_reuse_finding(aggregated_timeline)
+        if turn_finding is not None:
+            findings.append(turn_finding)
+    if not findings:
+        all_aggregated = bool(requests) and all(
+            r.provider in TURN_AGGREGATED_PROVIDERS for r in requests
+        )
+        if all_aggregated:
+            return [
+                Finding(
+                    "info",
+                    f"No turn had at least {MIN_CACHEABLE_INPUT} cacheable tokens, "
+                    "so the provider had nothing it was obliged to cache.",
+                )
+            ]
         return [
             Finding(
                 "info",
@@ -247,18 +335,61 @@ def _reuse_findings(requests: Sequence[Request]) -> list[Finding]:
                 "tokens, so the provider had nothing it was obliged to cache.",
             )
         ]
-    reused = sum(
-        1 for previous, current in eligible if current.read >= previous.total_input * REUSE_RATIO
-    )
+    return findings
+
+
+def _turn_aggregated_reuse_finding(timeline: Sequence[Request]) -> Finding | None:
+    """Score turn-aggregated providers (e.g. Antigravity) against each turn's cacheable input.
+
+    Each stored response sums all internal LLM calls in that turn, so comparing
+    turn N+1's reads against turn N's cumulative input fails whenever a short
+    turn follows a long tool loop. With `context_used` (the turn's final
+    context size) and `prior` (the previous turn's context size on the same
+    session/model, or 0 on a cold first turn), exact telescoping gives the
+    turn's cacheable input:
+
+        cacheable = total_input - context_used + prior
+
+    On a cold 1-call turn (`total_input == context_used`, `prior == 0`),
+    `cacheable` is 0 (not eligible). On a cold 2-call turn, `cacheable` equals
+    the first call's size. On a warm 1-call follow-up, `cacheable` equals
+    `prior`. Unbilled continuations still update `seen_prefix` from their
+    `context_used` (including compaction drops) without being scored. When
+    `context_used` is absent (older sessions), follow-up turns fall back to
+    `total_input`.
+    """
+    seen_prefix: dict[tuple[str, str], int] = {}
+    eligible: list[tuple[Request, int]] = []
+    for request in timeline:
+        key = (request.session_id, request.model)
+        prior = seen_prefix.get(key, 0)
+        if not request.unbilled:
+            if request.context_used is not None:
+                cacheable = min(
+                    request.total_input, request.total_input - request.context_used + prior
+                )
+            elif prior >= MIN_CACHEABLE_INPUT:
+                cacheable = request.total_input
+            else:
+                cacheable = 0
+            if cacheable >= MIN_CACHEABLE_INPUT:
+                eligible.append((request, cacheable))
+        if request.context_used is not None:
+            # Always track the actual ending context fill so compaction drops
+            # and legacy-to-modern transitions update the baseline accurately.
+            seen_prefix[key] = request.context_used
+        elif key not in seen_prefix and request.total_input > 0:
+            seen_prefix[key] = request.total_input
+    if not eligible:
+        return None
+    reused = sum(1 for req, cacheable in eligible if req.read >= cacheable * REUSE_RATIO)
     share = reused / len(eligible)
     level = "ok" if share >= 0.9 else "warn" if share >= 0.5 else "fail"
-    return [
-        Finding(
-            level,
-            f"{reused}/{len(eligible)} eligible requests reused at least "
-            f"{REUSE_RATIO:.0%} of the previous request's input.",
-        )
-    ]
+    return Finding(
+        level,
+        f"{reused}/{len(eligible)} eligible turns reused at least "
+        f"{REUSE_RATIO:.0%} of their cacheable input.",
+    )
 
 
 def analyze(directory: Path) -> Report:
@@ -272,8 +403,8 @@ def analyze(directory: Path) -> Report:
     # Delegated runs share the store but are a separate conversation: scoring
     # them together would report a prefix rewrite at every hand-off, and a
     # sub-agent's caching is worth judging on its own.
-    delegated = _requests(database, delegated=True)
-    requests = _requests(database, delegated=False)
+    delegated, delegated_timeline, _ = _requests(database, delegated=True)
+    requests, timeline, unbilled = _requests(database, delegated=False)
     reminders = _plan_reminders(database)
     report = Report(
         session=info.get("id", directory.name),
@@ -283,12 +414,18 @@ def analyze(directory: Path) -> Report:
         reminders=reminders,
         prefix_rewrites=_count_prefix_rewrites(database, delegated=False),
         delegated=delegated,
+        unbilled_turns=unbilled,
     )
     if not requests:
-        report.findings.append(Finding("info", "No model requests recorded."))
+        msg = (
+            "No billed model requests recorded."
+            if report.unbilled_turns
+            else "No model requests recorded."
+        )
+        report.findings.append(Finding("info", msg))
         return report
 
-    report.findings.extend(_reuse_findings(requests))
+    report.findings.extend(_reuse_findings(requests, timeline=timeline))
 
     streak, value = _pinned_streak(requests)
     if streak > MAX_PINNED_READS:
@@ -322,7 +459,7 @@ def analyze(directory: Path) -> Report:
         # is the check that a delegated run is asking for caching at all.
         report.findings.extend(
             Finding(finding.level, f"delegated: {finding.message}")
-            for finding in _reuse_findings(delegated)
+            for finding in _reuse_findings(delegated, timeline=delegated_timeline)
         )
     return report
 
@@ -335,6 +472,11 @@ def render(report: Report, *, verbose: bool = False) -> str:
         f"read={totals['read']:,}  write={totals['write']:,}  out={totals['output']:,}  "
         f"read share={report.read_share:.1%}",
     ]
+    if report.unbilled_turns:
+        lines.append(
+            f"  unbilled continuations={report.unbilled_turns} "
+            "(no provider billing usage; excluded from totals)"
+        )
     if report.delegated:
         child = Report("", "", "", report.delegated, [], 0)
         child_totals = child.totals
