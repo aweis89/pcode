@@ -128,6 +128,43 @@ rest, and a fast command log does not lag. Fail: stop, and record what was
 learned here. The remaining phases are a rebranded terminal with a config file
 and are not worth doing on their own.
 
+#### Phase 0 results so far (2026-11-20)
+
+- Ran tlpinney's signed prebuilt release (`smooth-v2026.10.31.2`), not a source
+  build.
+- [smooth_scroll_spike.py](smooth_scroll_spike.py) copies pcode's layout: a
+  transcript region above a fake editor pinned to the bottom, with rows
+  arriving in synchronized frames. The transcript is declared as a region with
+  an overscan row. A closed-form critically damped spring runs on the app's
+  own clock at 120 fps, and the fractional part goes out each frame as the
+  protocol 3 shift (`oy`).
+- Result, judged by eye: the spring glides pixel by pixel and plain row
+  scrolling visibly jumps. The fake editor below the region did not move. The
+  claim that apps cannot animate smoothly does not hold at 120 fps, as long as
+  the shift is sent every display frame.
+- Consequence: steps 1 and 3 may not be needed, and with them the Zig patch
+  and the source build. The stock region sequence may be enough.
+- Open: at first, spring mode showed misaligned characters at line ends. The
+  likely cause was long test lines wrapping into the hidden overscan row; they
+  are now cut to fit, but this is not confirmed. Real arrival rates are slow
+  (a few rows a second for prose), so test at those rates.
+
+What wiring it into pcode involves:
+
+- **A display-rate ticker.** pcode's flush loop runs at 30 fps. The shift
+  needs its own loop at display rate, and each tick is one small escape
+  sequence, not a repaint.
+- **The overscan row.** The row being revealed has to sit, hidden, in the row
+  just above the editor before the shift brings it into view. It belongs to
+  the live layout, not scrollback. After it is fully revealed, the normal
+  handoff commits it to scrollback and resets `oy` to 0 in the same
+  synchronized frame. That costs one blank row above the editor.
+- **Typed prose.** Typing shows a partial row in the live area. Either the
+  typed row is the one revealed, or typing is replaced by row reveals when
+  smooth scrolling is on.
+- **Screen not yet full, resize, popups, the alternate screen.** As listed
+  under the design sketch.
+
 ### Phase 1: the patch, properly
 
 - Settle the sequence: declaration, advance, clear, capability query, and a
