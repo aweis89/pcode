@@ -21,9 +21,6 @@ import os
 MIN_ROWS_PER_SECOND = 5.0
 MAX_ROWS_PER_SECOND = float(os.environ.get("PCODE_SMOOTH_SCROLL_MAX_RATE") or 10)
 CATCH_UP_SECONDS = 3.0
-# Characters typed per 30 fps frame while gliding: about 270 a second, a
-# touch slower than the unglided 360 so each line reads as it lands.
-TYPED_CHARS_PER_STEP = int(os.environ.get("PCODE_SMOOTH_SCROLL_TYPE_STEP") or 9)
 
 # Region ids are per app; any constant will do.
 REGION_ID = 7

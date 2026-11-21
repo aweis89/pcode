@@ -1919,11 +1919,11 @@ def install_reflow_renderer(app: Application) -> None:
 # row when small and lands within about a second however big it is.
 PACED_DRAIN_FRAMES = 30
 # Typed prose advances every TYPED_STEP_FRAMES frames (every frame: 30 a
-# second). A step reveals TYPED_CHARS_PER_STEP characters (about 360 a second,
-# near a model's own pace, so a steady stream reads as one), sped up so a
-# backlog types out within TYPED_DRAIN_STEPS steps (about two seconds).
+# second). A step reveals TYPED_CHARS_PER_STEP characters (about 270 a second,
+# a little under a model's own pace, so each line reads as it lands), sped up
+# so a backlog types out within TYPED_DRAIN_STEPS steps (about two seconds).
 TYPED_STEP_FRAMES = 1
-TYPED_CHARS_PER_STEP = 12
+TYPED_CHARS_PER_STEP = 9
 TYPED_DRAIN_STEPS = 60
 
 # Rich writes only SGR styles and OSC 8 hyperlinks. prompt_toolkit's ANSI parser
@@ -2365,7 +2365,7 @@ class TerminalOutput:
         backlog = sum(row.visible for row in self.rows if row.typed) - self._typed
         self._type_rate = max(
             self._type_rate,
-            smooth_scroll.TYPED_CHARS_PER_STEP if self.smooth else TYPED_CHARS_PER_STEP,
+            TYPED_CHARS_PER_STEP,
             -(-backlog // TYPED_DRAIN_STEPS),
         )
         rows, chars, typed = self._reveal_rate, self._type_rate, self._typed
@@ -2408,8 +2408,9 @@ class TerminalOutput:
             if self.smooth and (drain or self._regenerate is not None):
                 # A popup or a rebuilt screen must not be drawn gliding.
                 self._declare(None)
-            # Only a pinned editor scrolls the screen when rows are written.
-            pinned = self.smooth and self._regenerate is None and self._editor_pinned()
+            # The layout's drawn height before this write, to work out how far
+            # the write scrolls the screen (see `_scrolled`).
+            drawn = self._drawn_height() if self.smooth and self._regenerate is None else None
             if paced and self._regenerate is None:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
@@ -2477,10 +2478,11 @@ class TerminalOutput:
                         counter.write("".join(row.text for row in chunk))
                         counter.flush()
                         handoff.rows_written = counter.rows
-                        if pinned and counter.rows and self._declared is not None:
+                        scrolled = self._scrolled(drawn, counter.rows)
+                        if scrolled and self._declared is not None:
                             # Same frame as the rows: the terminal draws the
                             # region that much lower and springs it back.
-                            self.app.output.write_raw(smooth_scroll.advance(counter.rows))
+                            self.app.output.write_raw(smooth_scroll.advance(scrolled))
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
             if self.rows:
@@ -2538,6 +2540,35 @@ class TerminalOutput:
         needed = self.app.layout.container.preferred_height(size.columns, size.rows)
         return screen.height <= needed.preferred
 
+    def _drawn_height(self) -> int | None:
+        """Rows the layout was last drawn over, from the bottom of the screen."""
+        renderer = self.app.renderer
+        screen = renderer._last_screen
+        if screen is None or renderer._in_alternate_screen or not self.app._is_running:
+            return None
+        return screen.height
+
+    def _scrolled(self, drawn: int | None, written: int) -> int:
+        """How far writing ``written`` rows scrolls the screen, by this frame's end.
+
+        The layout always reaches the bottom row, so scrollback ends where it
+        was drawn from. The rows and the layout's new height scroll whatever
+        does not fit. Not every row written scrolls: one written as the live
+        panel shrinks (a finished command's row leaving it) fills the space
+        the panel gave up, and gliding it would draw it below its place.
+        """
+        if drawn is None or not written:
+            return 0
+        size = self.app.output.get_size()
+        needed = self.app.layout.container.preferred_height(size.columns, size.rows).preferred
+        scrolled = max(0, min(written, written + min(needed, size.rows) - drawn))
+        if os.environ.get("PCODE_SMOOTH_SCROLL_DEBUG"):
+            with open(os.environ["PCODE_SMOOTH_SCROLL_DEBUG"], "a") as log:
+                log.write(
+                    f"write written={written} scrolled={scrolled} drawn={drawn} needed={needed}\n"
+                )
+        return scrolled
+
     def _after_render(self, app) -> None:
         """Keep the glide region's bottom on the reserved row as the layout moves.
 
@@ -2546,6 +2577,15 @@ class TerminalOutput:
         """
         top = layout_top_row(app)
         screen = app.renderer._last_screen
+        if os.environ.get("PCODE_SMOOTH_SCROLL_DEBUG") and screen is not None:
+            size = app.output.get_size()
+            needed = app.layout.container.preferred_height(size.columns, size.rows).preferred
+            with open(os.environ["PCODE_SMOOTH_SCROLL_DEBUG"], "a") as log:
+                log.write(
+                    f"{monotonic():.3f} rows={size.rows} top={top} screen={screen.height}"
+                    f" needed={needed} pinned={self._editor_pinned()}"
+                    f" cursor={app.renderer._cursor_pos.y}\n"
+                )
         if top is not None and screen is not None and self._editor_pinned():
             # Pinned, the layout fills the bottom ``screen.height`` rows. Not
             # `layout_top_row`: after a write that scrolled, it rests on the
