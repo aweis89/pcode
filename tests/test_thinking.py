@@ -234,7 +234,7 @@ def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
         assert "hello" in buffer.getvalue()
         writer.thinking_delta("- one\n\n- two\n")
         assert "one" not in buffer.getvalue()
-        writer.finish_thinking("ignored streamed fallback")
+        writer.finish_thinking("ignored streamed fallback", complete=True)
         assert "one" in buffer.getvalue()
         assert "two" in buffer.getvalue()
         assert "ignored streamed fallback" not in buffer.getvalue()
@@ -408,3 +408,51 @@ def test_replay_does_not_split_a_thought_at_a_sub_agent_call():
         {"kind": "thinking_partial", "text": "I'm checking"},
         {"kind": "Message", "markdown": "Answer"},
     ]
+
+
+def test_a_scrollback_write_mid_thought_does_not_repeat_the_thought():
+    from pcode.runtime import Thinking, ThinkingDelta, ToolSummary
+    from pcode.stream_display import present_events, present_stream_event
+
+    activity = Activity(thinking_mode="scrollback")
+    transcript = Transcript(Console(file=StringIO(), width=60), activity=activity)
+    with create_pipe_input() as pipe:
+        app = PreviewApp()
+        prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
+        writer = TerminalOutput(transcript.console, prompt.app)
+        writer.commit_thinking = transcript.thinking
+
+        def feed(event):
+            present_stream_event(
+                event,
+                output=writer,
+                transcript=transcript,
+                activity=activity,
+                present=lambda events: present_events(
+                    events, activity=activity, transcript=transcript, edits=[]
+                ),
+            )
+
+        feed(ThinkingDelta("Checking"))
+        # A background job's result lands before the thought's completion.
+        feed(ToolSummary("shell", "make test", call_id="t1"))
+        feed(Thinking("Checking"))
+        assert rendered(transcript).count("Checking") == 1
+        # The next thought, arriving whole, is still written.
+        feed(Thinking("Whole"))
+        assert "Whole" in rendered(transcript)
+
+
+def test_a_turn_ended_mid_thought_lets_the_next_whole_thought_through():
+    transcript = Transcript(
+        Console(file=StringIO(), width=60), activity=Activity(thinking_mode="scrollback")
+    )
+    with create_pipe_input() as pipe:
+        app = PreviewApp()
+        prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
+        writer = TerminalOutput(transcript.console, prompt.app)
+        writer.commit_thinking = transcript.thinking
+        writer.thinking_delta("Cancelled")
+        writer.end_turn()
+        writer.finish_thinking("Whole", complete=True)
+        assert "Whole" in rendered(transcript)

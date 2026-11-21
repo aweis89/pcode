@@ -694,7 +694,7 @@ class PreviewApp:
 
     def turn_retry(self, text: str) -> None:
         # Separate abandoned partial text/thinking from the next attempt.
-        self.output.finish_thinking()
+        self.output.finish_thinking(complete=True)
         self.output.finish()
         if self._progress is not None:
             self._progress.turn_retry()

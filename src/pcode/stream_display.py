@@ -143,7 +143,7 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         output.thinking_delta(event.text)
         activity.think(event.text)
     elif isinstance(event, Thinking):
-        output.finish_thinking(event.text)
+        output.finish_thinking(event.text, complete=True)
         if activity.thought_done and event.text:
             # A block that arrived whole, with no deltas before it.
             activity.think(event.text)
@@ -151,7 +151,7 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         # next block, or the answer, replaces it.
         activity.thought_done = True
     elif isinstance(event, TextDelta):
-        output.finish_thinking()
+        output.finish_thinking(complete=True)
         output.delta(event.text)
         activity.status = "Responding…"
         if event.text.strip():  # An empty part start says nothing yet.

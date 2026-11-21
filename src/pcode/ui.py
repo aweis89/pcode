@@ -2075,6 +2075,8 @@ class TerminalOutput:
         )
         self._thinking_tail = ""
         self._thinking_streamed = False
+        # Whether the current thought streamed at all, across mid-thought commits.
+        self._thought_streamed = False
         self._regenerate = None
         self.resize_replay = None
         # Another view drawn in the conversation's place, e.g. a /btw thread
@@ -2177,7 +2179,7 @@ class TerminalOutput:
         self.print()
 
     def end_turn(self) -> None:
-        self.finish_thinking()
+        self.finish_thinking(complete=True)
         self.finish()
 
     def _commit(self, source: str) -> None:
@@ -2193,18 +2195,26 @@ class TerminalOutput:
         if not text:
             return
         self._thinking_streamed = True
+        self._thought_streamed = True
         for part in text.splitlines(keepends=True):
             self._thinking_tail += part
             if part.endswith("\n"):
                 self._commit_blocks(thinking=True)
 
-    def finish_thinking(self, fallback: str = "") -> None:
-        if not self._thinking_streamed and fallback:
+    def finish_thinking(self, fallback: str = "", *, complete: bool = False) -> None:
+        """Commit the thought so far; `complete` means the thought itself has ended.
+
+        A scrollback write in the middle of a thought commits what streamed
+        before it, so the completion's `fallback` must not repeat the thought.
+        """
+        if not self._thought_streamed and fallback:
             self.thinking_delta(fallback)
         if self._thinking_streamed:
             self._commit_thinking(self._thinking_tail.rstrip("\n") + "\n\n")
         self._thinking_tail = ""
         self._thinking_streamed = False
+        if complete:
+            self._thought_streamed = False
 
     def delta(self, text: str) -> None:
         if not text:

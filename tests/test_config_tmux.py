@@ -145,8 +145,8 @@ def test_config_full_terminal_geometry_across_interactions(pane):
     check('"7" (from user)', detail='"7" (from user)', content="› tool_max_lines")
 
     send("C-a", "C-k", "show_thinking", "Enter")
-    check("Enter saves; Escape cancels.", detail="› activity-panel")
-    send("Down", "Escape")
+    check("Enter saves; Escape cancels.", detail="› scrollback")
+    send("Up", "Escape")
     check(
         "Edit cancelled",
         detail="show_thinking",

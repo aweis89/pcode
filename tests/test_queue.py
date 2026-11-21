@@ -675,7 +675,7 @@ def test_thinking_rows_hold_the_newest_thought_above_the_status_row(monkeypatch)
         """Accepts every output call; `app.invalidate()` included."""
 
         def __getattr__(self, name):
-            return self if name == "app" else lambda *args: None
+            return self if name == "app" else lambda *args, **kwargs: None
 
     activity = Activity(prompt_state="running", status="Thinking…")
 
