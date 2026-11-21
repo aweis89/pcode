@@ -15,9 +15,37 @@ so pcode's busy event loop cannot make the motion stutter.
 
 import os
 
+# How fast rows are written while gliding, in rows per second: slow enough
+# that each glides in before the next arrives. A backlog speeds it up to
+# finish in about CATCH_UP_SECONDS, never past the maximum.
+MIN_ROWS_PER_SECOND = 5.0
+MAX_ROWS_PER_SECOND = float(os.environ.get("PCODE_SMOOTH_SCROLL_MAX_RATE") or 10)
+CATCH_UP_SECONDS = 3.0
+
 # Region ids are per app; any constant will do.
 REGION_ID = 7
 OFF = f"\x1b_smooth;off;{REGION_ID}\x1b\\"
+
+
+class Pacer:
+    """Rows due now under the glide's rate limit, from a credit that accrues over time."""
+
+    def __init__(self) -> None:
+        self.credit = 1.0
+        self.last: float | None = None
+
+    def due(self, backlog: int, now: float) -> int:
+        """Rows to write now of ``backlog``; the first after a pause goes at once."""
+        if not backlog:
+            self.credit, self.last = 1.0, None
+            return 0
+        rate = min(MAX_ROWS_PER_SECOND, max(MIN_ROWS_PER_SECOND, backlog / CATCH_UP_SECONDS))
+        if self.last is not None:
+            self.credit = min(self.credit + rate * (now - self.last), 1.0)
+        self.last = now
+        due = min(int(self.credit), backlog)
+        self.credit -= due
+        return due
 
 
 def enabled() -> bool:

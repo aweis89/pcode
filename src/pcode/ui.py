@@ -2117,6 +2117,7 @@ class TerminalOutput:
         # always reserved and empty, as the glide region's hidden bottom row.
         # ``_declared`` is the region last sent and when (None: cleared).
         self.smooth = False
+        self._glide_pacer = smooth_scroll.Pacer()
         self._declared: tuple[tuple[int, int], float] | None = None
 
     def regenerate(self, replay) -> None:
@@ -2411,7 +2412,9 @@ class TerminalOutput:
                 if self._queue():
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.rows:
+                if self.smooth:
+                    due = self._glide_pacer.due(len(self.rows), monotonic())
+                elif self.rows:
                     due, typed = self._advance()
                 if not due and typed != self._typed:
                     self._typed = typed
