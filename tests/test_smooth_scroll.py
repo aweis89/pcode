@@ -55,10 +55,12 @@ def test_pacer_lets_the_first_row_go_then_holds_to_the_rate():
 
 def test_sequences():
     assert smooth_scroll.declaration(9, 80) == "\x1b_smooth;7;0;9;0;79;0;0\x1b\\"
-    assert smooth_scroll.panel_declaration(20, 23, 80) == "\x1b_smooth;8;20;23;0;79;0;0;1\x1b\\"
+    assert (
+        smooth_scroll.visible_declaration(8, 20, 23, 80) == "\x1b_smooth;8;20;23;0;79;0;0;1\x1b\\"
+    )
     assert smooth_scroll.advance(2) == "\x1b_smooth;advance;7;2\x1b\\"
     assert smooth_scroll.advance(1, smooth_scroll.PANEL_ID) == "\x1b_smooth;advance;8;1\x1b\\"
-    assert smooth_scroll.OFF == "\x1b_smooth;off;7\x1b\\\x1b_smooth;off;8\x1b\\"
+    assert smooth_scroll.OFF == "".join(f"\x1b_smooth;off;{i}\x1b\\" for i in (7, 8, 9))
 
 
 @pytest.mark.parametrize(
@@ -172,3 +174,68 @@ def test_setting_and_probe_both_gate_the_glide(monkeypatch, setting, supported, 
         output = TerminalOutput(console, app)
         transcript.output = output
     assert output.gliding is gliding
+
+
+def test_glide_runs_downward_too_and_never_past_rest():
+    glide = Glide()
+    glide.advance(-1, 0.0)
+    assert glide.remaining(0.0) == pytest.approx(-1.0)
+    assert -1 < glide.remaining(0.05) < 0
+    glide.advance(-10, 0.05)
+    assert glide.remaining(0.05) == -MAX_GLIDE
+    assert glide.remaining(2.0) == 0.0
+    # Drawn higher, then lower: the new advance lands on what is left.
+    glide = Glide()
+    glide.advance(-1, 0.0)
+    left = glide.remaining(0.1)
+    glide.advance(2, 0.1)
+    assert glide.remaining(0.1) == pytest.approx(left + 2)
+
+
+def test_a_row_leaving_drops_the_rows_above_it():
+    from pcode.ui import _block_move
+
+    # Counted up from the bottom: status 1, commands 3 to 5, the middle one leaves.
+    before = {1: "status", 3: "$ make", 4: "$ ls", 5: "$ cd /tmp"}
+    after = {1: "status", 3: "$ make", 4: "$ cd /tmp"}
+    assert _block_move(after, before) == (-1, 4, 4)
+
+
+def test_a_row_arriving_lifts_the_rows_above_it():
+    from pcode.ui import _block_move
+
+    before = {1: "status", 3: "$ ls", 4: "$ cd /tmp"}
+    after = {1: "status", 3: "$ make", 4: "$ ls", 5: "$ cd /tmp"}
+    assert _block_move(after, before) == (1, 4, 5)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        # A row between the movers changed: not one block.
+        {1: "status", 3: "$ make", 4: "$ ls", 5: "$ cd /tmp && ls", 6: "$ pwd"},
+        # Too far to glide.
+        {1: "status", 9: "$ ls", 10: "$ cd /tmp"},
+    ],
+)
+def test_no_glide_when_it_is_not_one_block_moving(after):
+    from pcode.ui import _block_move
+
+    before = {1: "status", 3: "$ ls", 4: "$ cd /tmp", 5: "$ pwd"}
+    assert _block_move(after, before) is None
+    assert _block_move(before, before) is None
+
+
+def test_row_keys_ignore_spinners_and_marks():
+    from prompt_toolkit.layout.screen import Char, Screen
+
+    from pcode.ui import _row_keys
+
+    def screen(mark):
+        s = Screen()
+        for x, char in enumerate(f" {mark} $ ls"):
+            s.data_buffer[3][x] = Char(char)
+        s.height = 5
+        return s
+
+    assert _row_keys(screen("◜")) == _row_keys(screen("✓")) == {2: "$ ls"}

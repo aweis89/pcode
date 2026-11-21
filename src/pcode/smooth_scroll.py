@@ -26,8 +26,10 @@ MAX_ROWS_PER_SECOND = 10.0
 CATCH_UP_SECONDS = 3.0
 
 # The smooth-scroll protocol version pcode speaks: 4 added `advance`, 5 the
-# no-overscan flag. Exact, since `Glide` mirrors the terminal's spring.
-PROTOCOL = 5
+# no-overscan flag, 6 negative advances (content moved down) with the
+# innermost of nested regions winning. Exact, since `Glide` mirrors the
+# terminal's spring.
+PROTOCOL = 6
 QUERY = b"\x1b_smooth;?\x1b\\"
 # Any smooth-scroll reply, so a future shape is still kept out of typing; only
 # `ok;N` with N == PROTOCOL turns the glide on.
@@ -38,7 +40,10 @@ VERSION = re.compile(rb"ok;(\d{1,4})")
 # the live panel's rows above a row just added to it.
 REGION_ID = 7
 PANEL_ID = 8
-OFF = f"\x1b_smooth;off;{REGION_ID}\x1b\\\x1b_smooth;off;{PANEL_ID}\x1b\\"
+# Rows written before the screen is full, which push the typing row down
+# instead of scrolling: nested in the transcript region, so it wins there.
+INSERT_ID = 9
+OFF = "".join(f"\x1b_smooth;off;{id}\x1b\\" for id in (REGION_ID, PANEL_ID, INSERT_ID))
 
 
 # The terminal's glide spring (Ghostty Smooth's `Smooth.glide_stiffness` and
@@ -58,24 +63,27 @@ class Glide:
         self.velocity = 0.0
         self.at = 0.0
 
-    def remaining(self, now: float) -> float:
-        """Rows still to glide at ``now``; closed form, as the terminal computes it."""
+    def _at(self, now: float) -> tuple[float, float]:
+        """Position and velocity at ``now``: closed form, never past rest, as the terminal."""
         if not self.rows and not self.velocity:
-            return 0.0
-        omega = math.sqrt(GLIDE_STIFFNESS)
-        t = max(0.0, now - self.at)
-        position = (self.rows + (self.velocity + omega * self.rows) * t) * math.exp(-omega * t)
-        return max(0.0, position)
-
-    def advance(self, rows: int, now: float) -> None:
-        """The screen just scrolled ``rows``: add them to the glide as it stands now."""
+            return 0.0, 0.0
         omega = math.sqrt(GLIDE_STIFFNESS)
         t = max(0.0, now - self.at)
         c = self.velocity + omega * self.rows
         decay = math.exp(-omega * t)
         position = (self.rows + c * t) * decay
-        self.velocity = (self.velocity - omega * c * t) * decay
-        self.rows = min(max(position, 0.0) + rows, MAX_GLIDE)
+        if (position > 0) != (self.rows > 0) or abs(position) <= 0.001:
+            return 0.0, 0.0
+        return position, (self.velocity - omega * c * t) * decay
+
+    def remaining(self, now: float) -> float:
+        """Rows still to glide at ``now``; negative while drawn higher than its place."""
+        return self._at(now)[0]
+
+    def advance(self, rows: int, now: float) -> None:
+        """Content just moved up ``rows`` (negative: down): add them as the glide stands now."""
+        position, self.velocity = self._at(now)
+        self.rows = min(max(position + rows, -MAX_GLIDE), MAX_GLIDE)
         self.at = now
 
 
@@ -126,14 +134,19 @@ def declaration(bottom: int, columns: int) -> str:
     return f"\x1b_smooth;{REGION_ID};0;{bottom};0;{columns - 1};0;0\x1b\\"
 
 
-def panel_declaration(top: int, bottom: int, columns: int) -> str:
-    """Live panel rows ``top`` to ``bottom`` (0-based), all visible.
+def visible_declaration(region: int, top: int, bottom: int, columns: int) -> str:
+    """Rows ``top`` to ``bottom`` (0-based), all visible, as region ``region``.
 
     The no-overscan flag (bit 0 of the last field) keeps ``bottom`` drawn:
-    it is the row just added, with the status line right under it, so there
-    is no blank row to hide. Rows glided below it are clipped at its edge.
+    these regions have something right under them (the status line, the
+    typing row), so there is no blank row to hide. Rows glided past either
+    edge are clipped there.
     """
-    return f"\x1b_smooth;{PANEL_ID};{top};{bottom};0;{columns - 1};0;0;1\x1b\\"
+    return f"\x1b_smooth;{region};{top};{bottom};0;{columns - 1};0;0;1\x1b\\"
+
+
+def region_off(region: int) -> str:
+    return f"\x1b_smooth;off;{region}\x1b\\"
 
 
 def advance(rows: int, region: int = REGION_ID) -> str:

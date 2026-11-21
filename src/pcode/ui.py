@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import unicodedata
 from asyncio import Future
 from collections import Counter
 from collections.abc import Callable
@@ -2128,8 +2129,15 @@ class TerminalOutput:
         # Each drawn window's top and bottom row, counted up from the screen's
         # bottom edge (its last row is 1), after the last render.
         self._last_spans: dict[int, tuple[int, int]] = {}
+        # The live panel's rows as `_row_keys` reads them, after the last render.
+        self._last_keys: dict[int, str] = {}
         self._handoff_render = False
         self._declared: tuple[tuple[int, int], float] | None = None
+        # Rows written before the screen filled glide down into place, the
+        # typing row under them pushed down (`_glide_insert`): pcode's copy of
+        # that glide, and whether its region is declared.
+        self._insert_glide = smooth_scroll.Glide()
+        self._insert_declared = False
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -2426,7 +2434,7 @@ class TerminalOutput:
                 if self._queue():
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.gliding and self._typing_held():
+                if self.gliding and (self._typing_held() or self._insert_held()):
                     due, typed = 0, self._typed
                 else:
                     if self.rows:
@@ -2496,8 +2504,11 @@ class TerminalOutput:
                         if scrolled and self._declared is not None:
                             # Same frame as the rows: the terminal draws the
                             # region that much lower and springs it back.
+                            self._end_insert()
                             self.app.output.write_raw(smooth_scroll.advance(scrolled))
                             self._glide.advance(scrolled, monotonic())
+                        elif self._declared is not None and drawn is not None:
+                            self._glide_insert(drawn, counter.rows, chunk)
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
             if self.rows:
@@ -2505,6 +2516,54 @@ class TerminalOutput:
                 self.changed.set()
             else:
                 self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
+
+    def _glide_insert(self, drawn: int, written: int, chunk) -> None:
+        """Unroll rows written above the editor before the screen is full.
+
+        They scroll nothing: they land where the typing row was and push it,
+        and the live layout's top, down. The rows from the first of them to
+        the typing row glide down into place, so the new rows come into view
+        from their top edge. A typed row is already where it lands, so a
+        write with one in it does not glide. Later rows join the glide of
+        the next write waits for this one to settle (`_insert_held`).
+        """
+        if not written or any(row.typed for row in chunk):
+            return
+        top = self.app.output.get_size().rows - drawn  # the typing row, 0-based
+        columns = self.app.output.get_size().columns
+        self.app.output.write_raw(
+            smooth_scroll.visible_declaration(smooth_scroll.INSERT_ID, top, top + written, columns)
+            + smooth_scroll.advance(-written, smooth_scroll.INSERT_ID)
+        )
+        # A fresh glide: what is left of the last one is under the hold's
+        # threshold, and its rows, now above this region, finish at once.
+        self._insert_glide = smooth_scroll.Glide()
+        self._insert_glide.advance(-written, monotonic())
+        self._insert_declared = True
+
+    def _insert_held(self) -> bool:
+        """Whether the next write waits for the rows last unrolled to settle.
+
+        Each written row pushes only what is below it, so one region cannot
+        carry two inserts at different stages: a row still unrolling would
+        be drawn as the next one. Waiting until it is nearly in place keeps
+        the jump when its glide is dropped too small to see.
+        """
+        return (
+            self._insert_declared
+            and abs(self._insert_glide.remaining(monotonic())) > smooth_scroll.TYPE_WHEN_GLIDE_UNDER
+        )
+
+    def _end_insert(self) -> None:
+        """Drop the insert region once the transcript scrolls.
+
+        Nested, it would win over the transcript region and keep its rows
+        from gliding with the rest.
+        """
+        if self._insert_declared:
+            self._insert_declared = False
+            self._insert_glide = smooth_scroll.Glide()
+            self.app.output.write_raw(smooth_scroll.region_off(smooth_scroll.INSERT_ID))
 
     def _typing_held(self) -> bool:
         """Whether the next typed row waits for the glide to bring its row into view.
@@ -2545,6 +2604,7 @@ class TerminalOutput:
             if self._declared is None:
                 return
             self._declared = None
+            self._insert_declared = False
             self.app.output.write_raw(smooth_scroll.OFF)
         else:
             if self._declared is not None and self._declared[0] == key:
@@ -2652,6 +2712,7 @@ class TerminalOutput:
         if screen is None or app.renderer._in_alternate_screen or self.view is not None:
             self._last_layout = None
             self._last_spans = {}
+            self._last_keys = {}
             return
         pinned = self._editor_pinned()
         last, self._last_layout = self._last_layout, (screen.height, pinned)
@@ -2661,14 +2722,47 @@ class TerminalOutput:
             if pos.height > 0
         }
         last_spans, self._last_spans = self._last_spans, spans
-        if handoff or last is None or not (pinned and last[1]):
+        keys = _row_keys(screen)
+        last_keys, self._last_keys = self._last_keys, keys
+        if handoff or last is None or self._declared is None:
             return
         grown = screen.height - last[0]
-        if grown <= 0 or self._declared is None:
+        if not (pinned and last[1] and grown > 0):
+            # Nothing scrolled: rows may still have moved within the panel.
+            self._glide_moves(app, screen.height, keys, last_keys)
             return
+        self._end_insert()
         app.output.write_raw(smooth_scroll.advance(grown))
         self._glide.advance(grown, monotonic())
         self._glide_panel(app, screen.height, grown, spans, last_spans)
+
+    def _glide_moves(self, app, height: int, keys, last_keys) -> None:
+        """Glide live panel rows that moved up or down since the last render.
+
+        A row leaving the panel drops the rows above it into its place, and
+        one arriving while the screen has room lifts them. Rows are matched by
+        text (`_row_keys`), counted up from the bottom, which the layout always
+        reaches. The rows that moved by the most common distance glide by it,
+        unless something between them changed or stayed: then it is not one
+        block moving, and the rows land at once as before.
+        """
+        move = _block_move(keys, last_keys)
+        if move is None:
+            return
+        distance, low, high = move
+        rows = app.output.get_size().rows
+        top, bottom = rows - high, rows - low  # 0-based screen rows, where they are now
+        if distance > 0:
+            bottom += distance  # what lifted them: rows that rise in below
+        else:
+            top += distance  # the rows they left, now empty
+        if top < rows - height + 2 or bottom >= rows:  # below the typing and hidden rows
+            return
+        columns = app.output.get_size().columns
+        app.output.write_raw(
+            smooth_scroll.visible_declaration(smooth_scroll.PANEL_ID, top, bottom, columns)
+            + smooth_scroll.advance(distance, smooth_scroll.PANEL_ID)
+        )
 
     def _glide_panel(self, app, height: int, grown: int, spans, last_spans) -> None:
         """Glide the live panel's rows above the ones just added, and those rows in.
@@ -2691,7 +2785,9 @@ class TerminalOutput:
         if last_row < first_row:
             return
         columns = app.output.get_size().columns
-        app.output.write_raw(smooth_scroll.panel_declaration(first_row, last_row, columns))
+        app.output.write_raw(
+            smooth_scroll.visible_declaration(smooth_scroll.PANEL_ID, first_row, last_row, columns)
+        )
         app.output.write_raw(smooth_scroll.advance(grown, smooth_scroll.PANEL_ID))
 
     async def run(self) -> None:
@@ -2807,6 +2903,59 @@ def _preview_body(diff: bool, body: str, width: int, theme: str):
             Console(width=width), width, overflow="fold", no_wrap=False
         )
     ]
+
+
+def _row_keys(screen) -> dict[int, str]:
+    """The live layout's rows under the typing and hidden rows, by their text.
+
+    Keyed by row counted up from the bottom (the last row is 1), the edge the
+    layout always reaches. Symbols are left out, so a spinner's frame or a
+    call's mark turning `✓` does not make a row look like a different one.
+    Blank rows are left out.
+    """
+    keys = {}
+    for y in range(2, screen.height):
+        cells = screen.data_buffer.get(y)
+        if not cells:
+            continue
+        text = "".join(
+            cell.char
+            for _, cell in sorted(cells.items())
+            if unicodedata.category(cell.char[:1] or " ") != "So"
+        ).strip()
+        if text:
+            keys[screen.height - y] = text
+    return keys
+
+
+def _block_move(keys: dict[int, str], last_keys: dict[int, str]) -> tuple[int, int, int] | None:
+    """Rows that moved together since `last_keys`: (distance up, lowest, highest).
+
+    Rows count up from the bottom; a negative distance moved them down. The
+    distance is the one most moved rows agree on, and every row between the
+    lowest and highest of them must have moved by it, so a block that only
+    partly moved, or a row in it that changed, does not glide. At most
+    `smooth_scroll.MAX_GLIDE` rows: the terminal jumps the rest anyway.
+    """
+    where: dict[str, list[int]] = {}
+    for row, key in last_keys.items():
+        where.setdefault(key, []).append(row)
+    candidates = {
+        row: {row - old for old in where.get(key, ())}
+        for row, key in keys.items()
+        if last_keys.get(row) != key
+    }
+    votes = Counter(d for distances in candidates.values() for d in distances)
+    if not votes:
+        return None
+    distance = votes.most_common(1)[0][0]
+    moved = [row for row, distances in candidates.items() if distance in distances]
+    low, high = min(moved), max(moved)
+    if abs(distance) > smooth_scroll.MAX_GLIDE or len(moved) != sum(
+        low <= row <= high for row in keys
+    ):
+        return None
+    return distance, low, high
 
 
 def _spinner_rows(fragments, height) -> VSplit:
