@@ -12,12 +12,15 @@ Privacy & Security); without it you take the shot yourself and press Enter.
 """
 
 import argparse
+import json
 import os
+import plistlib
 import shlex
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from iterm import OSASCRIPT_TIMEOUT, quoted, session_colors
@@ -71,6 +74,67 @@ end tell""")
     return names.splitlines()
 
 
+DYNAMIC_PROFILES = Path.home() / "Library/Application Support/iTerm2/DynamicProfiles"
+
+
+@contextmanager
+def scaled_profile(profile: str, size: int | None):
+    """Yield a temporary Dynamic Profile inheriting `profile` at `size` pt, or `profile`."""
+    if size is None:
+        yield profile
+        return
+    if size <= 0:
+        raise SystemExit(f"--font-size must be positive, got {size}")
+    try:
+        raw = subprocess.check_output(["defaults", "export", "com.googlecode.iterm2", "-"])
+        bookmarks = plistlib.loads(raw).get("New Bookmarks", [])
+    except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException) as exc:
+        print(
+            f"warning: could not read iTerm2 profiles ({exc}); keeping default font",
+            file=sys.stderr,
+        )
+        yield profile
+        return
+    entry = next((b for b in bookmarks if b.get("Name") == profile), None)
+    normal = entry.get("Normal Font") if entry else None
+    family, _, orig_str = (normal or "").rpartition(" ")
+    try:
+        orig = float(orig_str)
+    except ValueError:
+        orig = 0.0
+    if not family or orig <= 0:
+        print(
+            f"warning: profile {profile!r} has no parseable Normal Font; keeping default font",
+            file=sys.stderr,
+        )
+        yield profile
+        return
+    name = f"pcode-screenshot-{os.getpid()}"
+    override: dict[str, object] = {
+        "Name": name,
+        "Guid": name,
+        "Dynamic Profile Parent Name": profile,
+        "Normal Font": f"{family} {size}",
+    }
+    if non_ascii := entry.get("Non Ascii Font"):
+        na_family, _, na_size = non_ascii.rpartition(" ")
+        try:
+            na_orig = float(na_size)
+        except ValueError:
+            na_orig = 0.0
+        if na_family and na_orig > 0:
+            scaled = max(8, round(na_orig * size / orig))
+            override["Non Ascii Font"] = f"{na_family} {scaled}"
+    DYNAMIC_PROFILES.mkdir(parents=True, exist_ok=True)
+    path = DYNAMIC_PROFILES / f"{name}.json"
+    try:
+        path.write_text(json.dumps({"Profiles": [override]}))
+        time.sleep(0.5)
+        yield name
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("scene", nargs="?", default="tabs", help="a scene with TABS")
@@ -78,6 +142,7 @@ def main() -> None:
     parser.add_argument(
         "--profile", help="iTerm2 profile for the tabs (default: this tab's own profile)"
     )
+    parser.add_argument("--font-size", type=int, help="override the profile's font size (pt)")
     parser.add_argument("--keep", action="store_true", help="leave the window open afterwards")
     args = parser.parse_args()
     scene = load(args.scene)
@@ -93,7 +158,10 @@ def main() -> None:
     profile = args.profile or (live and live[0]) or os.environ.get("ITERM_PROFILE") or "Default"
     print(f"iTerm2 profile: {profile}")
     lock = lock_demo_root()  # noqa: F841 - held until exit; the tabs' run.py skip it
-    with tempfile.TemporaryDirectory(prefix="pcode-tabs-") as tmp:
+    with (
+        scaled_profile(profile, args.font_size) as active_profile,
+        tempfile.TemporaryDirectory(prefix="pcode-tabs-") as tmp,
+    ):
         ready = Path(tmp)
         go = ready / "go"
         commands = []
@@ -119,7 +187,7 @@ def main() -> None:
             commands.append(f"/bin/sh {script}")
         window, servers = None, []
         try:
-            window = open_window(commands, profile, columns, rows)
+            window = open_window(commands, active_profile, columns, rows)
             time.sleep(1)
             go.touch()
             deadline = time.monotonic() + TIMEOUT

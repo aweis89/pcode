@@ -164,12 +164,13 @@ def frame_shade(background: str, theme: str) -> str:
     """A shade lifted off `background` toward the theme's contrast.
 
     Mixed from the terminal's actual background rather than fixed, so the box
-    reads as a gentle step up on any scheme. Light backgrounds need a smaller
-    step: the eye picks out darkening sooner than lightening.
+    reads as a clear step on any scheme. Dark backgrounds need a larger RGB
+    mix than light ones: near black, sRGB compression makes small linear steps
+    nearly invisible.
     """
     if theme == "light":
-        return _mix(background, "#000000", 0.045)
-    return _mix(background, "#ffffff", 0.06)
+        return _mix(background, "#000000", 0.055)
+    return _mix(background, "#ffffff", 0.125)
 
 
 @cache
@@ -177,16 +178,15 @@ def header_shade(background: str, theme: str) -> str:
     """The editor's header block: a step darker than the box, much the same
     step to the eye on either theme.
 
-    Dark, halfway back to the background, so the step scales with the box's
-    own lift: a fixed share of the shade all but vanished there (three of
-    255 levels on a typical dark scheme, one on black). Light, a small
-    share toward black, about as far as the dark step looks; the box's own
-    share overdid it, reading as a stripe rather than a header.
+    Dark, roughly halfway back to the background, so all three zones
+    (scrollback, header/thinking, tasks/editor) keep roughly even perceptual
+    separation from pure black through mid-dark schemes. Light, a step further
+    toward black than the box.
     """
     shade = frame_shade(background, theme)
     if theme == "light":
-        return _mix(shade, "#000000", 0.028)
-    return _mix(shade, background, 0.5)
+        return _mix(shade, "#000000", 0.045)
+    return _mix(shade, background, 0.48)
 
 
 @dataclass(frozen=True)
@@ -503,7 +503,7 @@ TERMINAL_THEME = Theme(
     {
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
-        "pcode.muted": "default",
+        "pcode.muted": "dim default",
         "pcode.note": "italic dim default",
         "pcode.thinking": "dim default",
         "pcode.error": "bold red",
@@ -520,7 +520,7 @@ TERMINAL_THEME = Theme(
         "markdown.h5": "italic",
         "markdown.h6": "italic",
         "markdown.h7": "italic",
-        "markdown.hr": "default",
+        "markdown.hr": "dim default",
         "markdown.link": "underline blue",
         "markdown.link_url": "underline blue",
         "markdown.table.border": "cyan",
