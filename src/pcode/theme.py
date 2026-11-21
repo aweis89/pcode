@@ -76,7 +76,8 @@ def _take_glide_reply(response: bytearray) -> None:
 
     match = smooth_scroll.REPLY.search(response)
     if match is not None:
-        _glide_protocol = int(match[1])
+        version = smooth_scroll.VERSION.fullmatch(match[1])
+        _glide_protocol = int(version[1]) if version else None
         del response[match.start() : match.end()]
 
 

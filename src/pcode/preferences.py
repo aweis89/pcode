@@ -536,7 +536,7 @@ SETTINGS = {
         "off",
         ("auto", "off"),
         description="Experimental: glide new rows into view; auto uses it in terminals that "
-        "answer for it (a patched Ghostty) and needs paced_scrollback on",
+        "answer for it (a patched Ghostty) and needs paced_scrollback not off",
     ),
     "show_edits": Setting(
         "on",

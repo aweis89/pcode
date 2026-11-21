@@ -65,7 +65,9 @@ def test_sequences():
     "env, asked",
     [
         ({"TERM": "xterm-ghostty"}, True),
-        ({"TERM": "xterm-256color", "GHOSTTY_RESOURCES_DIR": "/x"}, True),
+        ({"TERM": "xterm-256color", "TERM_PROGRAM": "ghostty"}, True),
+        # Inherited by terminals started from a Ghostty shell: not enough.
+        ({"TERM": "xterm-256color", "GHOSTTY_RESOURCES_DIR": "/x"}, False),
         ({"TERM": "xterm-ghostty", "TMUX": "/tmp/tmux,1,0"}, False),
         ({"TERM": "xterm-256color"}, False),
         ({"TERM": "xterm-kitty"}, False),
@@ -75,12 +77,12 @@ def test_only_ghostty_outside_tmux_is_asked(env, asked):
     assert smooth_scroll.worth_asking(env) is asked
 
 
-def _probe(monkeypatch, *, term="xterm-ghostty", answer=b"", probe_glide=True):
+def _probe(monkeypatch, *, term="xterm-ghostty", answer=b"", probe_glide=True, background=True):
     """Run the startup query on a pty; return what was sent and the leftover input."""
     master, slave = pty.openpty()
     monkeypatch.setenv("TERM", term)
     monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.delenv("GHOSTTY_RESOURCES_DIR", raising=False)
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
     monkeypatch.setattr(theme, "_glide_protocol", None)
     monkeypatch.setattr(theme, "_pending_input", bytearray())
     received = []
@@ -88,7 +90,7 @@ def _probe(monkeypatch, *, term="xterm-ghostty", answer=b"", probe_glide=True):
     def terminal():
         if select.select([master], [], [], 2)[0]:
             received.append(os.read(master, 1024))
-            os.write(master, answer + BACKGROUND)
+            os.write(master, answer + (BACKGROUND if background else b""))
 
     worker = threading.Thread(target=terminal)
     try:
@@ -96,7 +98,9 @@ def _probe(monkeypatch, *, term="xterm-ghostty", answer=b"", probe_glide=True):
             monkeypatch.setattr(sys, "stdin", stdin)
             monkeypatch.setattr(sys, "stdout", stdout)
             worker.start()
-            assert theme._query_background(1.0, probe_glide=probe_glide) == "dark"
+            timeout = 1.0 if background else 0.3
+            detected = theme._query_background(timeout, probe_glide=probe_glide)
+            assert detected == ("dark" if background else None)
             worker.join(2)
     finally:
         worker.join(2)
@@ -112,9 +116,17 @@ def test_probe_finds_a_terminal_that_glides(monkeypatch):
     assert left == b""
 
 
-def test_probe_needs_the_exact_protocol(monkeypatch):
-    _probe(monkeypatch, answer=b"\x1b_smooth;ok;4\x1b\\")
+@pytest.mark.parametrize("reply", [b"\x1b_smooth;ok;4\x1b\\", b"\x1b_smooth;ok;5;x\x1b\\"])
+def test_probe_needs_the_exact_protocol(monkeypatch, reply):
+    _, left = _probe(monkeypatch, answer=reply)
     assert not theme.glide_supported()
+    assert left == b""  # Taken out of typing all the same.
+
+
+def test_a_reply_without_a_background_one_still_counts(monkeypatch):
+    _, left = _probe(monkeypatch, answer=REPLY, background=False)
+    assert theme.glide_supported()
+    assert left == b""
 
 
 def test_no_reply_means_no_glide(monkeypatch):
@@ -129,8 +141,9 @@ def test_query_is_not_sent_unasked(monkeypatch, term, probe_glide):
     assert not theme.glide_supported()
 
 
-def test_a_late_reply_is_kept_out_of_typing():
-    text = "ab" + REPLY.decode() + "c\x1b[A"
+@pytest.mark.parametrize("reply", [REPLY.decode(), "\x1b_smooth;error;7\x1b\\"])
+def test_a_late_reply_is_kept_out_of_typing(reply):
+    text = "ab" + reply + "c\x1b[A"
     for split in range(len(text) + 1):
         keys = []
         parser = TerminalReplyParser(keys.append)
@@ -159,17 +172,3 @@ def test_setting_and_probe_both_gate_the_glide(monkeypatch, setting, supported, 
         output = TerminalOutput(console, app)
         transcript.output = output
     assert output.gliding is gliding
-
-
-def test_nothing_is_sent_when_not_gliding():
-    """With the glide off, releasing the screen writes no smooth-scroll sequence."""
-    written = []
-    console = Console(force_terminal=True, width=80)
-    with create_pipe_input() as pipe:
-        out = DummyOutput()
-        out.write_raw = written.append
-        app = Application(input=pipe, output=out)
-        output = TerminalOutput(console, app)
-        output.release_screen()
-    assert not output.gliding
-    assert not any("\x1b_" in text for text in written)

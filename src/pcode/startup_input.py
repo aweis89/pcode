@@ -12,13 +12,13 @@ from prompt_toolkit.input.vt100_parser import Vt100Parser
 # An OSC 11 background reply, a mode 2031 color-scheme report (1 dark, 2 light),
 # or a smooth-scroll reply the startup probe gave up waiting for (`pcode.theme`).
 _REPLY = re.compile(
-    r"\x1b\]11;[^\x07\x1b]{0,64}(?:\x07|\x1b\\)|\x1b\[\?997;([12])n|(\x1b_smooth;ok;\d{1,4}\x1b\\)"
+    r"\x1b\]11;[^\x07\x1b]{0,64}(?:\x07|\x1b\\)|\x1b\[\?997;([12])n|(\x1b_smooth;[^\x07\x1b]{0,32}\x1b\\)"
 )
 # A tail that may still become one of those: held until the next read. Only
 # characters a color reply contains, so typing after a truncated reply is
 # released at its first keystroke instead of being held for the flush to drop.
 _OPEN = re.compile(
-    r"\x1b\]11;[0-9A-Fa-f:/rgb]{0,40}\x1b?|\x1b\[\?997;[12]?|\x1b_smooth;(?:o|ok|ok;\d{0,4}\x1b?)?"
+    r"\x1b\]11;[0-9A-Fa-f:/rgb]{0,40}\x1b?|\x1b\[\?997;[12]?|\x1b_smooth;[a-z0-9;]{0,32}\x1b?"
 )
 _HEADERS = ("\x1b]11;", "\x1b[?997;", "\x1b_smooth;")
 # A cursor position report, and a tail that may still become one.

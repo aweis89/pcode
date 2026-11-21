@@ -29,7 +29,10 @@ CATCH_UP_SECONDS = 3.0
 # no-overscan flag. Exact, since `Glide` mirrors the terminal's spring.
 PROTOCOL = 5
 QUERY = b"\x1b_smooth;?\x1b\\"
-REPLY = re.compile(rb"\x1b_smooth;ok;(\d{1,4})\x1b\\")
+# Any smooth-scroll reply, so a future shape is still kept out of typing; only
+# `ok;N` with N == PROTOCOL turns the glide on.
+REPLY = re.compile(rb"\x1b_smooth;([^\x1b\x07]{0,32})\x1b\\")
+VERSION = re.compile(rb"ok;(\d{1,4})")
 
 # Region ids are per app; any constants will do. The transcript region, and
 # the live panel's rows above a row just added to it.
@@ -110,7 +113,8 @@ def worth_asking(env=os.environ) -> bool:
     """
     if env.get("TMUX"):
         return False
-    return env.get("TERM") == "xterm-ghostty" or bool(env.get("GHOSTTY_RESOURCES_DIR"))
+    # Not GHOSTTY_RESOURCES_DIR: terminals started from a Ghostty shell inherit it.
+    return env.get("TERM") == "xterm-ghostty" or env.get("TERM_PROGRAM") == "ghostty"
 
 
 def declaration(bottom: int, columns: int) -> str:
