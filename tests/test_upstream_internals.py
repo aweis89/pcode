@@ -42,6 +42,7 @@ PRIVATE_IMPORTS = {
     ("pydantic_ai_harness.repo_context._loader", "ContextFile"),
     ("pydantic_ai_harness.repo_context._loader", "context_file_label"),
     ("pydantic_ai_harness.repo_context._loader", "discover_instruction_files"),
+    ("pydantic_ai_harness.repo_context._loader", "render_context_files"),
     ("pydantic_ai_harness.shell._policy", "recoverable"),
     ("pydantic_ai_harness.sub_agents._toolset", "_Ended"),
 }

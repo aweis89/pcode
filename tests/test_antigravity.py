@@ -3397,3 +3397,261 @@ def test_system_prompt_append_skipped_for_side_worker_and_unadvertised(
     assert len(new_calls) == 3
     for call in new_calls:
         assert "_meta" not in call["params"]
+
+
+def test_session_new_appends_ancestor_and_non_native_repo_instructions(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pydantic_ai.capabilities import LocalWorkspace
+
+    from pcode.repo_context import create_repo_context
+
+    home = tmp_path / "home"
+    parent = home / "work"
+    repo = parent / "repo"
+    sub = repo / "pkg"
+    (repo / ".git").mkdir(parents=True)
+    sub.mkdir(parents=True)
+
+    (home / "AGENTS.md").write_text("HOME_AGENTS_RULE\n", encoding="utf-8")
+    (parent / "AGENTS.md").write_text("PARENT_AGENTS_RULE\n", encoding="utf-8")
+    (repo / "AGENTS.md").write_text("REPO_AGENTS_RULE\n", encoding="utf-8")
+    (repo / "CLAUDE.md").write_text("REPO_CLAUDE_RULE\n", encoding="utf-8")
+    (repo / "AGENTS.local.md").write_text("REPO_LOCAL_RULE\n", encoding="utf-8")
+    (sub / "AGENTS.md").write_text("SUB_AGENTS_RULE\n", encoding="utf-8")
+    # Identical copy of an AGENTS.md that agy loads natively should not be duplicated.
+    (sub / "CLAUDE.md").write_text("SUB_AGENTS_RULE\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(
+        "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "on"}
+    )
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-neon"),
+            model_settings={CWD_SETTING: str(sub)},
+            capabilities=[LocalWorkspace(sub), create_repo_context(sub)],
+        )
+        await streamed(agent, "hello")
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 1
+    append = new_calls[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "HOME_AGENTS_RULE" in append
+    assert "PARENT_AGENTS_RULE" in append
+    assert "REPO_CLAUDE_RULE" in append
+    assert "REPO_LOCAL_RULE" in append
+    # Repo and subdir AGENTS.md (plus identical CLAUDE.md) are loaded natively by agy.
+    assert "REPO_AGENTS_RULE" not in append
+    assert "SUB_AGENTS_RULE" not in append
+    # Ancestor-first order is preserved.
+    assert append.index("HOME_AGENTS_RULE") < append.index("PARENT_AGENTS_RULE")
+    assert append.index("PARENT_AGENTS_RULE") < append.index("REPO_CLAUDE_RULE")
+    assert append.index("REPO_CLAUDE_RULE") < append.index("REPO_LOCAL_RULE")
+
+
+def test_session_new_repo_instructions_respect_walk_up_off_and_worktree_dedupe(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pydantic_ai.capabilities import LocalWorkspace
+
+    from pcode.repo_context import create_repo_context
+
+    home = tmp_path / "home"
+    mainline = home / "repo"
+    wt = mainline / ".worktrees" / "feat"
+    (mainline / ".git").mkdir(parents=True)
+    wt.mkdir(parents=True)
+    # Worktree .git is a file, not a directory.
+    (wt / ".git").write_text("gitdir: ../../.git/worktrees/feat\n", encoding="utf-8")
+
+    (home / "AGENTS.md").write_text("HOME_RULE\n", encoding="utf-8")
+    (mainline / "AGENTS.md").write_text("SHARED_REPO_RULE\n", encoding="utf-8")
+    (mainline / "AGENTS.local.md").write_text("MAINLINE_LOCAL_RULE\n", encoding="utf-8")
+    (wt / "AGENTS.md").write_text("SHARED_REPO_RULE\n", encoding="utf-8")
+    (wt / "CLAUDE.local.md").write_text("WT_LOCAL_RULE\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+    async def go():
+        monkeypatch.setattr(
+            "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "on"}
+        )
+        await streamed(
+            Agent(
+                AntigravityModel("fake-neon"),
+                model_settings={CWD_SETTING: str(wt)},
+                capabilities=[LocalWorkspace(wt), create_repo_context(wt)],
+            ),
+            "hello",
+        )
+        monkeypatch.setattr(
+            "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "off"}
+        )
+        await streamed(
+            Agent(
+                AntigravityModel("fake-neon"),
+                model_settings={CWD_SETTING: str(wt)},
+                capabilities=[LocalWorkspace(wt), create_repo_context(wt)],
+            ),
+            "hello",
+        )
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 2
+
+    walk_on = new_calls[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "HOME_RULE" in walk_on
+    assert "MAINLINE_LOCAL_RULE" in walk_on
+    assert "WT_LOCAL_RULE" in walk_on
+    # Neither the worktree's nor mainline's identical AGENTS.md is duplicated.
+    assert "SHARED_REPO_RULE" not in walk_on
+
+    walk_off = new_calls[1]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "HOME_RULE" not in walk_off
+    assert "MAINLINE_LOCAL_RULE" not in walk_off
+    assert "SHARED_REPO_RULE" not in walk_off
+    assert "WT_LOCAL_RULE" in walk_off
+
+
+def test_session_new_repo_instructions_outside_git_repo(fake_agy, tmp_path, monkeypatch):
+    from pydantic_ai.capabilities import LocalWorkspace
+
+    from pcode.repo_context import create_repo_context
+
+    home = tmp_path / "home"
+    scratch = home / "scratch"
+    scratch.mkdir(parents=True)
+    (home / "AGENTS.md").write_text("HOME_OUTSIDE_GIT\n", encoding="utf-8")
+    (scratch / "AGENTS.md").write_text("SCRATCH_LOCAL_AGENTS\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(
+        "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "on"}
+    )
+
+    async def go():
+        await streamed(
+            Agent(
+                AntigravityModel("fake-neon"),
+                model_settings={CWD_SETTING: str(scratch)},
+                capabilities=[LocalWorkspace(scratch), create_repo_context(scratch)],
+            ),
+            "hello",
+        )
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 1
+    append = new_calls[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "HOME_OUTSIDE_GIT" in append
+    assert "SCRATCH_LOCAL_AGENTS" not in append
+
+
+def test_session_new_repo_instructions_symlinks_gemini_all_native_and_combined(
+    fake_agy, tmp_path, monkeypatch
+):
+    from pydantic_ai.capabilities import CombinedCapability, LocalWorkspace
+
+    from pcode.repo_context import create_repo_context
+
+    home = tmp_path / "home"
+    # 1. Repo with only native AGENTS.md + CLAUDE.md -> AGENTS.md symlink + GEMINI.md copy.
+    native_only = home / "native_only"
+    (native_only / ".git").mkdir(parents=True)
+    (native_only / "AGENTS.md").write_text("NATIVE_AGENTS\n", encoding="utf-8")
+    (native_only / "CLAUDE.md").symlink_to("AGENTS.md")
+    (native_only / "GEMINI.md").write_text("NATIVE_GEMINI\n", encoding="utf-8")
+    (native_only / "AGENTS.local.md").write_text("NATIVE_GEMINI\n", encoding="utf-8")
+
+    # 2. CombinedCapability wiring + multi-turn reuse when AGENTS.local.md changes.
+    combined_repo = home / "combined"
+    (combined_repo / ".git").mkdir(parents=True)
+    (home / "AGENTS.md").write_text("HOME_COMBINED\n", encoding="utf-8")
+    (combined_repo / "AGENTS.local.md").write_text("LOCAL_V1\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(
+        "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "on"}
+    )
+
+    async def go():
+        # All-native repo (with no home AGENTS.md yet? Remove temporarily via walk_up=off).
+        monkeypatch.setattr(
+            "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "off"}
+        )
+        await streamed(
+            Agent(
+                AntigravityModel("fake-neon"),
+                model_settings={CWD_SETTING: str(native_only)},
+                capabilities=[LocalWorkspace(native_only), create_repo_context(native_only)],
+            ),
+            "hello",
+        )
+        monkeypatch.setattr(
+            "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "on"}
+        )
+        agent = Agent(
+            AntigravityModel("fake-neon"),
+            model_settings={CWD_SETTING: str(combined_repo)},
+            capabilities=[
+                LocalWorkspace(combined_repo),
+                CombinedCapability([create_repo_context(combined_repo)]),
+            ],
+        )
+        first = await streamed(agent, "turn 1")
+        # Editing AGENTS.local.md mid-session must not drop/recreate the live agy session.
+        (combined_repo / "AGENTS.local.md").write_text("LOCAL_V2\n", encoding="utf-8")
+        await streamed(agent, "turn 2", history=first.all_messages())
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 2
+
+    native_append = new_calls[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "<context-file" not in native_append
+    assert "NATIVE_AGENTS" not in native_append
+    assert "NATIVE_GEMINI" not in native_append
+
+    combined_append = new_calls[1]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "HOME_COMBINED" in combined_append
+    assert "LOCAL_V1" in combined_append
+
+
+def test_worker_session_forwards_only_non_native_repo_instructions(fake_agy, tmp_path, monkeypatch):
+    from pydantic_ai.capabilities import LocalWorkspace
+
+    from pcode.agent import PCODE_CLIENT_INSTRUCTIONS
+    from pcode.repo_context import create_repo_context
+
+    home = tmp_path / "home"
+    repo = home / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (home / "AGENTS.md").write_text("HOME_WORKER_RULE\n", encoding="utf-8")
+    (repo / "AGENTS.md").write_text("REPO_NATIVE_RULE\n", encoding="utf-8")
+    (repo / "AGENTS.local.md").write_text("REPO_WORKER_LOCAL\n", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(
+        "pcode.repo_context.load_preferences", lambda: {"repo_context_walk_up": "on"}
+    )
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-neon", worker=True),
+            model_settings={CWD_SETTING: str(repo)},
+            capabilities=[LocalWorkspace(repo), create_repo_context(repo)],
+        )
+        await streamed(agent, "hello")
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 1
+    append = new_calls[0]["params"]["_meta"]["antigravity"]["systemPrompt"]["append"]
+    assert "HOME_WORKER_RULE" in append
+    assert "REPO_WORKER_LOCAL" in append
+    assert "REPO_NATIVE_RULE" not in append
+    assert PCODE_CLIENT_INSTRUCTIONS not in append

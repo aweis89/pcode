@@ -867,8 +867,12 @@ for what pcode sends and spawns via `agy acp`. Traps found while building it:
   `agentCapabilities._meta.antigravity.systemPrompt.append: true`. When
   present, main conversational `session/new` requests pass
   `_meta.antigravity.systemPrompt.append` with pcode's concise terminal/extension
-  instructions (plus delegation and `/advisor` notes when active), leaving side
-  sessions and delegated workers untouched.
+  instructions, any discovered repository instruction files `agy` does not load
+  natively (ancestor files above the git root such as `~/AGENTS.md`, plus
+  `CLAUDE.md`, `CLAUDE.local.md`, and `AGENTS.local.md`), and delegation or
+  `/advisor` notes when active. Delegated workers and `/btw` side sessions with
+  `AutomaticRepoContext` forward only the non-native repository instruction
+  files, leaving plain side completions untouched.
 - `agy` keeps working after a turn ends: a background command or schedule may
   stay `in_progress` across `session/prompt` settlement (held open until
   active non-daemon tools finish and the follow-up's `usage_update` + quiet

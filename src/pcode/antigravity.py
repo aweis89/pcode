@@ -1107,7 +1107,11 @@ class AntigravityModel(Model):
                 )
             else:
                 session, replay = await self._prepare(
-                    earlier, _asked(interrupted), cwd, prompt_bytes=_text_bytes(prompt)
+                    earlier,
+                    _asked(interrupted),
+                    cwd,
+                    prompt_bytes=_text_bytes(prompt),
+                    run_context=run_context,
                 )
                 await self._apply_effort(session, effort)
                 if not (self._side or self._worker):
@@ -1318,6 +1322,7 @@ class AntigravityModel(Model):
         cwd: str,
         *,
         prompt_bytes: int = 0,
+        run_context: RunContext[Any] | None = None,
     ) -> tuple[_Session, list[dict]]:
         """The session to prompt, and any replay to send before the new prompt.
 
@@ -1380,12 +1385,15 @@ class AntigravityModel(Model):
                 params: dict[str, Any] = {"cwd": cwd, "mcpServers": servers}
                 # Sent on session/new only: agy keeps the appended prompt for the
                 # session's lifetime (not updated on session/resume).
-                if (
-                    connection.supports_system_prompt_append
-                    and self.tools is not None
-                    and (append := self.tools.system_prompt_append())
-                ):
-                    params["_meta"] = {"antigravity": {"systemPrompt": {"append": append}}}
+                if connection.supports_system_prompt_append:
+                    if self.tools is not None:
+                        append: str | None = self.tools.system_prompt_append()
+                    else:
+                        from pcode.antigravity_tools import repo_context_instructions
+
+                        append = repo_context_instructions(run_context)
+                    if append:
+                        params["_meta"] = {"antigravity": {"systemPrompt": {"append": append}}}
                 result = await connection.request("session/new", params)
             _remember_models(result)
             session_id = result["sessionId"]

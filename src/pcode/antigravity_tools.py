@@ -358,19 +358,33 @@ def _bridge_instructions(ctx: RunContext[Any], exposed: list[str]) -> str:
     return "\n\n".join(dict.fromkeys(parts))
 
 
+def repo_context_instructions(ctx: RunContext[Any] | None) -> str | None:
+    """Repository instruction files pcode discovered that `agy` does not load natively."""
+    if ctx is None:
+        return None
+    from pcode.context_breakdown import REPO_CONTEXT
+
+    capability = (ctx.capabilities or {}).get(REPO_CONTEXT)
+    render = getattr(capability, "instructions_for_antigravity", None)
+    return render() if callable(render) else None
+
+
 def _system_prompt_append(ctx: RunContext[Any] | None) -> str:
     """Concise pcode-specific instructions appended to `agy`'s system prompt on `session/new`."""
     from pcode.agent import PCODE_CLIENT_INSTRUCTIONS
 
     parts: list[str] = [PCODE_CLIENT_INSTRUCTIONS]
-    if ctx is not None and ctx.tool_manager is not None:
-        exposed = _exposed_names(ctx)
-        if "delegate_task" in exposed:
-            parts.append(DELEGATION_PROMPT_NOTE)
-        if "advisor" in exposed:
-            for cap_id, capability in (ctx.capabilities or {}).items():
-                if cap_id in ("advisor", "advisor_guidance"):
-                    parts.extend(_capability_instructions(capability, ctx))
+    if ctx is not None:
+        if repo := repo_context_instructions(ctx):
+            parts.append(repo)
+        if ctx.tool_manager is not None:
+            exposed = _exposed_names(ctx)
+            if "delegate_task" in exposed:
+                parts.append(DELEGATION_PROMPT_NOTE)
+            if "advisor" in exposed:
+                for cap_id, capability in (ctx.capabilities or {}).items():
+                    if cap_id in ("advisor", "advisor_guidance"):
+                        parts.extend(_capability_instructions(capability, ctx))
     return "\n\n".join(dict.fromkeys(parts))
 
 

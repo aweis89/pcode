@@ -18,6 +18,7 @@ from pydantic_ai_harness.repo_context._loader import (
     ContextFile,
     context_file_label,
     discover_instruction_files,
+    render_context_files,
 )
 
 from pcode.context_breakdown import REPO_CONTEXT
@@ -56,6 +57,35 @@ async def discover_every_instruction_file(
             seen.add(digest)
             files.append(file)
     return files
+
+
+_NATIVE_AGY_FILENAMES = ("AGENTS.md", "GEMINI.md")
+
+
+def _native_agy_dirs(working_dir: Path) -> list[Path]:
+    """Directories whose rules `agy acp` loads natively (CWD up to the git root)."""
+    chain: list[Path] = []
+    for directory in (working_dir, *working_dir.parents):
+        chain.append(directory)
+        if (directory / ".git").exists():
+            return chain
+    # Outside a git repository, `agy` only loads rules from the workspace root itself.
+    return [working_dir]
+
+
+def _native_agy_rule_hashes(native_dirs: list[Path]) -> set[str]:
+    """Content hashes of rule files (`AGENTS.md`, `GEMINI.md`) that `agy acp` loads natively."""
+    hashes: set[str] = set()
+    for directory in native_dirs:
+        for name in _NATIVE_AGY_FILENAMES:
+            candidate = directory / name
+            try:
+                if candidate.is_file():
+                    content = candidate.read_bytes().decode("utf-8", errors="replace")
+                    hashes.add(hashlib.sha256(content.encode("utf-8")).hexdigest())
+            except OSError:
+                continue
+    return hashes
 
 
 @dataclass
@@ -136,6 +166,33 @@ class AutomaticRepoContext(RepoContext):
         """What the model is told, once instructions and inventory are loaded."""
         parts = (self._render_instructions(), self._inventory_context)
         return "\n\n".join(part for part in parts if part) or None
+
+    def instructions_for_antigravity(self) -> str | None:
+        """Render discovered instruction files that `agy acp` does not load natively.
+
+        `agy acp` walks from the working directory up to the git root loading
+        `AGENTS.md` and `GEMINI.md`, so it misses ancestor files above the repo
+        root (such as `~/AGENTS.md`) as well as `CLAUDE.md`, `CLAUDE.local.md`,
+        and `AGENTS.local.md`. Filter out any file `agy` already loads — both
+        `AGENTS.md` in its walk range and any file with identical content (e.g.
+        a `CLAUDE.md -> AGENTS.md` or `GEMINI.md` symlink, or a parent mainline
+        copy when running in a `.worktrees/` checkout). Because ACP only exposes
+        `systemPrompt.append`, forwarded files land after `agy`'s native rules.
+        """
+        if not self._context_files or self._cached_working_dir is None:
+            return None
+        native_dirs = _native_agy_dirs(self._cached_working_dir)
+        native_dir_set = set(native_dirs)
+        native_hashes = _native_agy_rule_hashes(native_dirs)
+        extra = [
+            file
+            for file in self._context_files
+            if not (file.directory in native_dir_set and file.path.name == "AGENTS.md")
+            and hashlib.sha256(file.content.encode("utf-8")).hexdigest() not in native_hashes
+        ]
+        if not extra:
+            return None
+        return render_context_files(extra, relative_to=self._cached_working_dir)
 
     def preload(self) -> "AutomaticRepoContext":
         """Load `root` as `before_run` would, outside a run; returns self.
