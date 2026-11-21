@@ -2120,6 +2120,7 @@ class TerminalOutput:
         # the region last sent and when (None: cleared).
         self.smooth = False
         self._glide_pacer = smooth_scroll.Pacer()
+        self._glide = smooth_scroll.Glide()
         self._declared: tuple[tuple[int, int], float] | None = None
 
     def regenerate(self, replay) -> None:
@@ -2417,10 +2418,13 @@ class TerminalOutput:
                 if self._queue():
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.rows:
-                    due, typed = self._advance()
-                if self.smooth:
-                    due, typed = self._glide_limit(due, typed)
+                if self.smooth and self._typing_held():
+                    due, typed = 0, self._typed
+                else:
+                    if self.rows:
+                        due, typed = self._advance()
+                    if self.smooth:
+                        due, typed = self._glide_limit(due, typed)
                 if not due and typed != self._typed:
                     self._typed = typed
                     self.app.invalidate()
@@ -2483,6 +2487,7 @@ class TerminalOutput:
                             # Same frame as the rows: the terminal draws the
                             # region that much lower and springs it back.
                             self.app.output.write_raw(smooth_scroll.advance(scrolled))
+                            self._glide.advance(scrolled, monotonic())
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
             if self.rows:
@@ -2490,6 +2495,19 @@ class TerminalOutput:
                 self.changed.set()
             else:
                 self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
+
+    def _typing_held(self) -> bool:
+        """Whether the next typed row waits for the glide to bring its row into view.
+
+        The typing row glides with the transcript, so just after a scroll it
+        sits partly below the visible rows. Rows that roll in whole are not
+        held: arriving from below is how they are meant to appear.
+        """
+        return (
+            bool(self.rows)
+            and self.rows[0].typed
+            and self._glide.remaining(monotonic()) > smooth_scroll.TYPE_WHEN_GLIDE_UNDER
+        )
 
     def _glide_limit(self, due: int, typed: int) -> tuple[int, int]:
         """Hold this frame's reveal to the glide's row rate.
