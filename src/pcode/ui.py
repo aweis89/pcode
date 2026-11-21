@@ -2125,6 +2125,9 @@ class TerminalOutput:
         # after the last render; and whether that render was a handoff's, whose
         # scroll `flush` already sent.
         self._last_layout: tuple[int, bool] | None = None
+        # Each drawn window's top and bottom row, counted up from the screen's
+        # bottom edge (its last row is 1), after the last render.
+        self._last_spans: dict[int, tuple[int, int]] = {}
         self._handoff_render = False
         self._declared: tuple[tuple[int, int], float] | None = None
 
@@ -2653,15 +2656,48 @@ class TerminalOutput:
         handoff, self._handoff_render = self._handoff_render, False
         if screen is None or app.renderer._in_alternate_screen or self.view is not None:
             self._last_layout = None
+            self._last_spans = {}
             return
         pinned = self._editor_pinned()
         last, self._last_layout = self._last_layout, (screen.height, pinned)
+        spans = {
+            id(window): (screen.height - pos.ypos, screen.height - pos.ypos - pos.height + 1)
+            for window, pos in screen.visible_windows_to_write_positions.items()
+            if pos.height > 0
+        }
+        last_spans, self._last_spans = self._last_spans, spans
         if handoff or last is None or not (pinned and last[1]):
             return
         grown = screen.height - last[0]
-        if grown > 0 and self._declared is not None:
-            app.output.write_raw(smooth_scroll.advance(grown))
-            self._glide.advance(grown, monotonic())
+        if grown <= 0 or self._declared is None:
+            return
+        app.output.write_raw(smooth_scroll.advance(grown))
+        self._glide.advance(grown, monotonic())
+        self._glide_panel(app, screen.height, grown, spans, last_spans)
+
+    def _glide_panel(self, app, height: int, grown: int, spans, last_spans) -> None:
+        """Glide the live panel's rows above the ones just added, and those rows in.
+
+        Everything above the new rows moved up ``grown``; everything below
+        them (the status line, the editor) stayed. The new rows end at the
+        lowest window that is new or whose top rose by ``grown``. The panel
+        region runs from under the transcript region's hidden row to there.
+        """
+        risen = [
+            bottom
+            for window, (top, bottom) in spans.items()
+            if window not in last_spans or last_spans[window][0] + grown == top
+        ]
+        if not risen:
+            return
+        rows = app.output.get_size().rows
+        last_row = rows - min(risen)
+        first_row = rows - height + 2  # below the typing row and the hidden row
+        if last_row < first_row:
+            return
+        columns = app.output.get_size().columns
+        app.output.write_raw(smooth_scroll.panel_declaration(first_row, last_row, columns))
+        app.output.write_raw(smooth_scroll.advance(grown, smooth_scroll.PANEL_ID))
 
     async def run(self) -> None:
         if not self.smooth or not isinstance(self.app, Application):

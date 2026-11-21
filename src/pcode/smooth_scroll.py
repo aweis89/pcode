@@ -23,9 +23,11 @@ MIN_ROWS_PER_SECOND = 5.0
 MAX_ROWS_PER_SECOND = float(os.environ.get("PCODE_SMOOTH_SCROLL_MAX_RATE") or 10)
 CATCH_UP_SECONDS = 3.0
 
-# Region ids are per app; any constant will do.
+# Region ids are per app; any constants will do. The transcript region, and
+# the live panel's rows above a row just added to it.
 REGION_ID = 7
-OFF = f"\x1b_smooth;off;{REGION_ID}\x1b\\"
+PANEL_ID = 8
+OFF = f"\x1b_smooth;off;{REGION_ID}\x1b\\\x1b_smooth;off;{PANEL_ID}\x1b\\"
 
 
 # The terminal's glide spring (Ghostty Smooth's `Smooth.glide_stiffness` and
@@ -105,6 +107,16 @@ def declaration(bottom: int, columns: int) -> str:
     return f"\x1b_smooth;{REGION_ID};0;{bottom};0;{columns - 1};0;0\x1b\\"
 
 
-def advance(rows: int) -> str:
+def panel_declaration(top: int, bottom: int, columns: int) -> str:
+    """Live panel rows ``top`` to ``bottom`` (0-based), all visible.
+
+    The no-overscan flag (bit 0 of the last field) keeps ``bottom`` drawn:
+    it is the row just added, with the status line right under it, so there
+    is no blank row to hide. Rows glided below it are clipped at its edge.
+    """
+    return f"\x1b_smooth;{PANEL_ID};{top};{bottom};0;{columns - 1};0;0;1\x1b\\"
+
+
+def advance(rows: int, region: int = REGION_ID) -> str:
     """The region's content just moved up ``rows`` rows: glide it in."""
-    return f"\x1b_smooth;advance;{REGION_ID};{rows}\x1b\\"
+    return f"\x1b_smooth;advance;{region};{rows}\x1b\\"
