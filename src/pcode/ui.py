@@ -2364,7 +2364,9 @@ class TerminalOutput:
         self._skipped = 0
         backlog = sum(row.visible for row in self.rows if row.typed) - self._typed
         self._type_rate = max(
-            self._type_rate, TYPED_CHARS_PER_STEP, -(-backlog // TYPED_DRAIN_STEPS)
+            self._type_rate,
+            smooth_scroll.TYPED_CHARS_PER_STEP if self.smooth else TYPED_CHARS_PER_STEP,
+            -(-backlog // TYPED_DRAIN_STEPS),
         )
         rows, chars, typed = self._reveal_rate, self._type_rate, self._typed
         due = 0
