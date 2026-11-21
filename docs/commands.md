@@ -486,7 +486,7 @@ the row still says what the turn is doing. Each row holds what it says for a mom
 quick calls reads as progress rather than flicker. `◈` marks work pcode runs
 itself, such as compaction.
 The thought is the model's newest, kept until its answer starts streaming;
-that is the default `/show-thinking activity-panel` mode (see
+that is the `/show-thinking activity-panel` mode (see
 [thinking](transcript.md#thinking-activity-panel-or-scrollback)).
 
 ### Tasks

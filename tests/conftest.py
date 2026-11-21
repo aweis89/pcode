@@ -217,6 +217,13 @@ def isolated_preferences(monkeypatch, tmp_path, request):
         "group_tools",
         replace_setting(preferences.SETTINGS["group_tools"], default="off"),
     )
+    # Scrollback is the shipped default, but most layout and model-settings tests
+    # assert on the activity-panel thought row and on no thinking budget.
+    monkeypatch.setitem(
+        preferences.SETTINGS,
+        "show_thinking",
+        replace_setting(preferences.SETTINGS["show_thinking"], default="activity-panel"),
+    )
     # Existing UI tests exercise Ctrl chords. Keep the real default available
     # to regressions requesting shipped_key_prefix, without adding a saved
     # preference to tests that assert on the exact persistence payload.

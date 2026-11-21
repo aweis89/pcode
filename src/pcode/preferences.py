@@ -689,7 +689,7 @@ SETTINGS = {
         description="Animation on a running tool call's row (a Rich spinner name)",
     ),
     "show_thinking": Setting(
-        "activity-panel",
+        "scrollback",
         THINKING_MODES,
         description="Where the model's thinking shows: its own rows in the activity panel, "
         "streamed into scrollback, or nowhere",

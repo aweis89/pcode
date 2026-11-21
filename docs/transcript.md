@@ -118,8 +118,8 @@ the modes:
 
 | Mode | Shows |
 | --- | --- |
-| `activity-panel` (default; formerly `status-line`) | The newest thought, faded and quoted with `❝` on every row, on up to `thinking_max_lines` (default 10) rows of its own in the [activity panel](commands.md#activity-panel), under the status row |
-| `scrollback` | The full thinking, streamed into scrollback in a dim style |
+| `activity-panel` (formerly `status-line`) | The newest thought, faded and quoted with `❝` on every row, on up to `thinking_max_lines` (default 10) rows of its own in the [activity panel](commands.md#activity-panel), under the status row |
+| `scrollback` (default) | The full thinking, streamed into scrollback in a dim style |
 | `off` | Nothing, and pcode asks the provider for nothing extra (on Gemini, an `/effort` level still returns summaries) |
 
 The thinking rows stay through the tool calls that follow a thought, so a
@@ -155,7 +155,7 @@ Each mode asks the provider for the text that suits it:
   level the model offers).
 
 ```sh
-pcode config set show_thinking scrollback   # Default is activity-panel
+pcode config set show_thinking activity-panel   # Default is scrollback
 ```
 
 Switching into or out of `scrollback` saves the default and rebuilds the retained
