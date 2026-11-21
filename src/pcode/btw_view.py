@@ -17,11 +17,11 @@ What is shown lives on `Activity.btw_thread`: the thread on screen, or None.
 
 from dataclasses import dataclass
 
-from rich.markdown import Markdown
 from rich.text import Text
 
 from pcode.aside import Aside
 from pcode.conversation_tree import excerpt
+from pcode.markdown import Markdown
 from pcode.terminal_text import safe_text
 
 Entry = tuple[tuple, str, bool]

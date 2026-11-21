@@ -6,8 +6,17 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.conversation_tree import ConversationTree
-from pcode.links import Link, conversation_links, extract_links, open_link
+from pcode.links import (
+    Link,
+    conversation_links,
+    extract_links,
+    file_target,
+    is_text_file,
+    link_editor_command,
+    open_link,
+)
 from pcode.links_ui import link_rows, links_dialog
+from pcode.markdown import Markdown
 
 
 def test_extract_markdown_labels_bare_urls_and_trailing_punctuation():
@@ -295,3 +304,186 @@ def test_links_command_requests_picker_and_notes_when_empty():
         assert "No links" in output.getvalue()
 
     asyncio.run(run())
+
+
+def test_markdown_renders_file_links_as_hyperlinks_and_blocks_unsafe_schemes():
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, color_system="truecolor", width=120)
+    console.print(
+        Markdown(
+            "See [Makefile](file:///tmp/Makefile#L60-L61), "
+            "[js](javascript:alert(1)), [vb](vbscript:foo), "
+            "[html](data:text/html,hi), and [docs](https://example.com)."
+        )
+    )
+    rendered = buf.getvalue()
+    assert "\x1b]8;" in rendered
+    assert "file:///tmp/Makefile#L60-L61" in rendered
+    assert "[Makefile](" not in rendered
+    assert "[js](javascript:alert(1))" in rendered
+    assert "[vb](vbscript:foo)" in rendered
+    assert "[html](data:text/html,hi)" in rendered
+    assert "https://example.com" in rendered
+
+
+def test_extract_links_includes_file_urls():
+    text = (
+        "Check [Makefile](file:///Users/aaron/Makefile#L60-L61) + "
+        "[SKILL.md](file:///Users/aaron/SKILL.md) and bare file:///tmp/notes.txt."
+    )
+    assert extract_links(text, "assistant") == [
+        Link("file:///Users/aaron/Makefile#L60-L61", "Makefile", "assistant"),
+        Link("file:///Users/aaron/SKILL.md", "SKILL.md", "assistant"),
+        Link("file:///tmp/notes.txt", "", "assistant"),
+    ]
+
+
+def test_file_target_decodes_paths_and_line_anchors(tmp_path):
+    space_file = tmp_path / "my file.py"
+    space_file.write_text("print(1)\n")
+    assert file_target(f"file://{tmp_path}/my%20file.py#L60-L61") == (space_file, 60)
+    assert file_target(f"file://localhost{tmp_path}/my%20file.py#L12C4") == (space_file, 12)
+    assert file_target(f"file://{tmp_path}/my%20file.py#line=7") == (space_file, 7)
+    assert file_target(f"file://{tmp_path}/my%20file.py#42") == (space_file, 42)
+    assert file_target(f"file://{tmp_path}/my%20file.py#1-overview") == (space_file, None)
+    assert file_target(f"file://{tmp_path}/my%20file.py#2026-01-changelog") == (space_file, None)
+    assert file_target(f"file://{tmp_path}/my%20file.py:19:3") == (space_file, 19)
+    assert file_target("https://example.com/file.py#L10") is None
+    assert file_target("file://otherhost/tmp/file.py") is None
+
+
+def test_is_text_file_and_link_editor_command(tmp_path):
+    makefile = tmp_path / "Makefile"
+    makefile.write_text("test:\n\tpytest\n")
+    ts_file = tmp_path / "index.ts"
+    ts_file.write_text("export const x: number = 1;\n")
+    empty = tmp_path / "empty.txt"
+    empty.write_text("")
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n1 0 obj\n")
+    gzip_txt = tmp_path / "notes.txt.gz"
+    gzip_txt.write_bytes(b"\x1f\x8b\x08\x00fake")
+    control_blob = tmp_path / "ctrl.bin"
+    control_blob.write_bytes(b"\x01\x02\x03\x04\x05\x06abc")
+    non_utf8_blob = tmp_path / "raw.bin"
+    non_utf8_blob.write_bytes(bytes(range(1, 256)))
+    binary = tmp_path / "blob"
+    binary.write_bytes(b"\x7fELF\x00\x01\x02")
+    subdir = tmp_path / "dir"
+    subdir.mkdir()
+
+    assert is_text_file(makefile)
+    assert is_text_file(ts_file)
+    assert is_text_file(empty)
+    assert not is_text_file(image)
+    assert not is_text_file(pdf)
+    assert not is_text_file(gzip_txt)
+    assert not is_text_file(control_blob)
+    assert not is_text_file(non_utf8_blob)
+    assert not is_text_file(binary)
+    assert not is_text_file(subdir)
+
+    env = {"VISUAL": "nvim"}
+    assert link_editor_command(f"{makefile.as_uri()}#L60-L61", environ=env) == [
+        "nvim",
+        "+60",
+        str(makefile),
+    ]
+    assert link_editor_command(f"{makefile.as_uri()}#L60", environ={"EDITOR": "code"}) == [
+        "code",
+        "--goto",
+        f"{makefile}:60",
+    ]
+    assert link_editor_command(makefile.as_uri(), environ={"VISUAL": "   "}) == [
+        "vi",
+        str(makefile),
+    ]
+    try:
+        link_editor_command(makefile.as_uri(), environ={"VISUAL": 'nvim "unterminated'})
+    except RuntimeError as error:
+        assert "Invalid editor command" in str(error)
+    else:
+        raise AssertionError("unmatched quote in $VISUAL should raise")
+    assert link_editor_command(image.as_uri(), environ=env) is None
+    assert link_editor_command(pdf.as_uri(), environ=env) is None
+    assert link_editor_command(subdir.as_uri(), environ=env) is None
+    assert link_editor_command("https://example.com", environ=env) is None
+
+    try:
+        link_editor_command(f"file://{tmp_path}/missing.py", environ=env)
+    except RuntimeError as error:
+        assert "does not exist" in str(error)
+    else:
+        raise AssertionError("missing file:// link should raise")
+
+
+def test_open_link_unwraps_file_url_path(tmp_path, monkeypatch):
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    calls = []
+    monkeypatch.setattr("pcode.links.sys.platform", "darwin")
+    monkeypatch.setattr("pcode.links.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("pcode.links.subprocess.Popen", lambda argv, **kw: calls.append(argv))
+
+    open_link(f"{image.as_uri()}#L1")
+    assert calls == [["open", str(image)]]
+
+
+def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from pydantic_ai import Agent
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+
+    text_file = tmp_path / "Makefile"
+    text_file.write_text("all:\n\techo hi\n")
+    image_file = tmp_path / "shot.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\n\x00")
+
+    monkeypatch.setenv("VISUAL", "nvim")
+    ran_editor = []
+    ran_opener = []
+    monkeypatch.setattr("pcode.app.subprocess.run", lambda cmd, **kw: ran_editor.append(cmd))
+    monkeypatch.setattr("pcode.links.open_link", lambda url: ran_opener.append(url))
+
+    async def run():
+        runtime = AgentRuntime(Agent("test"))
+        runtime.tree.consume({"kind": "turn_started", "run_id": "a", "prompt": "check"})
+        runtime.tree.consume(
+            {
+                "kind": "Message",
+                "markdown": (
+                    f"[Makefile]({text_file.as_uri()}#L2) and [shot]({image_file.as_uri()})"
+                ),
+            }
+        )
+        runtime.tree.consume({"kind": "turn_completed"})
+        output = StringIO()
+        app = PreviewApp(runtime=runtime, console=Console(file=output))
+
+        @asynccontextmanager
+        async def fake_popup(_output, _session):
+            yield None
+
+        monkeypatch.setattr(app, "popup", fake_popup)
+        fake_session = SimpleNamespace(app=SimpleNamespace(output=DummyOutput(), style=None))
+
+        picked = iter([f"{text_file.as_uri()}#L2", image_file.as_uri()])
+
+        class FakeDialog:
+            async def run_async(self):
+                return next(picked)
+
+        monkeypatch.setattr("pcode.links_ui.links_dialog", lambda *a, **kw: FakeDialog())
+
+        await app.choose_link(output=None, session=fake_session)
+        await app.choose_link(output=None, session=fake_session)
+
+    asyncio.run(run())
+    assert ran_editor == [["nvim", "+2", str(text_file)]]
+    assert ran_opener == [image_file.as_uri()]

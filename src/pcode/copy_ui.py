@@ -20,9 +20,10 @@ from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
 from rich.console import Group
-from rich.markdown import BlockQuote, CodeBlock, Markdown
+from rich.markdown import BlockQuote, CodeBlock
 
 from pcode.frame import Dialog
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     bind_list_paging,
     marked,

@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
+
+from pcode.markdown import Markdown
 
 # What marks a line as pcode's own rather than the model's. A different shade
 # alone is not enough: a three-line `/mcp` listing between two replies reads as

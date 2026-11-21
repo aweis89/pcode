@@ -1286,7 +1286,7 @@ class PreviewApp:
             self.transcript.error(f"Could not copy {name}.")
 
     async def choose_link(self, output: TerminalOutput, session) -> None:
-        from pcode.links import conversation_links, open_link
+        from pcode.links import conversation_links, link_editor_command, open_link
         from pcode.links_ui import links_dialog
 
         self.links_requested = False
@@ -1307,16 +1307,40 @@ class PreviewApp:
                 else "No links in this conversation yet."
             )
             return
-        async with self.popup(output, session) as modal_input:
-            dialog = links_dialog(
-                links,
-                message_links=message_links,
-                input=modal_input,
-                output=session.app.output,
-                style=session.app.style,
-            )
-            url = await dialog.run_async()
+        editor_error: str | None = None
+        opened_in_editor = False
+        # ExitStack keeps appearance queries paused until popup() restores raw mode.
+        with ExitStack() as stack:
+            async with self.popup(output, session) as modal_input:
+                dialog = links_dialog(
+                    links,
+                    message_links=message_links,
+                    input=modal_input,
+                    output=session.app.output,
+                    style=session.app.style,
+                )
+                url = await dialog.run_async()
+                if url is not None:
+                    try:
+                        command = link_editor_command(url)
+                    except RuntimeError as error:
+                        editor_error = str(error)
+                    else:
+                        if command is not None:
+                            opened_in_editor = True
+                            if self._appearance:
+                                stack.enter_context(self._appearance.paused())
+                            try:
+                                await asyncio.to_thread(subprocess.run, command, check=False)
+                            except OSError as error:
+                                editor_error = f"Could not start {command[0]}: {error}"
         if url is None:
+            return
+        if editor_error is not None:
+            self.transcript.error(f"Could not open {url}: {editor_error}")
+            return
+        if opened_in_editor:
+            self.transcript.note(f"Opened {url}")
             return
         try:
             open_link(url)
@@ -2207,6 +2231,7 @@ class PreviewApp:
                     input=modal_input,
                     output=session.app.output,
                     style=session.app.style,
+                    handoff=self._appearance.paused if self._appearance else nullcontext,
                     **options,
                 )
                 return browser, await browser.run()

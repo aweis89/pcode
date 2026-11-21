@@ -14,7 +14,6 @@ from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
-from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -26,6 +25,7 @@ from pcode.edit_transcript import EditTranscript, created_markdown
 from pcode.edits import patch_text
 from pcode.frame import Frame
 from pcode.inspection import InspectedCall, ToolArchive
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,

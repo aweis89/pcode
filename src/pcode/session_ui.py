@@ -11,13 +11,13 @@ from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
-from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
 from rich.theme import Theme
 
 from pcode.diagnostics import strip_controls
 from pcode.frame import Dialog, Frame
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     EllipsisProcessor,
     RichPane,
