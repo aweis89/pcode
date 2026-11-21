@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 0 of dev/ghostty-app-plan.md: can an app animate arriving output with Ghostty Smooth's app-set shift?
+"""Phase 0 of dev/ghostty-app-plan.md: animate arriving output with Ghostty Smooth's shift.
 
 Throwaway evidence-gathering, not shipped code. Run it inside Ghostty Smooth
 (tlpinney/ghostty), in a window of at least 12 rows:
