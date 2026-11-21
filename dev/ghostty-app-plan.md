@@ -1,11 +1,14 @@
 # Terminal app (Ghostty fork) plan
 
-Status: proposed implementation plan. Nothing here is built. This is the
-alternative to [desktop-host-plan.md](desktop-host-plan.md): instead of a second
-frontend, wrap the existing terminal app in a patched terminal emulator.
+Status: Phase 0 spike done (see results below); pcode support is next. This is
+the alternative to [desktop-host-plan.md](desktop-host-plan.md): instead of a
+second frontend, run the existing terminal app in a terminal that can shift
+rows by pixels.
 
-What was checked: pcode's own code, and the READMEs of the forks named below.
-No fork's source was read or built. Ghostty config options are quoted from
+The spike changed the plan's shape. pcode can drive the glide itself through
+the tlpinney fork's existing sequence, so the first deliverable is pcode
+support for that sequence, not a patched or rebranded terminal. `PCode.app` is
+deferred to an optional later phase. Ghostty config options are quoted from
 memory and must be checked against the version we build.
 
 ## Goal
@@ -58,21 +61,27 @@ animate smoothly itself, because its clock is not the terminal's frame clock.
 If true, pcode sending a per-frame shift at 30 fps will stutter, and the
 animation must run inside the renderer.
 
-## Design sketch
+The Phase 0 spike contradicted that claim at 120 fps (see results).
 
-To be confirmed or replaced by Phase 0.
+## Design
 
-- pcode declares one region: the viewport rows above the editor and live panel.
-- When pcode commits rows, it says so in the same synchronized update: "this
-  region advanced by N rows".
-- The terminal draws the region offset down by N rows and springs the offset to
-  zero on its own frame clock. Rows outside the region never move.
-- Trackpad scrolling through scrollback is separate and already handled by the
-  fork's whole-grid shift.
+App-driven, using the stock tlpinney sequence (protocol 3):
 
-This is an extension of the tlpinney region sequence (it has regions and
-overscan, but only trackpad-driven and app-set shifts), with the spring taken
-from or modelled on the parkers fork.
+- pcode declares one region: the viewport rows above the editor and live panel,
+  with the row just above the editor as the hidden overscan row.
+- The next line to commit is drawn into that hidden row. A spring on pcode's
+  own clock moves the region's shift (`oy`) from 0 toward one row, sent every
+  display frame by a small ticker that writes only the declaration.
+- When the line is fully revealed, the normal atomic handoff commits it to
+  scrollback, draws the following line into the hidden row, and resets `oy` to
+  0, in one synchronized frame.
+- Trackpad scrolling through scrollback stays with the terminal; pcode only
+  enables mouse reporting in popups.
+
+If the app-driven version hitches under a busy event loop, the fallback is a
+small fork patch: pcode says "slide this region up one row" once per line and
+the terminal springs it on its own frame clock (the parkers fork has a spring to
+model it on). That removes the ticker from pcode.
 
 Cases the design must cover:
 
@@ -97,8 +106,12 @@ Cases the design must cover:
 - **macOS first.** The tlpinney smooth rendering exists only in the Metal
   renderer. Linux needs the same work in the OpenGL renderer and is a later
   phase, not a launch target. Windows is out; the core is POSIX-only.
-- **The base fork is chosen after Phase 0**, not before.
-- **Build from source.** Do not ship or depend on another fork's binaries.
+- **Base fork: tlpinney/ghostty.** Its region sequence was enough for the
+  spike. Tell its author there is a second consumer and ask how stable the
+  sequence is, since pcode will depend on it.
+- **Build from source before shipping anything.** Do not ship another fork's
+  binaries. For pcode support alone, users bring their own terminal, so this
+  only applies once there is an app or a patch.
 - **pcode stays usable everywhere.** The region sequence is opt-in by
   capability query. `PCode.app` is one terminal pcode runs well in, not a
   requirement.
@@ -124,7 +137,9 @@ Cases the design must cover:
    (`pcode-benchmark`'s paced replay) in both `typed` and `rows` modes.
 
 Pass: output glides, the editor and live panel never move, text is sharp at
-rest, and a fast command log does not lag. Fail: stop, and record what was
+rest, and a fast command log does not lag. Measured as well as judged by eye:
+log the gap between shift writes during a replay, and require 99% of gaps under
+12 ms at 120 fps. Fail: stop, and record what was
 learned here. The remaining phases are a rebranded terminal with a config file
 and are not worth doing on their own.
 
@@ -171,28 +186,52 @@ What wiring it into pcode involves:
 - **Screen not yet full, resize, popups, the alternate screen.** As listed
   under the design sketch.
 
-### Phase 1: the patch, properly
+Before wiring pcode, two checks in the spike:
 
-- Settle the sequence: declaration, advance, clear, capability query, and a
-  version number. Write it down in the fork the way `SMOOTH.md` does.
-- Spring constants as terminal config, with a snap threshold for backlog.
-- Tests in the fork for the region bookkeeping. Rendering is checked by eye and
-  by a screen recording stepped frame by frame.
-- Decide the rebase policy: track upstream releases, not `main`, and keep the
-  patch as a short series of commits so each rebase is reviewable.
+- **Busy event loop.** The spike's `s` key injects random 10–60 ms stalls,
+  standing in for Markdown rendering and tool events. If glides visibly hitch
+  at `light`, go to the fork-patch fallback before touching `ui.py`.
+- **Right column.** The shift form makes the rightmost column overscan too.
+  Check whether a vertical-only shift (`ox` 0) still hides it, and whether that
+  caused the misaligned line ends. If it does, pcode renders one column
+  narrower, or a few-line fork patch keeps the column.
 
-### Phase 2: pcode support
+### Phase 1: pcode support (experiment)
+
+In a worktree, behind `PCODE_SMOOTH_SCROLL=1`:
 
 - Capability query at startup alongside the existing terminal queries
   (`theme.py` shows the rule: never query while prompt_toolkit owns input).
-- Declare and advance the region inside the existing atomic handoff, so it
-  lands in the same synchronized frame as the rows.
+  Off inside tmux.
+- The hidden row, the ticker, and commit-at-end-of-slide, as in the design.
+  The ticker shares prompt_toolkit's output so writes never interleave.
+- Typed prose reveals whole rows in smooth mode; typing into a revealed row can
+  come later if it is missed.
 - Clear and redeclare around popups, external programs, and resize.
-- A `smooth_scroll` preference (`auto`, `off`).
-- Tests assert the bytes written. This touches the editor and streaming, so
-  `make test-all` applies.
+- Replay a long session through `pcode-benchmark` and log shift-write gaps.
 
-### Phase 3: app identity and config
+Then, if it holds up: a `smooth_scroll` preference (`auto`, `off`), tests that
+assert the bytes written, `make test-all` (this touches the editor and
+streaming), a review, and a docs page saying which terminal to run.
+
+### Phase 2: fork patch, only if needed
+
+Only for problems Phase 1 cannot solve in pcode: hitches under load (move the
+spring into the terminal), the hidden right column, or more than one overscan
+row. If it happens:
+
+- Settle the added sequence and its capability version, documented the way
+  `SMOOTH.md` is, and offer it to the fork's author.
+- Track upstream releases, not `main`, and keep the patch as a short series of
+  commits so each rebase is reviewable.
+- Build from source; the Metal Toolchain trap in the results applies.
+
+### Phase 3: `PCode.app` (optional, deferred)
+
+A product decision to make after Phase 1 ships, not the path to a first
+result. It wraps everything below in one installable app.
+
+#### App identity and config
 
 - Bundle id, name, and icon, so `PCode.app` sits beside Ghostty with its own
   permissions.
@@ -204,7 +243,7 @@ What wiring it into pcode involves:
   (`syntax_colors.py`) look right together, since pcode reads the terminal's
   background at startup.
 
-### Phase 4: launch
+#### Launch
 
 - **Workspace.** A Finder launch starts in the home directory, and pcode wants
   a project. Options: a small picker of recent workspaces as the first screen,
@@ -221,7 +260,7 @@ What wiring it into pcode involves:
   already survive the window closing because the host owns them.
 - **Missing pcode.** Show install instructions in the pane instead of closing.
 
-### Phase 5: packaging
+#### Packaging
 
 - Developer ID signing and notarization.
 - `.dmg`, and a Homebrew cask that depends on the pcode formula.
@@ -230,14 +269,17 @@ What wiring it into pcode involves:
 
 ## Risks
 
-- **Fork upkeep.** This is a Zig and Swift terminal emulator, in languages this
-  repo does not use, rebased against a fast-moving upstream. We also own its
-  security updates. A small patch series is the only thing that keeps this
-  cheap.
-- **The spring may not survive real output.** Row commits are not perfectly
-  regular, and the editor handoff is frequent. Phase 0 exists for this.
-- **Niche payoff.** Smooth output reaches only people who run `PCode.app`
-  outside tmux. Everyone else gets nothing new.
+- **Depending on a one-person fork.** pcode support relies on an escape
+  sequence from a personal experiment with no other users. Keep it opt-in by
+  capability query so it costs nothing elsewhere.
+- **Fork upkeep, if we patch.** A Zig and Swift terminal emulator, in languages
+  this repo does not use, rebased against a fast-moving upstream. A small
+  patch series is the only thing that keeps this cheap.
+- **The spring may not survive real output.** pcode's event loop is busy, row
+  commits are not perfectly regular, and the editor handoff is frequent. The
+  stall mode and the Phase 1 replay exist for this.
+- **Niche payoff.** Smooth output reaches only people who run the fork outside
+  tmux. Everyone else gets nothing new.
 - **Upstream may get there first.** Ghostty has an open request for sub-cell
   scrolling ([discussion 3206](https://github.com/ghostty-org/ghostty/discussions/3206)).
   If upstream ships pixel scrolling, the fork shrinks to the region sequence,
@@ -245,7 +287,7 @@ What wiring it into pcode involves:
 
 ## Alternatives
 
-- **No fork, launcher only.** Phases 3 and 4 need no patched source: a launcher
+- **No fork, launcher only.** `PCode.app` itself needs no patched source: a launcher
   around stock Ghostty with its own config gives the app, splits, tabs, and
   themes. Worth shipping first if Phase 0 fails or drags.
 - **Build on libghostty.** Ghostty's README describes `libghostty` as an

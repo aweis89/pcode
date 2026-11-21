@@ -16,7 +16,7 @@ line on the app's own clock; floor(position) picks the rows, the fraction is oy.
 
 Keys:  m  mode (spring / plain rows)      p  producer (steady / bursty / fast log)
        [/]  steady rate (rows per second) +/-  spring stiffness
-       f  frame rate (60 / 120)
+       f  frame rate (60 / 120)         s  stalls (off / light / heavy), a busy event loop
        r  region on/off (check the editor never moves either way)     q  quit
 """
 
@@ -36,6 +36,13 @@ PRODUCERS = {
     "steady": (2.0, None, None),  # slow prose; [ ] change it (30 = pcode's code-block rate)
     "bursty": (20.0, 3, 1.5),  # an unpaced model: a few rows, then a gap
     "fast": (400.0, None, None),  # a command log
+}
+STALLS = {
+    # name: (chance a frame stalls, shortest stall, longest stall) in seconds.
+    # Stands in for pcode's event loop rendering Markdown or handling tool events.
+    "off": (0.0, 0.0, 0.0),
+    "light": (0.15, 0.010, 0.030),
+    "heavy": (0.25, 0.010, 0.060),
 }
 WORDS = (
     "the quick brown fox jumps over lazy dog while streaming tokens glide into view "
@@ -100,6 +107,7 @@ def main() -> None:
     burst_left, pause_until = 0, 0.0
     frame_ms: list[float] = []
     snaps = 0
+    stall = "off"
 
     w("\x1b[?25l\x1b[H\x1b[2J")
     try:
@@ -131,6 +139,9 @@ def main() -> None:
                     PRODUCERS["steady"] = (max(0.25, min(rate, 400.0)), None, None)
                 if key == "f":
                     fps = 60 if fps == 120 else 120
+                if key == "s":
+                    names = list(STALLS)
+                    stall = names[(names.index(stall) + 1) % len(names)]
                 if key == "r":
                     region_on = not region_on
                     if not region_on:
@@ -178,19 +189,25 @@ def main() -> None:
                 w(f"\x1b_smooth;1;0;{region_rows};0;{cols - 1};0;0;0;{oy}\x1b\\")
             avg = sum(frame_ms) / len(frame_ms)
             worst = max(frame_ms)
+            p99 = sorted(frame_ms)[int(len(frame_ms) * 0.99) - 1] if len(frame_ms) > 1 else avg
             status = [
                 "─" * cols,
                 f" mode={mode}  producer={producer}  region={'on' if region_on else 'off'}"
-                f"  rate={PRODUCERS[producer][0]:.2f}/s  k={stiffness:.0f}  fps={fps}",
+                f"  rate={PRODUCERS[producer][0]:.2f}/s  k={stiffness:.0f}  fps={fps}"
+                f"  stalls={stall}",
                 f" lines={len(lines)}  lag={target - pos:5.2f}  oy={oy:3d}  snaps={snaps}"
-                f"  frame avg={avg:5.2f}ms worst={worst:5.2f}ms",
+                f"  gap avg={avg:5.2f} p99={p99:5.2f} worst={worst:5.2f}ms",
                 f" capability: {capability}",
-                " m mode · p producer · [ ] rate · +/- stiffness · f fps · r region · q quit",
+                " m mode · p producer · [ ] rate · +/- k · f fps · s stalls · r region · q quit",
             ]
             for j, text in enumerate(status):
                 w(f"\x1b[{rows - EDITOR_ROWS + 1 + j};1H\x1b[2K\x1b[7m{text[:cols]}\x1b[0m")
             w("\x1b[?2026l")
             out.flush()
+
+            chance, shortest, longest = STALLS[stall]
+            if random.random() < chance:
+                time.sleep(random.uniform(shortest, longest))
 
             next_frame += 1 / fps
             delay = next_frame - time.perf_counter()
