@@ -148,6 +148,12 @@ and are not worth doing on their own.
   likely cause was long test lines wrapping into the hidden overscan row; they
   are now cut to fit, but this is not confirmed. Real arrival rates are slow
   (a few rows a second for prose), so test at those rates.
+- The fork also builds from source (`ed6a86659`, Xcode 27.2, Zig 0.17.1) with
+  the commands in its `SMOOTH.md`. Trap: Xcode 26 and later ship without the
+  Metal compiler. `zig build` then fails at `metal Ghostty (Ghostty.ir)`, and
+  the follow-on `xcodebuild` error (no `GhosttyKit.xcframework`) hides the
+  cause. Fix it with `xcodebuild -downloadComponent MetalToolchain` (about
+  840 MB, no sudo needed).
 
 What wiring it into pcode involves:
 
