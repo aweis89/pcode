@@ -5,6 +5,9 @@ code before extending it; the module names below were read from docstrings and
 interfaces, not from a full code read. Third-party API details (Dockview options
 in particular) are unverified and must be checked against the installed version.
 
+A cheaper alternative that keeps one UI is in
+[ghostty-app-plan.md](ghostty-app-plan.md). Only one of the two should be built.
+
 ## Goal
 
 An optional desktop app for macOS and Linux that attaches to pcode sessions and
