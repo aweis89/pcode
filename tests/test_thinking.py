@@ -348,3 +348,63 @@ def test_head_rows_keeps_the_first_rows_and_marks_the_cut():
     # A wide character cannot be split: it is dropped whole to make room.
     wide = head_rows("漢" * 10, 6, 1)
     assert cell_len(wide[0]) <= 6 and wide[0].endswith("…")
+
+
+def test_a_background_workers_calls_do_not_split_a_streaming_thought():
+    from pcode.runtime import Thinking, ThinkingDelta, ToolStarted, ToolSummary
+    from pcode.stream_display import present_events, present_stream_event
+
+    activity = Activity(thinking_mode="scrollback")
+    transcript = Transcript(Console(file=StringIO(), width=60), activity=activity)
+    with create_pipe_input() as pipe:
+        app = PreviewApp()
+        prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
+        writer = TerminalOutput(transcript.console, prompt.app)
+        writer.commit_thinking = transcript.thinking
+
+        def feed(event):
+            present_stream_event(
+                event,
+                output=writer,
+                transcript=transcript,
+                activity=activity,
+                present=lambda events: present_events(
+                    events, activity=activity, transcript=transcript, edits=[]
+                ),
+            )
+
+        delegate = ToolStarted("delegate_task", "worker · review", "d1", agent="worker")
+        feed(delegate)
+        feed(ThinkingDelta("I"))
+        # The worker reports while the parent is still mid-word.
+        feed(ToolStarted("delegate_task", "worker · review", "d1", activity="shell"))
+        feed(ToolStarted("shell", "git show", "d1:c1", parent_call_id="d1"))
+        feed(ToolSummary("shell", "git show", call_id="d1:c1", parent_call_id="d1"))
+        feed(ThinkingDelta("'m checking"))
+        feed(Thinking("I'm checking"))
+        assert rendered(transcript) == "I'm checking\n\n"
+        # A call that settles into scrollback still commits the thought above it.
+        feed(ThinkingDelta("Next"))
+        feed(ToolSummary("read_file", "a.py", call_id="t1"))
+        assert rendered(transcript).startswith("I'm checking\n\nNext\n\n")
+
+
+def test_replay_does_not_split_a_thought_at_a_sub_agent_call():
+    from types import SimpleNamespace
+
+    from pcode.sessions import SavedSession
+
+    child = {"kind": "ToolSummary", "name": "shell", "parent_call_id": "d1"}
+    records = [
+        {"kind": "ThinkingDelta", "text": "I"},
+        child,
+        {"kind": "ThinkingDelta", "text": "'m checking"},
+        {"kind": "Thinking", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]
+    saved = SimpleNamespace(active_records=lambda end=None: iter(records))
+    assert list(SavedSession.transcript_records(saved)) == [
+        child,
+        {"kind": "thinking_partial", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]

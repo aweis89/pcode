@@ -792,6 +792,8 @@ class SessionJournal:
 
         Only unfinished text is buffered. Flush thinking before interleaved display
         records, as live output does, and don't repeat it at the completion marker.
+        A sub-agent's call is not one: it is written beneath its delegate, and a
+        background worker's calls arrive in the middle of a thought.
         """
         partial = ""
         thinking = ""
@@ -816,6 +818,9 @@ class SessionJournal:
                 "turn_failed",
                 "turn_cancelled",
             }:
+                continue
+            if kind == "ToolSummary" and record.get("parent_call_id"):
+                yield record
                 continue
             if thinking:
                 yield {"kind": "thinking_partial", "text": thinking}

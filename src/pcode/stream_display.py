@@ -182,10 +182,12 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         activity.workers.record(event)
         return
     elif isinstance(event, (ToolStarted, ToolSummary)):
-        output.finish_thinking()
-        # Settled calls land in scrollback, so prose must be committed first.
-        # Suppressed calls, such as successful planning, do not interrupt it.
+        # Settled calls land in scrollback, so thinking and prose must be
+        # committed first. Nothing else interrupts them: not a suppressed call,
+        # such as successful planning, and not a background worker's own calls,
+        # which arrive in the middle of a word the model is still streaming.
         if transcript.writes_tool_result(event):
+            output.finish_thinking()
             output.finish()
         present((event,))
     elif isinstance(event, Message):
