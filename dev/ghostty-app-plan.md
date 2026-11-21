@@ -170,6 +170,41 @@ and are not worth doing on their own.
   cause. Fix it with `xcodebuild -downloadComponent MetalToolchain` (about
   840 MB, no sudo needed).
 
+#### App-driven glide in real pcode (2026-11-20): failed
+
+Wired into pcode (branch `feat/smooth-scroll`, first commit) with a 120 Hz
+asyncio ticker driving `oy` and a hidden row above the live panel. It caught
+and shook. The per-tick log showed why:
+
+- Ticks were late: 3,587 of 4,276 gaps were over 16 ms, against an 8 ms target.
+  pcode's event loop is busy rendering.
+- Every commit stalled the glide: the handoff that writes the row and repaints
+  the editor took 15 to 23 ms, once per line.
+- The region's bottom edge moved 255 times mid-glide as the live panel grew
+  and shrank, and each move jolted the shifted rows.
+
+So the fork author's claim holds for a real app, and the terminal-side spring
+(the fallback above) is needed.
+
+#### Terminal-side glide (2026-11-20): built, being judged
+
+- Fork patch on `~/p/ghostty-smooth` branch `pcode-glide`: protocol 4 adds
+  `ESC _ smooth;advance;ID;N ESC \`. The region's content is drawn N rows lower
+  (capped at 3) and a critically damped spring returns it to rest. The spring is
+  snapshotted at each frame update and evaluated at draw time, so motion
+  follows vsync. Glide survives re-declarations that move the region's edges.
+  Unit tests in `State.zig`.
+- pcode (branch, second commit): no ticker and no spring. It writes rows as
+  usual (rows pacing, typing off), sends `advance` in the same synchronized
+  frame when the editor is pinned, and re-declares the region after each
+  render so its bottom stays on the reserved, empty typing row. The shift form
+  is no longer used, so no column is hidden.
+- Known gap: rows drawn lower leave a band at the top of the screen with
+  nothing in it, up to the glide distance, because the renderer has no row
+  above the viewport to fill it with.
+
+The original notes on the app-driven wiring follow.
+
 What wiring it into pcode involves:
 
 - **A display-rate ticker.** pcode's flush loop runs at 30 fps. The shift
