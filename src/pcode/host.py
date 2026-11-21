@@ -287,6 +287,11 @@ class HostView:
 
     def __init__(self, host: "SessionHost") -> None:
         self._host = host
+        # The running command's tag as its terminal gave it (see `read_asides`).
+        self._command_tag = None
+        # Side-answer viewers open in a terminal (see `read_asides`), and
+        # what they asked for while it is kept.
+        self.viewers: set[asyncio.Task] = set()
 
     def __getattr__(self, name: str):
         if name.startswith("_"):
@@ -357,11 +362,13 @@ class HostView:
         self._host.run_began(tag)
         client, own_tag = self._host.sender(tag)
         self._host.running_command = client
+        self._command_tag = own_tag
         if client is not None:
             client.peer.notify("command_started", own_tag)
 
     def command_finished(self) -> None:
         client, self._host.running_command = self._host.running_command, None
+        self._command_tag = None
         if client is not None and client.peer is not None:
             client.peer.notify("command_finished")
 
@@ -379,7 +386,38 @@ class HostView:
         return await self._ask("choose_model", list(values), sorted(providers), current)
 
     async def read_asides(self):
-        return await self._ask("read_asides")
+        """Open the side-answer viewer in the asking terminal, without waiting for it.
+
+        The viewer stays open as long as its reader likes, and the host runs
+        one command at a time: awaited here, one terminal's open viewer would
+        stall every other terminal's commands behind it. So the command ends
+        at once, and a thread the viewer asks to bring into the conversation
+        is kept from outside the queue, as the swap view keeps one (`keep_thread`).
+        """
+        client = self._host.running_command
+        if client is None or client.headless:
+            # A headless caller only says it cannot show the viewer, at once
+            # and while its command still runs, so `run` reports it failed.
+            return await self._ask("read_asides")
+        task = asyncio.create_task(self._read_asides(client, self._command_tag))
+        self.viewers.add(task)
+        task.add_done_callback(self.viewers.discard)
+        return None
+
+    async def _read_asides(self, client: "_Client", tag) -> None:
+        # The tag goes along: the command has finished by the time the viewer
+        # opens, and the terminal needs it to tell an auto-open (see `PreviewApp.read_asides`).
+        try:
+            request = await client.peer.request("read_asides", tag)
+        except ConnectionError:
+            return
+        if request is None:
+            return
+        controller = self._host.controller
+        try:
+            await controller.keep_thread(request.thread, request.action, request.instructions)
+        except Exception as error:
+            controller.command_failed("/btw", error)
 
     async def browse_jobs(self) -> None:
         await self._ask("browse_jobs")
@@ -896,6 +934,8 @@ class SessionHost:
                 "Antigravity is continuing background work",
             ),
             (controller.asides.running or self._host_asides, "a side question is running"),
+            # A thread brought into the conversation from it would be lost.
+            (self.view.viewers, "a side-answer viewer is open"),
             # A title asked for beside the first turn, or a name /rename asked for, would be lost.
             (controller.naming(), "it is naming the session"),
         )
@@ -990,9 +1030,10 @@ class SessionHost:
             client.peer.notify("host_closed", self.successor)
             client.peer.close()
         controller.cancel_all()
-        for task in self.tasks:
+        viewers = list(self.view.viewers)
+        for task in (*self.tasks, *viewers):
             task.cancel()
-        await asyncio.gather(*self.tasks, *controller.tasks(), return_exceptions=True)
+        await asyncio.gather(*self.tasks, *viewers, *controller.tasks(), return_exceptions=True)
         await controller.asides.close()
         # Stopping them settled them: their journal entries go in before the session closes.
         await controller.side_records_settled()

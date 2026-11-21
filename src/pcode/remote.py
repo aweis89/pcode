@@ -366,7 +366,7 @@ class RemoteController:
             self.successor = args[0] if args else None
             return None
         if name == "read_asides":
-            return self._read_asides()
+            return self._read_asides(*args)
         if name == "after_command" and self._command_waits:
             self.activity.end_wait(self._command_waits.pop(0))
         if self.runtime and (
@@ -444,11 +444,20 @@ class RemoteController:
             self.asides._trim()
         return aside
 
-    async def _read_asides(self):
-        """The viewer; then the host learns what was read, so no terminal shows it as ready."""
+    async def _read_asides(self, *tag):
+        """The viewer; then the host learns what was read, so no terminal shows it as ready.
+
+        The host sends the `/btw` command's tag along and has finished that
+        command by now (see `HostView.read_asides`), so the viewer runs as
+        the command, which tells an auto-open and a superseded one apart.
+        """
+        if tag:
+            self.view.command_started(tag[0])
         try:
             return await self.view.read_asides()
         finally:
+            if tag:
+                self.view.command_finished()
             read = [aside.id for aside in self.asides.items if aside.read]
             if read and self.peer is not None:
                 self.peer.notify("asides_read", read)

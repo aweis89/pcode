@@ -714,6 +714,59 @@ def test_an_answer_read_in_one_terminal_is_read_in_every_terminal(tmp_path, host
     asyncio.run(run())
 
 
+def test_an_open_side_answer_viewer_does_not_hold_other_terminals_commands(tmp_path, host_dir):
+    """One terminal reading /btw answers must not stall another's commands behind it."""
+    from pcode.aside import Aside, Bridge
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            host.controller.asides.items.append(
+                Aside(question="why?", status="answered", answer="because")
+            )
+            reader, reader_view, _ = await attach(host)
+            other, other_view, _ = await attach(host)
+            close = asyncio.Event()
+            opened = []
+
+            async def still_reading():
+                opened.append(True)
+                await close.wait()
+                return Bridge("thread", "summary")
+
+            reader_view.read_asides = still_reading
+            reader.command("/btw", 7)
+            await until(lambda: opened)
+            # The viewer runs as the command it opened for, whose tag it keeps.
+            assert reader_view.calls[-1] == ("command_started", (7,), {})
+            await until(lambda: reader.activity.waits == [])
+            assert host.busy_with() == "a side-answer viewer is open"
+            other_opened = []
+
+            async def glance():
+                other_opened.append(True)
+
+            other_view.read_asides = glance
+            other.command("/btw")
+            await until(lambda: other_opened)
+            # What the viewer asks for once it closes is still kept.
+            kept = []
+
+            async def keep_thread(thread, action, instructions=""):
+                kept.append((thread, action))
+
+            host.controller.keep_thread = keep_thread
+            close.set()
+            await until(lambda: kept == [("thread", "summary")])
+            await until(lambda: not host.view.viewers)
+            for terminal in (reader, other):
+                terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_a_terminal_stops_side_questions_and_sees_them_settle(tmp_path, host_dir):
     """The questions run in the host; the terminal's records must follow them to the end."""
 
