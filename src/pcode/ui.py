@@ -2138,6 +2138,9 @@ class TerminalOutput:
         # that glide, and whether its region is declared.
         self._insert_glide = smooth_scroll.Glide()
         self._insert_declared = False
+        # The same for the live panel's rows moving (`_glide_moves`, `_glide_panel`).
+        self._panel_glide = smooth_scroll.Glide()
+        self._panel_declared = False
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -2565,6 +2568,31 @@ class TerminalOutput:
             self._insert_glide = smooth_scroll.Glide()
             self.app.output.write_raw(smooth_scroll.region_off(smooth_scroll.INSERT_ID))
 
+    def _drop_settled_regions(self, app) -> None:
+        """Clear the panel and insert regions once their glides have settled.
+
+        Left declared, a region outlives the rows it was for: the layout
+        moves on, and where it then covers the typing row or the transcript
+        region's hidden row it wins there (the innermost region does), so
+        those rows stop gliding with the transcript and the hidden row shows.
+        """
+        now = monotonic()
+        if self._panel_declared and not self._panel_glide.remaining(now):
+            self._panel_declared = False
+            app.output.write_raw(smooth_scroll.region_off(smooth_scroll.PANEL_ID))
+        if self._insert_declared and not self._insert_glide.remaining(now):
+            self._end_insert()
+
+    def _glide_panel_region(self, app, top: int, bottom: int, distance: int) -> None:
+        """Declare the panel region over rows ``top`` to ``bottom`` and glide it ``distance``."""
+        columns = app.output.get_size().columns
+        app.output.write_raw(
+            smooth_scroll.visible_declaration(smooth_scroll.PANEL_ID, top, bottom, columns)
+            + smooth_scroll.advance(distance, smooth_scroll.PANEL_ID)
+        )
+        self._panel_glide.advance(distance, monotonic())
+        self._panel_declared = True
+
     def _typing_held(self) -> bool:
         """Whether the next typed row waits for the glide to bring its row into view.
 
@@ -2604,7 +2632,7 @@ class TerminalOutput:
             if self._declared is None:
                 return
             self._declared = None
-            self._insert_declared = False
+            self._insert_declared = self._panel_declared = False
             self.app.output.write_raw(smooth_scroll.OFF)
         else:
             if self._declared is not None and self._declared[0] == key:
@@ -2693,6 +2721,7 @@ class TerminalOutput:
             # a bottom flipping in and out under the typing row jolts it.
             top = app.output.get_size().rows - screen.height + 1
         if self.view is None and top is not None and not app._running_in_terminal:
+            self._drop_settled_regions(app)
             self._declare(top)
         elif self.view is not None:
             self._declare(None)
@@ -2758,11 +2787,7 @@ class TerminalOutput:
             top += distance  # the rows they left, now empty
         if top < rows - height + 2 or bottom >= rows:  # below the typing and hidden rows
             return
-        columns = app.output.get_size().columns
-        app.output.write_raw(
-            smooth_scroll.visible_declaration(smooth_scroll.PANEL_ID, top, bottom, columns)
-            + smooth_scroll.advance(distance, smooth_scroll.PANEL_ID)
-        )
+        self._glide_panel_region(app, top, bottom, distance)
 
     def _glide_panel(self, app, height: int, grown: int, spans, last_spans) -> None:
         """Glide the live panel's rows above the ones just added, and those rows in.
@@ -2784,11 +2809,7 @@ class TerminalOutput:
         first_row = rows - height + 2  # below the typing row and the hidden row
         if last_row < first_row:
             return
-        columns = app.output.get_size().columns
-        app.output.write_raw(
-            smooth_scroll.visible_declaration(smooth_scroll.PANEL_ID, first_row, last_row, columns)
-        )
-        app.output.write_raw(smooth_scroll.advance(grown, smooth_scroll.PANEL_ID))
+        self._glide_panel_region(app, first_row, last_row, grown)
 
     async def run(self) -> None:
         if not self.gliding or not isinstance(self.app, Application):
