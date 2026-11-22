@@ -2883,12 +2883,21 @@ class TerminalOutput:
         grown = screen.height - last[0]
         if not (pinned and last[1] and grown > 0):
             # Nothing scrolled: rows may still have moved within the panel.
-            self._glide_moves(app, screen.height, keys, last_keys)
+            shaded = _shaded_rows(screen, getattr(app, "_merged_style", None))
+            self._glide_moves(app, screen.height, keys, last_keys, shaded, grown)
             return
         app.output.write_raw(smooth_scroll.advance(grown))
         self._glide_panel(app, screen.height, grown, spans, last_spans)
 
-    def _glide_moves(self, app, height: int, keys, last_keys) -> None:
+    def _glide_moves(
+        self,
+        app,
+        height: int,
+        keys,
+        last_keys,
+        shaded: set[int] | frozenset[int] = frozenset(),
+        grown: int = 0,
+    ) -> None:
         """Glide live panel rows that moved up or down since the last render.
 
         A row leaving the panel drops the rows above it into its place, and
@@ -2900,18 +2909,41 @@ class TerminalOutput:
         """
         move = _block_move(keys, last_keys)
         if move is None:
+            if grown:
+                self._end_panel()
             return
         distance, low, high = move
         rows = app.output.get_size().rows
         top, bottom = rows - high, rows - low  # 0-based screen rows, where they are now
+        floor = rows - height + 2
         if distance > 0:
             bottom += distance  # what lifted them: rows that rise in below
+            # Pull unkeyed shaded rows (blank top border, top gap) into an
+            # upward glide so the uncovered top edge opens above the box.
+            while (
+                top > floor
+                and (rows - top) in shaded
+                and (rows - (top - 1)) in shaded
+                and (rows - (top - 1)) not in keys
+            ):
+                top -= 1
         else:
             top += distance  # the rows they left, now empty
         # Never over the typing and hidden rows: what starts there comes in
         # from the region's top edge instead.
-        top = max(top, rows - height + 2)
+        top = max(top, floor)
         if bottom >= rows or bottom < top:
+            if grown:
+                self._end_panel()
+            return
+        # Ghostty fills the edge a glide uncovers (top when rising, bottom when
+        # dropping) with the terminal's default background. If that edge lies
+        # inside a shaded box, gliding paints a scrollback-colored stripe across
+        # the box and splits it in two; snap instead.
+        if (distance > 0 and (rows - top) in shaded and (rows - (top - 1)) in shaded) or (
+            distance < 0 and (rows - bottom) in shaded and (rows - (bottom + 1)) in shaded
+        ):
+            self._end_panel()
             return
         self._glide_panel_region(app, top, bottom, distance)
 
@@ -3075,6 +3107,29 @@ def _row_keys(screen) -> dict[int, str]:
         if text:
             keys[screen.height - y] = text
     return keys
+
+
+def _shaded_rows(screen, style) -> set[int]:
+    """Live layout rows (counted up from the bottom) painted with a surface shade.
+
+    Matches `_row_keys`'s coordinate system (`screen.height - y`). Rows on the
+    terminal's default background (or `bottom-toolbar`, which sets `bg:default`)
+    are omitted.
+    """
+    if style is None:
+        return set()
+    shaded = set()
+    for y in range(2, screen.height):
+        cells = screen.data_buffer.get(y)
+        if not cells:
+            continue
+        cell = cells.get(0)
+        if cell is None or not cell.style:
+            continue
+        bg = style.get_attrs_for_style_str(cell.style).bgcolor
+        if bg and bg != "default":
+            shaded.add(screen.height - y)
+    return shaded
 
 
 def _block_move(keys: dict[int, str], last_keys: dict[int, str]) -> tuple[int, int, int] | None:

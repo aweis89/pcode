@@ -430,3 +430,101 @@ def test_emit_native_commit_sends_batch_glide_and_queued_reveals(monkeypatch):
         "\x1b_smooth;reveal;7;0;5;0\x1b\\\x1b_smooth;reveal;7;5;15;0;1\x1b\\"
     )
     assert emit((4, 0, [(0, 4, False)])) == "\x1b_smooth;reveal;7;16;4;0;1\x1b\\"
+
+
+def test_shaded_rows_marks_surface_fills_and_ignores_default_backgrounds():
+    from prompt_toolkit.layout.screen import Char, Screen
+    from prompt_toolkit.styles import Style
+
+    from pcode.ui import _shaded_rows
+
+    style = Style.from_dict(
+        {
+            "shaded": "bg:#f1f1f1",
+            "shaded.top": "bg:#e6e6e6",
+            "bottom-toolbar": "bg:default fg:default",
+        }
+    )
+    screen = Screen()
+    screen.height = 7
+    # y=0, 1: typing and hidden overscan rows (excluded even if styled).
+    screen.data_buffer[0][0] = Char(" ", "class:shaded")
+    screen.data_buffer[1][0] = Char(" ", "class:shaded")
+    screen.data_buffer[2][0] = Char(" ", "")  # activity panel row on default bg
+    screen.data_buffer[3][0] = Char("┌", "class:shaded class:shaded.top")
+    screen.data_buffer[4][0] = Char("│", "class:shaded")
+    screen.data_buffer[5][0] = Char("└", "class:shaded")
+    screen.data_buffer[6][0] = Char(" ", "class:bottom-toolbar")
+    assert _shaded_rows(screen, style) == {4, 3, 2}
+    assert _shaded_rows(screen, Style.from_dict({})) == set()
+    assert _shaded_rows(screen, None) == set()
+
+
+def test_collapsing_inside_a_shaded_box_skips_glide_and_clears_stale_region(monkeypatch):
+    clock = [5.0]
+    output, out = _glide_output(monkeypatch, clock)
+    # Seed an in-flight panel glide from a prior expand.
+    output._glide_panel_region(output.app, 23, 26, 1)
+    out.written.clear()
+
+    # Shaded editor occupies rows 2..6 from bottom (row 2 is the unkeyed bottom border,
+    # row 1 is the unshaded bottom toolbar). Deleting a line drops rows 4..6 by 1.
+    before = {1: "toolbar", 3: "line 3", 4: "line 2", 5: "> line 1", 6: "title"}
+    after = {1: "toolbar", 3: "line 2", 4: "> line 1", 5: "title"}
+    shaded = {2, 3, 4, 5}
+    output._glide_moves(output.app, height=8, keys=after, last_keys=before, shaded=shaded, grown=-1)
+    assert out.written == ["\x1b_smooth;off;8\x1b\\"]
+    assert not output._panel_declared
+
+    # Without shading (`frame_style borders`), the same collapse still glides.
+    out.written.clear()
+    output._glide_moves(output.app, height=8, keys=after, last_keys=before, shaded=set(), grown=-1)
+    assert out.written == ["\x1b_smooth;8;24;27;0;79;0;0;1\x1b\\\x1b_smooth;advance;8;-1\x1b\\"]
+
+    # A height shrink with no matching block move still clears a stale panel region.
+    out.written.clear()
+    output._glide_moves(output.app, height=8, keys=after, last_keys=after, shaded=shaded, grown=-1)
+    assert out.written == ["\x1b_smooth;off;8\x1b\\"]
+    assert not output._panel_declared
+
+
+def test_unshaded_rows_dropping_above_a_shaded_editor_still_glide(monkeypatch):
+    clock = [5.0]
+    output, out = _glide_output(monkeypatch, clock)
+    # Activity rows 6..7 sit above a shaded editor (rows 2..5); row 6 leaves.
+    before = {1: "toolbar", 3: "> hi", 5: "title", 6: "$ ls", 7: "$ make"}
+    after = {1: "toolbar", 3: "> hi", 5: "title", 6: "$ make"}
+    shaded = {2, 3, 4, 5}
+    output._glide_moves(
+        output.app, height=10, keys=after, last_keys=before, shaded=shaded, grown=-1
+    )
+    assert out.written == ["\x1b_smooth;8;23;24;0;79;0;0;1\x1b\\\x1b_smooth;advance;8;-1\x1b\\"]
+
+
+def test_expanding_an_untitled_shaded_editor_includes_its_top_border(monkeypatch):
+    clock = [5.0]
+    output, out = _glide_output(monkeypatch, clock)
+    # Untitled shaded editor: row 5 (after) is the unkeyed shaded top border,
+    # row 4 is `> line 1` (moved up from 3), row 3 is `line 2`, row 2 is bottom border.
+    before = {1: "toolbar", 3: "> line 1"}
+    after = {1: "toolbar", 3: "line 2", 4: "> line 1"}
+    shaded = {2, 3, 4, 5}
+    output._glide_moves(output.app, height=10, keys=after, last_keys=before, shaded=shaded, grown=1)
+    # Region starts at row 25 (5 from bottom: the top border), not 26, so the
+    # uncovered top strip opens above the shaded box instead of inside it.
+    assert out.written == ["\x1b_smooth;8;25;27;0;79;0;0;1\x1b\\\x1b_smooth;advance;8;1\x1b\\"]
+
+    # If a keyed shaded header stayed put above the moved row (e.g. timer ticked
+    # in the same frame), refuse to split the box under the header.
+    out.written.clear()
+    after_with_header = {1: "toolbar", 3: "line 2", 4: "> line 1", 5: "Working 2s"}
+    before_with_header = {1: "toolbar", 3: "> line 1", 5: "Working 1s"}
+    output._glide_moves(
+        output.app,
+        height=10,
+        keys=after_with_header,
+        last_keys=before_with_header,
+        shaded=shaded,
+        grown=1,
+    )
+    assert out.written == ["\x1b_smooth;off;8\x1b\\"]
