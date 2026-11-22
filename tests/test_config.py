@@ -99,6 +99,7 @@ def test_defaults_and_path_do_not_create_files():
         "regenerate_on_resize": "on",
         "paced_scrollback": "rows",
         "smooth_scroll": "off",
+        "native_pacing": "auto",
         "show_commands": "off",
         "show_edits": "on",
         "live_edits": "off",
