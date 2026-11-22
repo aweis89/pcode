@@ -53,12 +53,91 @@ def test_pacer_lets_the_first_row_go_then_holds_to_the_rate():
     assert pacer.allowance(1, 0.31) == 1
 
 
+def test_pacer_preserves_fractional_credit_at_30hz():
+    pacer = Pacer()
+    emitted = 0
+    # Over 2 seconds at 30 Hz with a 24-row backlog (8 rows/s), carry-over
+    # keeps the actual emission rate right at ~8/s instead of dragging low.
+    for tick in range(60):
+        now = tick / 30.0
+        allow = pacer.allowance(24, now)
+        assert allow in (0, 1)
+        if allow:
+            pacer.spend(allow)
+            emitted += allow
+    assert 16 <= emitted <= 17
+
+
+def test_pacer_caps_credit_after_stalls_and_unspent_frames():
+    pacer = Pacer()
+    assert pacer.allowance(24, 0.0) == 1
+    pacer.spend(1)
+    # A long stall (>0.1s) does not bank extra credit past 1 row.
+    assert pacer.allowance(24, 0.5) == 1
+    pacer.spend(1)
+    assert pacer.allowance(24, 0.5 + 1 / 30.0) == 0
+    # Waiting with credit ready (spend 0) clamps back to 1.0 so spending later
+    # gives a full interval before the next row.
+    assert pacer.allowance(24, 0.7) == 1
+    pacer.spend(0)
+    assert pacer.allowance(24, 0.7 + 1 / 30.0) == 1
+    pacer.spend(1)
+    assert pacer.allowance(24, 0.7 + 2 / 30.0) == 0
+
+
+def test_glide_conveyor_cruises_steadily_and_coasts_without_overshoot():
+    glide = Glide()
+    # Feed 10 rows at 5 rows/s (every 0.2s), ending with rate=0 on the last row.
+    for i in range(10):
+        rate = 5.0 if i < 9 else 0.0
+        glide.advance(1, i * 0.2, rate=rate)
+    # Still trailing slightly right after the final row, then drains monotonically.
+    prev = glide.remaining(1.8)
+    assert 0.5 < prev < MAX_GLIDE
+    for step in range(1, 120):
+        rem = glide.remaining(1.8 + step / 120.0)
+        assert 0.0 <= rem <= prev + 1e-6
+        prev = rem
+    assert glide.remaining(3.0) == 0.0
+
+
+def test_glide_conveyor_edge_cases():
+    # Timeout drains if the app hints a rate and goes silent.
+    glide = Glide()
+    glide.advance(1, 0.0, rate=5.0)
+    assert glide.remaining(0.1) > 0.0
+    assert glide.remaining(2.0) == 0.0
+
+    # Slowest conveyor rate (0.5/s) from max_glide still settles on a large dt.
+    slow = Glide()
+    slow.advance(3, 0.0, rate=0.5)
+    slow.advance(0, 0.0, rate=0.0)
+    assert slow.remaining(10.0) == 0.0
+
+    # Quantization parity: 0.496 rounds to 0.50 (conveyor), 0.494 stays below (spring).
+    hi = Glide()
+    hi.advance(1, 0.0, rate=0.496)
+    assert hi.cruise == pytest.approx(0.5)
+    lo = Glide()
+    lo.advance(1, 0.0, rate=0.494)
+    assert lo.cruise == 0.0
+
+    # Cancelling back to 0 clears residual velocity so it does not bounce past rest.
+    rev = Glide()
+    rev.advance(1, 0.0, rate=5.0)
+    rev.advance(-1, 0.0, rate=0.0)
+    assert rev.rows == 0.0 and rev.velocity == 0.0 and rev.remaining(0.05) == 0.0
+
+
 def test_sequences():
     assert smooth_scroll.declaration(9, 80) == "\x1b_smooth;7;0;9;0;79;0;0\x1b\\"
     assert (
         smooth_scroll.visible_declaration(8, 20, 23, 80) == "\x1b_smooth;8;20;23;0;79;0;0;1\x1b\\"
     )
     assert smooth_scroll.advance(2) == "\x1b_smooth;advance;7;2\x1b\\"
+    assert smooth_scroll.advance(1, rate=5.0) == "\x1b_smooth;advance;7;1;500\x1b\\"
+    assert smooth_scroll.advance(1, rate=7.55) == "\x1b_smooth;advance;7;1;755\x1b\\"
+    assert smooth_scroll.advance(1, rate=150.0) == "\x1b_smooth;advance;7;1;10000\x1b\\"
     assert smooth_scroll.advance(1, smooth_scroll.PANEL_ID) == "\x1b_smooth;advance;8;1\x1b\\"
     assert smooth_scroll.OFF == "".join(f"\x1b_smooth;off;{i}\x1b\\" for i in (7, 8, 9))
 
@@ -129,7 +208,9 @@ def test_probe_finds_a_terminal_that_glides(monkeypatch):
     assert left == b""
 
 
-@pytest.mark.parametrize("reply", [b"\x1b_smooth;ok;4\x1b\\", b"\x1b_smooth;ok;5;x\x1b\\"])
+@pytest.mark.parametrize(
+    "reply", [b"\x1b_smooth;ok;4\x1b\\", b"\x1b_smooth;ok;6\x1b\\", b"\x1b_smooth;ok;7;x\x1b\\"]
+)
 def test_probe_needs_the_exact_protocol(monkeypatch, reply):
     _, left = _probe(monkeypatch, answer=reply)
     assert not theme.glide_supported()
@@ -323,6 +404,35 @@ def test_a_typed_row_does_not_unroll(monkeypatch):
     output, out = _glide_output(monkeypatch, [0.0])
     output._glide_insert(20, 1, [SimpleNamespace(typed=True)])
     assert out.written == [] and not output._insert_held()
+
+
+def test_glide_rate_hints_only_when_another_whole_row_is_ready(monkeypatch):
+    from types import SimpleNamespace
+
+    clock = [10.0]
+    output, _ = _glide_output(monkeypatch, clock)
+    output._glide.advance(1, clock[0], rate=5.0)
+    # Empty queue: end of stream -> 0.
+    assert output._glide_rate() == 0.0
+    assert not output._typing_held()
+    # Non-typed rows waiting -> pacer's target rate, not held by typing.
+    output.rows = [SimpleNamespace(typed=False, visible=10)] * 24
+    assert output._glide_rate() == pytest.approx(8.0)
+    assert not output._typing_held()
+    # Next row is typed and still typing out -> 0 and held while gliding.
+    output.rows = [SimpleNamespace(typed=True, visible=20)]
+    output._typed = 9
+    assert output._glide_rate() == 0.0
+    assert output._typing_held()
+    # Next row is typed but already revealed whole (backlogged) -> cruise rate, not held.
+    output._typed = 20
+    assert output._glide_rate() == pytest.approx(smooth_scroll.MIN_ROWS_PER_SECOND)
+    assert not output._typing_held()
+    # Blank prose row (visible == 0) does not hold typing and keeps cruising.
+    output.rows = [SimpleNamespace(typed=True, visible=0)]
+    output._typed = 0
+    assert output._glide_rate() == pytest.approx(smooth_scroll.MIN_ROWS_PER_SECOND)
+    assert not output._typing_held()
 
 
 def test_a_settled_panel_region_is_cleared_and_a_moving_one_kept(monkeypatch):

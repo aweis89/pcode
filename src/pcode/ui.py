@@ -2516,11 +2516,12 @@ class TerminalOutput:
                         self._handoff_render = True
                         if scrolled and self._declared is not None:
                             # Same frame as the rows: the terminal draws the
-                            # region that much lower and springs it back.
+                            # region that much lower and glides it back.
                             self._end_insert()
                             self._end_panel()
-                            self.app.output.write_raw(smooth_scroll.advance(scrolled))
-                            self._glide.advance(scrolled, monotonic())
+                            rate = self._glide_rate() if paced else 0.0
+                            self.app.output.write_raw(smooth_scroll.advance(scrolled, rate=rate))
+                            self._glide.advance(scrolled, monotonic(), rate=rate)
                         elif self._declared is not None and drawn is not None:
                             self._glide_insert(drawn, counter.rows, chunk)
                 # The handoff already repainted the editor on exit.
@@ -2618,12 +2619,14 @@ class TerminalOutput:
         """Whether the next typed row waits for the glide to bring its row into view.
 
         The typing row glides with the transcript, so just after a scroll it
-        sits partly below the visible rows. Rows that roll in whole are not
+        sits partly below the visible rows. Rows that roll in whole (including
+        backlogged typed rows already revealed in full, and blank rows) are not
         held: arriving from below is how they are meant to appear.
         """
         return (
             bool(self.rows)
             and self.rows[0].typed
+            and self._typed < self.rows[0].visible
             and self._glide.remaining(monotonic()) > smooth_scroll.TYPE_WHEN_GLIDE_UNDER
         )
 
@@ -2639,6 +2642,15 @@ class TerminalOutput:
             due, typed = allowed, row.visible if row.typed else 0
         self._glide_pacer.spend(due)
         return due, typed
+
+    def _glide_rate(self) -> float:
+        """Cruise rate (rows/s) to hint to the terminal, or 0 when pausing/typing."""
+        if not self.rows:
+            return 0.0
+        nxt = self.rows[0]
+        if nxt.typed and self._typed < nxt.visible:
+            return 0.0
+        return self._glide_pacer.rate_for(len(self.rows))
 
     def _declare(self, bottom: int | None) -> None:
         """Declare the glide region down to row ``bottom`` (0-based), or clear it.
