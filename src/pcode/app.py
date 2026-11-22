@@ -81,7 +81,7 @@ from pcode.runtime import (
 from pcode.shell_mode import shell_command
 from pcode.startup_input import StartupInput
 from pcode.stream_display import PrintedReply, present_events, present_stream_event
-from pcode.terminal_notify import TabProgress, TabTitle
+from pcode.terminal_notify import Reconcilable, Reconciler, TabProgress, TabTitle
 from pcode.theme import (
     THEMES,
     ambiguous_wide,
@@ -261,8 +261,7 @@ class PreviewApp:
         self._emulator: Callable[[str], None] | None = None
         # The tab's progress bar, while this terminal runs its prompt.
         self._progress: TabProgress | None = None
-        self._title: TabTitle | None = None
-        self._pane_session = None
+        self._reconciler: Reconciler | None = None
         self._appearance: AppearanceWatch | None = None
         self._kitty_spinners: KittySpinners | None = None
         # The in-process controller's loops, while this terminal runs them.
@@ -630,6 +629,7 @@ class PreviewApp:
         self.reviewed_checkpoint = None
         self.transcript.clear()
         self.transcript.print(Rule(title, style="pcode.muted"))
+        self.reconcile_terminal()
 
     def replay_conversation(self) -> None:
         # A host that loaded its conversation after this terminal attached
@@ -720,9 +720,19 @@ class PreviewApp:
         self.transcript.note(text)
         self.output.app.invalidate()
 
+    def reconcile_terminal(self) -> None:
+        """Bring the title and pane session in line now, not at the next slow tick.
+
+        Cheap: an item whose state has not changed writes nothing.
+        """
+        if self._reconciler is not None:
+            self._reconciler.tick()
+
     def turn_ended(self) -> None:
         if self._progress is not None:
             self._progress.turn_ended()
+        # A first turn names the session; /rename and /resume are turns too.
+        self.reconcile_terminal()
         self.activity.edit_previews.clear()
         # A watched job is not the turn's; its preview stays pinned.
         for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
@@ -2293,6 +2303,7 @@ class PreviewApp:
         self.activity.reset()
         if self._progress is not None:
             self._progress.switched()
+        self.reconcile_terminal()
         self.edits.clear()
         self.reviewed_checkpoint = None
         for name, value in welcome["activity"].items():
@@ -3218,12 +3229,16 @@ class PreviewApp:
                 "terminal_title", SETTINGS["terminal_title"].default
             )
             # Whichever controller is on screen: /attach replaces it.
-            self._title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
             from pcode import drawer, theme
 
+            items: list[Reconcilable] = []
+            tab_title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
+            if tab_title.enabled:
+                items.append(tab_title)
             # Over ssh the session is the remote machine's: a restored local pane can't reopen it.
             if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
-                self._pane_session = drawer.PaneSession(self.active_session_id, terminal)
+                items.append(drawer.PaneSession(self.active_session_id, terminal))
+            self._reconciler = Reconciler(items)
             self._appearance = AppearanceWatch(
                 terminal, active=lambda: self.transcript.theme == "auto"
             )
@@ -3267,10 +3282,8 @@ class PreviewApp:
             session.app.create_background_task(drafts.run())
             if self._progress is not None:
                 session.app.create_background_task(self._progress.run())
-            if self._title is not None:
-                session.app.create_background_task(self._title.run())
-            if self._pane_session is not None:
-                session.app.create_background_task(self._pane_session.run())
+            if self._reconciler is not None:
+                session.app.create_background_task(self._reconciler.run())
             if self._appearance is not None:
                 session.app.create_background_task(self._appearance.run())
             if early is not None:
@@ -3310,12 +3323,9 @@ class PreviewApp:
             if self._progress is not None:
                 self._progress.close()
                 self._progress = None
-            if self._title is not None:
-                self._title.close()
-                self._title = None
-            if self._pane_session is not None:
-                self._pane_session.close()
-                self._pane_session = None
+            if self._reconciler is not None:
+                self._reconciler.close()
+                self._reconciler = None
             if self._appearance is not None:
                 self._appearance.close()
                 self._appearance = None
