@@ -381,13 +381,12 @@ pcode config set paced_scrollback off    # Write every block at once
 The default is `rows`; changes apply on the next launch. An older saved `on`
 falls back to the default.
 
-When running in Ghostty Smooth (protocol 8) with `smooth_scroll auto`,
-`native_pacing` (`auto` by default) hands each settled block to the terminal in
-a single frame instead of dribbling rows from Python. Ghostty drives the batch
-conveyor glide with a soft bottom-edge dissolve, and in `typed` mode runs a
-120 Hz soft-edged ink sweep across prose lines (keeping hyperlinks, ligatures,
-and instant scrollback search intact). Set `native_pacing off` to stay on the
-Python pacer.
+With `smooth_scroll auto` in Ghostty Smooth, pcode hands settled blocks to the
+terminal in batches instead of pacing rows itself. Ghostty glides them in with
+a soft bottom-edge dissolve. In `typed` mode it also reveals new rows: a 120 Hz
+soft-edged ink sweep across prose lines and a top-to-bottom curtain for code
+and tables (keeping hyperlinks, ligatures, and instant scrollback search
+intact).
 
 ## Regenerating the terminal transcript
 

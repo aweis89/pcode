@@ -13,7 +13,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode import smooth_scroll, theme
-from pcode.smooth_scroll import MAX_GLIDE, Glide, Pacer
+from pcode.smooth_scroll import MAX_GLIDE, Glide
 from pcode.startup_input import TerminalReplyParser
 from pcode.ui import TerminalOutput, Transcript
 
@@ -41,118 +41,23 @@ def test_glide_adds_an_advance_to_what_is_left_not_to_the_start():
     assert glide.remaining(0.1) == pytest.approx(left + 1)
 
 
-def test_pacer_lets_the_first_row_go_then_holds_to_the_rate():
-    pacer = Pacer()
-    assert pacer.allowance(5, 0.0) == 1
-    pacer.spend(1)
-    assert pacer.allowance(5, 0.01) == 0
-    # At least MIN_ROWS_PER_SECOND: a row is due within 1/5 s.
-    assert pacer.allowance(5, 0.0 + 1 / smooth_scroll.MIN_ROWS_PER_SECOND) == 1
-    # Nothing queued resets it: the next row after a pause goes at once.
-    assert pacer.allowance(0, 0.3) == 0
-    assert pacer.allowance(1, 0.31) == 1
-
-
-def test_pacer_preserves_fractional_credit_at_30hz():
-    pacer = Pacer()
-    emitted = 0
-    # Over 2 seconds at 30 Hz with a 24-row backlog (8 rows/s), carry-over
-    # keeps the actual emission rate right at ~8/s instead of dragging low.
-    for tick in range(60):
-        now = tick / 30.0
-        allow = pacer.allowance(24, now)
-        assert allow in (0, 1)
-        if allow:
-            pacer.spend(allow)
-            emitted += allow
-    assert 16 <= emitted <= 17
-
-
-def test_pacer_caps_credit_after_stalls_and_unspent_frames():
-    pacer = Pacer()
-    assert pacer.allowance(24, 0.0) == 1
-    pacer.spend(1)
-    # A long stall (>0.1s) does not bank extra credit past 1 row.
-    assert pacer.allowance(24, 0.5) == 1
-    pacer.spend(1)
-    assert pacer.allowance(24, 0.5 + 1 / 30.0) == 0
-    # Waiting with credit ready (spend 0) clamps back to 1.0 so spending later
-    # gives a full interval before the next row.
-    assert pacer.allowance(24, 0.7) == 1
-    pacer.spend(0)
-    assert pacer.allowance(24, 0.7 + 1 / 30.0) == 1
-    pacer.spend(1)
-    assert pacer.allowance(24, 0.7 + 2 / 30.0) == 0
-
-
-def test_glide_conveyor_cruises_steadily_and_coasts_without_overshoot():
-    glide = Glide()
-    # Feed 10 rows at 5 rows/s (every 0.2s), ending with rate=0 on the last row.
-    for i in range(10):
-        rate = 5.0 if i < 9 else 0.0
-        glide.advance(1, i * 0.2, rate=rate)
-    # Still trailing slightly right after the final row, then drains monotonically.
-    prev = glide.remaining(1.8)
-    assert 0.5 < prev < MAX_GLIDE
-    for step in range(1, 120):
-        rem = glide.remaining(1.8 + step / 120.0)
-        assert 0.0 <= rem <= prev + 1e-6
-        prev = rem
-    assert glide.remaining(3.0) == 0.0
-
-
-def test_glide_conveyor_edge_cases():
-    # Timeout drains if the app hints a rate and goes silent.
-    glide = Glide()
-    glide.advance(1, 0.0, rate=5.0)
-    assert glide.remaining(0.1) > 0.0
-    assert glide.remaining(2.0) == 0.0
-
-    # Slowest conveyor rate (0.5/s) from max_glide still settles on a large dt.
-    slow = Glide()
-    slow.advance(3, 0.0, rate=0.5)
-    slow.advance(0, 0.0, rate=0.0)
-    assert slow.remaining(10.0) == 0.0
-
-    # Quantization parity: 0.496 rounds to 0.50 (conveyor), 0.494 stays below (spring).
-    hi = Glide()
-    hi.advance(1, 0.0, rate=0.496)
-    assert hi.cruise == pytest.approx(0.5)
-    lo = Glide()
-    lo.advance(1, 0.0, rate=0.494)
-    assert lo.cruise == 0.0
-
-    # Cancelling back to 0 clears residual velocity so it does not bounce past rest.
-    rev = Glide()
-    rev.advance(1, 0.0, rate=5.0)
-    rev.advance(-1, 0.0, rate=0.0)
-    assert rev.rows == 0.0 and rev.velocity == 0.0 and rev.remaining(0.05) == 0.0
-
-
 def test_sequences():
     assert smooth_scroll.declaration(9, 80) == "\x1b_smooth;7;0;9;0;79;0;0\x1b\\"
     assert (
         smooth_scroll.visible_declaration(8, 20, 23, 80) == "\x1b_smooth;8;20;23;0;79;0;0;1\x1b\\"
     )
     assert smooth_scroll.advance(2) == "\x1b_smooth;advance;7;2\x1b\\"
-    assert smooth_scroll.advance(1, rate=5.0) == "\x1b_smooth;advance;7;1;500\x1b\\"
-    assert smooth_scroll.advance(1, rate=7.55) == "\x1b_smooth;advance;7;1;755\x1b\\"
-    assert smooth_scroll.advance(1, rate=150.0) == "\x1b_smooth;advance;7;1;10000\x1b\\"
     assert smooth_scroll.advance(1, smooth_scroll.PANEL_ID) == "\x1b_smooth;advance;8;1\x1b\\"
     assert (
-        smooth_scroll.advance(
-            12,
-            rate=6.0,
-            flags=smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE,
-        )
-        == "\x1b_smooth;advance;7;12;600;3\x1b\\"
+        smooth_scroll.advance(12, flags=smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE)
+        == "\x1b_smooth;advance;7;12;0;3\x1b\\"
     )
     assert smooth_scroll.reveal(10, 4) == "\x1b_smooth;reveal;7;10;4;0\x1b\\"
     assert (
         smooth_scroll.reveal(10, 4, rate=300, flags=smooth_scroll.REVEAL_CURTAIN)
         == "\x1b_smooth;reveal;7;10;4;300;1\x1b\\"
     )
-    assert smooth_scroll.OFF == "".join(f"\x1b_smooth;off;{i}\x1b\\" for i in (7, 8, 9))
+    assert smooth_scroll.OFF == "".join(f"\x1b_smooth;off;{i}\x1b\\" for i in (7, 8))
 
 
 @pytest.mark.parametrize(
@@ -222,7 +127,13 @@ def test_probe_finds_a_terminal_that_glides(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "reply", [b"\x1b_smooth;ok;4\x1b\\", b"\x1b_smooth;ok;6\x1b\\", b"\x1b_smooth;ok;7;x\x1b\\"]
+    "reply",
+    [
+        b"\x1b_smooth;ok;7\x1b\\",
+        b"\x1b_smooth;ok;8\x1b\\",
+        b"\x1b_smooth;ok;10\x1b\\",
+        b"\x1b_smooth;ok;9;x\x1b\\",
+    ],
 )
 def test_probe_needs_the_exact_protocol(monkeypatch, reply):
     _, left = _probe(monkeypatch, answer=reply)
@@ -389,65 +300,6 @@ def _glide_output(monkeypatch, clock):
     return TerminalOutput(Console(force_terminal=True, width=80), app), out
 
 
-def test_a_row_written_before_the_screen_fills_unrolls_and_holds_the_next(monkeypatch):
-    from types import SimpleNamespace
-
-    clock = [100.0]
-    output, out = _glide_output(monkeypatch, clock)
-    # The layout drew the bottom 20 rows of 30, so the typing row is row 10.
-    output._glide_insert(20, 1, [SimpleNamespace(typed=False)])
-    sent = "".join(out.written)
-    # Cleared first, so the terminal starts this glide fresh as pcode does.
-    assert sent == (
-        "\x1b_smooth;off;9\x1b\\\x1b_smooth;9;10;11;0;79;0;0;1\x1b\\\x1b_smooth;advance;9;-1\x1b\\"
-    )
-    assert output._insert_held()
-    clock[0] += 0.5
-    assert not output._insert_held()
-    out.written.clear()
-    clock[0] += 1.0
-    output._drop_settled_regions(output.app)
-    assert out.written == ["\x1b_smooth;off;9\x1b\\"]
-    assert not output._insert_declared
-
-
-def test_a_typed_row_does_not_unroll(monkeypatch):
-    from types import SimpleNamespace
-
-    output, out = _glide_output(monkeypatch, [0.0])
-    output._glide_insert(20, 1, [SimpleNamespace(typed=True)])
-    assert out.written == [] and not output._insert_held()
-
-
-def test_glide_rate_hints_only_when_another_whole_row_is_ready(monkeypatch):
-    from types import SimpleNamespace
-
-    clock = [10.0]
-    output, _ = _glide_output(monkeypatch, clock)
-    output._glide.advance(1, clock[0], rate=5.0)
-    # Empty queue: end of stream -> 0.
-    assert output._glide_rate() == 0.0
-    assert not output._typing_held()
-    # Non-typed rows waiting -> pacer's target rate, not held by typing.
-    output.rows = [SimpleNamespace(typed=False, visible=10)] * 24
-    assert output._glide_rate() == pytest.approx(8.0)
-    assert not output._typing_held()
-    # Next row is typed and still typing out -> 0 and held while gliding.
-    output.rows = [SimpleNamespace(typed=True, visible=20)]
-    output._typed = 9
-    assert output._glide_rate() == 0.0
-    assert output._typing_held()
-    # Next row is typed but already revealed whole (backlogged) -> cruise rate, not held.
-    output._typed = 20
-    assert output._glide_rate() == pytest.approx(smooth_scroll.MIN_ROWS_PER_SECOND)
-    assert not output._typing_held()
-    # Blank prose row (visible == 0) does not hold typing and keeps cruising.
-    output.rows = [SimpleNamespace(typed=True, visible=0)]
-    output._typed = 0
-    assert output._glide_rate() == pytest.approx(smooth_scroll.MIN_ROWS_PER_SECOND)
-    assert not output._typing_held()
-
-
 def test_a_settled_panel_region_is_cleared_and_a_moving_one_kept(monkeypatch):
     clock = [5.0]
     output, out = _glide_output(monkeypatch, clock)
@@ -475,158 +327,27 @@ def test_repeated_rows_follow_the_block_but_do_not_vote():
     assert _block_move({1: "a", 3: "b", 4: "b"}, {1: "a", 2: "b", 3: "b"}) is None
 
 
-def test_probe_accepts_protocol_8_and_9_for_native_pacing(monkeypatch):
-    reply9 = b"\x1b_smooth;ok;9\x1b\\"
-    _, left = _probe(monkeypatch, answer=reply9)
+def test_probe_needs_protocol_9(monkeypatch):
+    _, left = _probe(monkeypatch, answer=b"\x1b_smooth;ok;9\x1b\\")
     assert theme.glide_supported()
-    assert theme.native_pacing_supported()
-    assert theme.queued_pacing_supported()
-    assert left == b""
-
-    reply8 = b"\x1b_smooth;ok;8\x1b\\"
-    _, left = _probe(monkeypatch, answer=reply8)
-    assert theme.glide_supported()
-    assert theme.native_pacing_supported()
-    assert not theme.queued_pacing_supported()
-    assert left == b""
-
-    # Protocol 7 still glides, without native pacing.
-    _, left = _probe(monkeypatch, answer=REPLY)
-    assert theme.glide_supported()
-    assert not theme.native_pacing_supported()
-    assert not theme.queued_pacing_supported()
     assert left == b""
 
 
-@pytest.mark.parametrize(
-    "smooth, native_pref, proto8, expected_native",
-    [
-        ("auto", "auto", True, True),
-        ("auto", "off", True, False),
-        ("auto", "auto", False, False),
-        ("off", "auto", True, False),
-    ],
-)
-def test_native_pacing_setting_and_probe_gating(
-    monkeypatch, smooth, native_pref, proto8, expected_native
-):
-    monkeypatch.setattr("pcode.ui.glide_supported", lambda: True)
-    monkeypatch.setattr("pcode.ui.native_pacing_supported", lambda: proto8)
-    console = Console(force_terminal=True, width=80)
-    transcript = Transcript(
-        console,
-        detected_theme="dark",
-        preferences={"smooth_scroll": smooth, "native_pacing": native_pref},
-    )
-    with create_pipe_input() as pipe:
-        app = Application(input=pipe, output=DummyOutput())
-        output = TerminalOutput(console, app)
-        transcript.output = output
-    assert output.native_pacing is expected_native
-
-
-def test_native_batch_groups_same_style_and_respects_overscan_budget(monkeypatch):
-    from pcode.ui import QueuedRow
-
-    clock = [10.0]
-    output, _ = _glide_output(monkeypatch, clock)
-    output.native_pacing = True
-    output._declared = ((40, 80), clock[0])
-    output.app.output.size = output.app.output.size._replace(rows=50)
-    output.rows = [
-        QueuedRow("prose line 1\n", typed=True),
-        QueuedRow("prose line 2\n", typed=True),
-        QueuedRow("\n", typed=False),  # blank spacer joins the prose run
-        QueuedRow("code line 1\n", typed=False),
-        QueuedRow("code line 2\n", typed=False),
-    ]
-    assert output._native_batch() == (3, True)
-
-    # Large burst exceeding MAX_BATCH_GLIDE commits up to 32 rows, then waits
-    # until enough overscan room opens rather than trickling 1 row at a time.
-    output.rows = [QueuedRow(f"row {i}\n", typed=False) for i in range(45)]
-    assert output._native_batch() == (smooth_scroll.MAX_BATCH_GLIDE, False)
-    output._native_backlog = float(smooth_scroll.MAX_BATCH_GLIDE)
-    output._native_rate = 8.0
-    output._native_at = clock[0]
-    assert output._native_batch() == (0, False)
-    clock[0] += 0.5  # 4 rows drained (< 8 threshold for a big burst)
-    assert output._native_batch() == (0, False)
-    clock[0] += 0.6  # ~8.8 rows drained -> commits 8 rows cleanly
-    assert output._native_batch() == (8, False)
-
-    # Short pane (< 32 transcript rows) caps batches to visible transcript rows.
-    output._reset_native_state()
-    output._declared = ((16, 80), clock[0])  # 15 visible transcript rows (0..14)
-    output.app.output.size = output.app.output.size._replace(rows=24)
-    assert output._native_batch() == (15, False)
-
-
-def test_emit_native_commit_sends_batch_glide_and_reveal_sequences(monkeypatch):
-    clock = [10.0]
+def _batch_output(monkeypatch, clock, *, rows=50, bottom=40, pinned=True):
     output, out = _glide_output(monkeypatch, clock)
-    output.native_pacing = True
-    output._declared = ((21, 80), clock[0])
-
-    # Scrolled prose commit: batch advance + soft fade + horizontal ink sweep.
-    output._native_commit = (6, 6, True, 240, None)
-    output._emit_native_commit(output.app)
-    sent = "".join(out.written)
-    assert sent == ("\x1b_smooth;advance;7;6;500;3\x1b\\\x1b_smooth;reveal;7;14;6;0\x1b\\")
-
-    # Scrolled non-prose commit: batch advance + soft fade, no horizontal sweep.
-    out.written.clear()
-    output._native_commit = (10, 10, False, 300, None)
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == "\x1b_smooth;advance;7;10;533;3\x1b\\"
-
-    # A second prose block waits until the first prose sweep finishes (split by code).
-    from pcode.ui import QueuedRow
-
-    output.rows = [QueuedRow("second prose\n", typed=True)]
-    assert output._native_batch() == (0, False)
-    clock[0] += 3.0
-    assert output._native_batch() == (1, True)
-
-    # In-place prose (screen not full, scrolled=0): sweep reveal only.
-    out.written.clear()
-    output._reset_native_state()
-    output._declared = ((15, 80), clock[0])
-    output._native_commit = (4, 0, True, 160, None)
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == "\x1b_smooth;reveal;7;10;4;0\x1b\\"
-
-    # In-place non-prose (screen not full, scrolled=0): vertical curtain reveal.
-    out.written.clear()
-    output._reset_native_state()
-    output._native_commit = (4, 0, False, 160, None)
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == "\x1b_smooth;reveal;7;10;4;0;1\x1b\\"
-
-    # Partial-to-full boundary crossing (0 < scrolled < written) for non-prose:
-    # glides the scrolled rows and dissolves the in-place rows with a curtain.
-    out.written.clear()
-    output._reset_native_state()
-    output._declared = ((21, 80), clock[0])
-    output._native_commit = (6, 2, False, 200, None)
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == (
-        "\x1b_smooth;advance;7;2;500;3\x1b\\\x1b_smooth;reveal;7;14;4;0;1\x1b\\"
-    )
+    output.gliding = True
+    output._declared = ((bottom, 80), clock[0])
+    output.app.output.size = output.app.output.size._replace(rows=rows)
+    monkeypatch.setattr(output, "_editor_pinned", lambda: pinned)
+    return output, out
 
 
-def test_protocol_9_queued_batch_and_mixed_reveals(monkeypatch):
+def test_native_batch_hands_off_mixed_rows_and_waits_on_the_glide(monkeypatch):
     from pcode.ui import QueuedRow
 
     clock = [10.0]
-    output, out = _glide_output(monkeypatch, clock)
-    output.native_pacing = True
-    output.native_queued = True
-    output._declared = ((21, 80), clock[0])
-    output.app.output.size = output.app.output.size._replace(rows=25)
-    monkeypatch.setattr(output, "_editor_pinned", lambda: True)
-
-    # Mixed prose -> code -> prose commits in ONE single handoff without splitting or stalling.
+    output, _ = _batch_output(monkeypatch, clock)
+    # Prose, code and prose again go in one handoff: reveals queue terminal-side.
     output.rows = [
         QueuedRow("prose 1\n", typed=True),
         QueuedRow("prose 2\n", typed=True),
@@ -635,59 +356,76 @@ def test_protocol_9_queued_batch_and_mixed_reveals(monkeypatch):
         QueuedRow("code 2\n", typed=False),
         QueuedRow("prose 3\n", typed=True),
     ]
-    assert output._native_batch() == (6, False)
-    runs = output._native_runs(output.rows)
-    assert runs == [(0, 3, True), (3, 2, False), (5, 1, True)]
+    assert output._native_batch() == 6
+    assert output._native_runs(output.rows) == [(0, 3, True), (3, 2, False), (5, 1, True)]
 
-    # Emits ONE rate-0 batch advance + queued sweep -> curtain -> sweep reveals.
-    output._native_commit = (6, 6, False, 120, runs)
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == (
+    # A burst past the glide's reach goes up to MAX_BATCH_GLIDE rows, then waits
+    # for enough room rather than trickling a row at a time.
+    output.rows = [QueuedRow(f"row {i}\n", typed=False) for i in range(200)]
+    assert output._native_batch() == smooth_scroll.MAX_BATCH_GLIDE
+    output._native_backlog = float(smooth_scroll.MAX_BATCH_GLIDE)
+    output._native_rate = 20.0
+    output._native_at = clock[0]
+    assert output._native_batch() == 0
+    clock[0] += 0.5  # 10 rows drained: under the 16-row minimum for a big burst
+    assert output._native_batch() == 0
+    clock[0] += 0.5  # 20 rows drained
+    assert output._native_batch() == 20
+
+    # Before the screen fills, rows land in place: no more than can be seen.
+    output._reset_native_state()
+    output._declared = ((16, 80), clock[0])
+    output.app.output.size = output.app.output.size._replace(rows=24)
+    monkeypatch.setattr(output, "_editor_pinned", lambda: False)
+    assert output._native_batch() == 15
+
+
+def test_emit_native_commit_sends_batch_glide_and_queued_reveals(monkeypatch):
+    clock = [10.0]
+    output, out = _batch_output(monkeypatch, clock, rows=25, bottom=21)
+
+    def emit(commit):
+        out.written.clear()
+        output._reset_native_state()
+        output._native_commit = commit
+        output._emit_native_commit(output.app)
+        return "".join(out.written)
+
+    # One batch advance, then sweep -> curtain -> sweep reveals.
+    assert emit((6, 6, [(0, 3, True), (3, 2, False), (5, 1, True)])) == (
         "\x1b_smooth;advance;7;6;0;3\x1b\\"
         "\x1b_smooth;reveal;7;14;3;0\x1b\\"
         "\x1b_smooth;reveal;7;17;2;0;1\x1b\\"
         "\x1b_smooth;reveal;7;19;1;0\x1b\\"
     )
+    assert output._native_backlog == 6.0
 
-    # Large 40-row burst on a 20-row transcript emits signed negative top rows for
-    # content already scrolled into the 128-row glide window.
-    out.written.clear()
-    output._reset_native_state()
-    big_runs = [(0, 15, True), (15, 15, False), (30, 10, True)]
-    output._native_commit = (40, 40, False, 800, big_runs)
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == (
+    # A 40-row burst on a 20-row transcript reveals rows already scrolled
+    # above the region with negative tops.
+    assert emit((40, 40, [(0, 15, True), (15, 15, False), (30, 10, True)])) == (
         "\x1b_smooth;advance;7;40;0;3\x1b\\"
         "\x1b_smooth;reveal;7;-20;15;0\x1b\\"
         "\x1b_smooth;reveal;7;-5;15;0;1\x1b\\"
         "\x1b_smooth;reveal;7;10;10;0\x1b\\"
     )
 
-    # Pure non-prose scrolled commit in `rows` mode uses batch glide + soft bottom fade only.
-    out.written.clear()
-    output._reset_native_state()
+    # `rows` mode, no prose: batch glide only.
     output.typed = False
-    output._native_commit = (10, 10, False, 200, [(0, 10, False)])
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == "\x1b_smooth;advance;7;10;0;3\x1b\\"
+    assert emit((10, 10, [(0, 10, False)])) == "\x1b_smooth;advance;7;10;0;3\x1b\\"
+    # ...plus a curtain over the rows that filled the space above the editor.
+    assert emit((6, 2, [(0, 6, False)])) == (
+        "\x1b_smooth;advance;7;2;0;3\x1b\\\x1b_smooth;reveal;7;14;4;0;1\x1b\\"
+    )
 
-    # In `typed` mode, a pure non-prose scrolled commit still emits a curtain reveal so
-    # it chains cleanly with adjacent prose sweeps, and trailing non-newline rows never
-    # spill past `end_row`.
-    out.written.clear()
-    output._reset_native_state()
+    # `typed` mode curtains non-prose too, so it chains with the sweeps, and a
+    # trailing unfinished row never spills past the transcript's last row.
     output.typed = True
-    output._native_commit = (5, 5, False, 100, [(0, 6, False)])
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == (
+    assert emit((5, 5, [(0, 6, False)])) == (
         "\x1b_smooth;advance;7;5;0;3\x1b\\\x1b_smooth;reveal;7;15;5;0;1\x1b\\"
     )
 
-    # In-place (`scrolled == 0`) clips negative prefix without shifting/overlapping later runs.
-    out.written.clear()
-    output._reset_native_state()
-    output._native_commit = (25, 0, False, 400, [(0, 10, True), (10, 15, False)])
-    output._emit_native_commit(output.app)
-    assert "".join(out.written) == (
+    # In place (nothing scrolled): rows above the region are clipped off.
+    assert emit((25, 0, [(0, 10, True), (10, 15, False)])) == (
         "\x1b_smooth;reveal;7;0;5;0\x1b\\\x1b_smooth;reveal;7;5;15;0;1\x1b\\"
     )
+    assert emit((4, 0, [(0, 4, False)])) == "\x1b_smooth;reveal;7;16;4;0;1\x1b\\"

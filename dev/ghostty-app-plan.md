@@ -277,10 +277,10 @@ streaming), a review, and a docs page saying which terminal to run.
   (not the `/dev/tty` fallback `--print` uses), when the environment says
   Ghostty (`TERM=xterm-ghostty`, which survives ssh, or
   `GHOSTTY_RESOURCES_DIR`), and never under tmux.
-- The version must match exactly (`PROTOCOL`, now 5: 4 added `advance`, 5 the
-  no-overscan flag), because pcode mirrors the terminal's spring constants
-  to time typing. The row rate is a constant for the same reason, not a
-  setting.
+- The version must match exactly (`PROTOCOL`, now 9: batch conveyor glides
+  backed by scrollback and queued sweep/curtain reveals), because pcode
+  mirrors the terminal's batch glide reach and conveyor speeds to decide when
+  to hand off the next batch. Older protocols are not supported.
 - A reply that lands after the probe stops waiting (slow ssh) is filtered out
   of typed input by `startup_input`, like a late background reply.
 - Popups clear the regions (`TerminalOutput.release_screen`); full-screen

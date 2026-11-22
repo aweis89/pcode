@@ -98,8 +98,6 @@ from pcode.terminal_text import safe_text
 from pcode.theme import (
     detect_theme,
     glide_supported,
-    native_pacing_supported,
-    queued_pacing_supported,
     terminal_background,
 )
 from pcode.theme_gallery import SyntaxGallery
@@ -2269,23 +2267,18 @@ class TerminalOutput:
         self._row_base = 0
         # Experimental glide (`pcode.smooth_scroll`). The typing row is then
         # always reserved, the glide region's last visible row, with a blank
-        # reserved row below it as the region's hidden bottom row. Rows reach
-        # scrollback no faster than ``_glide_pacer`` allows. ``_declared`` is
-        # the region last sent and when (None: cleared).
+        # reserved row below it as the region's hidden bottom row. Settled
+        # rows go to the terminal in batches (`_native_batch`), which paces
+        # them itself. ``_declared`` is the region last sent and when (None:
+        # cleared).
         self.gliding = False
-        self.native_pacing = False
-        self.native_queued = False
-        self._native_commit: (
-            tuple[int, int, bool, int, list[tuple[int, int, bool]] | None] | None
-        ) = None
+        # The batch just written, `(rows, rows scrolled, runs)`, for
+        # `_track_layout` to announce in the same frame; see `_native_runs`.
+        self._native_commit: tuple[int, int, list[tuple[int, int, bool]]] | None = None
+        # pcode's estimate of the terminal's batch glide still to run.
         self._native_backlog = 0.0
-        self._native_rate = smooth_scroll.MIN_ROWS_PER_SECOND
+        self._native_rate = smooth_scroll.BATCH_MIN_RATE
         self._native_at = 0.0
-        self._native_reveal_until = 0.0
-        self._native_reveal_mode: int | None = None
-        self._native_reveal_split = False
-        self._glide_pacer = smooth_scroll.Pacer()
-        self._glide = smooth_scroll.Glide()
         # The layout's drawn height and whether it was pinned (no filler rows),
         # after the last render; and whether that render was a handoff's, whose
         # scroll `flush` already sent.
@@ -2297,12 +2290,8 @@ class TerminalOutput:
         self._last_keys: dict[int, str] = {}
         self._handoff_render = False
         self._declared: tuple[tuple[int, int], float] | None = None
-        # Rows written before the screen filled glide down into place, the
-        # typing row under them pushed down (`_glide_insert`): pcode's copy of
-        # that glide, and whether its region is declared.
-        self._insert_glide = smooth_scroll.Glide()
-        self._insert_declared = False
-        # The same for the live panel's rows moving (`_glide_moves`, `_glide_panel`).
+        # The live panel's rows moving (`_glide_moves`, `_glide_panel`): pcode's
+        # copy of that glide, and whether its region is declared.
         self._panel_glide = smooth_scroll.Glide()
         self._panel_declared = False
 
@@ -2529,23 +2518,17 @@ class TerminalOutput:
             # The layout's drawn height before this write, to work out how far
             # the write scrolls the screen (see `_scrolled`).
             drawn = self._drawn_height() if self.gliding and self._regenerate is None else None
-            native_batch_prose = False
             if paced and self._regenerate is None:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
                 if self.pending:
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.native_pacing:
-                    due, native_batch_prose = self._native_batch()
-                    typed = 0
-                elif self.gliding and (self._typing_held() or self._insert_held()):
-                    due, typed = 0, self._typed
-                else:
-                    if self.rows:
-                        due, typed = self._advance()
-                    if self.gliding:
-                        due, typed = self._glide_limit(due, typed)
+                if self.gliding:
+                    # The terminal paces and reveals the batch itself.
+                    due = self._native_batch()
+                elif self.rows:
+                    due, typed = self._advance()
                 if not due and typed != self._typed:
                     self._typed = typed
                     self.app.invalidate()
@@ -2599,33 +2582,15 @@ class TerminalOutput:
                         self._handoff_render = True
                         if (
                             not rebuilt
-                            and self.native_pacing
+                            and self.gliding
                             and paced
                             and self._declared is not None
+                            and counter.rows > 0
                         ):
                             # Sent in `_track_layout` right after the editor
                             # redraws and before SYNC_END so the terminal sees
                             # the final committed rows when scanning reveal spans.
-                            if counter.rows > 0:
-                                chars = sum(row.visible for row in chunk)
-                                runs = self._native_runs(chunk) if self.native_queued else None
-                                self._native_commit = (
-                                    counter.rows,
-                                    scrolled,
-                                    native_batch_prose,
-                                    chars,
-                                    runs,
-                                )
-                        elif scrolled and self._declared is not None:
-                            # Same frame as the rows: the terminal draws the
-                            # region that much lower and glides it back.
-                            self._end_insert()
-                            self._end_panel()
-                            rate = self._glide_rate() if paced else 0.0
-                            self.app.output.write_raw(smooth_scroll.advance(scrolled, rate=rate))
-                            self._glide.advance(scrolled, monotonic(), rate=rate)
-                        elif self._declared is not None and drawn is not None:
-                            self._glide_insert(drawn, counter.rows, chunk)
+                            self._native_commit = (counter.rows, scrolled, self._native_runs(chunk))
                 # Ensure a commit never leaks past this handoff if `_track_layout` skipped it.
                 self._native_commit = None
                 # The handoff already repainted the editor on exit.
@@ -2636,60 +2601,8 @@ class TerminalOutput:
             else:
                 self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
 
-    def _glide_insert(self, drawn: int, written: int, chunk) -> None:
-        """Unroll rows written above the editor before the screen is full.
-
-        They scroll nothing: they land where the typing row was and push it,
-        and the live layout's top, down. The rows from the first of them to
-        the typing row glide down into place, so the new rows come into view
-        from their top edge. A typed row is already where it lands, so a
-        write with one in it does not glide. The next write waits for this
-        one to settle (`_insert_held`).
-        """
-        if not written or any(row.typed for row in chunk):
-            return
-        top = self.app.output.get_size().rows - drawn  # the typing row, 0-based
-        columns = self.app.output.get_size().columns
-        # A fresh glide: what is left of the last one is under the hold's
-        # threshold, and its rows, now above this region, finish at once.
-        # Cleared first, since a redeclared region keeps its glide.
-        self.app.output.write_raw(
-            smooth_scroll.region_off(smooth_scroll.INSERT_ID)
-            + smooth_scroll.visible_declaration(
-                smooth_scroll.INSERT_ID, top, top + written, columns
-            )
-            + smooth_scroll.advance(-written, smooth_scroll.INSERT_ID)
-        )
-        self._insert_glide = smooth_scroll.Glide()
-        self._insert_glide.advance(-written, monotonic())
-        self._insert_declared = True
-
-    def _insert_held(self) -> bool:
-        """Whether the next write waits for the rows last unrolled to settle.
-
-        Each written row pushes only what is below it, so one region cannot
-        carry two inserts at different stages: a row still unrolling would
-        be drawn as the next one. Waiting until it is nearly in place keeps
-        the jump when its glide is dropped too small to see.
-        """
-        return (
-            self._insert_declared
-            and abs(self._insert_glide.remaining(monotonic())) > smooth_scroll.TYPE_WHEN_GLIDE_UNDER
-        )
-
-    def _end_insert(self) -> None:
-        """Drop the insert region once the transcript scrolls.
-
-        Nested, it would win over the transcript region and keep its rows
-        from gliding with the rest.
-        """
-        if self._insert_declared:
-            self._insert_declared = False
-            self._insert_glide = smooth_scroll.Glide()
-            self.app.output.write_raw(smooth_scroll.region_off(smooth_scroll.INSERT_ID))
-
     def _drop_settled_regions(self, app) -> None:
-        """Clear the panel and insert regions once their glides have settled.
+        """Clear the panel region once its glide has settled.
 
         Left declared, a region outlives the rows it was for: the layout
         moves on, and where it then covers the typing row or the transcript
@@ -2699,8 +2612,6 @@ class TerminalOutput:
         now = monotonic()
         if self._panel_declared and not self._panel_glide.remaining(now):
             self._end_panel()
-        if self._insert_declared and not self._insert_glide.remaining(now):
-            self._end_insert()
 
     def _end_panel(self) -> None:
         """Drop the panel region: its glide settled, or the transcript scrolls."""
@@ -2719,43 +2630,6 @@ class TerminalOutput:
         self._panel_glide.advance(distance, monotonic())
         self._panel_declared = True
 
-    def _typing_held(self) -> bool:
-        """Whether the next typed row waits for the glide to bring its row into view.
-
-        The typing row glides with the transcript, so just after a scroll it
-        sits partly below the visible rows. Rows that roll in whole (including
-        backlogged typed rows already revealed in full, and blank rows) are not
-        held: arriving from below is how they are meant to appear.
-        """
-        return (
-            bool(self.rows)
-            and self.rows[0].typed
-            and self._typed < self.rows[0].visible
-            and self._glide.remaining(monotonic()) > smooth_scroll.TYPE_WHEN_GLIDE_UNDER
-        )
-
-    def _glide_limit(self, due: int, typed: int) -> tuple[int, int]:
-        """Hold this frame's reveal to the glide's row rate.
-
-        Rows beyond the allowance wait. A typed row they reached is then
-        complete, so it stays shown whole until its turn to be written.
-        """
-        allowed = self._glide_pacer.allowance(len(self.rows), monotonic())
-        if due > allowed:
-            row = self.rows[allowed]
-            due, typed = allowed, row.visible if row.typed else 0
-        self._glide_pacer.spend(due)
-        return due, typed
-
-    def _glide_rate(self) -> float:
-        """Cruise rate (rows/s) to hint to the terminal, or 0 when pausing/typing."""
-        if not self.rows:
-            return 0.0
-        nxt = self.rows[0]
-        if nxt.typed and self._typed < nxt.visible:
-            return 0.0
-        return self._glide_pacer.rate_for(len(self.rows))
-
     def _declare(self, bottom: int | None) -> None:
         """Declare the glide region down to row ``bottom`` (0-based), or clear it.
 
@@ -2770,8 +2644,8 @@ class TerminalOutput:
                 return
             self._declared = None
             self._reset_native_state()
-            self._insert_declared = self._panel_declared = False
-            self._insert_glide, self._panel_glide = smooth_scroll.Glide(), smooth_scroll.Glide()
+            self._panel_declared = False
+            self._panel_glide = smooth_scroll.Glide()
             self.app.output.write_raw(smooth_scroll.OFF)
         else:
             if self._declared is not None and self._declared[0] == key:
@@ -2853,13 +2727,21 @@ class TerminalOutput:
     def _reset_native_state(self) -> None:
         self._native_commit = None
         self._native_backlog = 0.0
-        self._native_reveal_until = 0.0
-        self._native_reveal_mode = None
-        self._native_reveal_split = False
+
+    def _drain_native_backlog(self, now: float) -> float:
+        """pcode's estimate of the batch glide the terminal still has to run at ``now``."""
+        elapsed = max(0.0, now - self._native_at)
+        self._native_backlog = max(0.0, self._native_backlog - elapsed * self._native_rate)
+        self._native_at = now
+        return self._native_backlog
 
     @staticmethod
     def _native_runs(chunk: list[QueuedRow]) -> list[tuple[int, int, bool]]:
-        """Group committed rows into contiguous `(offset, count, is_prose)` runs."""
+        """Group committed rows into contiguous `(offset, count, is_prose)` runs.
+
+        Blank rows join the run they sit in, so the gap between paragraphs
+        does not split a sweep.
+        """
         runs: list[tuple[int, int, bool]] = []
         if not chunk:
             return runs
@@ -2877,195 +2759,81 @@ class TerminalOutput:
         return runs
 
     def _native_batch_cap(self) -> int:
-        """Maximum rows to commit in one native handoff without exceeding viewport or overscan."""
+        """Most rows one handoff may write.
+
+        Pinned, every row scrolls into the batch glide, which reaches back
+        `MAX_BATCH_GLIDE` rows. Before the screen fills, rows land in place
+        instead, so no more than the transcript rows that can be seen.
+        """
+        if self._editor_pinned():
+            return smooth_scroll.MAX_BATCH_GLIDE
         size_rows = max(1, self.app.output.get_size().rows)
         if self._declared is not None:
             vis_cap = max(1, self._declared[0][0] - 1)
         else:
             vis_cap = max(1, size_rows - 4)
-        if self.native_queued:
-            if self._editor_pinned():
-                return smooth_scroll.MAX_QUEUED_BATCH_GLIDE
-            return min(smooth_scroll.MAX_QUEUED_BATCH_GLIDE, vis_cap, size_rows)
         return min(smooth_scroll.MAX_BATCH_GLIDE, vis_cap, size_rows)
 
-    def _native_batch(self) -> tuple[int, bool]:
-        """Contiguous batch of queued rows to hand off to Ghostty Smooth's native pacer.
+    def _native_batch(self) -> int:
+        """Queued rows to hand to the terminal now, mixed prose and code alike.
 
-        Protocol 9 (`native_queued`) hands off mixed prose/code bursts up to 128
-        rows in a single write without stalling between reveal modes. Protocol 8
-        groups same-style rows up to 32 rows and waits when switching modes.
+        Waits while the terminal's glide is too far behind to take a useful
+        batch, rather than trickling a row or two at a time.
         """
         if not self.rows:
-            return 0, False
-        now = monotonic()
-        if self._native_backlog > 0.0:
-            elapsed = max(0.0, now - self._native_at)
-            self._native_backlog = max(0.0, self._native_backlog - elapsed * self._native_rate)
-            self._native_at = now
-        if self.native_queued:
-            cap = self._native_batch_cap()
-            room = min(cap, int(smooth_scroll.MAX_QUEUED_BATCH_GLIDE - self._native_backlog))
-            if room <= 0:
-                return 0, False
-            total = len(self.rows)
-            min_chunk = min(16, max(1, cap // 2))
-            if total > room and room < min_chunk:
-                return 0, False
-            return min(total, room), False
-        if now >= self._native_reveal_until:
-            self._native_reveal_mode = None
-            self._native_reveal_split = False
-        first_visible = next((row for row in self.rows if row.visible), None)
-        is_prose = bool(first_visible.typed) if first_visible is not None else False
-        # Avoid aborting Ghostty's single-slot reveal mid-animation when switching
-        # reveal modes (e.g., prose -> code on a partial screen, or prose1 -> code -> prose2).
-        if self._native_reveal_mode is not None and now < self._native_reveal_until:
-            if is_prose:
-                if (
-                    self._native_reveal_mode != smooth_scroll.REVEAL_SWEEP
-                    or self._native_reveal_split
-                ):
-                    return 0, False
-            elif not self._editor_pinned():
-                if self._native_reveal_mode != smooth_scroll.REVEAL_CURTAIN:
-                    return 0, False
+            return 0
+        backlog = self._drain_native_backlog(monotonic())
         cap = self._native_batch_cap()
-        room = min(cap, int(smooth_scroll.MAX_BATCH_GLIDE - self._native_backlog))
+        room = min(cap, int(smooth_scroll.MAX_BATCH_GLIDE - backlog))
         if room <= 0:
-            return 0, False
-        run = 0
-        for row in self.rows:
-            if row.visible and row.typed != is_prose:
-                break
-            run += 1
-        # Avoid trickling tiny 1-2 row handoffs during a huge burst, scaled to pane height.
-        min_chunk = min(8, max(1, cap // 2))
-        if run > room and room < min_chunk:
-            return 0, False
-        return min(run, room), is_prose
+            return 0
+        total = len(self.rows)
+        if total > room and room < min(16, max(1, cap // 2)):
+            return 0
+        return min(total, room)
 
     def _emit_native_commit(self, app) -> None:
-        """Emit protocol 8/9 batch-glide and reveal sequences for the just-committed rows."""
+        """Send the batch glide and reveals for the rows just committed.
+
+        The rows end on the transcript's last row (`end_row`). Scrolled rows
+        glide in on the terminal's conveyor; reveals may start above the
+        region (negative rows) as far back as the glide reaches. In `rows`
+        mode, scrolled rows get no reveal beyond a curtain over the rows that
+        filled the space above the editor.
+        """
         commit, self._native_commit = self._native_commit, None
         if commit is None or self._declared is None:
             return
-        written, scrolled, is_prose, chars, runs = commit
-        bottom = self._declared[0][0]
-        end_row = bottom - 2
+        written, scrolled, runs = commit
+        end_row = self._declared[0][0] - 2
         if end_row < 0:
             return
-        now = monotonic()
-        if self.native_queued and runs is not None:
-            max_glide = smooth_scroll.MAX_QUEUED_BATCH_GLIDE
-            base_row = end_row - written + 1
-            if scrolled > 0:
-                self._end_insert()
-                self._end_panel()
-                elapsed = max(0.0, now - self._native_at) if self._native_backlog > 0.0 else 0.0
-                backlog = max(0.0, self._native_backlog - elapsed * self._native_rate) + scrolled
-                backlog = min(backlog, float(max_glide))
-                self._native_backlog = backlog
-                self._native_rate = min(30.0, max(smooth_scroll.MIN_ROWS_PER_SECOND, backlog / 2.5))
-                self._native_at = now
-                flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
-                # Rate 0 lets Ghostty's native adaptive conveyor drive velocity directly.
-                app.output.write_raw(smooth_scroll.advance(scrolled, rate=0.0, flags=flags))
-                # In `typed` mode (or whenever prose is present), emit reveals for every
-                # run so adjacent prose/code commits chain seamlessly without gaps.
-                if self.typed or any(run_prose for _, _, run_prose in runs):
-                    for off, rlen, run_prose in runs:
-                        r_start = base_row + off
-                        r_end = min(r_start + rlen, end_row + 1)
-                        if r_end <= -max_glide:
-                            continue
-                        r_start = max(-max_glide, r_start)
-                        r_count = min(r_end - r_start, max_glide)
-                        if r_count > 0:
-                            r_flags = (
-                                smooth_scroll.REVEAL_SWEEP
-                                if run_prose
-                                else smooth_scroll.REVEAL_CURTAIN
-                            )
-                            app.output.write_raw(
-                                smooth_scroll.reveal(r_start, r_count, flags=r_flags)
-                            )
-                else:
-                    in_place = written - scrolled
-                    if in_place > 0:
-                        c_end = min(base_row + in_place, end_row + 1)
-                        if c_end > -max_glide:
-                            c_start = max(-max_glide, base_row)
-                            c_count = min(c_end - c_start, max_glide)
-                            if c_count > 0:
-                                app.output.write_raw(
-                                    smooth_scroll.reveal(
-                                        c_start, c_count, flags=smooth_scroll.REVEAL_CURTAIN
-                                    )
-                                )
-            else:
-                for off, rlen, run_prose in runs:
-                    r_start = base_row + off
-                    r_end = min(r_start + rlen, end_row + 1)
-                    if r_end <= 0:
-                        continue
-                    r_start = max(0, r_start)
-                    r_count = min(r_end - r_start, max_glide)
-                    if r_count > 0:
-                        r_flags = (
-                            smooth_scroll.REVEAL_SWEEP
-                            if run_prose
-                            else smooth_scroll.REVEAL_CURTAIN
-                        )
-                        app.output.write_raw(smooth_scroll.reveal(r_start, r_count, flags=r_flags))
-            return
-
-        count = min(written, end_row + 1, smooth_scroll.MAX_BATCH_GLIDE)
-        start_row = end_row - count + 1
+        reach = smooth_scroll.MAX_BATCH_GLIDE
+        base_row = end_row - written + 1
+        floor = 0
         if scrolled > 0:
-            self._end_insert()
             self._end_panel()
-            elapsed = max(0.0, now - self._native_at) if self._native_backlog > 0.0 else 0.0
-            backlog = max(0.0, self._native_backlog - elapsed * self._native_rate) + scrolled
-            backlog = min(backlog, float(smooth_scroll.MAX_BATCH_GLIDE))
-            rate = smooth_scroll.Pacer.rate_for(int(backlog))
+            backlog = min(self._drain_native_backlog(monotonic()) + scrolled, float(reach))
             self._native_backlog = backlog
-            self._native_rate = max(rate, smooth_scroll.MIN_ROWS_PER_SECOND)
-            self._native_at = now
+            self._native_rate = smooth_scroll.batch_rate(backlog)
             flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
-            app.output.write_raw(smooth_scroll.advance(scrolled, rate=rate, flags=flags))
-            if is_prose and count > 0:
-                app.output.write_raw(
-                    smooth_scroll.reveal(start_row, count, flags=smooth_scroll.REVEAL_SWEEP)
-                )
-                dur = min(2.2, max(chars / 280.0, scrolled / self._native_rate))
-                self._native_reveal_mode = smooth_scroll.REVEAL_SWEEP
-                self._native_reveal_until = max(self._native_reveal_until, now) + dur
-                self._native_reveal_split = False
-            else:
-                if self._native_reveal_mode == smooth_scroll.REVEAL_SWEEP:
-                    # A non-prose block landed after an active prose sweep: the next
-                    # prose block won't be adjacent, so hold it until the sweep finishes.
-                    self._native_reveal_split = True
-                # Boundary crossing (0 < scrolled < written): dissolve the rows that filled
-                # the blank space above the editor so they don't pop on frame 0.
+            app.output.write_raw(smooth_scroll.advance(scrolled, flags=flags))
+            floor = -reach
+            if not self.typed:
+                # `rows` mode: the glide and fade are the reveal, except for
+                # rows that filled the space above the editor.
                 in_place = written - scrolled
-                if in_place > 0 and count > 0 and self._native_reveal_mode is None:
-                    curtain_n = min(in_place, count)
-                    app.output.write_raw(
-                        smooth_scroll.reveal(
-                            start_row, curtain_n, flags=smooth_scroll.REVEAL_CURTAIN
-                        )
-                    )
-                    self._native_reveal_mode = smooth_scroll.REVEAL_CURTAIN
-                    self._native_reveal_until = now + min(1.5, curtain_n / 10.0)
-        elif count > 0:
-            reveal_flags = smooth_scroll.REVEAL_SWEEP if is_prose else smooth_scroll.REVEAL_CURTAIN
-            app.output.write_raw(smooth_scroll.reveal(start_row, count, flags=reveal_flags))
-            dur = min(2.0, chars / 280.0) if is_prose else min(1.5, count / 10.0)
-            self._native_reveal_mode = reveal_flags
-            self._native_reveal_until = max(self._native_reveal_until, now) + dur
-            self._native_reveal_split = False
+                runs = [(0, in_place, False)] if in_place > 0 else []
+        for offset, length, prose in runs:
+            start = base_row + offset
+            end = min(start + length, end_row + 1)
+            if end <= floor:
+                continue
+            start = max(floor, start)
+            count = min(end - start, reach)
+            if count > 0:
+                flags = smooth_scroll.REVEAL_SWEEP if prose else smooth_scroll.REVEAL_CURTAIN
+                app.output.write_raw(smooth_scroll.reveal(start, count, flags=flags))
 
     def _track_layout(self, app) -> None:
         top = layout_top_row(app)
@@ -3117,9 +2885,7 @@ class TerminalOutput:
             # Nothing scrolled: rows may still have moved within the panel.
             self._glide_moves(app, screen.height, keys, last_keys)
             return
-        self._end_insert()
         app.output.write_raw(smooth_scroll.advance(grown))
-        self._glide.advance(grown, monotonic())
         self._glide_panel(app, screen.height, grown, spans, last_spans)
 
     def _glide_moves(self, app, height: int, keys, last_keys) -> None:
@@ -4710,7 +4476,6 @@ class Transcript:
         self.theme = theme
         # Experimental, and only for Ghostty Smooth, which the probe asks after.
         self.smooth_scroll = preferences.get("smooth_scroll", SETTINGS["smooth_scroll"].default)
-        self.native_pacing = preferences.get("native_pacing", SETTINGS["native_pacing"].default)
         self.detected_theme = (
             detect_theme(
                 probe_width=probe_width,
@@ -4771,10 +4536,6 @@ class Transcript:
                 and isinstance(output.app, Application)
             )
             output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
-            output.native_pacing = (
-                output.gliding and self.native_pacing == "auto" and native_pacing_supported()
-            )
-            output.native_queued = output.native_pacing and queued_pacing_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
             if self.replays_on_resize:
                 output.resize_replay = self.replay
