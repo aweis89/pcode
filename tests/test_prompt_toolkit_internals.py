@@ -75,6 +75,14 @@ def test_renderer_state_and_overridden_methods(app):
         parameters(Renderer.__init__)
     )
     assert hasattr(app, "cpr_not_supported_callback")
+    # install_nowrap_editor: every prompt paint turns autowrap off and back on
+    # through the output, and erase turns it on before resetting.
+    from prompt_toolkit import renderer as renderer_module
+
+    diff = inspect.getsource(renderer_module._output_screen_diff)
+    assert "output.disable_autowrap()" in diff and "output.enable_autowrap()" in diff
+    erase = inspect.getsource(Renderer.erase)
+    assert erase.index("output.enable_autowrap()") < erase.index("self.reset(")
 
 
 def test_screen_cells_read_by_the_reflow_renderer():

@@ -2016,6 +2016,47 @@ def install_reflow_renderer(app: Application) -> None:
     )
 
 
+def install_nowrap_editor(app: Application) -> None:
+    """Keep autowrap off while the editor is painted, so Ghostty never reflows it.
+
+    Ghostty reflows the screen before the app sees SIGWINCH. Narrowing it
+    splits each of the editor's full-width rows (frame borders, status line)
+    in two, and it shows that frame until the resize repaint lands a cursor
+    report later: the top of the editor jumps up and back. With autowrap
+    (DECAWM) off, Ghostty resizes without reflowing at all, cutting rows at
+    the new width instead. prompt_toolkit already paints with it off and
+    turns it back on after each paint; that is held off until the renderer
+    resets (every erase), so transcript written between an erase and the
+    next paint still wraps. Only with resize replay on: the replay restores
+    the transcript the cut hid.
+    """
+    renderer, output = app.renderer, app.output
+    reset, render = renderer.reset, renderer.render
+    enable = output.enable_autowrap
+    held = False
+
+    def hold_enable() -> None:
+        if not held:
+            enable()
+
+    def nowrap_render(app, layout, is_done: bool = False) -> None:
+        nonlocal held
+        held = not is_done
+        render(app, layout, is_done)
+
+    def wrapping_reset(*args, **kwargs) -> None:
+        nonlocal held
+        reset(*args, **kwargs)
+        if held:
+            held = False
+            enable()
+            output.flush()
+
+    output.enable_autowrap = hold_enable
+    renderer.render = nowrap_render
+    renderer.reset = wrapping_reset
+
+
 # Frames a paced backlog takes to drain, so a settled block rolls out row by
 # row when small and lands within about a second however big it is.
 PACED_DRAIN_FRAMES = 30
@@ -4335,6 +4376,8 @@ def create_prompt(
         session.app.ttimeoutlen = 0.1
     if transcript is None or not transcript.replays_on_resize:
         install_reflow_renderer(session.app)
+    elif smooth_scroll.worth_asking():
+        install_nowrap_editor(session.app)
 
     return session
 
