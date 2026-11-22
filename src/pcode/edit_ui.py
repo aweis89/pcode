@@ -31,6 +31,7 @@ from pcode.edits import edit_text, patch_text
 from pcode.frame import Frame
 from pcode.git_diff import Review
 from pcode.links import editor_command
+from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
     bind_list_paging,
     fuzzy_match,
@@ -818,12 +819,16 @@ class DiffBrowser:
             self.notice = f"{file_path(row.change)} no longer exists"
             return
         command = editor_command(path, row.line)
+        # In the popup's terminal, which is an overlay's when it is on one.
+        terminal = terminal_fds()
 
         async def edit():
             try:
                 with self.handoff():
                     await run_in_terminal(
-                        lambda: subprocess.run(command, cwd=self.review.root, check=False),
+                        lambda: subprocess.run(
+                            command, cwd=self.review.root, check=False, **terminal
+                        ),
                         in_executor=True,
                     )
             except OSError as error:

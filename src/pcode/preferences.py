@@ -792,15 +792,15 @@ SETTINGS = {
         ("on", "off"),
         description="Open the side-answer viewer as soon as a /btw answer is ready",
     ),
-    # Read each time the viewer opens, so `/config set` applies without a restart.
-    "btw_view": Setting(
+    # Read each time a popup opens, so `/config set` applies without a restart.
+    "popup_view": Setting(
         "popup",
-        ("popup", "swap", "drawer"),
+        ("popup", "overlay"),
         description=(
-            "Show /btw threads in a full-screen popup, or swap them into the "
-            "conversation's place on screen, where the editor replies to them; "
-            "drawer (experimental) shows them beside the terminal in Ghostty "
-            "Smooth with a session host, else as swap"
+            "Where popups and /btw threads open: full screen, or (experimental) "
+            "overlay, laid over the conversation by Ghostty Smooth, which keeps "
+            "streaming behind them; there /btw threads open in a drawer the "
+            "editor replies to (with a session host)"
         ),
     ),
     # Read when a job finishes, so `/config set` applies without a restart.
@@ -954,6 +954,19 @@ def load_preferences() -> dict[str, str]:
         if key not in USER_ONLY:
             merged[key] = value
     return merged
+
+
+def popup_view() -> str:
+    """The `popup_view` setting: `popup` or `overlay`."""
+    preferences = load_preferences()
+    if "popup_view" in preferences:
+        return preferences["popup_view"]
+    # It replaced `btw_view`, whose `drawer` was the overlay's first part.
+    try:
+        legacy = read_preferences().get("btw_view")
+    except ValueError:
+        legacy = None
+    return "overlay" if legacy == "drawer" else SETTINGS["popup_view"].default
 
 
 def subagent_models() -> list[str]:

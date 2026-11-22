@@ -77,6 +77,7 @@ from pcode.preferences import (
     canonical,
     load_preferences,
     parse_height,
+    popup_view,
     screen_rows,
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
@@ -3827,9 +3828,7 @@ class PromptLayout:
                 pos = int((elapsed * 48) % max(1, span)) - pulse
                 mark_len = len(mark_text) + 1
                 head_frags = (
-                    mark_frags
-                    if len(text) >= mark_len
-                    else [("class:activity.spinner", text)]
+                    mark_frags if len(text) >= mark_len else [("class:activity.spinner", text)]
                 )
                 return [
                     ("class:frame.border", lead),
@@ -4527,7 +4526,7 @@ class Transcript:
                 probe_width=probe_width,
                 probe_cursor=probe_cursor,
                 probe_glide=probe_glide and self.smooth_scroll == "auto",
-                probe_drawer=probe_glide and preferences.get("btw_view") == "drawer",
+                probe_drawer=probe_glide and popup_view() == "overlay",
                 probe_kitty=probe_glide
                 and preferences.get("smooth_spinner", SETTINGS["smooth_spinner"].default) == "auto",
             )

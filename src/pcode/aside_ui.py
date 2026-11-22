@@ -41,6 +41,7 @@ from pcode.frame import Frame
 from pcode.links import Link, extract_links, link_editor_command, open_link, remember_link
 from pcode.links_ui import LinkPicker
 from pcode.markdown import Markdown
+from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
     PopupCommand,
     PopupInput,
@@ -686,12 +687,14 @@ class AsideBrowser:
                 self.notice = f"Could not open {url}: {error}"
                 return
             if command is not None:
+                # In the popup's terminal, which is an overlay's when it is on one.
+                terminal = terminal_fds()
 
                 async def edit() -> None:
                     try:
                         with self.handoff():
                             await run_in_terminal(
-                                lambda: subprocess.run(command, check=False),
+                                lambda: subprocess.run(command, check=False, **terminal),
                                 in_executor=True,
                             )
                     except OSError as error:

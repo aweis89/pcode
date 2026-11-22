@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import ExitStack, aclosing, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, ExitStack, aclosing, asynccontextmanager, nullcontext
 from pathlib import Path
 
 from prompt_toolkit.application import get_app
@@ -62,6 +62,7 @@ from pcode.preferences import (
     hints_preference,
     load_preferences,
     parse_height,
+    popup_view,
     preference_count,
     save_preferences,
     thinking_mode_preference,
@@ -301,9 +302,13 @@ class PreviewApp:
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
-        # `btw_view` as `drawer_host` last read it, and when.
+        # `popup_view` as `drawer_host` last read it, and when.
         self._drawer_pref = False
         self._drawer_pref_at = float("-inf")
+        # Overlay popups (`pcode.popup_surface`) open one at a time, and stop
+        # being tried once the terminal failed to open one.
+        self._overlay_lock = asyncio.Lock()
+        self._overlay_failed = False
         # `/merge` and `/summarize` sent from a swapped-in /btw thread, while they run.
         self._btw_tasks: set[asyncio.Task] = set()
         # The popup generation an auto-open `/btw` was queued in. That viewer
@@ -763,13 +768,13 @@ class PreviewApp:
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, layout="sheet") as surface:
                 picker = ModelPicker(
                     values,
                     providers,
                     current=current,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 return await picker.run()
@@ -781,7 +786,7 @@ class PreviewApp:
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session) as surface:
                 browser = JobBrowser(
                     self.runtime.jobs,
                     stop=lambda job: self.controller.stop_jobs([job.id]),
@@ -790,8 +795,8 @@ class PreviewApp:
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 await browser.run()
@@ -806,13 +811,13 @@ class PreviewApp:
         if output is None or session is None:
             return None
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, overlay=False) as surface:
                 dialog = SecretPrompt(
                     title,
                     prompt,
                     detail=detail,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 return await dialog.run()
@@ -856,11 +861,11 @@ class PreviewApp:
 
         self.config_requested = False
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session) as surface:
                 browser = ConfigBrowser(
                     save=self.apply_config,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 await browser.run()
@@ -1098,15 +1103,80 @@ class PreviewApp:
         except OSError, ValueError:
             self.transcript.warning("Could not update defaults; this change applies only here.")
 
+    def _claim_popup(self) -> None:
+        """Count a popup as shown, so requests queued before it are superseded."""
+        # Include requests queued during preparation and terminal
+        # handoff, not just those waiting when this command began.
+        self._popup_generation += 1
+        if self._command_popup_generation is not None:
+            self._command_popup_generation = self._popup_generation
+
+    def popups_overlay(self) -> bool:
+        """Whether popups open in an overlay beside the conversation (`popup_view overlay`).
+
+        Only in a terminal that answered the overlay probe, on this machine
+        (it finds pcode's socket by path), and until one failed to open.
+        """
+        from pcode import theme
+
+        if self._overlay_failed or not theme.popup_supported():
+            return False
+        if not self.transcript.console.is_terminal:
+            return False
+        if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+            return False
+        return popup_view() == "overlay"
+
     @asynccontextmanager
-    async def popup(self, output: TerminalOutput, session):
-        """Give a modal exclusive terminal ownership, superseding pending popups."""
+    async def popup(
+        self, output: TerminalOutput, session, *, layout: str = "wide", overlay: bool = True
+    ):
+        """Give a modal a terminal of its own, superseding pending popups.
+
+        Yields a `PopupSurface`: pass its `input` and `output` to the popup.
+        That is an overlay when `popups_overlay()` (`layout` is its shape, `sheet`
+        for short lists and prompts, `wide` for browsers), else pcode's own
+        terminal, given to the popup whole. `overlay=False` always takes the
+        full screen: a secret is typed where nothing else can take keys.
+        """
+        from pcode import popup_surface
+
         if (
             self._command_popup_generation is not None
             and self._command_popup_generation != self._popup_generation
         ):
             raise _PopupSuperseded
+        if overlay and self.popups_overlay():
+            async with AsyncExitStack() as stack:
+                await stack.enter_async_context(self._overlay_lock)
+                try:
+                    surface = await stack.enter_async_context(
+                        popup_surface.overlay(session.app.output, session.app.input, layout=layout)
+                    )
+                except popup_surface.OverlayUnavailable:
+                    # Not again this session: each try waits for the terminal.
+                    self._overlay_failed = True
+                    self.transcript.warning(
+                        "The terminal did not open the popup overlay; "
+                        "popups take the full screen for the rest of this session."
+                    )
+                else:
+                    self._claim_popup()
+                    yield surface
+                    return
+        async with self._full_screen_popup(output, session) as surface:
+            yield surface
+
+    @asynccontextmanager
+    async def _full_screen_popup(self, output: TerminalOutput, session):
+        """The popup takes pcode's terminal: the editor waits, the conversation is redrawn after."""
+        from pcode import drawer
+        from pcode.popup_surface import PopupSurface
+
         await output.flush(drain=True)
+        # The /btw drawer would cover the popup: out of the way until it is done.
+        thread_view = getattr(session, "btw_view", None)
+        hide = bool(getattr(thread_view, "drawer_open", False))
         try:
             async with output.lock:
                 async with suspended_editor(session.app):
@@ -1120,17 +1190,17 @@ class PreviewApp:
                         if stdin is not None
                         else session.app.input
                     )
+                    if hide:
+                        session.app.output.write_raw(drawer.HIDE)
                     try:
-                        # Include requests queued during preparation and terminal
-                        # handoff, not just those waiting when this command began.
-                        self._popup_generation += 1
-                        if self._command_popup_generation is not None:
-                            self._command_popup_generation = self._popup_generation
-                        yield modal_input
+                        self._claim_popup()
+                        yield PopupSurface(modal_input, session.app.output)
                     finally:
                         if modal_input is not session.app.input:
                             modal_input.close()
         finally:
+            if hide:
+                session.app.output.write_raw(drawer.SHOW)
             # Reuse resize's transcript replay, even when resize replay is off.
             # Flush only after releasing the writer lock and restoring the
             # normal screen, including dismissal, cancellation, and failures.
@@ -1173,7 +1243,7 @@ class PreviewApp:
         if tree is not None:
             selected = set(tree.path(tree.active))
             archive.calls = [call for call in archive.calls if call.run_id in selected]
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session) as surface:
             inspector = ToolInspector(
                 archive,
                 failed=failed,
@@ -1183,8 +1253,8 @@ class PreviewApp:
                 delta=self.transcript.delta,
                 dedent=self.transcript.diff_dedent,
                 color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             await inspector.run()
@@ -1273,14 +1343,14 @@ class PreviewApp:
         choices = history[0].snippets()
         choice = choices[0]
         if len(history) > 1 or len(choices) > 1:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session) as surface:
                 dialog = copy_dialog(
                     tree,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 choice = await dialog.run_async()
@@ -1297,6 +1367,7 @@ class PreviewApp:
     async def choose_link(self, output: TerminalOutput, session) -> None:
         from pcode.links import conversation_links, link_editor_command, open_link
         from pcode.links_ui import links_dialog
+        from pcode.popup_surface import terminal_fds
 
         self.links_requested = False
         tree = getattr(self.runtime, "tree", None)
@@ -1320,12 +1391,12 @@ class PreviewApp:
         opened_in_editor = False
         # ExitStack keeps appearance queries paused until popup() restores raw mode.
         with ExitStack() as stack:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, layout="sheet") as surface:
                 dialog = links_dialog(
                     links,
                     message_links=message_links,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 url = await dialog.run_async()
@@ -1340,7 +1411,9 @@ class PreviewApp:
                             if self._appearance:
                                 stack.enter_context(self._appearance.paused())
                             try:
-                                await asyncio.to_thread(subprocess.run, command, check=False)
+                                await asyncio.to_thread(
+                                    subprocess.run, command, check=False, **terminal_fds()
+                                )
                             except OSError as error:
                                 editor_error = f"Could not start {command[0]}: {error}"
         if url is None:
@@ -1423,7 +1496,7 @@ class PreviewApp:
                 " Each file tool's edits are in /tools edits."
             )
             return
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session) as surface:
             browser = DiffBrowser(
                 review,
                 reload=self.load_review,
@@ -1433,8 +1506,8 @@ class PreviewApp:
                 rendered=rendered,
                 width=width,
                 dedent=dedent,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
                 handoff=self._appearance.paused if self._appearance else nullcontext,
             )
@@ -1895,12 +1968,12 @@ class PreviewApp:
         entries = await asyncio.to_thread(lambda: list_hosts() + list_stopped())
         from pcode.host_ui import hosts_dialog
 
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, layout="sheet") as surface:
             dialog = hosts_dialog(
                 entries,
                 current=current,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             choice = await dialog.run_async()
@@ -2230,15 +2303,15 @@ class PreviewApp:
         output, session = self.output, self.prompt_session
         self.aside_view_open = True
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session) as surface:
                 browser = AsideBrowser(
                     self.asides,
                     stop=self.controller.cancel_asides,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                     handoff=self._appearance.paused if self._appearance else nullcontext,
                     **options,
@@ -2411,15 +2484,15 @@ class PreviewApp:
         from pcode.worker_ui import WorkerBrowser
 
         self.worker_view_requested = False
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session) as surface:
             browser = WorkerBrowser(
                 self.activity.workers,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
                 show_thinking=self.activity.show_thinking,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             prefill = await browser.run()
@@ -2443,15 +2516,15 @@ class PreviewApp:
         # a running turn owns the history it would be replaced with. Browse now,
         # fork when the turn ends — or ask the branch a side question with /btw.
         navigable = not (self.activity.busy or self.activity.queued)
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session) as surface:
             dialog = tree_dialog(
                 tree,
                 navigable=navigable,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             selection = await dialog.run_async()
@@ -2485,7 +2558,7 @@ class PreviewApp:
             self.transcript.note("No saved sessions for this workspace.")
             return
         active_id = self.active_session_id()
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session) as surface:
             browser = SessionBrowser(
                 records,
                 root=self.session_dir or session_root(),
@@ -2494,8 +2567,8 @@ class PreviewApp:
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             identity = await browser.run()
@@ -2540,11 +2613,11 @@ class PreviewApp:
             else:
                 host = status_rows(entry)
             rows = [*host, *rows]
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, layout="sheet") as surface:
             dialog = session_info_dialog(
                 rows,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             await dialog.run_async()
@@ -3153,9 +3226,7 @@ class PreviewApp:
                 self._appearance.close()
                 self._appearance = None
             if self._kitty_spinners is not None:
-                self._kitty_spinners.close(
-                    session.app.output.write_raw, session.app.output.flush
-                )
+                self._kitty_spinners.close(session.app.output.write_raw, session.app.output.flush)
                 self._kitty_spinners = None
             await self.leave_controller(self.controller)
             if thread_view is not None:
