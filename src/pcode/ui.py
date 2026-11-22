@@ -2838,7 +2838,10 @@ class TerminalOutput:
     def _track_layout(self, app) -> None:
         top = layout_top_row(app)
         screen = app.renderer._last_screen
-        if top is not None and screen is not None and self._editor_pinned():
+        # Measured once: after the render the per-render cache is gone, so each
+        # call re-measures the whole layout, and this runs after every render.
+        pinned = self._editor_pinned()
+        if top is not None and screen is not None and pinned:
             # Pinned, the layout fills the bottom ``screen.height`` rows. Not
             # `layout_top_row`: after a write that scrolled, it rests on the
             # handoff's guess, one row off until the cursor report lands, and
@@ -2850,9 +2853,9 @@ class TerminalOutput:
             self._emit_native_commit(app)
         else:
             self._native_commit = None
-        self._glide_growth(app)
+        self._glide_growth(app, pinned)
 
-    def _glide_growth(self, app) -> None:
+    def _glide_growth(self, app, pinned: bool) -> None:
         """Glide the transcript up when the live panel grows while pinned.
 
         A pinned layout has no filler rows to grow into, so a command or task
@@ -2868,7 +2871,6 @@ class TerminalOutput:
             self._last_spans = {}
             self._last_keys = {}
             return
-        pinned = self._editor_pinned()
         last, self._last_layout = self._last_layout, (screen.height, pinned)
         spans = {
             id(window): (screen.height - pos.ypos, screen.height - pos.ypos - pos.height + 1)
