@@ -383,6 +383,7 @@ def test_native_batch_hands_off_mixed_rows_and_waits_on_the_glide(monkeypatch):
 def test_emit_native_commit_sends_batch_glide_and_queued_reveals(monkeypatch):
     clock = [10.0]
     output, out = _batch_output(monkeypatch, clock, rows=25, bottom=21)
+    output.typed = True  # Prose rows exist only in `typed` mode.
 
     def emit(commit):
         out.written.clear()
