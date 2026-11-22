@@ -27,8 +27,9 @@ side question is reading the answer while the turn is still running. A bare
 
 ## The popup
 
-By default (`btw_view popup`), threads show in a full-screen viewer, which
-takes the terminal while it is open and has a follow-up editor of its own.
+Unless a [drawer](#threads-in-a-drawer) shows them, threads show in a viewer
+with a follow-up editor of its own. It takes the whole terminal while it is
+open, or with `popup_view overlay` opens over the conversation.
 **Ctrl+Q** opens it, as a bare `/btw` does:
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
@@ -69,75 +70,57 @@ follow-up editor alike. By default, hold Ctrl while pressing the letter; a
 configured [shortcut prefix](commands.md#shortcut-prefix) changes these keys.
 Ctrl+/ browses the current popup's help.
 
-## Swapping a thread in
+## Threads in a drawer
 
-With `pcode config set btw_view swap`, a thread shows in the conversation's place. The screen and your terminal's scrollback are rebuilt from the
-thread, headed ` btw ` and its first question in a colour of its own, and
-rebuilt from the conversation again when you go back, the way a resize
-redraws it. While it is shown the thread is ordinary terminal output: scroll
-it with the mouse wheel or your terminal's own keys, and select and copy it
-without any frame coming along.
+Experimental. With `pcode config set popup_view overlay`, in
+Ghostty Smooth with a [session host](sessions.md#background-sessions), a thread opens in a drawer
+beside the conversation instead of the popup. The drawer is a terminal of its
+own, so the thread keeps your terminal's font and colors, and you can scroll
+and select it there. The thread is headed ` btw ` and its first question in a
+colour of its own. The screen keeps the conversation, so a running turn goes
+on streaming beside it.
 
-A running turn carries on while you read. Its spinner stays on the editor's
-border, and what it writes lands in the conversation, in order, when you go
-back. Meanwhile a divider under the thread points up to it and down to the
-conversation, with the keys that go back or on to the next thread, and the conversation's
-newest three lines stream in beneath it, above the turn's own tool rows:
-
-```text
-because one token of lookahead decides every rule.
-── ↑ btw: why is the parser LL(1)? · ↓ conversation ── Ctrl+Q or Esc back · Ctrl+\ next thread (1/2) ─
-  Updated parser.py: the lookahead table now comes from the grammar, so a new
-  rule needs no edit here. Running the parser tests next to check the error
-  messages still name the right token.
-```
-
-Notices meant for the conversation flash above the editor instead, and so do
-its warnings and errors, which are in the conversation too when you go back.
-A `!command` or a command for the conversation, such as `/help`, takes you
-back first, so you see what it prints; Ctrl+Enter does too.
-
-The main editor talks to the thread, with everything it can do (history,
+The main editor talks to the open thread, with everything it can do (history,
 completion, vi mode, `@file`s):
 
 - **Enter** sends a [follow-up](#following-up) to the thread, never to the
   conversation, so typing during a turn neither steers nor queues it. The
   editor's border takes the thread's colour while this is so. A follow-up that
-  cannot be sent yet keeps your draft and says why. The answer streams in
-  below, a block at a time, as the conversation's do.
+  cannot be sent yet keeps your draft and says why. The answer streams into
+  the drawer a block at a time, as the conversation's do.
 - **`/merge`, `/summarize [focus]`, `/copy`, `/links`, `/stop`, `/close`** act
   on the thread ([commands](#commands)); every other command, and
-  `/btw QUESTION`, means what it always does. So do a `!command`, which runs in
-  the shell, and **Ctrl+Enter**, which interrupts the conversation's turn with
-  your message.
-- **Ctrl+Q** toggles: from a thread it goes straight back to the
-  conversation, however many threads there are, and from the conversation it
-  shows the thread you last looked at (the newest the first time). It works
-  the same in every editor mode.
+  `/btw QUESTION`, means what it always does. A `!command` or a command for
+  the conversation, such as `/help`, closes the thread first, and
+  **Ctrl+Enter** interrupts the conversation's turn with your message.
+- **Ctrl+Q** toggles: with a thread open it closes the drawer and the editor
+  goes back to the conversation, however many threads there are; from the
+  conversation it opens the thread you last looked at (the newest the first
+  time). It works the same in every editor mode.
 - **A bare `/btw`** lists the threads when there is more than one, with the
-  newest unread answer selected and a preview beside the list. Enter shows
-  the highlighted thread in the conversation's place; Escape leaves things as
-  they were. With a single thread it shows that one at once.
-- **Ctrl+\\** shows the next older thread, and from the oldest wraps to the
-  newest. The divider says which thread of how many is shown
-  (`Ctrl+\ next thread (1/3)`). With a
-  [shortcut prefix](commands.md#shortcut-prefix), these keys are the prefix and
-  `q` or `\`. If your vi leader is `\`, use Ctrl+\ itself, since a second `\`
-  only closes the leader menu.
+  newest unread answer selected and a preview beside the list. Enter opens
+  the highlighted thread in the drawer; Escape leaves things as they were.
+  With a single thread it opens that one at once.
+- **Ctrl+\\** opens the next older thread, and from the oldest wraps to the
+  newest. With a [shortcut prefix](commands.md#shortcut-prefix), these keys
+  are the prefix and `q` or `\`. If your vi leader is `\`, use Ctrl+\ itself,
+  since a second `\` only closes the leader menu.
 - **Escape** goes back to the conversation, keeping your draft. In vi mode,
   Escape first leaves insert mode as usual, and a second one goes back;
   Ctrl+Q needs no second press.
 
 An answer that opens by itself waits while you have a draft in the editor:
-swapping then would send your half-written message to the thread. Ctrl+Q,
-or picking it after a bare `/btw`, shows it when you are ready.
+opening it then would send your half-written message to the thread. Ctrl+Q,
+or picking it after a bare `/btw`, opens it when you are ready.
 
-The conversation is rebuilt from what pcode keeps of it, so a very long one
-comes back trimmed the way a resize trims it (`transcript_max_chars`).
+Without a drawer (another terminal, no session host, or `popup_view popup`),
+side threads use [the popup](#the-popup). If the drawer goes away while a
+thread is open, the thread closes and the editor goes back to the
+conversation.
 
 ## Commands
 
-The swapped-in thread and the popup's follow-up editor take these as
+The main editor with a [thread in the drawer](#threads-in-a-drawer) and the popup's follow-up editor take these as
 commands. In the popup a menu completes them as you type `/`, and the start of
 a single name (`/co`) is enough on its own:
 
@@ -148,7 +131,7 @@ a single name (`/co`) is enough on its own:
 | `/summarize [focus]` | Send the model a summary of the thread, keeping what *focus* says, as Ctrl+S |
 | `/merge` | Merge into the conversation, as Ctrl+T |
 | `/stop` | Stop running side questions, as Ctrl+K |
-| `/close` | Go back to the conversation, as Escape (swapped-in thread only) |
+| `/close` | Go back to the conversation, as Escape (drawer thread only) |
 
 A follow-up that starts with a path of more than one part, such as
 `/etc/hosts`, is still sent as a question; one like `/tmp` reads as a command
@@ -172,7 +155,7 @@ never throws away the side question as well.
 
 ## Following up
 
-With a [thread swapped in](#swapping-a-thread-in), the main editor sends
+With a [thread in the drawer](#threads-in-a-drawer), the main editor sends
 follow-ups to it. The popup has an editor under the answer for asking a
 follow-up, so a side question can become a short back-and-forth without
 leaving it. Press

@@ -394,7 +394,7 @@ class HostView:
         one command at a time: awaited here, one terminal's open viewer would
         stall every other terminal's commands behind it. So the command ends
         at once, and a thread the viewer asks to bring into the conversation
-        is kept from outside the queue, as the swap view keeps one (`keep_thread`).
+        is kept from outside the queue, as a thread in the drawer is (`keep_thread`).
         """
         client = self._host.running_command
         if client is None or client.headless:

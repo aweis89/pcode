@@ -44,6 +44,8 @@ _cursor_row: int | None = None
 _glide_protocol: int | None = None
 # The drawer protocol the startup probe heard (`pcode.drawer`), or None.
 _drawer_protocol: int | None = None
+# The overlay popup protocol it heard (`pcode.popup_surface`), or None.
+_popup_protocol: int | None = None
 # Whether the startup probe heard an OK reply to the Kitty graphics query.
 _kitty_graphics: bool | None = None
 
@@ -80,6 +82,13 @@ def drawer_supported() -> bool:
     return _drawer_protocol == drawer.PROTOCOL
 
 
+def popup_supported() -> bool:
+    """Whether the startup probe found a terminal that opens pcode's popups over itself."""
+    from pcode import drawer
+
+    return _popup_protocol == drawer.POPUP_PROTOCOL
+
+
 def kitty_graphics_supported() -> bool:
     """Whether the startup probe confirmed Kitty graphics support."""
     return _kitty_graphics is True
@@ -97,14 +106,16 @@ def _take_kitty_reply(response: bytearray) -> None:
 
 
 def _take_drawer_reply(response: bytearray) -> None:
-    global _drawer_protocol
+    """Record and remove the drawer's and the popups' replies (`pcode;ok;N`, `pcode;popup;N`)."""
+    global _drawer_protocol, _popup_protocol
     from pcode import drawer
 
-    _drawer_protocol = None
-    match = drawer.REPLY.search(response)
-    if match is not None:
-        version = drawer.VERSION.fullmatch(match[1])
-        _drawer_protocol = int(version[1]) if version else None
+    _drawer_protocol = _popup_protocol = None
+    for match in reversed(list(drawer.REPLY.finditer(response))):
+        if version := drawer.VERSION.fullmatch(match[1]):
+            _drawer_protocol = int(version[1])
+        elif version := drawer.POPUP_VERSION.fullmatch(match[1]):
+            _popup_protocol = int(version[1])
         del response[match.start() : match.end()]
 
 
@@ -229,7 +240,9 @@ def _query_background(
 
     # Asked of Ghostty only, as the glide is, for the same reasons.
     drawer_query = (
-        drawer.QUERY if probe_drawer and handle is None and smooth_scroll.worth_asking() else b""
+        drawer.QUERY + drawer.POPUP_QUERY
+        if probe_drawer and handle is None and smooth_scroll.worth_asking()
+        else b""
     )
     from pcode import kitty_spinner
 
@@ -339,7 +352,8 @@ def detect_theme(
     `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`);
     `probe_cursor` records the starting cursor row (`take_initial_cursor_row`);
     `probe_glide` asks whether the terminal glides (`glide_supported`);
-    `probe_drawer` whether it opens pcode's drawer (`drawer_supported`);
+    `probe_drawer` whether it opens pcode's drawer and popups (`drawer_supported`,
+    `popup_supported`);
     `probe_kitty` whether it speaks Kitty graphics (`kitty_graphics_supported`).
     """
     detected = _query_background(

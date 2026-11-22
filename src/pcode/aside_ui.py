@@ -41,6 +41,7 @@ from pcode.frame import Frame
 from pcode.links import Link, extract_links, link_editor_command, open_link, remember_link
 from pcode.links_ui import LinkPicker
 from pcode.markdown import Markdown
+from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
     PopupCommand,
     PopupInput,
@@ -161,9 +162,10 @@ class AsideBrowser:
     answer. Leave it off for a viewer that opens by itself: it could arrive
     mid-keystroke at the main prompt, and Enter would send what was typed.
 
-    With `pick`, for `btw_view swap`, the viewer only chooses a thread: it
-    opens on the list, and Enter closes it with the selected thread in
-    `picked`, for the app to swap in where the main editor replies to it.
+    With `pick`, for a drawer (`PreviewApp.btw_drawer`), the viewer only
+    chooses a thread: it opens on the list, and Enter closes it with the
+    selected thread in `picked`, for the app to open in the drawer, where the
+    main editor replies to it.
     """
 
     def __init__(
@@ -313,8 +315,8 @@ class AsideBrowser:
         def stop_running(event):
             self.stop()
 
-        # The key that opened the viewer closes it, as it leaves a swapped-in
-        # thread; the mouse toggle that other popups keep on `q` moves to `g`.
+        # The key that opened the viewer closes it, as it leaves a thread open
+        # in the drawer; the mouse toggle that other popups keep on `q` moves to `g`.
         # Never over a half-written follow-up, which closing would lose.
         # Picking, `q` leaves whatever was on screen, a thread or the conversation.
         @shortcuts.add("q", "Close" if pick else "Back to the conversation", filter=idle)
@@ -686,12 +688,14 @@ class AsideBrowser:
                 self.notice = f"Could not open {url}: {error}"
                 return
             if command is not None:
+                # In the popup's terminal, which is an overlay's when it is on one.
+                terminal = terminal_fds()
 
                 async def edit() -> None:
                     try:
                         with self.handoff():
                             await run_in_terminal(
-                                lambda: subprocess.run(command, check=False),
+                                lambda: subprocess.run(command, check=False, **terminal),
                                 in_executor=True,
                             )
                     except OSError as error:

@@ -17,6 +17,7 @@ from pcode.links import (
 )
 from pcode.links_ui import link_rows, links_dialog
 from pcode.markdown import Markdown
+from pcode.popup_surface import PopupSurface
 
 
 def test_extract_markdown_labels_bare_urls_and_trailing_punctuation():
@@ -467,8 +468,8 @@ def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(tmp_pat
         app = PreviewApp(runtime=runtime, console=Console(file=output))
 
         @asynccontextmanager
-        async def fake_popup(_output, _session):
-            yield None
+        async def fake_popup(_output, _session, **options):
+            yield PopupSurface(None, _session.app.output)
 
         monkeypatch.setattr(app, "popup", fake_popup)
         fake_session = SimpleNamespace(app=SimpleNamespace(output=DummyOutput(), style=None))

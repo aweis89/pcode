@@ -46,6 +46,7 @@ from pcode.host_protocol import (
     write_entry,
 )
 from pcode.live import AgentRuntime
+from pcode.popup_surface import PopupSurface
 from pcode.remote import (
     HostError,
     HostLaunch,
@@ -1865,8 +1866,8 @@ def test_switch_resumes_or_forgets_a_stopped_session(host_dir, monkeypatch, acti
         return Dialog()
 
     @asynccontextmanager
-    async def popup(output, session):
-        yield None
+    async def popup(output, session, **options):
+        yield PopupSurface(None, None)
 
     opened: list = []
 

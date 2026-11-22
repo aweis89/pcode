@@ -1,22 +1,14 @@
-"""The /btw thread view: a side thread drawn in the conversation's place.
+"""The /btw thread view: a side thread the main editor replies to.
 
-With `btw_view swap`, opening a thread rebuilds the screen and the terminal's
-scrollback from the thread instead of the conversation
-(`TerminalOutput.open_view`), and closing it rebuilds the conversation, the way
-a resize does. While it is shown the thread is ordinary scrollback, so the
-terminal's own wheel scrolling and text selection work on it, and the main
-editor, with everything it can do, sends follow-ups to it.
+With `popup_view overlay` in a terminal that has a drawer (`pcode.drawer`),
+opening a thread draws it in a drawer beside the terminal, and the screen
+keeps the conversation. While a thread is open the main editor, with
+everything it can do, sends follow-ups to it, and Ctrl+Q or Esc goes back to
+the conversation. Without a drawer, /btw opens the popup viewer instead
+(`pcode.aside_ui`).
 
-A turn still running carries on meanwhile: its writes wait, kept in the
-transcript's log, and the rebuild that closes the view draws them. Its spinner
-stays on the editor's border, and the side question's own row in the live
-panel above the editor. Its warnings and errors flash there as well.
-
-What is shown lives on `Activity.btw_thread`: the thread on screen, or None.
-
-With `btw_view drawer` in a terminal that has one (`pcode.drawer`), the thread
-is drawn in a drawer beside the terminal instead, and the screen keeps the
-conversation; the editor still replies to the thread.
+What is open lives on `Activity.btw_thread`: the thread the editor replies
+to, or None.
 """
 
 from dataclasses import dataclass
@@ -24,7 +16,6 @@ from dataclasses import dataclass
 from rich.text import Text
 
 from pcode.aside import Aside
-from pcode.conversation_tree import excerpt
 from pcode.drawer import CLOSE
 from pcode.markdown import Markdown
 from pcode.terminal_text import safe_text
@@ -50,7 +41,7 @@ def threads(activity) -> list[list[Aside]]:
 
 
 def current(activity) -> list[Aside]:
-    """The thread on screen; empty while the conversation is, or once it was dropped.
+    """The open thread; empty while none is, or once it was dropped.
 
     While it is not empty the editor sends to it rather than to the conversation.
     """
@@ -79,7 +70,7 @@ def reopen_thread(activity) -> str | None:
 
 
 def position(activity) -> tuple[int, int]:
-    """The thread on screen as (number, of), newest first; (0, n) while none is."""
+    """The open thread as (number, of), newest first; (0, n) while none is."""
     ordered = _ordered(activity)[::-1]
     shown = activity.btw_thread
     return (ordered.index(shown) + 1 if shown in ordered else 0), len(ordered)
@@ -147,7 +138,7 @@ class ThreadWriter:
     """What of a thread is new since the last call, as entries to print.
 
     Answers go out a whole block at a time once settled, as the conversation's
-    do. Shared by the swap (`ThreadView`) and the drawer (`pcode.btw_tail`).
+    do. The drawer draws threads with it (`pcode.btw_tail`).
     """
 
     def __init__(self) -> None:
@@ -201,112 +192,59 @@ class ThreadWriter:
 
 
 class ThreadView:
-    """Keeps the screen on `Activity.btw_thread`, synced before every redraw."""
+    """Keeps the drawer on `Activity.btw_thread`, synced before every redraw."""
 
-    def __init__(self, activity, transcript, key_label=lambda key: f"Ctrl+{key.upper()}") -> None:
+    def __init__(self, activity, transcript) -> None:
         self.activity = activity
         self.transcript = transcript
-        # How to press a prompt shortcut: Ctrl+Q, or a leader and `q`.
-        self.key_label = key_label
-        # Told the ids of answers once they are on screen whole, e.g. so a
-        # session host stops announcing them to its other terminals.
+        # Told the ids of answers once they are shown whole, e.g. so a session
+        # host stops announcing them to its other terminals.
         self.on_read = None
         # The session host whose drawer shows threads (`pcode.drawer`), or None
-        # to draw them here; asked before every sync.
+        # when there is no drawer; asked before every sync.
         self.drawer_host = lambda: None
         self._drawn: tuple[str, str | None] | None = None
-        self._shown: str | None = None
-        self.writer = ThreadWriter()
+
+    @property
+    def drawer_open(self) -> bool:
+        """Whether the drawer is showing a thread."""
+        return self._drawn is not None
 
     def sync(self) -> None:
-        """Open, switch, close or extend the view to match the thread on `Activity`."""
+        """Open, switch or close the drawer to match the thread on `Activity`."""
         output = self.transcript.output if self.transcript is not None else None
         if output is None or not self.transcript.console.is_terminal:
             return
-        thread = current(self.activity)
-        shown = thread[0].thread if thread else None
         host = self.drawer_host()
-        if host is not None:
-            self._sync_drawer(output, host, shown, thread)
+        if host is None:
+            # No drawer any more (the setting changed, or another session took
+            # it): the thread closes rather than keep the editor replying to
+            # something nothing shows.
+            if self.activity.btw_thread is not None:
+                close(self.activity)
+                # A reply being typed stays in the draft, now for the conversation.
+                self.transcript.flash(
+                    "The /btw drawer closed, and its thread too: Enter goes to the conversation."
+                )
+            if self._drawn is not None:
+                self._drawn = None
+                output.app.output.write_raw(CLOSE)
             return
-        if self._drawn is not None:
-            # The drawer went (another session, say): close it, and draw here.
-            self._drawn = None
-            output.app.output.write_raw(CLOSE)
-        # Judged against the screen too, not only the last call: whatever
-        # left a view open, or replaced the output under one, this frame
-        # puts the screen back where `Activity` says it is. (`open_view` keeps
-        # the replay as `output.view`, so this settles after one call.)
-        if shown is None:
-            self._shown = None
-            output.close_view(self.transcript.replay)
-            return
-        if shown != self._shown or output.view != self.replay:
-            self._shown = shown
-            output.open_view(self.replay)
-            return
-        entries = self._entries(thread)
-        if entries is None:
-            # Something already written changed under it: draw it again.
-            output.open_view(self.replay)
-        else:
-            output.view_print(entries)
-
-    def _sync_drawer(self, output, host: str, shown: str | None, thread: list[Aside]) -> None:
-        """Point the drawer at the thread on `Activity`; the screen keeps the conversation."""
         from pcode.drawer import open_btw
 
-        if output.view is not None:
-            self._shown = None
-            output.close_view(self.transcript.replay)
+        thread = current(self.activity)
+        shown = thread[0].thread if thread else None
         drawn = (host, shown)
         if drawn != self._drawn:
             # Never opened, nothing to close: a terminal with no drawer open hears nothing.
             if shown is not None or self._drawn is not None:
                 output.app.output.write_raw(open_btw(host, shown) if shown else CLOSE)
             self._drawn = drawn if shown is not None else None
-        # Shown whole in the drawer is read, as on screen.
+        # Shown whole in the drawer is read.
         seen = []
         for aside in thread:
             if not aside.running and not aside.read:
                 aside.read = True
                 seen.append(aside.id)
-        self._report(seen)
-
-    def replay(self) -> list[Entry]:
-        """The whole view from the top, as the rebuild that opens or redraws it asks."""
-        self.writer.reset()
-        thread = current(self.activity)
-        if not thread:
-            return []
-        return self._heading(thread) + (self._entries(thread) or [])
-
-    def _heading(self, thread: list[Aside]) -> list[Entry]:
-        first = thread[0]
-        model = f" · {first.label}" if first.label else ""
-        title = Text.assemble(
-            (" btw ", "pcode.btw.badge"),
-            (f" {excerpt(first.question)[:80]}", "pcode.btw"),
-            (model, "pcode.muted"),
-        )
-        # Written once, so it names no position and offers Ctrl+\ only if
-        # there was another thread then; the divider above the editor keeps up
-        # as threads come and go. A key /unbind took away is not offered.
-        back, after = self.key_label("q"), self.key_label("\\")
-        cycle = "Esc back to the conversation"
-        if back != "unbound":
-            cycle = f"{back} or {cycle}"
-        if position(self.activity)[1] > 1 and after != "unbound":
-            cycle += f" · {after} next thread"
-        keys = f"Enter replies here · {cycle} · /merge /summarize /copy /links /stop"
-        return [entry(title), entry(Text(keys, style="pcode.muted")), entry()]
-
-    def _entries(self, thread: list[Aside]) -> list[Entry] | None:
-        """What of ``thread`` is new since the last call; None if written text changed."""
-        entries, seen = self.writer.entries(thread, self.transcript.code_theme)
-        self._report(seen)
-        return entries
-
-    def _report(self, seen: list[str]) -> None:
         if seen and self.on_read is not None:
             self.on_read(seen)

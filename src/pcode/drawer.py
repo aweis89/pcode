@@ -1,4 +1,4 @@
-"""Experimental: /btw threads in a drawer beside the terminal (`btw_view drawer`).
+"""Experimental: /btw threads in a drawer beside the terminal (`popup_view overlay`).
 
 Ghostty Smooth (the pcode fork of Ghostty) can lay a second terminal over the
 right of a pane. pcode asks for it with one short APC, which names what to
@@ -7,16 +7,20 @@ show and never carries it:
     ESC _ pcode;?  ESC \\                    probe; the terminal answers `pcode;ok;1`
     ESC _ pcode;btw;<host>;<thread> ESC \\   show this host's /btw thread
     ESC _ pcode;close ESC \\                 close the drawer
+    ESC _ pcode;hide ESC \\                  hide it, still running (under a full-screen popup)
+    ESC _ pcode;show ESC \\                  show it again
     ESC _ pcode;focus ESC \\                 (from the drawer) give the keyboard back
 
 The drawer's terminal runs `pcode.btw_tail` with the session host's own Python
 (`HostEntry.python`), which connects to the host as an observer
 (`SessionHost`'s `observe` hello): it does not count as a terminal, may call
 nothing, and is sent the side questions and each change to them. It draws them
-as the swap does, so the drawer has the terminal's font, size and colors.
+as the popup's thread does, so the drawer has the terminal's font, size and
+colors.
 
-The editor keeps replying to the thread as with `btw_view swap`; only drawing
-it moves beside the conversation.
+The editor replies to the thread while the drawer shows it; only drawing it
+moves beside the conversation. Popups open over the drawer the same way, as a
+terminal of their own (`pcode.popup_surface`, probed with `pcode;popup?`).
 """
 
 import os
@@ -26,10 +30,16 @@ from pathlib import Path
 
 PROTOCOL = 1
 QUERY = b"\x1b_pcode;?\x1b\\"
+# Overlay popups (`pcode.popup_surface`), asked after with the drawer.
+POPUP_PROTOCOL = 1
+POPUP_QUERY = b"\x1b_pcode;popup?\x1b\\"
 # Any pcode reply, so a future shape is still kept out of typing.
 REPLY = re.compile(rb"\x1b_pcode;([^\x1b\x07]{0,32})\x1b\\")
 VERSION = re.compile(rb"ok;(\d{1,4})")
+POPUP_VERSION = re.compile(rb"popup;(\d{1,4})")
 CLOSE = "\x1b_pcode;close\x1b\\"
+HIDE = "\x1b_pcode;hide\x1b\\"
+SHOW = "\x1b_pcode;show\x1b\\"
 FOCUS = "\x1b_pcode;focus\x1b\\"
 # What the drawer's hello sends: it speaks this, not the terminals' `PROTOCOL`.
 # 1 was a web page fed rendered HTML; 2 is the raw side questions.
