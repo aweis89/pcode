@@ -1275,7 +1275,7 @@ def test_btw_retires_side_process_on_failure_close_and_summarize(fake_agy, tmp_p
         # Summarizing a restored thread (reply.model is None) retires its fresh side model.
         restored = SideReply(answer="ans", messages=[ModelRequest(parts=[UserPromptPart("hi")])])
         summary = await runtime.summarize_aside(restored)
-        assert "do not use tools." in summary
+        assert "as my next message." in summary
         await asyncio.gather(*list(antigravity._background), return_exceptions=True)
         assert len(antigravity._connections) == 0
 
