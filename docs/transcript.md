@@ -355,27 +355,30 @@ These settings also work through `/config` and apply on the next launch.
 
 The model's reply reaches scrollback one finished Markdown block at a time, so
 without pacing a whole paragraph would appear at once after a pause. By default
-(`typed`), finished prose (paragraphs, lists, headings, quotes, and thinking) is
-typed out a few characters per frame on a live row, and each row moves to
+(`rows`), finished blocks roll into scrollback a row per frame, sped up to
+finish a burst in about a second.
+
+With `typed`, finished prose (paragraphs, lists, headings, quotes, and thinking)
+is typed out a few characters per frame on a live row instead, moving to
 scrollback once complete. The text is already rendered, so nothing reflows while
 it types: line breaks and styling are final from the first character, and
-indentation appears at once. Code blocks, tables, rules, and tool output roll in
-a row per frame instead, since half a code line or table border reads badly.
+indentation appears at once. Code blocks, tables, rules, and tool output still
+roll in a row per frame, since half a code line or table border reads badly.
+Typing runs at about 270 characters a second (a little under a model's own
+pace), speeding up to finish a burst in about two seconds. Prose and whole-row
+blocks queue behind each other, so prose followed by a long code block can take
+about three seconds to land.
 
-Typing runs at about 270 characters a second, a little under a model's own pace. When
-a burst arrives faster than that, typing speeds up to finish it in about two
-seconds. Rows rolled in whole go one per frame, sped up to finish in about a
-second. The two queue behind each other, so prose followed by a long code block
-can take about three seconds to land. Opening a popup or ending the session
-writes whatever is left at once, and a redraw or resize rebuild always lands
-whole. Pacing changes only how text appears, not what is written or retained.
+Opening a popup or ending the session writes whatever is left at once, and a
+redraw or resize rebuild always lands whole. Pacing changes only how text
+appears, not what is written or retained.
 
 ```sh
-pcode config set paced_scrollback rows  # Roll every block in by row
-pcode config set paced_scrollback off   # Write every block at once
+pcode config set paced_scrollback typed  # Type settled prose out character by character
+pcode config set paced_scrollback off    # Write every block at once
 ```
 
-The default is `typed`; changes apply on the next launch. An older saved `on`
+The default is `rows`; changes apply on the next launch. An older saved `on`
 falls back to the default.
 
 ## Regenerating the terminal transcript

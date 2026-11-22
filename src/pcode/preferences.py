@@ -534,9 +534,9 @@ SETTINGS = {
         description="Rebuild scrollback at the new width when the terminal resizes",
     ),
     "paced_scrollback": Setting(
-        "typed",
-        ("typed", "rows", "off"),
-        description="Type settled prose out, or roll blocks in by row, instead of landing at once",
+        "rows",
+        ("rows", "typed", "off"),
+        description="Roll settled blocks in by row, or type prose out, instead of landing at once",
     ),
     "smooth_scroll": Setting(
         "off",
