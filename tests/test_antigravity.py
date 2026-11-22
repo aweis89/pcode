@@ -2720,7 +2720,12 @@ def test_cancelling_held_subagent_turn_sends_cancel_and_quarantines(
         model = AntigravityModel("fake-neon")
         agent = agent_for(model, tmp_path)
         task = asyncio.create_task(agent.run("SUBAGENT_HANG"))
-        await asyncio.sleep(0.15)
+        # Under load, startup can outlast a fixed sleep: wait for the prompt to go out.
+        for _ in range(500):
+            if prompts(fake_agy):
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.15)  # Settled and holding for the subagent.
         assert not task.done()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -3776,3 +3781,19 @@ def test_worker_session_forwards_only_non_native_repo_instructions(fake_agy, tmp
     assert "REPO_WORKER_LOCAL" in append
     assert "REPO_NATIVE_RULE" not in append
     assert PCODE_CLIENT_INSTRUCTIONS not in append
+
+
+def test_subagent_wait_gives_up_after_its_limit(fake_agy, tmp_path, monkeypatch):
+    # A subagent that never reports must not hold the turn (and spinner) forever.
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    monkeypatch.setattr(antigravity, "SUBAGENT_WAIT_LIMIT", 0.2)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        started = asyncio.get_running_loop().time()
+        result = await asyncio.wait_for(agent_for(model, tmp_path).run("SUBAGENT_HANG"), 3.0)
+        return result, asyncio.get_running_loop().time() - started
+
+    result, elapsed = run(go())
+    assert "Waiting for the code review subagent." in result.output
+    assert elapsed >= 0.2

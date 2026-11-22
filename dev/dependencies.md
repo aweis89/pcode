@@ -893,6 +893,13 @@ for what pcode sends and spawns via `agy acp`. Traps found while building it:
   launch (paused until the subagent's wakeup arrives and its `usage_update` +
   quiet debounce settle; cleared if another non-daemon tool runs afterwards so
   a subagent that already reported during later work cannot hang the turn).
+  `agy` sends nothing when a subagent dies silently or reported before
+  settlement, so the wait gives up after `SUBAGENT_WAIT_LIMIT` (30 minutes).
+  The hold tracks one pending subagent, not a count: with two in flight, or a
+  held command finishing first, the first wake clears it, and the parent's
+  "still waiting" reply ends the turn; the later report then arrives as a
+  continuation. Ctrl+C during the wait quarantines wakes, so that subagent's
+  report is dropped rather than reopening a turn.
   Delayed wakeups that still arrive after a turn has finalized are buffered by
   `AntigravityModel._idle_update` when a `SessionController` is attached
   (`wake_listener`) and open a provider continuation turn

@@ -124,6 +124,11 @@ IDLE_QUIET = 1.5
 DEFERRED_FINALIZE_DEBOUNCE = 3.0
 # Safety cap while waiting for an unsolicited follow-up reply's `usage_update`.
 OPEN_REPLY_QUIET_LIMIT = 120.0
+# Longest a held turn waits for a native `invoke_subagent` to report back. `agy`
+# gives no signal when one dies silently, or when it reported before settlement
+# and the parent replied with text only; past this the turn ends, and a late
+# report still opens a provider continuation turn.
+SUBAGENT_WAIT_LIMIT = 1800.0
 # Tool titles Antigravity leaves in_progress across `session/prompt` settlement.
 SCHEDULE_TITLES = frozenset({"Run schedule", "Running schedule"})
 # Tool names/titles for Antigravity's native async subagent launcher: `agy`
@@ -1908,6 +1913,8 @@ class AntigravityStream(StreamedResponse):
         loop = asyncio.get_running_loop()
         reply_open = False
         quiet_deadline: float | None = None
+        # When the current wait for a launched native subagent gives up.
+        subagent_deadline: float | None = None
         if self.continuation:
             self.holding = True
             quiet_deadline = loop.time() + DEFERRED_FINALIZE_DEBOUNCE
@@ -1949,6 +1956,10 @@ class AntigravityStream(StreamedResponse):
                     self.subagent_launched = False
                     reply_open = False
                     quiet_deadline = None
+                    if self.awaiting_subagent:
+                        subagent_deadline = loop.time() + SUBAGENT_WAIT_LIMIT
+                        if not self._has_running_tools():
+                            quiet_deadline = subagent_deadline
                 continue  # A prompt a steering message took over, or held for background work.
             kind = update.get("sessionUpdate")
             substantive_wake = _is_wake_update(
@@ -1965,12 +1976,16 @@ class AntigravityStream(StreamedResponse):
                     if self.subagent_launched:
                         self.awaiting_subagent = True
                         self.subagent_launched = False
+                        subagent_deadline = loop.time() + SUBAGENT_WAIT_LIMIT
                 elif substantive_wake:
                     reply_open = True
-                # Any active non-daemon tool (including long MCP delegations) or an
-                # awaited native subagent pauses the quiet timer while holding.
-                if self._has_running_tools() or self.awaiting_subagent:
+                # Any active non-daemon tool (including long MCP delegations) pauses
+                # the quiet timer while holding; an awaited native subagent swaps it
+                # for the much longer `SUBAGENT_WAIT_LIMIT`.
+                if self._has_running_tools():
                     quiet_deadline = None
+                elif self.awaiting_subagent:
+                    quiet_deadline = subagent_deadline
                 else:
                     limit = OPEN_REPLY_QUIET_LIMIT if reply_open else DEFERRED_FINALIZE_DEBOUNCE
                     quiet_deadline = loop.time() + limit
