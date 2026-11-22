@@ -566,6 +566,27 @@ def test_marker_survives_suffix_growth():
     assert 1234 < context_estimate(messages) < 50000
 
 
+def test_multi_step_turn_anchors_on_measured_context_not_billing():
+    # An Antigravity turn bills every internal step's context; switching the
+    # session to another model then compacted a 296k context reported as 2.6M.
+    turn = ModelResponse(
+        parts=[TextPart("done")],
+        usage=RequestUsage(input_tokens=2_586_595, output_tokens=5_000),
+        provider_details={"stop_reason": "end_turn", "context_used": 295_586},
+    )
+    follow_up = ModelRequest(parts=[UserPromptPart("next question " * 100)])
+    estimate = context_estimate([ModelRequest(parts=[UserPromptPart("go")]), turn, follow_up])
+    assert 295_586 < estimate < 300_000
+    # Later anchors still win: the next model's own usage, then a checkpoint.
+    later = ModelResponse(parts=[TextPart("ok")], usage=RequestUsage(input_tokens=140_000))
+    assert context_estimate([turn, follow_up, later]) < 150_000
+    later.metadata = {MARKER: {"tokens": 50_000}}
+    assert context_estimate([turn, follow_up, later]) == 50_000
+    # A malformed value falls back to the provider's input usage.
+    turn.provider_details = {"context_used": True}
+    assert context_estimate([turn]) >= 2_586_595
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 def test_unsaved_auto_failure_retains_settled_tool_effects(monkeypatch, cancel):
     monkeypatch.setenv("PCODE_CONTEXT_WINDOW", "16000")

@@ -37,7 +37,7 @@ from pydantic_ai_harness.compaction import (
 from pydantic_ai_harness.compaction._shared import find_token_cutoff
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, is_provider_valid
 
-from pcode.context_usage import compact_tokens
+from pcode.context_usage import compact_tokens, measured_context
 from pcode.native_results import drop_orphaned_native_parts
 from pcode.output_limits import ModelOutputLimits
 
@@ -113,6 +113,8 @@ def known_schema_tokens(messages) -> int | None:
 def context_estimate(messages, parameters=None) -> int:
     """Use provider usage until a rewrite invalidates it, then a marked estimate.
 
+    A measured `context_used` (multi-step ACP turns) beats that turn's billing usage.
+
     Retained responses still carry original billing usage. Checkpoint markers
     prevent stale usage from retriggering compaction. Schema growth is added to
     anchored overhead, not hidden behind it. Unknown baselines conservatively
@@ -125,8 +127,14 @@ def context_estimate(messages, parameters=None) -> int:
         if marker:
             estimate = marker["tokens"] + estimate_token_count(messages[index + 1 :])
             break
-        if isinstance(message, ModelResponse) and message.usage.input_tokens:
-            break
+        if isinstance(message, ModelResponse):
+            # Anchoring on a multi-step turn's billing sum compacted a 300k
+            # context reported as 2.6M; its measured fill is the real anchor.
+            if used := measured_context(message):
+                estimate = used + estimate_token_count(messages[index + 1 :])
+                break
+            if message.usage.input_tokens:
+                break
     if estimate is None:
         estimate = estimate_context_tokens(messages, model_request_parameters=parameters)
     if parameters is not None:
