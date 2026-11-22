@@ -305,10 +305,10 @@ class PreviewApp:
         # `popup_view` as `drawer_host` last read it, and when.
         self._drawer_pref = False
         self._drawer_pref_at = float("-inf")
-        # Overlay popups (`pcode.popup_surface`) open one at a time, and stop
-        # being tried once the terminal failed to open one.
-        self._overlay_lock = asyncio.Lock()
-        self._overlay_failed = False
+        # Popups open one at a time, overlay or full screen; overlays
+        # (`pcode.popup_surface`) stop being tried once two failed to open.
+        self._popup_lock = asyncio.Lock()
+        self._overlay_failures = 0
         # `/merge` and `/summarize` sent from a /btw thread in the drawer, while they run.
         self._btw_tasks: set[asyncio.Task] = set()
         # The popup generation an auto-open `/btw` was queued in. That viewer
@@ -1115,17 +1115,24 @@ class PreviewApp:
         """Whether popups open in an overlay beside the conversation (`popup_view overlay`).
 
         Only in a terminal that answered the overlay probe, on this machine
-        (it finds pcode's socket by path), and until one failed to open.
+        (it finds pcode's socket by path), and until two in a row failed to open.
         """
         from pcode import theme
 
-        if self._overlay_failed or not theme.popup_supported():
+        # Twice running: once may be a cold start (a fresh install compiling).
+        if self._overlay_failures >= 2 or not theme.popup_supported():
             return False
         if not self.transcript.console.is_terminal:
             return False
         if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
             return False
         return popup_view() == "overlay"
+
+    def _superseded(self) -> bool:
+        return (
+            self._command_popup_generation is not None
+            and self._command_popup_generation != self._popup_generation
+        )
 
     @asynccontextmanager
     async def popup(
@@ -1138,34 +1145,41 @@ class PreviewApp:
         for short lists and prompts, `wide` for browsers), else pcode's own
         terminal, given to the popup whole. `overlay=False` always takes the
         full screen: a secret is typed where nothing else can take keys.
+        One popup at a time, wherever it opens.
         """
         from pcode import popup_surface
 
-        if (
-            self._command_popup_generation is not None
-            and self._command_popup_generation != self._popup_generation
-        ):
+        if self._superseded():
             raise _PopupSuperseded
-        if overlay and self.popups_overlay():
-            async with AsyncExitStack() as stack:
-                await stack.enter_async_context(self._overlay_lock)
-                try:
-                    surface = await stack.enter_async_context(
-                        popup_surface.overlay(session.app.output, session.app.input, layout=layout)
-                    )
-                except popup_surface.OverlayUnavailable:
-                    # Not again this session: each try waits for the terminal.
-                    self._overlay_failed = True
-                    self.transcript.warning(
-                        "The terminal did not open the popup overlay; "
-                        "popups take the full screen for the rest of this session."
-                    )
-                else:
-                    self._claim_popup()
-                    yield surface
-                    return
-        async with self._full_screen_popup(output, session) as surface:
-            yield surface
+        async with self._popup_lock:
+            # Shown meanwhile, another popup may have superseded this one.
+            if self._superseded():
+                raise _PopupSuperseded
+            if overlay and self.popups_overlay():
+                async with AsyncExitStack() as stack:
+                    try:
+                        surface = await stack.enter_async_context(
+                            popup_surface.overlay(
+                                session.app.output,
+                                session.app.input,
+                                layout=layout,
+                                on_main_resize=lambda: session.app._on_resize(),
+                            )
+                        )
+                    except popup_surface.OverlayUnavailable:
+                        self._overlay_failures += 1
+                        if not self.popups_overlay():
+                            self.transcript.warning(
+                                "The terminal did not open the popup overlay; "
+                                "popups take the full screen for the rest of this session."
+                            )
+                    else:
+                        self._overlay_failures = 0
+                        self._claim_popup()
+                        yield surface
+                        return
+            async with self._full_screen_popup(output, session) as surface:
+                yield surface
 
     @asynccontextmanager
     async def _full_screen_popup(self, output: TerminalOutput, session):
@@ -1201,6 +1215,7 @@ class PreviewApp:
         finally:
             if hide:
                 session.app.output.write_raw(drawer.SHOW)
+                session.app.output.flush()
             # Reuse resize's transcript replay, even when resize replay is off.
             # Flush only after releasing the writer lock and restoring the
             # normal screen, including dismissal, cancellation, and failures.

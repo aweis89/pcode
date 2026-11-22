@@ -962,10 +962,12 @@ def popup_view() -> str:
     if "popup_view" in preferences:
         return preferences["popup_view"]
     # It replaced `btw_view`, whose `drawer` was the overlay's first part.
-    try:
-        legacy = read_preferences().get("btw_view")
-    except ValueError:
-        legacy = None
+    legacy = None
+    for path in (preferences_path(), project_preferences_path()):
+        try:
+            legacy = read_preferences(path).get("btw_view", legacy) if path else legacy
+        except ValueError:
+            continue
     return "overlay" if legacy == "drawer" else SETTINGS["popup_view"].default
 
 

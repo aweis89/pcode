@@ -27,7 +27,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
     modal_input.close.side_effect = lambda: events.append("close input")
     factory = Mock(return_value=modal_input)
     monkeypatch.setattr("pcode.app.StartupInput", factory)
-    session = SimpleNamespace(app=SimpleNamespace(input=editor_input))
+    session = SimpleNamespace(app=SimpleNamespace(input=editor_input, output=None))
 
     async def run():
         lock = asyncio.Lock()
@@ -56,7 +56,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
 
         async def popup():
             async with app.popup(output, session) as inp:
-                assert inp is (modal_input if separate_input else editor_input)
+                assert inp.input is (modal_input if separate_input else editor_input)
                 assert lock.locked()
                 events.append("dialog")
                 if outcome:

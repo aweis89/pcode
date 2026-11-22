@@ -10,6 +10,7 @@ from rich.console import Console
 
 from pcode.conversation_tree import ConversationTree
 from pcode.copy_ui import Snippet, last_response, snippets
+from pcode.popup_surface import PopupSurface
 
 RESPONSE = """Two things:
 
@@ -141,8 +142,8 @@ def test_main_copy_history_by_keyboard(monkeypatch, older, keys, expected):
         with create_pipe_input() as pipe:
 
             @asynccontextmanager
-            async def popup(output, session):
-                yield pipe
+            async def popup(output, session, **options):
+                yield PopupSurface(pipe, None)
 
             monkeypatch.setattr(app, "popup", popup)
             original = tree_ui.CopyBrowser
@@ -259,8 +260,8 @@ def test_copy_command_opens_the_picker_for_a_quote_from_earlier_in_the_turn(monk
         app = PreviewApp(runtime=runtime, console=Console(file=StringIO()))
 
         @asynccontextmanager
-        async def popup(output, session):
-            yield None
+        async def popup(output, session, **options):
+            yield PopupSurface(None, session.app.output)
 
         monkeypatch.setattr(app, "popup", popup)
         session = SimpleNamespace(app=SimpleNamespace(output=DummyOutput(), style=None))

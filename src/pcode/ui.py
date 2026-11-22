@@ -77,7 +77,6 @@ from pcode.preferences import (
     canonical,
     load_preferences,
     parse_height,
-    popup_view,
     screen_rows,
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
@@ -4322,7 +4321,8 @@ class Transcript:
                 probe_width=probe_width,
                 probe_cursor=probe_cursor,
                 probe_glide=probe_glide and self.smooth_scroll == "auto",
-                probe_drawer=probe_glide and popup_view() == "overlay",
+                # Asked whatever `popup_view` says, so turning it on needs no restart.
+                probe_drawer=probe_glide,
                 probe_kitty=probe_glide
                 and preferences.get("smooth_spinner", SETTINGS["smooth_spinner"].default) == "auto",
             )
