@@ -15,6 +15,7 @@ positions correct, the same technique ``TabsProcessor`` uses to expand tabs.
 from __future__ import annotations
 
 from bisect import bisect_right
+from collections.abc import Callable
 from functools import cache
 
 from prompt_toolkit.document import Document
@@ -135,8 +136,12 @@ class WordWrapProcessor(Processor):
         and its continuation), which ``TransformationInput.width`` includes.
     """
 
-    def __init__(self, prefix_width: int = 0) -> None:
-        self.prefix_width = prefix_width
+    def __init__(self, prefix_width: int | Callable[[], int] = 0) -> None:
+        self._prefix_width = prefix_width
+
+    @property
+    def prefix_width(self) -> int:
+        return self._prefix_width() if callable(self._prefix_width) else self._prefix_width
 
     def apply_transformation(self, ti: TransformationInput) -> Transformation:
         fragments = explode_text_fragments(ti.fragments)

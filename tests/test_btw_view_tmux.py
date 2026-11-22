@@ -78,6 +78,9 @@ def test_the_editor_replies_to_the_drawer_thread_while_a_turn_runs(pane, release
     pane("send-keys", "-t", "preview:0.0", "while it runs?", "Enter")
     screen = capture(pane, "TO_THREAD: while it runs?", running=True)
     assert "LIVE_EDIT_LINE" in screen
+    assert "SIDE_QUESTION?" in screen
+    assert "btw ❯" in screen
+    assert "btw reply" in screen
     assert "SIDE_ANSWER" not in history(pane), "the thread is the drawer's to draw"
     # Escape gives the editor back to the conversation.
     pane("send-keys", "-t", "preview:0.0", "Escape")

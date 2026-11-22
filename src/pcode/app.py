@@ -2805,8 +2805,17 @@ class PreviewApp:
             model += f" ({effort})"
         # Read left to right and cut from the right: the path leads, then send
         # mode and live activity, then metadata, with the help hint last.
-        once = " (once)" if self.send_mode_once else ""
-        segments = [("mode", f"{self.next_send_mode}{once}")]
+        btw = self.btw_thread()
+        if btw:
+            newest = btw[-1]
+            if newest.model:
+                model = newest.label or newest.model
+            elif newest.effort:
+                model = f"{self.model} ({newest.effort})" if self.model else newest.effort
+            segments = [("btw", "btw reply")]
+        else:
+            once = " (once)" if self.send_mode_once else ""
+            segments = [("mode", f"{self.next_send_mode}{once}")]
         if self._startup_pending:
             segments.extend([("sep", " · "), ("activity", "starting")])
         # No "working" label: the status on the editor's top border already says so.
