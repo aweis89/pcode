@@ -51,6 +51,9 @@ class Terminal:
     def flush(self) -> None:
         pass
 
+    def get_size(self):
+        return (24, 80)
+
     def get_default_color_depth(self) -> ColorDepth:
         return ColorDepth.DEPTH_8_BIT
 
@@ -242,3 +245,58 @@ def test_the_popup_directory_is_private(terminal):
 
     asyncio.run(main())
     assert popup_dir().stat().st_mode & 0o777 == 0o700
+
+
+def test_escape_in_the_main_pane_cancels_the_popup(terminal):
+    from prompt_toolkit.key_binding.key_processor import KeyPress
+
+    editor = EditorInput()
+    editor.keys = [KeyPress(Keys.Escape, "\x1b")]
+
+    async def main():
+        async with overlay(terminal, editor) as surface:
+            app = picker(surface, [])
+            task = asyncio.ensure_future(app.run_async())
+            await _wait_for(lambda: b"pick one" in terminal.screen)
+            # The overlay went missing without hanging up; Escape in pcode's pane.
+            assert editor.read_keys() == []
+            return await asyncio.wait_for(task, 5)
+
+    assert asyncio.run(main()) is None
+
+
+def test_a_task_the_popup_started_finds_no_terminal_after_it(terminal):
+    async def main():
+        async with overlay(terminal, EditorInput()):
+            assert terminal_fds()
+            gate = asyncio.Event()
+
+            async def outlives():
+                await gate.wait()
+                return terminal_fds()
+
+            task = asyncio.ensure_future(outlives())
+        gate.set()
+        return await task
+
+    assert asyncio.run(main()) == {}
+
+
+def test_leftovers_are_swept_and_a_missed_resize_replayed(terminal):
+    import time as clock
+
+    directory = popup_dir()
+    directory.mkdir(mode=0o700, parents=True)
+    old = directory / ("0" * 16 + ".json")
+    old.write_text("{}")
+    os.utime(old, (clock.time() - 3600,) * 2)
+    resizes = []
+    sizes = iter([(24, 80), (30, 100)])
+    terminal.get_size = lambda: next(sizes)
+
+    async def main():
+        async with overlay(terminal, EditorInput(), on_main_resize=lambda: resizes.append(1)):
+            assert not old.exists()
+
+    asyncio.run(main())
+    assert resizes == [1]

@@ -33,8 +33,10 @@ import asyncio
 import json
 import os
 import secrets
+import select
 import socket
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
@@ -59,9 +61,21 @@ DONE = b"\x1b_pcode;done\x1b\\"
 # How long the terminal gets to start the bridge. Python starts in ~50 ms;
 # not answering at all means it can't reach the socket (a container, a VM).
 CONNECT_TIMEOUT = 3.0
+# Older entries in `popup_dir()` are leftovers: each is found within seconds.
+_STALE_AFTER = 600.0
+
+
+class _Terminal:
+    """The overlay's tty while its popup runs; emptied after, for tasks that outlive it."""
+
+    def __init__(self, fd: int) -> None:
+        self.fd: int | None = fd
+
 
 # The overlay's terminal while a popup runs on one, for programs it starts.
-_overlay_fd: ContextVar[int | None] = ContextVar("overlay_fd", default=None)
+# A holder rather than the fd: a task the popup started keeps this context
+# after the popup, and must not then find a closed (or reused) fd number.
+_overlay_terminal: ContextVar[_Terminal | None] = ContextVar("overlay_terminal", default=None)
 
 
 def open_apc(token: str, layout: str) -> str:
@@ -80,7 +94,8 @@ def terminal_fds() -> dict[str, Any]:
     Empty on the full screen, where the popup's terminal is pcode's own. On an
     overlay the program ($EDITOR) runs in the overlay, as the popup does.
     """
-    fd = _overlay_fd.get()
+    terminal = _overlay_terminal.get()
+    fd = terminal.fd if terminal is not None else None
     if fd is None:
         return {}
     return {"stdin": fd, "stdout": fd, "stderr": fd}
@@ -111,6 +126,8 @@ class _OverlayWriter:
         self.fd = fd
         self._pending: list[bytes] = []
         self.gone = False
+        # Sent with the first frame, so the terminal never shows an empty popup.
+        self.ready = READY
 
     def fileno(self) -> int:
         return self.fd
@@ -124,10 +141,14 @@ class _OverlayWriter:
 
     def flush(self) -> None:
         data, self._pending = b"".join(self._pending), []
+        if data and self.ready:
+            data, self.ready = self.ready + data, b""
         while data and not self.gone:
             try:
                 written = os.write(self.fd, data)
             except BlockingIOError:
+                # Shared with the bridge, the file could be non-blocking.
+                select.select([], [self.fd], [], 0.05)
                 continue
             except InterruptedError:
                 continue
@@ -173,6 +194,12 @@ def _private_dir():
         raise OSError(f"{directory} is not this user's own directory")
     if info.st_mode & 0o077:
         directory.chmod(0o700)
+    # A pcode that died waiting for its overlay left its socket and entry.
+    stale = time.time() - _STALE_AFTER
+    for path in directory.iterdir():
+        with suppress(OSError):
+            if path.lstat().st_mtime < stale:
+                path.unlink()
     return directory
 
 
@@ -196,19 +223,27 @@ def _cancel(session: AppSession) -> None:
 
 
 @contextmanager
-def _inert_editor(main_input: Input):
+def _inert_editor(main_input: Input, cancel: Callable[[], None]):
     """Drop keys that reach the editor while a popup has the keyboard.
 
     The terminal moves focus to the overlay, but split navigation or a tab
     switch can bring it back to pcode's pane; a key typed there must not land
     in the draft (a secret, say). Cursor reports still go to the editor, which
-    keeps drawing the conversation.
+    keeps drawing the conversation. Escape or Ctrl+C there cancels the popup:
+    if the overlay ever went without hanging up, that is the way out.
     """
     read_keys, flush_keys = main_input.read_keys, main_input.flush_keys
     kept = (Keys.CPRResponse,)
+    cancelling = (Keys.Escape, Keys.ControlC)
 
     def filtered(read):
-        return lambda: [key for key in read() if key.key in kept]
+        def keys():
+            pressed = read()
+            if any(key.key in cancelling for key in pressed):
+                cancel()
+            return [key for key in pressed if key.key in kept]
+
+        return keys
 
     main_input.read_keys = filtered(read_keys)
     main_input.flush_keys = filtered(flush_keys)
@@ -225,6 +260,33 @@ class OverlayUnavailable(Exception):
     """The terminal didn't open the overlay; the popup takes the full screen instead."""
 
 
+async def _receive(connection: socket.socket) -> tuple[bytes, list[int]]:
+    """The bridge's hello and the fds sent with it, without blocking the loop."""
+    loop = asyncio.get_running_loop()
+    connection.setblocking(False)
+    while True:
+        try:
+            message, fds, flags, _ = socket.recv_fds(connection, 64, 1)
+        except BlockingIOError:
+            readable = loop.create_future()
+            loop.add_reader(connection.fileno(), readable.set_result, None)
+            try:
+                await readable
+            finally:
+                loop.remove_reader(connection.fileno())
+            continue
+        if flags & socket.MSG_CTRUNC:
+            for fd in fds:
+                os.close(fd)
+            return b"", []
+        return message, fds
+
+
+def _give_up(main_output: Output, token: str) -> None:
+    main_output.write_raw(close_apc(token))
+    main_output.flush()
+
+
 @asynccontextmanager
 async def overlay(
     main_output: Output,
@@ -233,8 +295,13 @@ async def overlay(
     layout: str = "wide",
     timeout: float = CONNECT_TIMEOUT,
     python: str | None = None,
+    on_main_resize: Callable[[], None] | None = None,
 ) -> AsyncIterator[PopupSurface]:
-    """Open an overlay popup surface; raises `OverlayUnavailable` before yielding if it can't."""
+    """Open an overlay popup surface; raises `OverlayUnavailable` before yielding if it can't.
+
+    `on_main_resize` is called after the popup if pcode's own terminal changed
+    size meanwhile: the popup had SIGWINCH, so the editor never heard.
+    """
     token = secrets.token_hex(8)
     try:
         directory = _private_dir()
@@ -245,7 +312,7 @@ async def overlay(
         raise OverlayUnavailable(str(error)) from error
     loop = asyncio.get_running_loop()
     connection = None
-    fd = None
+    fds: list[int] = []
     try:
         try:
             server.bind(str(address))
@@ -257,13 +324,15 @@ async def overlay(
         main_output.write_raw(open_apc(token, layout))
         main_output.flush()
         try:
-            connection, _ = await asyncio.wait_for(loop.sock_accept(server), timeout)
-            connection.settimeout(1.0)
-            message, fds, _, _ = await asyncio.to_thread(socket.recv_fds, connection, 64, 1)
+            async with asyncio.timeout(timeout):
+                connection, _ = await loop.sock_accept(server)
+                message, fds = await _receive(connection)
         except (TimeoutError, OSError) as error:
-            main_output.write_raw(close_apc(token))
-            main_output.flush()
+            _give_up(main_output, token)
             raise OverlayUnavailable("the terminal did not open the popup") from error
+        except asyncio.CancelledError:
+            _give_up(main_output, token)
+            raise
         finally:
             # Found once; nothing else may connect.
             for path in (entry, address):
@@ -271,13 +340,9 @@ async def overlay(
                     path.unlink()
             server.close()
         fd = fds[0] if fds else None
-        for extra in fds[1:]:
-            os.close(extra)
-        if message != HELLO or fd is None or not os.isatty(fd):
-            main_output.write_raw(close_apc(token))
-            main_output.flush()
+        if not message.startswith(HELLO) or fd is None or not os.isatty(fd):
+            _give_up(main_output, token)
             raise OverlayUnavailable("the popup's terminal did not check out")
-        connection.setblocking(False)
         writer = _OverlayWriter(fd)
         session_box: list[AppSession] = []
 
@@ -285,6 +350,11 @@ async def overlay(
             writer.gone = True
             if session_box:
                 _cancel(session_box[0])
+
+        def resized() -> None:
+            app = session_box[0].app if session_box else None
+            if app is not None and app.is_running:
+                app._on_resize()
 
         def bridge_spoke() -> None:
             try:
@@ -297,11 +367,8 @@ async def overlay(
                 # The bridge went: the terminal closed the overlay.
                 loop.remove_reader(connection.fileno())
                 cancel()
-                return
-            if RESIZED in data and session_box:
-                app = session_box[0].app
-                if app is not None and app.is_running:
-                    app._on_resize()
+            elif RESIZED in data:
+                resized()
 
         stdin = open(fd, encoding="utf-8", errors="replace", closefd=False)
         popup_input = _OverlayInput(stdin, lambda: writer.gone, cancel)
@@ -312,28 +379,33 @@ async def overlay(
                 default_color_depth=main_output.get_default_color_depth(),
             )
         )
-        writer.write(READY.decode())
-        writer.flush()
+        main_size = main_output.get_size()
         loop.add_reader(connection.fileno(), bridge_spoke)
-        overlay_token = _overlay_fd.set(fd)
+        terminal = _Terminal(fd)
+        terminal_token = _overlay_terminal.set(terminal)
         try:
             with (
-                _inert_editor(main_input),
+                _inert_editor(main_input, cancel),
                 create_app_session(popup_input, popup_output) as session,
             ):
                 session_box.append(session)
                 yield PopupSurface(popup_input, popup_output, overlay=True, session=session)
         finally:
-            _overlay_fd.reset(overlay_token)
+            terminal.fd = None
+            _overlay_terminal.reset(terminal_token)
             with suppress(Exception):
                 loop.remove_reader(connection.fileno())
             clear_typeahead(popup_input)
             popup_input.close()
             stdin.close()
+            # Shown or not, it closes: never flash an empty popup first.
+            writer.ready = b""
             writer.write(DONE.decode())
             writer.flush()
+            if on_main_resize is not None and main_output.get_size() != main_size:
+                on_main_resize()
     finally:
         if connection is not None:
             connection.close()
-        if fd is not None:
+        for fd in fds:
             os.close(fd)
