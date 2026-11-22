@@ -378,6 +378,8 @@ class AsideBrowser:
         picker = Frame(
             DynamicContainer(lambda: self.picker.container if self.picker else HSplit([])),
             title="Links",
+            # It floats over the browser: without its box it would run into it.
+            boxed=True,
         )
         overlaid = FloatContainer(
             root_container,

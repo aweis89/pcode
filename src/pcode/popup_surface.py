@@ -15,7 +15,9 @@ Every popup is a prompt_toolkit `Application` given an input and an output.
 The overlay protocol (`ESC _ pcode;… ESC \\`):
 
     pcode;popup?                    probe; the terminal answers `pcode;popup;1`
-    pcode;popup;<token>;<layout>    open a popup (`sheet` or `wide`) running the bridge
+    pcode;popup;<token>;<layout>[;<base64 utf-8 title>]
+                                    open a popup (`sheet` or `wide`) running the bridge;
+                                    a title heads it from the start
     pcode;popup-close;<token>       give up on that popup (it never came, say)
     pcode;ready                     (from the overlay) shown it: focus it
     pcode;title;<base64 utf-8>      (from the overlay) the popup's title, for its header
@@ -84,19 +86,23 @@ class _Terminal:
 _overlay_terminal: ContextVar[_Terminal | None] = ContextVar("overlay_terminal", default=None)
 
 
-def open_apc(token: str, layout: str) -> str:
+def open_apc(token: str, layout: str, title: str = "") -> str:
     if layout not in LAYOUTS:
         raise ValueError(f"Not a popup layout: {layout!r}")
-    return f"\x1b_pcode;popup;{token};{layout}\x1b\\"
+    named = f";{_encode_title(title)}" if title else ""
+    return f"\x1b_pcode;popup;{token};{layout}{named}\x1b\\"
 
 
 def close_apc(token: str) -> str:
     return f"\x1b_pcode;popup-close;{token}\x1b\\"
 
 
+def _encode_title(title: str) -> str:
+    return base64.b64encode(title[:TITLE_MAX].encode("utf-8", "replace")).decode("ascii")
+
+
 def title_apc(title: str) -> bytes:
-    encoded = base64.b64encode(title[:TITLE_MAX].encode("utf-8", "replace"))
-    return b"\x1b_pcode;title;" + encoded + b"\x1b\\"
+    return b"\x1b_pcode;title;" + _encode_title(title).encode("ascii") + b"\x1b\\"
 
 
 def _overlay_writer(output: Output | None) -> "_OverlayWriter | None":
@@ -118,12 +124,13 @@ def drawn_in_overlay() -> bool:
 def set_title(title: str) -> None:
     """Show `title` in the overlay's header, if the app being drawn is on one.
 
-    Sent with the next frame, and only when it changed.
+    Sent with the next frame, and only when it changed. An empty one puts
+    back the title the popup opened with.
     """
     app = get_app_or_none()
     writer = _overlay_writer(app.output if app is not None else None)
     if writer is not None:
-        writer.title = title
+        writer.title = title or writer.opened_title
 
 
 def terminal_fds() -> dict[str, Any]:
@@ -167,8 +174,8 @@ class _OverlayWriter:
         # Sent with the first frame, so the terminal never shows an empty popup.
         self.ready = READY
         # The header's title, sent before the next frame whenever it changes.
-        self.title = title
-        self._sent_title = ""
+        # The one it opened with went in the open request, already shown.
+        self.title = self.opened_title = self._sent_title = title
 
     def fileno(self) -> int:
         return self.fd
@@ -375,7 +382,7 @@ async def overlay(
             _write_entry(entry, python or sys.executable)
         except OSError as error:
             raise OverlayUnavailable(str(error)) from error
-        main_output.write_raw(open_apc(token, layout))
+        main_output.write_raw(open_apc(token, layout, title))
         main_output.flush()
         try:
             async with asyncio.timeout(timeout):

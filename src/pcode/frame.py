@@ -13,7 +13,7 @@ scroll bar becomes a thin thumb (``SlimScrollbarMargin``). Which is drawn is
 decided at each render, so one widget serves both.
 """
 
-from prompt_toolkit.filters import Condition, has_completions
+from prompt_toolkit.filters import Condition, Never, has_completions
 from prompt_toolkit.formatted_text import (
     AnyFormattedText,
     StyleAndTextTuples,
@@ -57,7 +57,8 @@ def frame_rows(*, footer: bool = False) -> int:
     """Rows a titled ``Frame`` takes beyond its body, as drawn now.
 
     Boxed, its top and bottom rules; in an overlay, its heading rule and only
-    a footer's row if it has one. Read at render, like the frame itself.
+    a footer's row if it has one (untitled, it has no heading row
+    there either). Read at render, like the frame itself.
     """
     if drawn_in_overlay():
         return 1 + footer
@@ -106,7 +107,7 @@ class Frame:
             return Condition(lambda: bool(fragment_list_to_text(to_formatted_text(get()))))
 
         titled, footed = shown(lambda: self.title), shown(lambda: self.footer)
-        flat = in_overlay if not boxed else Condition(lambda: False)
+        flat = in_overlay if not boxed else Never()
 
         top = ConditionalContainer(
             VSplit(
@@ -211,9 +212,7 @@ class Dialog:
 
         def bare() -> AnyContainer:
             # Asked at each render in an overlay: the header follows the title.
-            title = fragment_list_to_text(to_formatted_text(self.title))
-            if title:
-                set_title(title)
+            set_title(fragment_list_to_text(to_formatted_text(self.title)))
             return self.body
 
         framed = Box(body=Shadow(body=frame), style="class:dialog")
