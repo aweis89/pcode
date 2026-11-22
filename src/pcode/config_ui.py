@@ -15,7 +15,7 @@ from prompt_toolkit.widgets import TextArea
 from rich.text import Text
 
 from pcode import config
-from pcode.frame import Frame
+from pcode.frame import Frame, frame_rows
 from pcode.popup_ui import (
     RichPane,
     SearchDebounce,
@@ -242,8 +242,8 @@ class ConfigBrowser:
             # Header, filter, two message rows, and keys take five. The details
             # get the larger share: the list row already shows name and value.
             body = get_app().output.get_size().rows - 5
-            # Always leave the list at least one row between its borders.
-            return max(3, min(16, body * 3 // 5, body - 3))
+            # Always leave the list at least one row inside its frame.
+            return max(3, min(16, body * 3 // 5, body - 1 - frame_rows()))
 
         wide = VSplit(
             [

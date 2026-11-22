@@ -166,16 +166,37 @@ def test_a_long_title_is_cut():
     assert base64.b64decode(payload) == b"x" * popup_surface.TITLE_MAX
 
 
-def test_the_title_goes_out_before_ready():
+def test_a_changed_title_goes_out_before_ready():
     read, write = os.pipe()
     try:
+        # The title it opened with is already in the header: not sent again.
         writer = _OverlayWriter(write, "Diffs")
+        writer.title = "Diffs · 2"
         writer.write("frame")
         writer.flush()
-        assert os.read(read, 4096) == title_apc("Diffs") + popup_surface.READY + b"frame"
+        assert os.read(read, 4096) == title_apc("Diffs · 2") + popup_surface.READY + b"frame"
     finally:
         os.close(read)
         os.close(write)
+
+
+def test_the_open_request_carries_the_title():
+    token = "a" * 16
+    assert popup_surface.open_apc(token, "sheet") == f"\x1b_pcode;popup;{token};sheet\x1b\\"
+    named = popup_surface.open_apc("a" * 16, "sheet", "Model · ✓")
+    payload = named.removesuffix("\x1b\\").split(";")[4]
+    assert base64.b64decode(payload).decode() == "Model · ✓"
+
+
+def test_an_untitled_dialog_puts_back_the_popups_title(overlay_output):
+    output, writer, read = overlay_output
+    writer.opened_title = writer._sent_title = writer.title = "Links"
+    dialog = Dialog(body(), title="Links · tool")
+    render(dialog, output)
+    assert writer.title == "Links · tool"
+    dialog.title = ""
+    render(dialog, output)
+    assert writer.title == "Links"
 
 
 def scrolled(output, lines: int, cursor: int = 0, height: int = 10) -> list[str]:
