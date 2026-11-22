@@ -689,3 +689,39 @@ def test_generic_lifecycle_refuses_parent_with_active_task_before_mainline_chang
     assert git(repo, "rev-parse", "HEAD") == before
     assert parent.path.exists()
     assert Path(record.worktree).exists()
+
+
+def test_repo_scope_reads_git_files_without_running_git(repo, tmp_path, monkeypatch):
+    """Plain checkouts and linked worktrees group from `.git` alone, matching git."""
+    linked = worktree.create(repo, "feature").path
+    external = tmp_path / "external"
+    git(repo, "worktree", "add", "-q", "-b", "external", str(external))
+    (linked / "nested").mkdir()
+    plain = (tmp_path / "plain").resolve()
+    plain.mkdir()
+    missing = (tmp_path / "missing").resolve()
+    cases = {
+        repo: repo,
+        repo / ".worktrees": repo,
+        linked: repo,
+        linked / "nested": repo,
+        external: repo,
+        plain: plain,
+        missing: missing,  # Deleted: grouped by itself, as git -C fails there.
+    }
+    with patch("pcode.worktree._git", side_effect=AssertionError("ran git")):
+        assert {path: worktree.repo_scope(path) for path in cases} == cases
+    # Layouts the files can't vouch for still ask git, and get its answer.
+    bare = (tmp_path / "bare.git").resolve()
+    git(tmp_path, "init", "-q", "--bare", str(bare))
+    nested_bare = repo / "inner.git"
+    git(repo, "init", "-q", "--bare", str(nested_bare))
+    submodule_like = tmp_path / "sub"
+    submodule_like.mkdir()
+    (submodule_like / ".git").write_text(f"gitdir: {repo / '.git' / 'modules' / 'sub'}\n")
+    for path in (bare, nested_bare, repo / ".git", submodule_like):
+        assert worktree._read_main_checkout(path) is worktree._ASK_GIT
+    assert worktree.repo_scope(bare) == bare
+    assert worktree.repo_scope(nested_bare) == nested_bare
+    monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    assert worktree._read_main_checkout(repo) is worktree._ASK_GIT

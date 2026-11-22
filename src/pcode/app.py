@@ -2554,16 +2554,19 @@ class PreviewApp:
 
         def load():
             # Off the event loop: the first import of pcode.sessions pulls in the
-            # agent stack, and grouping by repository runs git per workspace.
+            # agent stack, and grouping by repository can still run git for an
+            # unusual checkout, so the browser gets every workspace's scope ready.
             from pcode.sessions import list_sessions
             from pcode.worktree import repo_scope
 
             records = list_sessions(self.session_dir)
+            spaces = {Path(info.workspace).resolve() for info in records}
+            scopes = {space: repo_scope(space) for space in spaces}
             scope = repo_scope(self.workspace)
-            return records, any(repo_scope(Path(info.workspace)) == scope for info in records)
+            return records, scopes, any(found == scope for found in scopes.values())
 
         with self.activity.waiting("Loading saved sessions"):
-            records, any_here = await asyncio.to_thread(load)
+            records, scopes, any_here = await asyncio.to_thread(load)
         from pcode.session_ui import SessionBrowser
         from pcode.sessions import session_root
 
@@ -2577,6 +2580,7 @@ class PreviewApp:
                 root=self.session_dir or session_root(),
                 workspace=self.workspace,
                 active_id=active_id,
+                scopes=scopes,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,

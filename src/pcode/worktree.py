@@ -45,6 +45,59 @@ def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
     return result
 
 
+_ASK_GIT = object()
+"""`_read_main_checkout` found a layout it won't vouch for."""
+
+_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES")
+
+
+def _read_main_checkout(path: Path) -> Path | None | object:
+    """`main_checkout` from the `.git` files alone, or `_ASK_GIT` when unsure.
+
+    Starting git costs ~20ms, and grouping a few hundred saved sessions by
+    repository asked it once per workspace, so `/resume` took over a second to
+    open. The two layouts nearly every checkout uses can be read instead: a
+    `.git` directory (the main checkout itself), or a linked worktree's `.git`
+    file naming `<main>/.git/worktrees/<name>`, whose `commondir` leads back to
+    `<main>/.git`. Anything else (submodules, bare repos, separate git dirs,
+    another filesystem, git's location variables) goes to git.
+
+    Only for grouping: unlike git it vouches for a repository git would refuse
+    (another user's, "dubious ownership"), so it can't say git will work here.
+    """
+    if any(name in os.environ for name in _GIT_LOCATION_ENV):
+        return _ASK_GIT
+    try:
+        device = path.stat().st_dev
+    except OSError:
+        return None  # As git -C fails on a missing directory.
+    if not path.is_dir():
+        return None
+    for directory in (path, *path.parents):
+        dot_git = directory / ".git"
+        try:
+            if directory.stat().st_dev != device:
+                return _ASK_GIT  # Git stops searching at a filesystem boundary.
+            if (directory / "HEAD").is_file() and (directory / "objects").is_dir():
+                return _ASK_GIT  # A bare repository, or inside a .git directory.
+            if dot_git.is_dir():
+                return directory
+            if dot_git.is_file():
+                line = dot_git.read_text(errors="replace").strip()
+                if not line.startswith("gitdir:"):
+                    return _ASK_GIT
+                gitdir = directory / line.removeprefix("gitdir:").strip()
+                common = gitdir / (gitdir / "commondir").read_text().strip()
+                common = common.resolve()
+                if common.name != ".git" or not common.is_dir():
+                    return _ASK_GIT
+                return common.parent
+        except OSError:
+            # No commondir (a submodule) or an unreadable file.
+            return _ASK_GIT
+    return None
+
+
 def main_checkout(path: Path) -> Path | None:
     """The repository's primary worktree, or None when `path` is not in a git repo."""
     result = _git(path, "worktree", "list", "--porcelain", check=False)
@@ -82,10 +135,15 @@ def repo_scope(path: Path) -> Path:
 
     Linked worktrees and the mainline checkout share a main checkout, so
     comparing this value (rather than the raw workspace) groups sessions from
-    the same repository regardless of which worktree created them.
+    the same repository regardless of which worktree created them. Read from
+    the `.git` files when they are plain, since grouping hundreds of saved
+    sessions by asking git took over a second.
     """
     path = path.resolve()
-    return project_checkout(path) or path
+    found = _read_main_checkout(path)
+    if found is _ASK_GIT:
+        found = project_checkout(path)
+    return found.resolve() if isinstance(found, Path) else path
 
 
 def is_linked(path: Path) -> bool:

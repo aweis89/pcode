@@ -109,6 +109,7 @@ class SessionBrowser:
         root: Path,
         workspace: Path,
         active_id: str | None = None,
+        scopes: dict[Path, Path] | None = None,
         rich_theme: Theme | None = None,
         code_theme: str = "ansi_dark",
         color_system: str | None = "truecolor",
@@ -117,7 +118,8 @@ class SessionBrowser:
     ) -> None:
         self.records = records
         self.root = root
-        self._workspace_scopes: dict[Path, Path] = {}
+        # Resolved workspace -> repo_scope, seeded by a caller that already has them.
+        self._workspace_scopes: dict[Path, Path] = dict(scopes or {})
         self.workspace = self.workspace_scope(workspace)
         self.active_id = active_id
         self.code_theme = code_theme
