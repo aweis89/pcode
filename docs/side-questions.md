@@ -206,8 +206,8 @@ instructions ("keep only the decisions", "what should change in the plan?");
 press **Enter** with nothing typed to summarize as is, or **Escape** to cancel
 and get your follow-up draft back. The summary is asked *in the thread*, on its
 model and after its last answer, so it reuses the thread's cache. When it is
-ready it is sent to the conversation's model as a message from you, naming the
-thread's questions and carrying the summary, exactly as if you had typed it:
+ready it is sent to the conversation's model as a message from you, word for
+word as the thread's model wrote it, exactly as if you had typed it:
 
 - **A turn is running:** the summary steers it, joining at the model's next
   request, so the work in progress can change course.

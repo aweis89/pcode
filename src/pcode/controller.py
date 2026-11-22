@@ -29,7 +29,6 @@ from pcode.aside import (
     SideReply,
     SideTarget,
     effort_fragment,
-    exchanges,
     model_fragment,
     model_labels,
     parse_models,
@@ -4103,12 +4102,10 @@ class SessionController:
         """
         from pcode.aside import retire_reply
 
-        asked = self.asides.thread(follows.thread)
         with self.activity.waiting("Summarizing side thread"):
             restored = follows.reply is None
             reply = await self.side_reply(follows)
             try:
-                questions = [aside.question for aside, _ in exchanges(asked, reply.messages)]
                 summary = await self.runtime.summarize_aside(reply, instructions)
             finally:
                 if restored:
@@ -4121,7 +4118,7 @@ class SessionController:
         except ValueError as error:
             self.view.warning(f"Side thread summary not sent: {error}.")
             return
-        self.submit(summary_message(questions, summary), "steering")
+        self.submit(summary_message(summary), "steering")
         follows.bridged = "summarized"
         if follows.recorded:
             self.runtime.mark_side(follows.id, "summarized")

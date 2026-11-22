@@ -363,9 +363,8 @@ def test_a_summary_is_asked_in_the_thread_and_leaves_the_conversation_alone(tmp_
         assert runtime.tree.active == active
 
     asyncio.run(run())
-    message = summary_message(["Why?", "And\nthen?"], "  The answer.\n")
-    assert message.startswith("[Side thread summary]")
-    assert "- Why?\n- And then?\n" in message and message.endswith("\n\nThe answer.")
+    # The thread's model writes the message; it is sent as written.
+    assert summary_message("  The answer.\n") == "The answer."
 
 
 def settled_app(tmp_path, requests) -> PreviewApp:
@@ -489,7 +488,7 @@ def test_a_summary_sent_mid_turn_steers_it(tmp_path):
         await asyncio.gather(*app.controller._summaries)
 
     asyncio.run(run())
-    assert sent_on == [(summary_message(["Why?"], "Summary: the parser is LL(1)."), "steering")]
+    assert sent_on == [(summary_message("Summary: the parser is LL(1)."), "steering")]
     assert app.asides.items[0].bridged == "summarized"
 
 
@@ -552,7 +551,7 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
     app = settled_app(tmp_path, requests)
     runtime = app.runtime
 
-    message = summary_message(["Why?"], "Summary: the parser is LL(1).")
+    message = summary_message("Summary: the parser is LL(1).")
 
     async def run():
         await turn(runtime, "Main task")

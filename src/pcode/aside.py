@@ -73,11 +73,13 @@ def framed_follow_up(question: str) -> str:
 
 
 # Asked in the thread, where its questions and answers are, so the summary
-# reuses the thread's cache; `summary_message` is what the conversation is sent.
+# reuses the thread's cache. The reply is sent to the conversation verbatim.
 SUMMARY_FRAMING = (
-    "[Side thread summary] Summarize this side discussion for the main conversation, "
-    "which never saw it: what was asked, what was found, and anything that should change "
-    "the ongoing work. Be brief and concrete, with no preamble, and do not use tools."
+    "[Side thread summary] Write a message for the main conversation about this side "
+    "discussion, which it never saw. Your reply is sent there verbatim as my next message, "
+    "so write it to that model directly and include only what it needs to carry on: "
+    "usually what was found and anything that should change the ongoing work. "
+    "Be brief and concrete, with no preamble, and do not use tools."
 )
 
 
@@ -86,18 +88,13 @@ def framed_summary(instructions: str) -> str:
     return SUMMARY_FRAMING + (f"\n\nFocus: {instructions}" if instructions else "")
 
 
-def summary_message(questions: list[str], summary: str) -> str:
+def summary_message(summary: str) -> str:
     """The user message that brings a thread's summary to the conversation's model.
 
-    The conversation never saw the thread, so this names its questions rather
-    than pointing at a discussion "above" that is not there.
+    The thread's model wrote it for the conversation (see `SUMMARY_FRAMING`),
+    so it is sent as written.
     """
-    lines = [
-        "[Side thread summary] Beside this conversation I asked side questions you did not see:"
-    ]
-    lines += [f"- {' '.join(question.split())}" for question in questions]
-    lines += ["", "What came of them:", "", summary.strip()]
-    return "\n".join(lines)
+    return summary.strip()
 
 
 @dataclass(frozen=True)
