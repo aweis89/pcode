@@ -9,7 +9,7 @@ from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.output import DummyOutput
 
 from pcode.commands import CommandRegistry
-from pcode.model_ui import ModelPicker
+from pcode.pick_ui import PickList
 from pcode.preferences import SETTINGS, parse_vi_key_prefix, save_preferences
 from pcode.ui import create_prompt
 
@@ -277,7 +277,7 @@ def test_model_popup_search_does_not_adopt_vi_prefix():
 
     async def run():
         with create_pipe_input() as pipe:
-            picker = ModelPicker([], [], input=pipe, output=DummyOutput())
+            picker = PickList([], title="Choose model", input=pipe, output=DummyOutput())
             pipe.send_text("a l\x03")
             assert await asyncio.wait_for(picker.app.run_async(), 3) is None
             assert picker.search.text == "a l"

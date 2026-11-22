@@ -1,30 +1,33 @@
 """Temporary link chooser for URLs seen in the conversation."""
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-from prompt_toolkit.application import Application
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Always, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
-from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.widgets import Label, TextArea
 
-from pcode.frame import Dialog, ScrollingTextArea
+from pcode.frame import ScrollingTextArea
 from pcode.links import Link
+from pcode.pick_ui import PickAction, PickItem
 from pcode.popup_ui import (
     SearchDebounce,
     bind_list_paging,
     fit_width,
-    popup_container,
-    popup_mouse,
-    popup_style,
     steer_list_from_query,
 )
 from pcode.prefix_keys import PrefixKeys
 
+if TYPE_CHECKING:
+    from pcode.popup_surface import PopupSurface
+
 _ROW_WIDTH = 100
+TITLE = "Links"
+EMPTY = "No matching links."
+TOGGLE_TOOLS = PickAction("t", "Show/hide tool links", needs_item=False)
 
 
 def link_rows(links: list[Link]) -> list[tuple[str, str]]:
@@ -43,8 +46,7 @@ class LinkPicker:
     """A search line over the links, newest first; Enter picks, Esc clears then backs out.
 
     ``container`` and ``key_bindings`` let a popup host it as an overlay, which
-    the side-answer viewer does; ``links_dialog`` wraps it in an application of
-    its own and adds the tool-link toggle.
+    the side-answer viewer does. `/links` itself is a pick list (`link_items`).
     """
 
     def __init__(
@@ -53,19 +55,9 @@ class LinkPicker:
         on_pick: Callable[[str], None],
         on_cancel: Callable[[], None],
         *,
-        message_links: list[Link] | None = None,
-        toggles_tools: bool = False,
         shortcuts: PrefixKeys | None = None,
-        footer: tuple = (),
     ) -> None:
         self.links = links
-        # Collect message-only links separately: a URL first seen in a tool can also
-        # appear in a reply, and must survive hiding tools despite URL deduplication.
-        if message_links is None:
-            message_links = [link for link in links if link.source in ("", "user", "assistant")]
-        self.message_links = message_links
-        self.toggles_tools = toggles_tools
-        self.show_tools = True
         self.visible: list[Link] = []
         self.query = TextArea(height=1, prompt="Search: ", multiline=False)
         self.list = ScrollingTextArea(
@@ -108,7 +100,6 @@ class LinkPicker:
                 Label(self.summary, dont_extend_height=True),
                 self.query,
                 self.list,
-                *footer,
             ],
             padding=1,
             # Gated, so a waiting leader still owns Enter and Esc.
@@ -130,23 +121,18 @@ class LinkPicker:
         ]
 
     def summary(self) -> str:
-        tools = f" · Tools: {'shown' if self.show_tools else 'hidden'}"
-        return f"{len(self.visible)} links" + (tools if self.toggles_tools else "")
+        return f"{len(self.visible)} links"
 
     def selected(self) -> str | None:
         row = self.list.document.cursor_position_row
         return self.visible[row].url if row < len(self.visible) else None
-
-    def toggle_tools(self) -> None:
-        self.show_tools = not self.show_tools
-        self.refresh()
 
     def refresh(self) -> None:
         previous = self.selected()
         term = self.query.text.casefold()
         self.visible[:] = [
             link
-            for link in reversed(self.links if self.show_tools else self.message_links)
+            for link in reversed(self.links)
             if term in f"{link.url} {link.label} {link.source}".casefold()
         ]
         selected = next((i for i, link in enumerate(self.visible) if link.url == previous), 0)
@@ -157,46 +143,45 @@ class LinkPicker:
         )
 
 
-def links_dialog(
-    links: list[Link],
-    *,
-    message_links: list[Link] | None = None,
-    input=None,
-    output=None,
-    style=None,
-    key_prefix: str | None = None,
-):
-    """A popup application whose result is the picked URL, or None."""
-    app: Application
-    shortcuts = PrefixKeys(key_prefix)
-    picker = LinkPicker(
-        links,
-        on_pick=lambda url: app.exit(result=url),
-        on_cancel=lambda: app.exit(result=None),
-        message_links=message_links,
-        toggles_tools=True,
-        shortcuts=shortcuts,
-        footer=(Label(shortcuts.summary),),
-    )
-    shortcuts.set_help(picker.help)
+def link_items(links: list[Link]) -> list[PickItem]:
+    """The `/links` rows, newest first, searched by URL, label and source."""
+    newest = list(reversed(links))
+    return [
+        PickItem(url, text, search=f"{link.url}\n{link.label}\n{link.source}")
+        for link, (url, text) in zip(newest, link_rows(newest))
+    ]
 
-    @shortcuts.add("f", "Search")
-    def search(event):
-        event.app.layout.focus(picker.query)
 
-    @shortcuts.add("t", "Show/hide tool links")
-    def toggle_tools(event):
-        picker.toggle_tools()
+def header(count: int, show_tools: bool) -> str:
+    return f"{count} links · Tools: {'shown' if show_tools else 'hidden'}"
 
-    dialog = Dialog(title="Links", body=picker.container)
-    app = Application(
-        # Open in the search line, so typing filters straight away.
-        layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.query),
-        key_bindings=shortcuts.key_bindings(KeyBindings()),
-        full_screen=True,
-        mouse_support=popup_mouse(shortcuts),
-        input=input,
-        output=output,
-        style=popup_style(style),
-    )
-    return app
+
+async def pick_link(
+    surface: "PopupSurface", links: list[Link], message_links: list[Link], style=None
+) -> str | None:
+    """The URL picked on `surface`, or None.
+
+    The tool-link toggle shows the other list in its place, keeping the search
+    and the selection. `message_links` are collected apart from `links`: a URL
+    first seen in a tool can also appear in a reply, and must survive hiding
+    tools despite URL deduplication.
+    """
+    show_tools, query, selected = True, "", None
+    while True:
+        shown = links if show_tools else message_links
+        picked = await surface.pick(
+            link_items(shown),
+            title=TITLE,
+            header=header(len(shown), show_tools),
+            empty=EMPTY,
+            selected=selected,
+            query=query,
+            match="substring",
+            actions=(TOGGLE_TOOLS,),
+            style=style,
+        )
+        if picked is None:
+            return None
+        if picked.action != TOGGLE_TOOLS.key:
+            return picked.id
+        show_tools, query, selected = not show_tools, picked.query, picked.id

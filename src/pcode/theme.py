@@ -86,7 +86,14 @@ def popup_supported() -> bool:
     """Whether the startup probe found a terminal that opens pcode's popups over itself."""
     from pcode import drawer
 
-    return _popup_protocol == drawer.POPUP_PROTOCOL
+    return _popup_protocol is not None and _popup_protocol >= drawer.POPUP_PROTOCOL
+
+
+def native_pick_supported() -> bool:
+    """Whether that terminal also draws pick lists natively (`PopupSurface.pick`)."""
+    from pcode import drawer
+
+    return _popup_protocol is not None and _popup_protocol >= drawer.PICK_PROTOCOL
 
 
 def kitty_graphics_supported() -> bool:

@@ -142,7 +142,7 @@ def test_opening_popup_discards_pending_popups_only(monkeypatch, tmp_path, first
         monkeypatch.setattr(app, "_initialize_runtime", initialize)
         monkeypatch.setattr(app.preview, "reply", reply)
         monkeypatch.setattr("pcode.models.active_providers", lambda _: {"anthropic"})
-        monkeypatch.setattr("pcode.model_ui.ModelPicker.run", picker)
+        monkeypatch.setattr("pcode.pick_ui.PickList.run", picker)
         monkeypatch.setattr(
             "pcode.session_ui.session_info_dialog",
             lambda *args, **kwargs: SimpleNamespace(run_async=dialog),

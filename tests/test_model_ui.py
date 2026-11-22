@@ -8,10 +8,12 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from rich.console import Console
 
+from pcode import model_ui
 from pcode.app import PreviewApp
 from pcode.aside import SideTarget
 from pcode.live import AgentRuntime
-from pcode.model_ui import ModelPicker
+from pcode.model_ui import custom_pattern, model_items
+from pcode.pick_ui import Picked, PickList, visible
 from pcode.sessions import SavedSession
 from pcode.ui import create_prompt
 
@@ -25,6 +27,20 @@ async def wait_for(predicate):
             await asyncio.sleep(0.01)
 
 
+def model_picker(models=MODELS, current=None, **options):
+    return PickList(
+        model_items(models, current),
+        title=model_ui.TITLE,
+        header=model_ui.HEADER,
+        custom=custom_pattern(),
+        **options,
+    )
+
+
+def ids(query, models=MODELS):
+    return [item.id for item in visible(model_items(models), query, custom=custom_pattern())]
+
+
 @pytest.mark.parametrize(
     "keys,expected",
     [
@@ -36,20 +52,18 @@ async def wait_for(predicate):
         ("anthropic:new-model\r", "anthropic:new-model"),
         ("\x1b", None),
         ("\x03", None),
-        ("\x0c", None),
     ],
 )
 def test_picker_keyboard(keys, expected):
     async def run():
         with create_pipe_input() as pipe:
-            picker = ModelPicker(
-                MODELS, PROVIDERS, current=MODELS[0], input=pipe, output=DummyOutput()
-            )
+            picker = model_picker(current=MODELS[0], input=pipe, output=DummyOutput())
             task = asyncio.create_task(picker.run())
             try:
                 await wait_for(lambda: picker.app.is_running)
                 pipe.send_text(keys)
-                assert await asyncio.wait_for(task, 3) == expected
+                picked = await asyncio.wait_for(task, 3)
+                assert (picked.id if picked else None) == expected
             finally:
                 if not task.done():
                     task.cancel()
@@ -64,7 +78,7 @@ def test_picker_contextual_help_preserves_selection_and_filter(monkeypatch, pref
 
     async def run():
         with create_pipe_input() as pipe:
-            picker = ModelPicker(MODELS, PROVIDERS, input=pipe, output=DummyOutput())
+            picker = model_picker(input=pipe, output=DummyOutput())
             task = asyncio.create_task(picker.run())
             try:
                 await wait_for(lambda: picker.app.is_running)
@@ -74,17 +88,14 @@ def test_picker_contextual_help_preserves_selection_and_filter(monkeypatch, pref
                     assert ("Ctrl+/", "all keys") in picker.shortcuts.hint_footer()
                 pipe.send_text("\x1f")
                 await wait_for(lambda: picker.shortcuts.browsing)
-                assert ("Enter", "Apply selected model") in picker.shortcuts.hint_rows()
-                assert any(
-                    "provider:model-id" in label for _, label in picker.shortcuts.hint_rows()
-                )
+                assert ("Enter", "Choose the selected row") in picker.shortcuts.hint_rows()
                 pipe.send_text("ignored\r\x1b[B\x1f")
                 await wait_for(lambda: not picker.shortcuts.visible)
                 assert picker.search.text == ""
                 assert picker.selected == 0
                 assert not task.done()
                 pipe.send_text("\x1b[B\r")
-                assert await asyncio.wait_for(task, 3) == MODELS[1]
+                assert (await asyncio.wait_for(task, 3)).id == MODELS[1]
             finally:
                 if not task.done():
                     task.cancel()
@@ -95,22 +106,19 @@ def test_picker_contextual_help_preserves_selection_and_filter(monkeypatch, pref
 
 def test_filter_empty_matches_custom_validation_and_current_marker():
     with create_pipe_input() as pipe:
-        picker = ModelPicker(MODELS, PROVIDERS, current=MODELS[0], input=pipe, output=DummyOutput())
-        assert "current" in str(picker.fragments())
-        picker.search.text = "no matches"
-        assert picker.matches == []
+        picker = model_picker(current=MODELS[0], input=pipe, output=DummyOutput())
+        assert "· current" in str(picker.fragments())
+        assert ids("no matches") == []
         # Supported but unconfigured providers still take a typed ID.
-        picker.search.text = "google:not-active"
-        assert picker.matches == ["google:not-active"]
-        picker.search.text = "unknown:provider"
-        assert picker.matches == []
-        picker.search.text = "anthropic:invalid model"
-        assert picker.matches == []
-        picker.search.text = "opus 5"
-        assert picker.matches == [MODELS[0]]
+        assert ids("google:not-active") == ["google:not-active"]
+        assert ids("unknown:provider") == []
+        assert ids("anthropic:invalid model") == []
+        assert ids("opus 5") == [MODELS[0]]
+        # A listed model is its own row, not a custom one.
+        assert ids(MODELS[0]) == [MODELS[0]]
         picker.search.text = "anthropic:custom-id"
-        assert picker.matches == ["anthropic:custom-id"]
-        assert "custom" in str(picker.fragments())
+        assert [item.id for item in picker.matches] == ["anthropic:custom-id"]
+        assert "· custom" in str(picker.fragments())
 
 
 def test_ctrl_l_preserves_editor_draft_and_cursor():
@@ -527,9 +535,9 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
     switch = AsyncMock()
     app.controller.switch_model = switch
     monkeypatch.setattr("pcode.models.active_providers", lambda _: PROVIDERS)
-    picker = Mock(run=AsyncMock(return_value=selection))
+    picker = Mock(run=AsyncMock(return_value=Picked(selection) if selection else None))
     factory = Mock(return_value=picker)
-    monkeypatch.setattr("pcode.model_ui.ModelPicker", factory)
+    monkeypatch.setattr("pcode.pick_ui.PickList", factory)
 
     @asynccontextmanager
     async def terminal(app):
@@ -549,7 +557,8 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
             switch.assert_awaited_once_with(selection)
         else:
             switch.assert_not_called()
-        assert factory.call_args.kwargs["current"] == MODELS[0]
+        items = factory.call_args.args[0]
+        assert [item.id for item in items if item.marker == "current"] == [MODELS[0]]
 
     asyncio.run(run())
 
@@ -559,7 +568,7 @@ def test_no_active_provider_does_not_open_modal(monkeypatch):
     app = PreviewApp(console=Console(file=buffer))
     monkeypatch.setattr("pcode.models.active_providers", lambda _: set())
     factory = Mock(side_effect=AssertionError("must not open"))
-    monkeypatch.setattr("pcode.model_ui.ModelPicker", factory)
+    monkeypatch.setattr("pcode.pick_ui.PickList", factory)
     asyncio.run(app.controller.select_model(""))
     assert "No active model providers" in buffer.getvalue()
     factory.assert_not_called()
@@ -582,29 +591,18 @@ def test_no_active_provider_does_not_open_modal(monkeypatch):
 )
 def test_filter_combines_provider_and_model_prefixes(query, expected):
     models = [*MODELS, "anthropic:claude-sonnet-5", "anthropic:claude-haiku-4-5"]
-    with create_pipe_input() as pipe:
-        picker = ModelPicker(models, PROVIDERS, input=pipe, output=DummyOutput())
-        picker.selected = 2
-        picker.search.text = query
-        assert picker.matches == expected
-        assert picker.selected == 0
-        picker.search.text = ""
-        assert picker.matches == models
+    assert ids(query, models) == expected
+    assert ids("", models) == models
 
 
 def test_filter_preserves_newest_first_catalog_order():
     from pcode.models import model_catalog
 
     current = "anthropic:claude-opus-4-5"
-    with create_pipe_input() as pipe:
-        picker = ModelPicker(
-            model_catalog({"anthropic"}, current),
-            {"anthropic"},
-            current=current,
-            input=pipe,
-            output=DummyOutput(),
-        )
-        picker.search.text = "anthopus"
-        assert picker.matches[0] == "anthropic:claude-opus-5-5"
-        assert picker.matches.index("anthropic:claude-opus-4-8") < picker.matches.index(current)
-        assert "current" in str(picker.fragments())
+    catalog = model_catalog({"anthropic"}, current)
+    found = ids("anthopus", catalog)
+    assert found[0] == "anthropic:claude-opus-5-5"
+    assert found.index("anthropic:claude-opus-4-8") < found.index(current)
+    assert [item.marker for item in model_items(catalog, current) if item.id == current] == [
+        "current"
+    ]

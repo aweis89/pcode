@@ -11,11 +11,17 @@ Every popup is a prompt_toolkit `Application` given an input and an output.
   hands that terminal's fd to this process. The popup then runs here, as ever,
   with every callback it has, but reads keys from and draws on the overlay. The
   conversation stays on screen behind it and keeps streaming.
+- A native picker (protocol 2): for a pick list (`PopupSurface.pick`) the
+  terminal draws the list itself, a search field over native rows, and only
+  the result comes back. Without one, `pick` runs `pick_ui.PickList` on the
+  terminal overlay or the full screen.
 
 The overlay protocol (`ESC _ pcode;… ESC \\`):
 
-    pcode;popup?                    probe; the terminal answers `pcode;popup;1`
+    pcode;popup?                    probe; the terminal answers `pcode;popup;N`
+                                    (1: terminal overlays, 2: native pickers too)
     pcode;popup;<token>;<layout>    open a popup (`sheet` or `wide`) running the bridge
+    pcode;pick;<token>;<layout>     open a native picker (protocol 2), see below
     pcode;popup-close;<token>       give up on that popup (it never came, say)
     pcode;ready                     (from the overlay) shown it: focus it
     pcode;title;<base64 utf-8>      (from the overlay) the popup's title, for its header
@@ -28,6 +34,20 @@ no other program's output can raise one. Closing it from the terminal (Cmd+W,
 a click outside it) hangs its terminal up, and the popup is cancelled as if
 its own cancel key had been pressed: `app.exit(result=None)`, which is what
 every popup's cancel does.
+
+A native picker has no terminal and no bridge: the terminal connects to the
+token's socket itself and speaks newline-delimited JSON (UTF-8) over it.
+
+    terminal -> pcode   `pcode-pick 1\\n`, its hello (the bridge's differs)
+    pcode -> terminal   a list: `pick_ui.payload`, one JSON object per line
+    terminal -> pcode   the pick: `{"id": str|null, "action": str|null, "query": str}`
+    pcode -> terminal   another list to show in its place, or EOF: close it
+
+The terminal shows and focuses the picker only once the first list arrives.
+It closing the socket (Escape, Cmd+W, a click outside) is a cancel; so is
+Escape or Ctrl+C in pcode's own pane, after which pcode closes the socket and
+sends `popup-close`. Nothing else may connect: the socket is in the private
+`popup_dir()`, the token is 16 hex digits, and it is unlinked once found.
 """
 
 import asyncio
@@ -43,7 +63,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.application.current import AppSession, create_app_session, get_app_or_none
 from prompt_toolkit.input import Input
@@ -56,7 +76,14 @@ from pcode.keyboard_protocol import keyboard_output
 from pcode.popup_bridge import HELLO, RESIZED, popup_dir
 from pcode.startup_input import StartupInput
 
+if TYPE_CHECKING:
+    # Imported where used: `pick_ui` draws with `frame`, which imports this module.
+    from pcode.pick_ui import Match, PickAction, Picked, PickItem
+
 PROTOCOL = 1  # Probed as `drawer.POPUP_QUERY`.
+PICK_HELLO = b"pcode-pick 1\n"
+# The longest pick a native picker may send back.
+_PICK_REPLY_LIMIT = 1 << 16
 LAYOUTS = ("sheet", "wide")
 READY = b"\x1b_pcode;ready\x1b\\"
 DONE = b"\x1b_pcode;done\x1b\\"
@@ -88,6 +115,12 @@ def open_apc(token: str, layout: str) -> str:
     if layout not in LAYOUTS:
         raise ValueError(f"Not a popup layout: {layout!r}")
     return f"\x1b_pcode;popup;{token};{layout}\x1b\\"
+
+
+def pick_apc(token: str, layout: str) -> str:
+    if layout not in LAYOUTS:
+        raise ValueError(f"Not a popup layout: {layout!r}")
+    return f"\x1b_pcode;pick;{token};{layout}\x1b\\"
 
 
 def close_apc(token: str) -> str:
@@ -141,13 +174,96 @@ def terminal_fds() -> dict[str, Any]:
 
 @dataclass
 class PopupSurface:
-    """What a popup draws on: pass `input` and `output` to its Application."""
+    """What a popup draws on: pass `input` and `output` to its Application.
 
-    input: Input
-    output: Output
+    A native picker's surface has neither (both None): only `pick` works on it.
+    """
+
+    input: Input | None
+    output: Output | None
     overlay: bool = False
     # The overlay's AppSession, whose `app` is the popup once it runs.
     session: AppSession | None = field(default=None, repr=False)
+    native: "_NativePicker | None" = field(default=None, repr=False)
+
+    async def pick(
+        self,
+        items: "list[PickItem]",
+        *,
+        title: str,
+        header: str = "",
+        empty: str = "No matches.",
+        selected: str | None = None,
+        query: str = "",
+        match: "Match" = "fuzzy",
+        actions: "tuple[PickAction, ...]" = (),
+        custom: str | None = None,
+        style=None,
+    ) -> "Picked | None":
+        """Pick from `items`; None when cancelled. See `pick_ui` for the options.
+
+        Natively the terminal draws the list; otherwise `PickList` does, with
+        `style` (the editor's). Call it again on the same surface to show
+        another list in its place, as a toggle does.
+        """
+        options = dict(
+            title=title,
+            header=header,
+            empty=empty,
+            selected=selected,
+            query=query,
+            match=match,
+            actions=actions,
+            custom=custom,
+        )
+        if self.native is not None:
+            return await self.native.pick(items, **options)
+        from pcode.pick_ui import PickList
+
+        picker = PickList(items, **options, input=self.input, output=self.output, style=style)
+        return await picker.run()
+
+
+class _NativePicker:
+    """The terminal's native pick list, over the socket it connected to."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.reader = reader
+        self.writer = writer
+        self.cancelled = asyncio.Event()
+
+    def cancel(self) -> None:
+        self.cancelled.set()
+
+    async def pick(self, items: "list[PickItem]", **options) -> "Picked | None":
+        from pcode.pick_ui import checked, payload
+
+        if self.cancelled.is_set():
+            return None
+        message = json.dumps(payload(items, **options), ensure_ascii=False) + "\n"
+        reading = waiting = None
+        try:
+            self.writer.write(message.encode("utf-8"))
+            await self.writer.drain()
+            reading = asyncio.ensure_future(self.reader.readline())
+            waiting = asyncio.ensure_future(self.cancelled.wait())
+            await asyncio.wait({reading, waiting}, return_when=asyncio.FIRST_COMPLETED)
+            line = reading.result() if reading.done() else b""
+        except OSError, ValueError, asyncio.LimitOverrunError, asyncio.IncompleteReadError:
+            line = b""
+        finally:
+            for task in (reading, waiting):
+                if task is not None and not task.done():
+                    task.cancel()
+        try:
+            # A line cut short is the terminal closing the picker.
+            reply = json.loads(line) if line.endswith(b"\n") else None
+        except ValueError:
+            reply = None
+        picked = checked(reply, items, options["actions"], options["custom"])
+        if picked is None:
+            self.cancel()
+        return picked
 
 
 class _OverlayWriter:
@@ -460,3 +576,66 @@ async def overlay(
             connection.close()
         for fd in fds:
             os.close(fd)
+
+
+@asynccontextmanager
+async def pick_overlay(
+    main_output: Output,
+    main_input: Input,
+    *,
+    layout: str = "sheet",
+    timeout: float = CONNECT_TIMEOUT,
+) -> AsyncIterator[PopupSurface]:
+    """Open a native picker (protocol 2); raises `OverlayUnavailable` before yielding if it can't.
+
+    The surface it yields only picks (`PopupSurface.pick`): the terminal draws
+    the list. Escape or Ctrl+C in pcode's pane cancels it, as on an overlay.
+    """
+    token = secrets.token_hex(8)
+    try:
+        address = _private_dir() / f"{token}.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    except OSError as error:
+        raise OverlayUnavailable(str(error)) from error
+    loop = asyncio.get_running_loop()
+    writer: asyncio.StreamWriter | None = None
+    try:
+        try:
+            server.bind(str(address))
+            server.listen(1)
+            server.setblocking(False)
+        except OSError as error:
+            raise OverlayUnavailable(str(error)) from error
+        main_output.write_raw(pick_apc(token, layout))
+        main_output.flush()
+        try:
+            async with asyncio.timeout(timeout):
+                connection, _ = await loop.sock_accept(server)
+                reader, writer = await asyncio.open_unix_connection(
+                    sock=connection, limit=_PICK_REPLY_LIMIT
+                )
+                hello = await reader.readline()
+        except (TimeoutError, OSError, ValueError, asyncio.LimitOverrunError) as error:
+            _give_up(main_output, token)
+            raise OverlayUnavailable("the terminal did not open the picker") from error
+        except asyncio.CancelledError:
+            _give_up(main_output, token)
+            raise
+        finally:
+            # Found once; nothing else may connect.
+            with suppress(OSError):
+                address.unlink()
+            server.close()
+        if hello != PICK_HELLO:
+            _give_up(main_output, token)
+            raise OverlayUnavailable("the picker did not check out")
+        picker = _NativePicker(reader, writer)
+        with _inert_editor(main_input, picker.cancel):
+            yield PopupSurface(None, None, overlay=True, native=picker)
+    finally:
+        if writer is not None:
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+            # The terminal closes it on EOF; this covers one that missed it.
+            _give_up(main_output, token)

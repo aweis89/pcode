@@ -3,27 +3,9 @@
 import time
 from pathlib import Path
 
-from prompt_toolkit.application import Application
-from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Always, has_focus
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit
-from prompt_toolkit.widgets import Label, TextArea
-
-from pcode.frame import Dialog, ScrollingTextArea
-from pcode.host_protocol import HostEntry, code_fingerprint
-from pcode.popup_ui import (
-    SearchDebounce,
-    bind_list_paging,
-    fit_width,
-    nest_forks,
-    popup_container,
-    popup_mouse,
-    popup_style,
-    steer_list_from_query,
-)
-from pcode.prefix_keys import PrefixKeys
+from pcode.host_protocol import HostEntry
+from pcode.pick_ui import PickAction, Picked, PickItem
+from pcode.popup_ui import nest_forks
 
 _TITLE_WIDTH = 40
 STATES = {"working": "● working", "idle": "○ idle   ", "starting": "◌ starting"}
@@ -55,6 +37,26 @@ def age(seconds: float) -> str:
     return f"{int(seconds // 86400)}d ago"
 
 
+def _title(entry: HostEntry, guide: str = "") -> str:
+    title = guide + " ".join(entry.label().split())
+    return title[: _TITLE_WIDTH - 1] + "…" if len(title) > _TITLE_WIDTH else title
+
+
+def _state(entry: HostEntry) -> str:
+    return NEW if unseen(entry) else STATES.get(entry.state, entry.state)
+
+
+def _detail(entry: HostEntry, now: float, code: str | None) -> str:
+    """Where it runs and when it last did anything, and what is odd about it."""
+    if entry.state == "stopped":
+        flags = " · stopped"  # Enter starts it again on the code installed now.
+    else:
+        flags = " · old code" if code is not None and entry.stale(code) else ""
+        if entry.held and not entry.attached:
+            flags += f" · held: {entry.held}"
+    return f"{Path(entry.workspace).name} · {age(now - entry.updated)}{flags}"
+
+
 def host_row(
     entry: HostEntry,
     current: str | None,
@@ -68,19 +70,9 @@ def host_row(
     `guide` draws a fork under its original (`nested`), within the title's width.
     """
     now = time.time() if now is None else now
-    title = guide + " ".join(entry.label().split())
-    if len(title) > _TITLE_WIDTH:
-        title = title[: _TITLE_WIDTH - 1] + "…"
     marker = "▸" if entry.id == current else " "
-    state = NEW if unseen(entry) else STATES.get(entry.state, entry.state)
-    where = Path(entry.workspace).name
-    if entry.state == "stopped":
-        old = " · stopped"  # Enter starts it again on the code installed now.
-    else:
-        old = " · old code" if code is not None and entry.stale(code) else ""
-        if entry.held and not entry.attached:
-            old += f" · held: {entry.held}"
-    return f"{marker} {state}  {title:<{_TITLE_WIDTH}}  {where} · {age(now - entry.updated)}{old}"
+    title = _title(entry, guide)
+    return f"{marker} {_state(entry)}  {title:<{_TITLE_WIDTH}}  {_detail(entry, now, code)}"
 
 
 def nested(entries: list[HostEntry]) -> list[tuple[HostEntry, str]]:
@@ -106,156 +98,65 @@ def status_rows(entry: HostEntry, now: float | None = None, *, code: str | None 
     return rows
 
 
-def hosts_dialog(
+TITLE = "Sessions"
+NEW_SESSION = PickAction("n", "New session", needs_item=False)
+STOP = PickAction("x", "Stop (twice)", confirm="stop it. Its turn is cancelled.", delete=True)
+
+
+def host_items(
     entries: list[HostEntry],
-    *,
     current: str | None,
-    input=None,
-    output=None,
-    style=None,
-    key_prefix: str | None = None,
-):
-    """Returns ("attach", id), ("stop", id), ("new", None), or None when cancelled.
+    *,
+    now: float | None = None,
+    code: str | None = None,
+) -> list[PickItem]:
+    """The `/attach` rows: new, then working, then the rest, each fork under its original.
 
-    For a stopped entry "attach" means resume it, and "stop" forget it.
+    Searched by title, last prompt, workspace and ID.
     """
-    entries = ordered(entries)
-    code = code_fingerprint()
-    visible: list[HostEntry] = []
-    tree = nested(entries)
-    query = TextArea(height=1, prompt="Search: ", multiline=False)
-    choices = ScrollingTextArea(
-        read_only=True,
-        wrap_lines=False,
-        scrollbar=True,
-        # Fit every row, not just the filtered ones, so searching does not resize the box.
-        width=fit_width([host_row(entry, current, code=code, guide=g) for entry, g in tree]),
-    )
-    choices.window.cursorline = Always()
-    status = [""]
-    armed: list[str | None] = [None]
-    bindings = KeyBindings()
-
-    def selected() -> HostEntry | None:
-        row = choices.document.cursor_position_row
-        return visible[row] if row < len(visible) else None
-
-    def refresh():
-        previous = selected()
-        term = query.text.casefold()
-        # Searching lists matches flat, as /resume does; otherwise forks nest.
-        rows = (
-            [
-                (entry, "")
-                for entry in entries
-                if term
-                in f"{entry.title} {entry.last_prompt} {entry.workspace} {entry.id}".casefold()
-            ]
-            if term
-            else tree
-        )
-        visible[:] = [entry for entry, _ in rows]
-        index = next((i for i, entry in enumerate(visible) if entry is previous), 0)
-        lines = [host_row(entry, current, code=code, guide=guide) for entry, guide in rows]
-        position = sum(len(line) + 1 for line in lines[:index])
-        choices.buffer.set_document(
-            Document("\n".join(lines) or empty(term), position), bypass_readonly=True
-        )
-
-    def empty(term: str) -> str:
-        if term:
-            return "No matching sessions."
-        return f"No background sessions are running. {shortcuts.label('n')} starts one."
-
-    searching = SearchDebounce(query.buffer, refresh)
-    steer_list_from_query(bindings, query, choices, searching)
-    bind_list_paging(bindings, choices, has_focus(choices) | has_focus(query))
-
-    @bindings.add("enter", eager=True)
-    def accept(event):
-        searching.flush()
-        entry = selected()
-        if entry is not None:
-            event.app.exit(result=("attach", entry.id))
-
-    shortcuts = PrefixKeys(key_prefix)
-    shortcuts.set_help(
-        lambda: [
-            ("Type", "Search in the search field"),
-            ("↑/↓", "Select session"),
-            ("PgUp/PgDn", "Page"),
-            ("Ctrl+U/D", "Half page"),
-            ("Enter", "Switch session"),
-            ("Tab/Shift+Tab", "Switch search / list"),
-            ("Delete", "Stop (or forget a stopped) session (twice; list focused)"),
-            ("Esc", "Clear search when focused, otherwise cancel"),
-            ("Ctrl+C", "Cancel"),
-        ]
-    )
-
-    @shortcuts.add("f", "Search")
-    def search(event):
-        event.app.layout.focus(query)
-
-    @shortcuts.add("n", "New session")
-    def new(event):
-        event.app.exit(result=("new", None))
-
-    @shortcuts.add("x", "Stop (twice)")
-    @bindings.add("delete", filter=has_focus(choices))
-    def stop(event):
-        entry = selected()
-        if entry is None:
-            return
-        if armed[0] == entry.id:
-            event.app.exit(result=("stop", entry.id))
-            return
-        armed[0] = entry.id
-        status[0] = (
-            f"Press {shortcuts.label('x')} again to remove {entry.label()[:40]} from this list. "
-            "/resume still opens it."
+    now = time.time() if now is None else now
+    items = []
+    for entry, guide in nested(ordered(entries)):
+        label = entry.label()[:40]
+        confirm = (
+            f"remove {label} from this list. /resume still opens it."
             if entry.state == "stopped"
-            else f"Press {shortcuts.label('x')} again to stop {entry.id} ({entry.label()[:40]}). "
-            "Its turn is cancelled."
+            else f"stop {entry.id} ({label}). Its turn is cancelled."
         )
+        items.append(
+            PickItem(
+                entry.id,
+                f"{_state(entry)}  {_title(entry)}",
+                detail=_detail(entry, now, code),
+                marker="this terminal" if entry.id == current else "",
+                depth=len(guide) // 3,
+                search="\n".join((entry.title, entry.last_prompt, entry.workspace, entry.id)),
+                confirm=confirm,
+            )
+        )
+    return items
 
-    @bindings.add("escape", eager=True)
-    def escape(event):
-        if event.app.layout.has_focus(query) and query.text:
-            query.text = ""
-        else:
-            event.app.exit(result=None)
 
-    @bindings.add("c-c")
-    def cancel(event):
-        event.app.exit(result=None)
-
+def header(entries: list[HostEntry]) -> str:
     running = sum(entry.state != "stopped" for entry in entries)
     working = sum(entry.state == "working" for entry in entries)
     fresh = sum(unseen(entry) for entry in entries)
-    dialog = Dialog(
-        title="Sessions",
-        body=HSplit(
-            [
-                Label(
-                    f"{running} running · {working} working · {fresh} new · ▸ this terminal",
-                    dont_extend_height=True,
-                ),
-                query,
-                choices,
-                Label(lambda: status[0], dont_extend_height=True),
-                Label(shortcuts.summary),
-            ],
-            padding=1,
-        ),
-    )
-    refresh()
-    return Application(
-        layout=Layout(popup_container(dialog, shortcuts), focused_element=query),
-        key_bindings=shortcuts.key_bindings(bindings),
-        full_screen=True,
-        mouse_support=popup_mouse(shortcuts),
-        input=input,
-        output=output,
-        style=popup_style(style),
-    )
+    return f"{running} running · {working} working · {fresh} new"
+
+
+def empty(entries: list[HostEntry]) -> str:
+    return "No matching sessions." if entries else "No background sessions are running."
+
+
+def choice(picked: Picked | None) -> tuple[str, str | None] | None:
+    """("attach", id), ("stop", id), ("new", None), or None when cancelled.
+
+    For a stopped entry "attach" means resume it, and "stop" forget it.
+    """
+    if picked is None:
+        return None
+    if picked.action == NEW_SESSION.key:
+        return "new", None
+    if picked.id is None:
+        return None
+    return ("stop" if picked.action == STOP.key else "attach"), picked.id

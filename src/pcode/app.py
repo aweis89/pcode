@@ -764,22 +764,24 @@ class PreviewApp:
 
     async def choose_model(self, values, providers, current):
         """The model picker; returns the choice, or None when dismissed."""
-        from pcode.model_ui import ModelPicker
+        from pcode import model_ui
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session, layout="sheet", title="Choose model") as surface:
-                picker = ModelPicker(
-                    values,
-                    providers,
-                    current=current,
-                    input=surface.input,
-                    output=surface.output,
+            async with self.popup(
+                output, session, layout="sheet", title=model_ui.TITLE, pick=True
+            ) as surface:
+                picked = await surface.pick(
+                    model_ui.model_items(values, current),
+                    title=model_ui.TITLE,
+                    header=model_ui.HEADER,
+                    empty=model_ui.EMPTY,
+                    custom=model_ui.custom_pattern(),
                     style=session.app.style,
                 )
-                return await picker.run()
         except _PopupSuperseded:
             return None
+        return picked.id if picked is not None else None
 
     async def browse_jobs(self) -> None:
         from pcode.jobs_ui import JobBrowser
@@ -1143,6 +1145,7 @@ class PreviewApp:
         layout: str = "wide",
         overlay: bool = True,
         title: str = "",
+        pick: bool = False,
     ):
         """Give a modal a terminal of its own, superseding pending popups.
 
@@ -1152,9 +1155,11 @@ class PreviewApp:
         terminal, given to the popup whole. `overlay=False` always takes the
         full screen: a secret is typed where nothing else can take keys.
         `title` heads an overlay's panel until a dialog sets its own.
+        `pick` asks for a surface only used to `pick`: the terminal's native
+        picker where it has one (it has no terminal), else as above.
         One popup at a time, wherever it opens.
         """
-        from pcode import popup_surface
+        from pcode import popup_surface, theme
 
         if self._superseded():
             raise _PopupSuperseded
@@ -1162,7 +1167,23 @@ class PreviewApp:
             # Shown meanwhile, another popup may have superseded this one.
             if self._superseded():
                 raise _PopupSuperseded
-            if overlay and self.popups_overlay():
+            native = pick and overlay and theme.native_pick_supported()
+            if native and self.popups_overlay():
+                async with AsyncExitStack() as stack:
+                    try:
+                        surface = await stack.enter_async_context(
+                            popup_surface.pick_overlay(
+                                session.app.output, session.app.input, layout=layout
+                            )
+                        )
+                    except popup_surface.OverlayUnavailable:
+                        self._overlay_failed()
+                    else:
+                        self._overlay_failures = 0
+                        self._claim_popup()
+                        yield surface
+                        return
+            elif overlay and self.popups_overlay():
                 async with AsyncExitStack() as stack:
                     try:
                         surface = await stack.enter_async_context(
@@ -1174,12 +1195,7 @@ class PreviewApp:
                             )
                         )
                     except popup_surface.OverlayUnavailable:
-                        self._overlay_failures += 1
-                        if not self.popups_overlay():
-                            self.transcript.warning(
-                                "The terminal did not open the popup overlay; "
-                                "popups take the full screen for the rest of this session."
-                            )
+                        self._overlay_failed()
                     else:
                         self._overlay_failures = 0
                         self._claim_popup()
@@ -1187,6 +1203,15 @@ class PreviewApp:
                         return
             async with self._full_screen_popup(output, session) as surface:
                 yield surface
+
+    def _overlay_failed(self) -> None:
+        """An overlay did not open; this one takes the full screen, and after two all do."""
+        self._overlay_failures += 1
+        if not self.popups_overlay():
+            self.transcript.warning(
+                "The terminal did not open the popup overlay; "
+                "popups take the full screen for the rest of this session."
+            )
 
     @asynccontextmanager
     async def _full_screen_popup(self, output: TerminalOutput, session):
@@ -1387,9 +1412,8 @@ class PreviewApp:
             self.transcript.error(f"Could not copy {name}.")
 
     async def choose_link(self, output: TerminalOutput, session) -> None:
+        from pcode import links_ui
         from pcode.links import conversation_links, link_editor_command, open_link
-        from pcode.links_ui import links_dialog
-        from pcode.popup_surface import terminal_fds
 
         self.links_requested = False
         tree = getattr(self.runtime, "tree", None)
@@ -1409,41 +1433,33 @@ class PreviewApp:
                 else "No links in this conversation yet."
             )
             return
+        url: str | None = None
+        command: list[str] | None = None
         editor_error: str | None = None
-        opened_in_editor = False
         # ExitStack keeps appearance queries paused until popup() restores raw mode.
         with ExitStack() as stack:
-            async with self.popup(output, session, layout="sheet", title="Links") as surface:
-                dialog = links_dialog(
-                    links,
-                    message_links=message_links,
-                    input=surface.input,
-                    output=surface.output,
-                    style=session.app.style,
-                )
-                url = await dialog.run_async()
+            async with self.popup(
+                output, session, layout="sheet", title=links_ui.TITLE, pick=True
+            ) as surface:
+                url = await links_ui.pick_link(surface, links, message_links, session.app.style)
                 if url is not None:
                     try:
                         command = link_editor_command(url)
                     except RuntimeError as error:
                         editor_error = str(error)
-                    else:
-                        if command is not None:
-                            opened_in_editor = True
-                            if self._appearance:
-                                stack.enter_context(self._appearance.paused())
-                            try:
-                                await asyncio.to_thread(
-                                    subprocess.run, command, check=False, **terminal_fds()
-                                )
-                            except OSError as error:
-                                editor_error = f"Could not start {command[0]}: {error}"
+                native = surface.native is not None
+                if command is not None and not native:
+                    editor_error = await self._run_link_editor(command, stack)
+            if command is not None and native:
+                # A native list has no terminal: $EDITOR takes pcode's own, as on the full screen.
+                async with self.popup(output, session, overlay=False):
+                    editor_error = await self._run_link_editor(command, stack)
         if url is None:
             return
         if editor_error is not None:
             self.transcript.error(f"Could not open {url}: {editor_error}")
             return
-        if opened_in_editor:
+        if command is not None:
             self.transcript.note(f"Opened {url}")
             return
         try:
@@ -1452,6 +1468,18 @@ class PreviewApp:
             self.transcript.error(f"Could not open {url}: {error}")
             return
         self.transcript.note(f"Opened {url}")
+
+    async def _run_link_editor(self, command: list[str], stack: ExitStack) -> str | None:
+        """Open a link in $EDITOR in the popup's terminal; an error, or None."""
+        from pcode.popup_surface import terminal_fds
+
+        if self._appearance:
+            stack.enter_context(self._appearance.paused())
+        try:
+            await asyncio.to_thread(subprocess.run, command, check=False, **terminal_fds())
+        except OSError as error:
+            return f"Could not start {command[0]}: {error}"
+        return None
 
     def recorded_edits(self) -> list[EditCompleted]:
         """Prefer the saved journal on the active branch; fall back to this process."""
@@ -1989,17 +2017,23 @@ class PreviewApp:
             return
         # Opened even with none listed: its new-session key starts an empty one.
         entries = await asyncio.to_thread(lambda: list_hosts() + list_stopped())
-        from pcode.host_ui import hosts_dialog
+        from pcode import host_ui
+        from pcode.host_protocol import code_fingerprint
 
-        async with self.popup(output, session, layout="sheet", title="Sessions") as surface:
-            dialog = hosts_dialog(
-                entries,
-                current=current,
-                input=surface.input,
-                output=surface.output,
+        code = code_fingerprint()
+        async with self.popup(
+            output, session, layout="sheet", title=host_ui.TITLE, pick=True
+        ) as surface:
+            picked = await surface.pick(
+                host_ui.host_items(entries, current, code=code),
+                title=host_ui.TITLE,
+                header=host_ui.header(entries),
+                empty=host_ui.empty(entries),
+                match="substring",
+                actions=(host_ui.NEW_SESSION, host_ui.STOP),
                 style=session.app.style,
             )
-            choice = await dialog.run_async()
+        choice = host_ui.choice(picked)
         if choice is None:
             return
         action, identity = choice

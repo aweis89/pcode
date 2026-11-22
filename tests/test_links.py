@@ -1,6 +1,7 @@
 import asyncio
 from io import StringIO
 
+import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -15,8 +16,9 @@ from pcode.links import (
     link_editor_command,
     open_link,
 )
-from pcode.links_ui import link_rows, links_dialog
+from pcode.links_ui import link_items, link_rows, pick_link
 from pcode.markdown import Markdown
+from pcode.pick_ui import visible
 from pcode.popup_surface import PopupSurface
 
 
@@ -112,82 +114,70 @@ def test_link_rows_show_source_and_label():
     ]
 
 
-def test_links_dialog_defaults_to_newest_and_cancels():
-    links = [Link("https://old.test"), Link("https://new.test")]
+def pick(links, keys, *, messages=None, then=""):
+    """Run `/links` on a terminal surface, typing `keys` (and `then` after a pause)."""
+    if messages is None:
+        messages = [link for link in links if link.source in ("", "user", "assistant")]
 
     async def run():
         with create_pipe_input() as pipe:
-            cases = (("\r", "https://new.test"), ("\x1b[B\r", "https://old.test"), ("\x1b", None))
-            for keys, expected in cases:
-                dialog = links_dialog(links, input=pipe, output=DummyOutput())
-                task = asyncio.create_task(dialog.run_async())
-                await asyncio.sleep(0.05)
-                pipe.send_text(keys)
-                assert await asyncio.wait_for(task, 2) == expected
+            surface = PopupSurface(pipe, DummyOutput())
+            task = asyncio.create_task(pick_link(surface, links, messages))
+            await asyncio.sleep(0.05)
+            pipe.send_text(keys)
+            if then:
+                await asyncio.sleep(0.6)
+                pipe.send_text(then)
+            return await asyncio.wait_for(task, 2)
 
-    asyncio.run(run())
+    return asyncio.run(run())
 
 
-def test_links_dialog_search_and_tool_filter():
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [("\r", "https://new.test"), ("\x1b[B\r", "https://old.test"), ("\x1b", None)],
+)
+def test_links_defaults_to_newest_and_cancels(keys, expected):
+    assert pick([Link("https://old.test"), Link("https://new.test")], keys) == expected
+
+
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        # The picker opens in the search line; Ctrl+T toggles tools from there.
+        ("\x14\r", "https://old.test/path"),
+        ("\x14\x14\r", "https://old.test/path"),  # Retain selection after toggling.
+        ("REFERENCE\r", "https://old.test/path"),
+        ("old.test/path\r", "https://old.test/path"),
+        ("SHELL\r", "https://new.test"),
+        ("t\r", "https://new.test"),  # Typed `t` searches; it does not hide tools.
+        ("missing\r\x03", None),  # Empty matches cannot open a stale URL.
+    ],
+)
+def test_links_search_and_tool_filter(keys, expected):
     links = [
         Link("https://old.test/path", "Reference Manual", "assistant"),
         Link("https://new.test", "", "shell"),
     ]
-
-    async def run():
-        # The picker opens in the search line; Ctrl+T toggles tools from there.
-        cases = (
-            ("\x14\r", "https://old.test/path"),
-            ("\x14\x14\r", "https://old.test/path"),  # Retain selection after toggling.
-            ("REFERENCE\r", "https://old.test/path"),
-            ("old.test/path\r", "https://old.test/path"),
-            ("SHELL\r", "https://new.test"),
-            ("t\r", "https://new.test"),  # Typed `t` searches; it does not hide tools.
-            ("missing\r\x03", None),  # Empty matches cannot open a stale URL.
-            ("\t\x06missing\r\x03", None),  # Ctrl+F in the list returns to the search.
-            ("missing\x1b", "https://new.test"),  # Esc clears the search first.
-        )
-        for keys, expected in cases:
-            with create_pipe_input() as pipe:
-                dialog = links_dialog(links, input=pipe, output=DummyOutput())
-                task = asyncio.create_task(dialog.run_async())
-                await asyncio.sleep(0.05)
-                pipe.send_text(keys)
-                if keys.endswith("\x1b"):
-                    await asyncio.sleep(0.6)
-                    pipe.send_text("\r")
-                assert await asyncio.wait_for(task, 2) == expected
-
-    asyncio.run(run())
+    assert pick(links, keys) == expected
 
 
-def test_links_dialog_tab_moves_from_the_search_line_to_the_list():
+def test_links_escape_clears_the_search_first():
     links = [Link("https://old.test"), Link("https://new.test")]
-
-    async def run():
-        with create_pipe_input() as pipe:
-            dialog = links_dialog(links, input=pipe, output=DummyOutput())
-            task = asyncio.create_task(dialog.run_async())
-            await asyncio.sleep(0.05)
-            # In the list, `j` is not typed into the search, so Enter still opens.
-            pipe.send_text("\tj\r")
-            assert await asyncio.wait_for(task, 2) == "https://new.test"
-
-    asyncio.run(run())
+    assert pick(links, "missing\x1b", then="\r") == "https://new.test"
 
 
-def test_links_dialog_can_recover_when_tools_are_only_links():
-    async def run():
-        with create_pipe_input() as pipe:
-            dialog = links_dialog(
-                [Link("https://tool.test", "", "shell")], input=pipe, output=DummyOutput()
-            )
-            task = asyncio.create_task(dialog.run_async())
-            await asyncio.sleep(0.05)
-            pipe.send_text("\x14\r\x14\x14\r\x14\r")
-            assert await asyncio.wait_for(task, 2) == "https://tool.test"
+def test_links_can_recover_when_tools_are_only_links():
+    links = [Link("https://tool.test", "", "shell")]
+    assert pick(links, "\x14\r\x14\x14\r\x14\r") == "https://tool.test"
 
-    asyncio.run(run())
+
+def test_links_rows_search_url_label_and_source():
+    items = link_items([Link("https://a.test", "Manual", "user"), Link("https://b.test")])
+    # Newest first.
+    assert [item.id for item in items] == ["https://b.test", "https://a.test"]
+    assert [item.id for item in visible(items, "manual user", "substring")] == ["https://a.test"]
+    assert visible(items, "manualuser", "substring") == []
 
 
 def test_filter_tools_before_deduplicating_and_sort_by_last_appearance():
@@ -231,15 +221,7 @@ def test_link_recency_follows_interleaved_events_and_preserves_message_links():
     ]
     assert messages == [Link("https://a.test", "", "assistant")]
 
-    async def run():
-        with create_pipe_input() as pipe:
-            dialog = links_dialog(links, message_links=messages, input=pipe, output=DummyOutput())
-            task = asyncio.create_task(dialog.run_async())
-            await asyncio.sleep(0.05)
-            pipe.send_text("\x14\r")
-            assert await asyncio.wait_for(task, 2) == "https://a.test"
-
-    asyncio.run(run())
+    assert pick(links, "\x14\r", messages=messages) == "https://a.test"
 
 
 def test_tool_links_track_last_appearance():
@@ -432,7 +414,11 @@ def test_open_link_unwraps_file_url_path(tmp_path, monkeypatch):
     assert calls == [["open", str(image)]]
 
 
-def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native", [False, True])
+def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(
+    tmp_path, monkeypatch, native
+):
+    """A native list has no terminal: $EDITOR then runs on the full screen once it closed."""
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
@@ -469,22 +455,32 @@ def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(tmp_pat
 
         @asynccontextmanager
         async def fake_popup(_output, _session, **options):
-            yield PopupSurface(None, _session.app.output)
+            popups.append(options)
+            if native and options.get("pick"):
+                yield PopupSurface(None, None, overlay=True, native=object())
+            else:
+                yield PopupSurface(None, _session.app.output)
 
         monkeypatch.setattr(app, "popup", fake_popup)
         fake_session = SimpleNamespace(app=SimpleNamespace(output=DummyOutput(), style=None))
 
         picked = iter([f"{text_file.as_uri()}#L2", image_file.as_uri()])
 
-        class FakeDialog:
-            async def run_async(self):
-                return next(picked)
+        async def fake_pick(surface, links, message_links, style):
+            return next(picked)
 
-        monkeypatch.setattr("pcode.links_ui.links_dialog", lambda *a, **kw: FakeDialog())
+        monkeypatch.setattr("pcode.links_ui.pick_link", fake_pick)
 
         await app.choose_link(output=None, session=fake_session)
         await app.choose_link(output=None, session=fake_session)
 
+    popups: list[dict] = []
     asyncio.run(run())
     assert ran_editor == [["nvim", "+2", str(text_file)]]
     assert ran_opener == [image_file.as_uri()]
+    picks = [{"layout": "sheet", "title": "Links", "pick": True}] * 2
+    if native:
+        # The editor got a full-screen popup of its own after the first list.
+        assert popups == [picks[0], {"overlay": False}, picks[1]]
+    else:
+        assert popups == picks
