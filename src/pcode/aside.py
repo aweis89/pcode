@@ -75,12 +75,8 @@ def framed_follow_up(question: str) -> str:
 # Asked in the thread, where its questions and answers are, so the summary
 # reuses the thread's cache. The reply is sent to the conversation verbatim.
 SUMMARY_FRAMING = (
-    "[Side thread summary] Your reply to this is sent to the main conversation verbatim "
-    "as my next message, so write it as that message. Include only what it needs to "
-    "carry on, usually what was found here and anything that should change the ongoing "
-    "work, stated as plain information: do not mention this side discussion, a summary, "
-    "or where the message came from. Be brief and concrete, with no preamble, and do "
-    "not use tools."
+    "[Side thread summary] Summarize this thread for the main conversation; "
+    "your reply is sent there as my next message. Do not use tools."
 )
 
 
