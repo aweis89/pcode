@@ -14,12 +14,12 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import ConditionalContainer, DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import Label
 from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode.frame import Frame
+from pcode.frame import Frame, ScrollingTextArea
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
     RichPane,
@@ -162,7 +162,7 @@ class WorkerBrowser:
         self._rendered: tuple | None = None
         self._refreshing = False
         self.notice = ""
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(

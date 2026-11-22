@@ -76,12 +76,11 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   arguments and results, or the assistant's replies, most recent first. Duplicate
   URLs appear once, at their latest position; tool links show the tool name.
   The picker opens in its search line: typing filters URLs, labels, and sources
-  (case-insensitive) while `↑`/`↓` move the selection, and Tab moves to the list.
+  (case-insensitive, every word must match) while `↑`/`↓` move the selection.
   `Enter` opens the URL in the default browser (`open` on macOS, `xdg-open` on
   Linux, the shell association on Windows). `Esc` clears the search, or closes the
   picker when the search is empty. **Ctrl+T** shows/hides tool links (shown by
-  default; URLs also in prompts or replies stay) and **Ctrl+F** returns to the
-  search. Filters reset when you reopen it. Output dropped by truncation or stored
+  default; URLs also in prompts or replies stay). Filters reset when you reopen it. Output dropped by truncation or stored
   only in a spill file isn't searched. Handy when your terminal or tmux doesn't
   make links clickable.
 - `/copy`: copy a prompt, a response, or one quote or code block from the active
@@ -837,14 +836,23 @@ these actions alongside the current popup's navigation and editing keys:
 | `/tools` | `f` search · `x` failures only · `e` edits only · `t` tool filter · `y` copy command · `o` copy output |
 | `/diffs` | `f` search the focused pane · `s` / `r` next / previous match · `v` next view · `n` note · `a` mark reviewed · `e` open in editor · `g` refresh |
 | `/resume` | `f` search · `r` prompts only · `g` all workspaces · `x` delete (twice) |
-| `/attach` | `f` search · `n` new session · `x` stop (twice) |
+| `/attach` | `n` new session · `x` stop (twice; Delete too, with the search empty) |
 | `/jobs` | `w` watch in the preview · `k` stop |
-| `/links` | `f` search · `t` show/hide tool links |
+| `/links` | `t` show/hide tool links |
 | `/tree` | `y` copy the selection, or pick a quote or code block from a response |
 | `/agents` | `t` thinking · `a` answer the worker's question · `m` message the worker · `r` show its report |
 
 With an explicitly configured `key_prefix ctrl+b`, press Ctrl+B then the letter
 instead: Ctrl+B `y` copies.
+
+In the model picker, Esc clears the filter first, as in the other lists with a
+search line, and Ctrl+L, the key that opened it, closes it straight away.
+
+Where Ghostty Smooth draws `/model`, `/links` and `/attach` as native lists
+(`popup_view overlay`), their shortcuts are Cmd and the letter instead (Cmd+N
+starts a new session from `/attach`), and Cmd+W closes the list. Cmd+X in
+`/attach` stops the selected session (twice) rather than cutting text from the
+search field.
 
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus; popup bodies keep the terminal's default background. With

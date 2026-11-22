@@ -135,8 +135,9 @@ def test_all_popups_share_style_scope(kind):
     from pcode.git_diff import Review
     from pcode.inspection import ToolArchive
     from pcode.inspector_ui import ToolInspector
-    from pcode.links_ui import links_dialog
-    from pcode.model_ui import ModelPicker
+    from pcode.links_ui import link_items
+    from pcode.model_ui import model_items
+    from pcode.pick_ui import PickList
     from pcode.session_ui import SessionBrowser, session_info_dialog
     from pcode.tree_ui import tree_dialog
 
@@ -147,13 +148,13 @@ def test_all_popups_share_style_scope(kind):
         elif kind == "tree":
             app = tree_dialog(ConversationTree(), **options)
         elif kind == "models":
-            app = ModelPicker(["test:model"], {"test"}, **options).app
+            app = PickList(model_items(["test:model"]), title="Choose model", **options).app
         elif kind == "tools":
             app = ToolInspector(ToolArchive(), **options).app
         elif kind == "edits":
             app = DiffBrowser(Review("t", [], "none"), **options).app
         elif kind == "links":
-            app = links_dialog([], **options)
+            app = PickList(link_items([]), title="Links", **options).app
         elif kind == "asides":
             app = AsideBrowser(Asides(), **options).app
         else:

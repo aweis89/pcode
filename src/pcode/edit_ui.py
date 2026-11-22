@@ -28,7 +28,7 @@ from prompt_toolkit.widgets import Label, TextArea
 from pcode.delta import Delta
 from pcode.edit_transcript import DiffLexer, text_fragments
 from pcode.edits import edit_text, patch_text
-from pcode.frame import Frame
+from pcode.frame import FRAME_COLUMNS, Frame, ScrollingTextArea
 from pcode.git_diff import Review
 from pcode.links import editor_command
 from pcode.popup_surface import terminal_fds
@@ -52,6 +52,8 @@ VIEWS = ("all", "uncommitted", "review")
 VIEW_NAMES = {"all": "All changes", "uncommitted": "Uncommitted", "review": "Since review"}
 HEADING_STYLE = "bold underline"
 NOTE_STYLE = "italic fg:ansiyellow"
+# Columns beside a diff row: the frame's, the scroll bar's, and a spare one.
+DIFF_CHROME = FRAME_COLUMNS + 2
 # A hunk quoted in a note keeps this many lines either side of the noted one.
 QUOTE_CONTEXT = 2
 QUOTE_HUNK_LINES = 12
@@ -385,11 +387,13 @@ class DiffBrowser:
         self._syncing = False
         self.query = TextArea(height=1, prompt=lambda: PROMPTS[self.scope], multiline=False)
         self.note = TextArea(height=1, prompt=self.note_prompt, multiline=False)
-        self.files = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.files = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.files, lambda text: setattr(self, "notice", text))
         self.files.window.cursorline = Always()
         self.lexer = DiffLexer(code_theme)
-        self.diff = TextArea(read_only=True, wrap_lines=False, scrollbar=True, lexer=self.lexer)
+        self.diff = ScrollingTextArea(
+            read_only=True, wrap_lines=False, scrollbar=True, lexer=self.lexer
+        )
         copy_drags(self.diff, lambda text: setattr(self, "notice", text))
         self.diff.window.cursorline = Always()
         self.searching = SearchDebounce(self.query.buffer, lambda: self.refresh(first_match=True))
@@ -572,9 +576,9 @@ class DiffBrowser:
         return render_review(review or self.review, self.delta, width, known, dedent=self.dedent)
 
     def pane_width(self) -> int:
-        # The frame's two borders, the scrollbar, and a spare column: every
+        # The frame's columns, the scrollbar, and a spare column: every
         # padded delta row is exactly the width it was rendered for.
-        return max(1, self.app.output.get_size().columns - 4)
+        return max(1, self.app.output.get_size().columns - DIFF_CHROME)
 
     def rewidth(self, _app=None) -> None:
         """delta lays a diff out for one width, so a resize renders it again."""

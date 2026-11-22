@@ -46,7 +46,6 @@ from pcode.host_protocol import (
     write_entry,
 )
 from pcode.live import AgentRuntime
-from pcode.popup_surface import PopupSurface
 from pcode.remote import (
     HostError,
     HostLaunch,
@@ -1848,7 +1847,9 @@ def test_switch_resumes_or_forgets_a_stopped_session(host_dir, monkeypatch, acti
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
+    from pcode import host_ui
     from pcode.host_protocol import remember_stopped
+    from pcode.pick_ui import Picked
 
     remember_stopped(
         HostEntry("stop0000", 1, "m", "/w", session_id="sess-1", title="done", unseen=True)
@@ -1857,30 +1858,28 @@ def test_switch_resumes_or_forgets_a_stopped_session(host_dir, monkeypatch, acti
     app = PreviewApp(model="function:script", console=Console(file=output, width=140))
     shown: list[dict] = []
 
-    class Dialog:
-        async def run_async(self):
-            return (action, "stop0000")
-
-    def dialog(entries, **kwargs):
-        shown.extend({"id": entry.id, "state": entry.state} for entry in entries)
-        return Dialog()
+    class Surface:
+        async def pick(self, items, **options):
+            shown.extend(item.id for item in items)
+            assert options["actions"] == (host_ui.NEW_SESSION, host_ui.STOP)
+            return Picked("stop0000", "x" if action == "stop" else None)
 
     @asynccontextmanager
     async def popup(output, session, **options):
-        yield PopupSurface(None, None)
+        assert options["pick"]
+        yield Surface()
 
     opened: list = []
 
     async def open_saved(identity, active_id):
         opened.append(identity)
 
-    monkeypatch.setattr("pcode.host_ui.hosts_dialog", dialog)
     monkeypatch.setattr(app, "popup", popup)
     monkeypatch.setattr(app, "open_saved_session", open_saved)
     asyncio.run(
         app.switch_session(None, SimpleNamespace(app=SimpleNamespace(output=None, style=None)))
     )
-    assert shown == [{"id": "stop0000", "state": "stopped"}]
+    assert shown == ["stop0000"]
     assert opened == (["sess-1"] if action == "attach" else [])
     assert list_stopped() == []
 

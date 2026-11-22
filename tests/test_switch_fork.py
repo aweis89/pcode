@@ -438,12 +438,10 @@ def test_new_with_a_prompt_is_never_refused_as_busy(tmp_path):
 
 
 def test_the_attach_list_says_how_to_start_one_when_empty():
-    from pcode.host_ui import hosts_dialog
+    from pcode import host_ui
+    from pcode.pick_ui import PickList
 
-    dialog = hosts_dialog([], current=None, output=DummyOutput())
-    texts = [
-        window.content.buffer.text
-        for window in dialog.layout.find_all_windows()
-        if hasattr(window.content, "buffer")
-    ]
-    assert any("No background sessions are running" in text for text in texts)
+    picker = PickList([], title="t", empty=host_ui.empty([]), actions=(host_ui.NEW_SESSION,))
+    assert "No background sessions are running" in str(picker.fragments())
+    # The new-session key is in the hint, wherever the list is drawn.
+    assert ("n", "New session") in [(s.key, s.label) for s in picker.shortcuts.available()]

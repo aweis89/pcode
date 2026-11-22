@@ -27,7 +27,7 @@ from pcode import popup_surface
 from pcode.popup_bridge import popup_dir
 from pcode.popup_surface import OverlayUnavailable, overlay, terminal_fds
 
-OPEN = re.compile(r"\x1b_pcode;popup;([0-9a-f]{16});(sheet|wide)\x1b\\")
+OPEN = re.compile(r"\x1b_pcode;popup;([0-9a-f]{16});(?:sheet|wide)(?:;[A-Za-z0-9+/=]+)?\x1b\\")
 
 
 class Terminal:
@@ -185,6 +185,25 @@ def test_a_popup_runs_on_the_overlay_and_gives_it_back(terminal):
     # The socket and entry are gone once found.
     assert list(popup_dir().iterdir()) == []
     assert terminal.bridge.wait(5) is not None
+
+
+def test_the_overlay_is_titled_before_it_is_shown(terminal):
+    seen: list = []
+
+    async def main():
+        async with overlay(terminal, EditorInput(), title="Diffs") as surface:
+            app = picker(surface, seen)
+            task = asyncio.ensure_future(app.run_async())
+            await _wait_for(lambda: b"pick one" in terminal.screen)
+            terminal.type(b"\r")
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(main())
+    # In the open request, so the header is laid out before the first frame;
+    # never sent again from the overlay.
+    named = popup_surface.open_apc("0" * 16, "wide", "Diffs").removesuffix("\x1b\\").split(";")[4]
+    assert any(f";wide;{named}" in data for data in terminal.written)
+    assert popup_surface.title_apc("Diffs") not in bytes(terminal.screen)
 
 
 def test_closing_the_overlay_cancels_the_popup(terminal):

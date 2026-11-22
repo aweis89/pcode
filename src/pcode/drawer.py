@@ -32,6 +32,8 @@ PROTOCOL = 1
 QUERY = b"\x1b_pcode;?\x1b\\"
 # Overlay popups (`pcode.popup_surface`), asked after with the drawer.
 POPUP_PROTOCOL = 1
+# A terminal answering this or later also draws pick lists natively (`popup_surface`).
+PICK_PROTOCOL = 2
 POPUP_QUERY = b"\x1b_pcode;popup?\x1b\\"
 # Any pcode reply, so a future shape is still kept out of typing.
 REPLY = re.compile(rb"\x1b_pcode;([^\x1b\x07]{0,32})\x1b\\")

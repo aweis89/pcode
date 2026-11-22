@@ -1,0 +1,140 @@
+{
+ "fuzzy": [
+  {
+   "term": "edit_ui",
+   "text": "src/pcode/edit_ui.py",
+   "match": true
+  },
+  {
+   "term": "ed_ui",
+   "text": "src/pcode/edit_ui.py",
+   "match": true
+  },
+  {
+   "term": "pc/edui",
+   "text": "src/pcode/edit_ui.py",
+   "match": true
+  },
+  {
+   "term": "edui",
+   "text": "src/pcode/edit_ui.py",
+   "match": true
+  },
+  {
+   "term": "dtui",
+   "text": "src/pcode/edit_ui.py",
+   "match": false
+  },
+  {
+   "term": "sel_row",
+   "text": "+self.selected_row = 1",
+   "match": true
+  },
+  {
+   "term": "_",
+   "text": "anything",
+   "match": false
+  },
+  {
+   "term": "",
+   "text": "anything",
+   "match": true
+  },
+  {
+   "term": "anthopus",
+   "text": "anthropic claude-opus-5",
+   "match": true
+  },
+  {
+   "term": "anthopus",
+   "text": "anthropic:claude-sonnet-5",
+   "match": false
+  },
+  {
+   "term": "claopus",
+   "text": "anthropic:claude-opus-5",
+   "match": true
+  },
+  {
+   "term": "codluna",
+   "text": "openai-codex:gpt-5.6-luna",
+   "match": true
+  },
+  {
+   "term": "gpt-5.6",
+   "text": "openai-codex:gpt-5.6-luna",
+   "match": true
+  },
+  {
+   "term": "gpt56",
+   "text": "openai-codex:gpt-5.6-luna",
+   "match": true
+  },
+  {
+   "term": "g5l",
+   "text": "openai-codex:gpt-5.6-luna",
+   "match": true
+  },
+  {
+   "term": "lunagpt",
+   "text": "openai-codex:gpt-5.6-luna",
+   "match": false
+  },
+  {
+   "term": "aab",
+   "text": "aa ab",
+   "match": true
+  },
+  {
+   "term": "abc",
+   "text": "a-b-c",
+   "match": true
+  },
+  {
+   "term": "abd",
+   "text": "ab-c",
+   "match": false
+  },
+  {
+   "term": "café",
+   "text": "le café",
+   "match": true
+  },
+  {
+   "term": "cafe",
+   "text": "le café",
+   "match": false
+  },
+  {
+   "term": "x",
+   "text": "",
+   "match": false
+  }
+ ],
+ "casefold": [
+  {
+   "text": "ANTHOPUS",
+   "folded": "anthopus"
+  },
+  {
+   "text": "Straße",
+   "folded": "strasse"
+  },
+  {
+   "text": "STRASSE",
+   "folded": "strasse"
+  },
+  {
+   "text": "ÉCOLE",
+   "folded": "école"
+  },
+  {
+   "text": "ΣΊΣΥΦΟΣ",
+   "folded": "σίσυφοσ"
+  },
+  {
+   "text": "Opus 5",
+   "folded": "opus 5"
+  }
+ ]
+}

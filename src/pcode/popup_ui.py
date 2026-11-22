@@ -31,7 +31,6 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import (
     AfterInput,
@@ -49,7 +48,7 @@ from rich.style import Style as RichStyle
 from rich.styled import Styled
 from rich.theme import Theme
 
-from pcode.frame import TITLE_CHROME, Frame, text_width
+from pcode.frame import TITLE_CHROME, Frame, SlimScrollbarMargin, frame_rows, text_width
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.prefix_keys import PrefixKeys
@@ -79,9 +78,10 @@ def marked(renderable, key: str) -> Styled:
     return Styled(renderable, RichStyle(meta={_MARK + key: True}))
 
 
-# Framed selector panes: rows of list content, before the frame's own borders.
+# Framed selector panes: rows of list content, before the frame's own rows.
 LIST_ROWS_MIN = 3
 LIST_ROWS_MAX = 6
+# A boxed frame's borders, either side or above and below.
 _BORDERS = 2
 # Rows a docked editor grows to before it scrolls; the panes above keep the rest.
 INPUT_ROWS_MAX = 6
@@ -113,6 +113,8 @@ POPUP_ACCENTS = Style.from_dict(
         "popup scrollbar.background": _NATIVE,
         "popup scrollbar.button": f"{_NATIVE} reverse",
         "popup scrollbar.arrow": f"{_NATIVE} bold",
+        # An overlay's thin thumb (`frame.SlimScrollbarMargin`).
+        "popup scrollbar.slim": f"{_NATIVE} dim",
         "popup selected": f"{_NATIVE} reverse",
         "popup cursor-line": f"{_NATIVE} reverse nounderline",
         "popup placeholder": "dim italic",
@@ -242,7 +244,10 @@ def shortcut_hint(shortcuts: PrefixKeys):
         wrap_lines=True,
         dont_extend_height=True,
     )
-    frame = Frame(body, title=lambda: shortcuts.help_title, width=frame_width, footer=footer)
+    # Boxed even in an overlay: it floats over the content.
+    frame = Frame(
+        body, title=lambda: shortcuts.help_title, width=frame_width, footer=footer, boxed=True
+    )
     return ConditionalContainer(
         VSplit([frame], align=HorizontalAlign.LEFT),
         filter=Condition(lambda: shortcuts.visible),
@@ -608,9 +613,7 @@ class RichPane:
         # The window scrolls to keep the reported cursor visible on every render,
         # so a fixed row 0 would snap keyboard scrolling straight back to the top.
         self.control = Control()
-        self.window = Window(
-            self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
-        )
+        self.window = Window(self.control, wrap_lines=False, right_margins=[SlimScrollbarMargin()])
 
     def follow(self, renderables: list) -> None:
         """Replace streaming content: stay on the tail if the reader was there, else hold."""
@@ -762,10 +765,11 @@ def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:
     rows up front.
     """
     visible = max(LIST_ROWS_MIN, min(LIST_ROWS_MAX, rows))
+    chrome = frame_rows()
     return Dimension(
-        min=1 + _BORDERS,
-        preferred=visible + _BORDERS,
-        max=LIST_ROWS_MAX + _BORDERS,
+        min=1 + chrome,
+        preferred=visible + chrome,
+        max=LIST_ROWS_MAX + chrome,
     )
 
 

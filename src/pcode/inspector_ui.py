@@ -23,7 +23,7 @@ from pcode.clipboard import copy as copy_to_clipboard
 from pcode.delta import Delta
 from pcode.edit_transcript import EditTranscript, created_markdown
 from pcode.edits import patch_text
-from pcode.frame import Frame
+from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspection import InspectedCall, ToolArchive
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
@@ -208,7 +208,7 @@ class ToolInspector:
         self.notice = ""
         self._refreshing = False
         self.query = TextArea(height=1, prompt="Search tools/commands: ", multiline=False)
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(

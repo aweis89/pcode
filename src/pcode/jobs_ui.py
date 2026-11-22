@@ -11,11 +11,11 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import Label
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode.frame import Frame
+from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspector_ui import code_block, format_command
 from pcode.jobs import Job, JobRegistry, format_duration
 from pcode.popup_ui import (
@@ -124,7 +124,7 @@ class JobBrowser:
         self.notice = ""
         self._rendered: tuple | None = None
         self._refreshing = False
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(

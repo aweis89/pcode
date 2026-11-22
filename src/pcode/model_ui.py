@@ -1,169 +1,41 @@
-"""Searchable, temporary model picker; never owns the main editor's buffer."""
+"""The `/model` pick list: rows for the models on offer, and the custom IDs it takes."""
 
 import re
+from collections.abc import Iterable
 
-from prompt_toolkit.application import Application
-from prompt_toolkit.data_structures import Point
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
-
-from pcode.frame import Dialog
 from pcode.models import PROVIDERS
-from pcode.popup_ui import SearchDebounce, fuzzy_match, popup_container, popup_style
-from pcode.prefix_keys import PrefixKeys
+from pcode.pick_ui import PickItem
+
+TITLE = "Choose model"
+HEADER = "Type provider:model-id for a custom model."
+EMPTY = "No matches. Try another filter or provider:model-id."
 
 
-def matches_model(term: str, model: str) -> bool:
-    """Match the id or the provider's display name plus model, e.g. anth + opus."""
-    provider, _, name = model.partition(":")
-    return any(
-        fuzzy_match(term, text)
-        for text in (model.casefold(), f"{PROVIDERS.get(provider, provider)} {name}".casefold())
-    )
+def model_items(models: Iterable[str], current: str | None = None) -> list[PickItem]:
+    """One row per model, matched by its id or by the provider's name and the model's.
 
-
-class ModelPicker:
-    def __init__(self, models, providers, *, current=None, input=None, output=None, style=None):
-        self.models = list(models)
-        self.providers = set(providers)
-        self.current = current
-        self.selected = 0
-        self.matches = list(models)
-        self.search = TextArea(height=1, prompt="Filter: ", multiline=False)
-        self.searching = SearchDebounce(self.search.buffer, lambda: self.filter(self.search.buffer))
-        rows = FormattedTextControl(
-            self.fragments, get_cursor_position=lambda: Point(x=0, y=self.selected)
-        )
-        self.rows = Window(
-            rows,
-            height=Dimension(min=3, max=14),
-            dont_extend_height=True,
-            wrap_lines=False,
-            always_hide_cursor=True,
-        )
-        keys = KeyBindings()
-        shortcuts = self.shortcuts = PrefixKeys()
-        shortcuts.set_help(
-            lambda: [
-                ("Type", "Filter models or enter provider:model-id"),
-                ("↑/↓ / Ctrl+P/N", "Select model"),
-                ("PgUp/PgDn", "Page"),
-                ("Ctrl+U/D", "Half page"),
-                ("Enter", "Apply selected model"),
-                ("Esc / Ctrl+C / Ctrl+L", "Cancel"),
-            ]
-        )
-
-        @keys.add("up", eager=True)
-        @keys.add("c-p", eager=True)
-        def previous(event):
-            self.move(-1)
-
-        @keys.add("down", eager=True)
-        @keys.add("c-n", eager=True)
-        def next_model(event):
-            self.move(1)
-
-        # The same paging keys as every other popup, moving the selection.
-        @keys.add("pageup", eager=True)
-        def previous_page(event):
-            self.move(-self.page())
-
-        @keys.add("pagedown", eager=True)
-        def next_page(event):
-            self.move(self.page())
-
-        @keys.add("c-u", eager=True)
-        def previous_half(event):
-            self.move(-max(1, (self.page() + 1) // 2))
-
-        @keys.add("c-d", eager=True)
-        def next_half(event):
-            self.move(max(1, (self.page() + 1) // 2))
-
-        @keys.add("enter", eager=True)
-        def accept(event):
-            self.searching.flush()
-            if self.matches:
-                event.app.exit(result=self.matches[self.selected])
-
-        @keys.add("escape", eager=True)
-        @keys.add("c-c")
-        @keys.add("c-l")
-        def cancel(event):
-            event.app.exit(result=None)
-
-        dialog = Dialog(
-            title="Choose model",
-            body=HSplit(
-                [
-                    self.search,
-                    self.rows,
-                    Label(
-                        "Type provider:model-id for a custom model.",
-                        dont_extend_height=True,
-                    ),
-                    Label(shortcuts.summary, dont_extend_height=True),
-                ],
-                padding=1,
-            ),
-        )
-        self.app = Application(
-            layout=Layout(popup_container(dialog, shortcuts), focused_element=self.search),
-            key_bindings=shortcuts.key_bindings(keys),
-            full_screen=True,
-            input=input,
-            output=output,
-            style=popup_style(style),
-        )
-
-    def move(self, rows: int) -> None:
-        self.selected = max(0, min(len(self.matches) - 1, self.selected + rows))
-
-    def page(self) -> int:
-        """Rows actually visible, falling back before the first render."""
-        info = self.rows.render_info
-        return max(1, info.window_height - 1) if info is not None else 10
-
-    def filter(self, buffer):
-        query = buffer.text.strip()
-        terms = query.casefold().split()
-        self.matches = [name for name in self.models if all(matches_model(t, name) for t in terms)]
-        provider, _, name = query.partition(":")
-        # Any supported provider, not only configured ones: the key may be
-        # exported after launch, and infer_model reports a missing key clearly.
-        if (
-            provider in PROVIDERS
-            and name
-            and re.fullmatch(r"[A-Za-z0-9_.:/-]+", name)
-            and query not in self.matches
-        ):
-            self.matches.insert(0, query)
-        self.selected = 0
-
-    def fragments(self):
-        if not self.matches:
-            return [("class:plan", "No matches. Try another filter or provider:model-id.")]
-        result = []
-        for index, name in enumerate(self.matches):
-            provider, _, model = name.partition(":")
-            marker = " · current" if name == self.current else ""
-            if name not in self.models:
-                marker += " · custom"
-            style = "class:selected" if index == self.selected else ""
-            result.append(
-                (
-                    style,
-                    f"{'›' if index == self.selected else ' '} "
-                    f"{PROVIDERS.get(provider, provider)} · {model}{marker}",
-                )
+    So `anth opus` and `anthopus` both find anthropic:claude-opus-5.
+    """
+    items = []
+    for model in models:
+        provider, _, name = model.partition(":")
+        shown = PROVIDERS.get(provider, provider)
+        items.append(
+            PickItem(
+                model,
+                f"{shown} · {name}",
+                marker="current" if model == current else "",
+                search=f"{model}\n{shown} {name}",
             )
-            if index < len(self.matches) - 1:
-                result.append(("", "\n"))
-        return result
+        )
+    return items
 
-    async def run(self):
-        return await self.app.run_async()
+
+def custom_pattern() -> str:
+    """A typed `provider:model-id` the list offers as a row of its own.
+
+    Any supported provider, not only configured ones: the key may be exported
+    after launch, and infer_model reports a missing key clearly.
+    """
+    providers = "|".join(re.escape(provider) for provider in sorted(PROVIDERS))
+    return rf"(?:{providers}):[A-Za-z0-9_.:/-]+"
