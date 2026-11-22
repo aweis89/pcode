@@ -49,6 +49,9 @@ NOTIFY_SECONDS = 5
 # Quiet this long before `manage_worker` list calls a running worker possibly
 # stuck. Long: one thinking-heavy model call or test run can go many minutes.
 STALL_SECONDS = 900
+# `WorkerHandle.activity` before the worker's own stream starts.
+QUEUED = "Queued for a worker slot"
+SETTING_UP = "Setting up its worktree"
 
 _current: ContextVar[WorkerHandle | None] = ContextVar("current_worker", default=None)
 
@@ -200,11 +203,17 @@ class WorkerHandle:
     def liveness(self, quiet: int) -> str:
         """What a running worker is doing, worded so a quiet one does not read as stuck."""
         if self.question is not None:
-            return "Waiting on your answer; reply with manage_worker(action='answer')."
+            return (
+                "Waiting on your answer; reply with "
+                f"manage_worker(action='answer', worker_id='{self.id}')."
+            )
+        if self.activity == QUEUED:
+            # Waiting on other workers, never stuck on its own account.
+            return f"{QUEUED}; it starts when another worker finishes."
         if self.running_tools:
             text = f"Running {', '.join(self.running_tools)}; last progress {quiet}s ago."
-        elif self.activity.startswith("Queued"):
-            text = f"{self.activity}; it starts when another worker finishes."
+        elif self.activity == SETTING_UP:
+            text = f"{SETTING_UP}; last progress {quiet}s ago."
         else:
             text = (
                 f"In a model call; last progress {quiet}s ago. One model call can run "

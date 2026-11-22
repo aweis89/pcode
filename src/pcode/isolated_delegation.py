@@ -33,6 +33,8 @@ from pcode.task_worktrees import TaskWorktrees
 from pcode.worker_channel import (
     NOTIFY_SECONDS,
     PARENT_INSTRUCTIONS,
+    QUEUED,
+    SETTING_UP,
     WorkerHub,
     bind_worker,
     current_worker,
@@ -341,9 +343,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         handle.started = True
         handle.previous = None
         slots = self.worker_slots if agent_name == "worker" else None
-        handle.mark_started(
-            "Queued for a worker slot" if slots is not None and slots.locked() else "Starting"
-        )
+        handle.mark_started(QUEUED if slots is not None and slots.locked() else "Starting")
         unread = 0
         try:
             await notify(handle, ctx, status="running")
@@ -407,6 +407,9 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         if agent_name != "worker":
             raise ModelRetry("Only the built-in worker supports isolated workspaces; use shared.")
         key = self._resolve_model_key(agent_name, self._agents[agent_name], model)
+        if handle is not None:
+            handle.activity = SETTING_UP
+            handle.mark_progress()
         try:
             store = TaskWorktrees(self.workspace)
             creation = asyncio.create_task(asyncio.to_thread(store.create, wait=True))
@@ -431,6 +434,9 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
                     await _setup(describe(Path(record.worktree)))
             except TimeoutError:
                 raise WorktreeError(f"Worktree setup exceeded {SETUP_TIMEOUT_SECONDS}s") from None
+            if handle is not None:
+                handle.activity = "Starting"
+                handle.mark_progress()
             async with self.worker_factory(Path(record.worktree)) as worker:
                 prompt = (
                     f"{task}\n\nYou are working in an isolated task worktree.\n"
@@ -583,7 +589,8 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             action: answer (its ask_parent question), message (read before its next
                 step), stop (background workers only), or list. list gives each running
                 worker's elapsed_seconds, seconds_since_progress, activity, running_tools
-                and a `liveness` verdict; tokens is null until a model call ends.
+                and a `liveness` verdict (tool_calls counts this run only); tokens is
+                null until a model call ends.
             worker_id: The worker, such as w3; not needed for list.
             text: The answer or message.
         """

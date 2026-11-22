@@ -161,6 +161,7 @@ class ResumableAgent(WrapperAgent):
                 )
                 if handle is not None:
                     handle.activity = f"Reconnecting {attempt}/{attempts}"
+                    handle.running_tools = []  # The resent request starts over.
                     handle.mark_progress()
                 if (parent := _parent.get()) is not None:
                     await parent.emit(ChildActivity(activity=f"Reconnecting {attempt}/{attempts}"))

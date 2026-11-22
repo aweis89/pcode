@@ -402,7 +402,7 @@ def test_list_reports_a_live_worker_mid_model_call_as_live(tmp_path):
 
 def test_liveness_flags_a_long_silence_and_running_tools(monkeypatch):
     from pcode import worker_channel
-    from pcode.worker_channel import STALL_SECONDS, Question, WorkerHandle
+    from pcode.worker_channel import QUEUED, SETTING_UP, STALL_SECONDS, Question, WorkerHandle
 
     clock = [1000.0]
     monkeypatch.setattr(worker_channel, "monotonic", lambda: clock[0])
@@ -419,8 +419,15 @@ def test_liveness_flags_a_long_silence_and_running_tools(monkeypatch):
     clock[0] += STALL_SECONDS
     assert "may be stuck; tell the user" in handle.summary()["liveness"]
 
+    handle.activity = SETTING_UP
+    assert handle.summary()["liveness"].startswith(f"{SETTING_UP}; last progress")
+
+    # A queued worker waits on others: never called stuck, however long.
+    handle.activity = QUEUED
+    assert "stuck" not in handle.summary()["liveness"]
+
     handle.question = Question(text="Which branch?")
-    assert "Waiting on your answer" in handle.summary()["liveness"]
+    assert "worker_id='w1'" in handle.summary()["liveness"]
 
     handle.status = "done"
     assert "liveness" not in handle.summary()
