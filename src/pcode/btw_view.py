@@ -222,6 +222,10 @@ class ThreadView:
             # something nothing shows.
             if self.activity.btw_thread is not None:
                 close(self.activity)
+                # A reply being typed stays in the draft, now for the conversation.
+                self.transcript.flash(
+                    "The /btw drawer closed, and its thread too: Enter goes to the conversation."
+                )
             if self._drawn is not None:
                 self._drawn = None
                 output.app.output.write_raw(CLOSE)

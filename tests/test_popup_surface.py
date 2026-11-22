@@ -259,7 +259,7 @@ def test_escape_in_the_main_pane_cancels_the_popup(terminal):
             task = asyncio.ensure_future(app.run_async())
             await _wait_for(lambda: b"pick one" in terminal.screen)
             # The overlay went missing without hanging up; Escape in pcode's pane.
-            assert editor.read_keys() == []
+            assert editor.flush_keys() == []
             return await asyncio.wait_for(task, 5)
 
     assert asyncio.run(main()) is None
@@ -282,7 +282,7 @@ def test_a_task_the_popup_started_finds_no_terminal_after_it(terminal):
     assert asyncio.run(main()) == {}
 
 
-def test_leftovers_are_swept_and_a_missed_resize_replayed(terminal):
+def test_leftovers_are_swept(terminal):
     import time as clock
 
     directory = popup_dir()
@@ -290,13 +290,29 @@ def test_leftovers_are_swept_and_a_missed_resize_replayed(terminal):
     old = directory / ("0" * 16 + ".json")
     old.write_text("{}")
     os.utime(old, (clock.time() - 3600,) * 2)
-    resizes = []
-    sizes = iter([(24, 80), (30, 100)])
-    terminal.get_size = lambda: next(sizes)
 
     async def main():
-        async with overlay(terminal, EditorInput(), on_main_resize=lambda: resizes.append(1)):
+        async with overlay(terminal, EditorInput()):
             assert not old.exists()
 
     asyncio.run(main())
-    assert resizes == [1]
+
+
+def test_alt_keys_in_the_main_pane_leave_the_popup_alone(terminal):
+    from prompt_toolkit.key_binding.key_processor import KeyPress
+
+    editor = EditorInput()
+    editor.keys = [KeyPress(Keys.Escape, "\x1b"), KeyPress("b", "b")]
+
+    async def main():
+        async with overlay(terminal, editor) as surface:
+            app = picker(surface, [])
+            task = asyncio.ensure_future(app.run_async())
+            await _wait_for(lambda: b"pick one" in terminal.screen)
+            assert editor.read_keys() == []  # Alt+b: dropped, nothing cancelled
+            await asyncio.sleep(0.1)
+            assert not task.done()
+            terminal.type(b"\r")
+            return await asyncio.wait_for(task, 5)
+
+    assert asyncio.run(main()) == "picked"

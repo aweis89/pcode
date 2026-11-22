@@ -1163,7 +1163,6 @@ class PreviewApp:
                                 session.app.output,
                                 session.app.input,
                                 layout=layout,
-                                on_main_resize=lambda: session.app._on_resize(),
                             )
                         )
                     except popup_surface.OverlayUnavailable:
@@ -2350,8 +2349,8 @@ class PreviewApp:
     def drawer_host(self) -> str | None:
         """The session host a drawer beside the terminal reads threads from (`pcode.drawer`).
 
-        Only for a terminal that answered the drawer probe (asked with
-        `popup_view overlay` at startup), while the setting still says overlay, and
+        Only for a terminal that answered the drawer probe, while `popup_view`
+        says overlay, and
         a session host whose socket that terminal can find; else None. Asked
         every frame, so the setting is read again at most once a second.
         """

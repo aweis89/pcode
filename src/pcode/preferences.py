@@ -966,7 +966,7 @@ def popup_view() -> str:
     for path in (preferences_path(), project_preferences_path()):
         try:
             legacy = read_preferences(path).get("btw_view", legacy) if path else legacy
-        except ValueError:
+        except OSError, ValueError:
             continue
     return "overlay" if legacy == "drawer" else SETTINGS["popup_view"].default
 

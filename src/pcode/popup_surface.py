@@ -63,6 +63,8 @@ DONE = b"\x1b_pcode;done\x1b\\"
 CONNECT_TIMEOUT = 3.0
 # Older entries in `popup_dir()` are leftovers: each is found within seconds.
 _STALE_AFTER = 600.0
+# How long a frame may wait for the overlay to take it.
+_WRITE_TIMEOUT = 2.0
 
 
 class _Terminal:
@@ -143,11 +145,16 @@ class _OverlayWriter:
         data, self._pending = b"".join(self._pending), []
         if data and self.ready:
             data, self.ready = self.ready + data, b""
+        deadline = time.monotonic() + _WRITE_TIMEOUT
         while data and not self.gone:
             try:
                 written = os.write(self.fd, data)
             except BlockingIOError:
                 # Shared with the bridge, the file could be non-blocking.
+                if time.monotonic() > deadline:
+                    # Not drained, yet not hung up: as good as gone.
+                    self.gone = True
+                    return
                 select.select([], [self.fd], [], 0.05)
                 continue
             except InterruptedError:
@@ -215,6 +222,10 @@ def _cancel(session: AppSession) -> None:
     app = session.app
     if app is None or not app.is_running:
         return
+    if getattr(app, "_running_in_terminal", False):
+        # $EDITOR has the overlay: leave it be. Once it ends the popup reads
+        # its input again, and a hung-up one cancels it then.
+        return
     future = getattr(app, "future", None)
     if future is not None and future.done():
         return
@@ -229,14 +240,14 @@ def _inert_editor(main_input: Input, cancel: Callable[[], None]):
     The terminal moves focus to the overlay, but split navigation or a tab
     switch can bring it back to pcode's pane; a key typed there must not land
     in the draft (a secret, say). Cursor reports still go to the editor, which
-    keeps drawing the conversation. Escape or Ctrl+C there cancels the popup:
-    if the overlay ever went without hanging up, that is the way out.
+    keeps drawing the conversation. Ctrl+C there, or Escape on its own,
+    cancels the popup: if the overlay ever went without hanging up, that is
+    the way out.
     """
     read_keys, flush_keys = main_input.read_keys, main_input.flush_keys
     kept = (Keys.CPRResponse,)
-    cancelling = (Keys.Escape, Keys.ControlC)
 
-    def filtered(read):
+    def filtered(read, cancelling):
         def keys():
             pressed = read()
             if any(key.key in cancelling for key in pressed):
@@ -245,8 +256,10 @@ def _inert_editor(main_input: Input, cancel: Callable[[], None]):
 
         return keys
 
-    main_input.read_keys = filtered(read_keys)
-    main_input.flush_keys = filtered(flush_keys)
+    # Read keys carry Escape before Alt+key and unknown sequences; a lone
+    # Escape only ever comes out when the parser flushes it after a pause.
+    main_input.read_keys = filtered(read_keys, (Keys.ControlC,))
+    main_input.flush_keys = filtered(flush_keys, (Keys.ControlC, Keys.Escape))
     try:
         yield
     finally:
@@ -295,13 +308,8 @@ async def overlay(
     layout: str = "wide",
     timeout: float = CONNECT_TIMEOUT,
     python: str | None = None,
-    on_main_resize: Callable[[], None] | None = None,
 ) -> AsyncIterator[PopupSurface]:
-    """Open an overlay popup surface; raises `OverlayUnavailable` before yielding if it can't.
-
-    `on_main_resize` is called after the popup if pcode's own terminal changed
-    size meanwhile: the popup had SIGWINCH, so the editor never heard.
-    """
+    """Open an overlay popup surface; raises `OverlayUnavailable` before yielding if it can't."""
     token = secrets.token_hex(8)
     try:
         directory = _private_dir()
@@ -379,7 +387,6 @@ async def overlay(
                 default_color_depth=main_output.get_default_color_depth(),
             )
         )
-        main_size = main_output.get_size()
         loop.add_reader(connection.fileno(), bridge_spoke)
         terminal = _Terminal(fd)
         terminal_token = _overlay_terminal.set(terminal)
@@ -402,8 +409,6 @@ async def overlay(
             writer.ready = b""
             writer.write(DONE.decode())
             writer.flush()
-            if on_main_resize is not None and main_output.get_size() != main_size:
-                on_main_resize()
     finally:
         if connection is not None:
             connection.close()
