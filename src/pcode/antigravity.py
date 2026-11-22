@@ -1958,6 +1958,8 @@ class AntigravityStream(StreamedResponse):
                     quiet_deadline = None
                     if self.awaiting_subagent:
                         subagent_deadline = loop.time() + SUBAGENT_WAIT_LIMIT
+                        # A tool still running keeps the timer paused; when it finishes,
+                        # that update counts as a wake and ends the subagent wait.
                         if not self._has_running_tools():
                             quiet_deadline = subagent_deadline
                 continue  # A prompt a steering message took over, or held for background work.
@@ -1980,8 +1982,8 @@ class AntigravityStream(StreamedResponse):
                 elif substantive_wake:
                     reply_open = True
                 # Any active non-daemon tool (including long MCP delegations) pauses
-                # the quiet timer while holding; an awaited native subagent swaps it
-                # for the much longer `SUBAGENT_WAIT_LIMIT`.
+                # the quiet timer while holding. While awaiting a native subagent, only
+                # non-wake updates land here, and they keep its fixed deadline.
                 if self._has_running_tools():
                     quiet_deadline = None
                 elif self.awaiting_subagent:
