@@ -19,15 +19,23 @@ from rich.text import Text
 
 from pcode.aside import Aside, apply_state
 from pcode.btw_view import Entry, ThreadWriter, entry
+from pcode.conversation_tree import excerpt
 from pcode.drawer import FOCUS, OBSERVER_VERSION, valid_host
 from pcode.host_protocol import LINE_LIMIT, dumps, read_message, socket_path
+from pcode.tool_display import literal, plain
 
 # Top of the screen, then the screen and the scrollback cleared: a whole redraw.
 CLEAR = "\x1b[H\x1b[2J\x1b[3J"
 HIDE_CURSOR = "\x1b[?25l"
+SHOW_CURSOR = "\x1b[?25h"
 ERASE_LINE = "\r\x1b[2K"
 # Width changes come in bursts while the drawer's edge is dragged.
 RESIZE_SETTLE = 0.12
+# How often to try the host again once it has gone: a /restart brings it back.
+RECONNECT_SECONDS = 2.0
+# What a host on the web drawer's observer version answers.
+OLD_HOST = "Unsupported drawer version."
+RESTART = "This session host's pcode predates this drawer: run /restart in pcode."
 
 
 class Tail:
@@ -71,6 +79,9 @@ class Tail:
         self.note = note
         self.draw()
 
+    def reconnected(self) -> None:
+        self.note = ""
+
     def shown(self) -> list[Aside]:
         return [aside for aside in self.asides if aside.thread == self.thread]
 
@@ -89,9 +100,11 @@ class Tail:
                 entries += self.writer.entries(thread, self.transcript.code_theme)[0] or []
             for objects, end, _ in entries:
                 self.console.print(*objects, end=end)
-            status = self.note or self._progress(thread)
+            status = plain(self.note or self._progress(thread))
             if status:
-                self.console.print(Text(f"  {status}", style="pcode.muted"), end="")
+                # One row, never wrapped: erasing it takes back exactly that row.
+                row = Text(f"  {status}", style="pcode.muted", no_wrap=True, overflow="ellipsis")
+                self.console.print(row, end="", crop=True)
                 self._status = True
         out.flush()
 
@@ -106,11 +119,13 @@ class Tail:
         if not thread:
             return [entry(Text("Waiting for the side thread…", style="pcode.muted"))]
         first = thread[0]
-        question = first.question.strip().splitlines()[0] if first.question.strip() else ""
+        # The host's text, so nothing in it reaches this terminal as a control.
+        question = excerpt(literal(first.question))[:80]
+        label = plain(first.label, limit=60)
         title = Text.assemble(
             (" btw ", "pcode.btw.badge"),
-            (f" {question[:80]}", "pcode.btw"),
-            (f" · {first.label}" if first.label else "", "pcode.muted"),
+            (f" {question}", "pcode.btw"),
+            (f" · {label}" if label else "", "pcode.muted"),
         )
         keys = Text("Reply in pcode's editor · Esc back to it", style="pcode.muted")
         return [entry(title), entry(keys), entry()]
@@ -135,31 +150,44 @@ async def run(host: str, thread: str) -> None:
         redraw = loop.call_later(RESIZE_SETTLE, lambda: tail.draw(whole=True))
 
     loop.add_signal_handler(signal.SIGWINCH, resized)
-    with _keys(loop):
-        try:
-            reader, writer = await asyncio.open_unix_connection(
-                str(socket_path(host)), limit=LINE_LIMIT
-            )
-        except OSError as error:
-            tail.closed(f"Cannot reach session {host}: {error}")
-            await asyncio.Event().wait()
-            return
+    try:
+        with _keys(loop):
+            # Shown until the drawer closes, which ends this process: a host
+            # that goes is tried again, so a /restart comes back by itself.
+            while True:
+                await _watch(host, tail)
+                await asyncio.sleep(RECONNECT_SECONDS)
+    finally:
+        sys.stdout.write(SHOW_CURSOR)
+        sys.stdout.flush()
+
+
+async def _watch(host: str, tail: Tail) -> None:
+    """Draw the host's side questions until it goes, or say why it cannot be reached."""
+    try:
+        path = str(socket_path(host))
+        reader, writer = await asyncio.open_unix_connection(path, limit=LINE_LIMIT)
+    except OSError:
+        if not tail.note:
+            tail.closed(f"Session {host} is not running.")
+        return
+    try:
         writer.write(dumps({"type": "observe", "version": OBSERVER_VERSION}))
         await writer.drain()
         ready = await read_message(reader)
         if ready is None or ready.get("type") != "ready":
-            message = (ready or {}).get("message") or (
-                "This session host's pcode predates the drawer: /restart it."
-            )
-            tail.closed(message)
-            await asyncio.Event().wait()
+            message = (ready or {}).get("message") or RESTART
+            tail.closed(RESTART if message == OLD_HOST else message)
             return
+        tail.reconnected()
         while (message := await read_message(reader)) is not None:
             tail.apply(message)
         if not tail.note:
             tail.closed("The session host stopped.")
-        # Shown until the drawer closes, which ends this process.
-        await asyncio.Event().wait()
+    except (OSError, ValueError) as error:
+        tail.closed(f"Lost the session host: {error}")
+    finally:
+        writer.close()
 
 
 @contextlib.contextmanager
@@ -177,8 +205,16 @@ def _keys(loop: asyncio.AbstractEventLoop):
     tty.setcbreak(fd)
 
     def typed() -> None:
-        data = os.read(fd, 1024)
-        if data in (b"\x1b", b"q"):
+        try:
+            data = os.read(fd, 1024)
+        except OSError:
+            data = b""
+        if not data:
+            # The terminal has gone: nothing more will be typed, and a
+            # reader left on a closed descriptor would fire forever.
+            loop.remove_reader(fd)
+            return
+        if data.endswith(b"\x1b") or b"q" in data:
             sys.stdout.write(FOCUS)
             sys.stdout.flush()
 

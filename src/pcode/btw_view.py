@@ -134,7 +134,10 @@ def outcome_blocks(aside: Aside, answered: bool) -> list:
     if aside.running:
         return []  # Its progress is the viewer's status row, not text here.
     if aside.error:
-        return [Text(f"  {aside.status}: {aside.error}", style="dim")]
+        from pcode.tool_display import plain
+
+        # A model or provider's text: no control reaches the terminal.
+        return [Text(f"  {aside.status}: {plain(aside.error, limit=None)}", style="dim")]
     if not answered:
         return [Text(f"  ({aside.status}; no answer)", style="dim")]
     return []
