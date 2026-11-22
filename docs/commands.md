@@ -194,8 +194,7 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
 - `/btw QUESTION` (alias `/side`): [ask a side question](side-questions.md) against the context the model
   is working with right now, without interrupting or queueing it. Answers open in a
   [viewer](side-questions.md#the-popup) by default (auto-opened when ready via
-  `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any time; with `popup_view overlay`
-  in Ghostty Smooth, a hosted session [opens threads in a drawer](side-questions.md#threads-in-a-drawer)
+  `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any time; in Ghostty Smooth, a hosted session [opens threads in a drawer](side-questions.md#threads-in-a-drawer)
   instead. You can send a [follow-up](side-questions.md#following-up) to
   the thread, or [keep it](side-questions.md#keeping-a-thread) in the conversation.
   `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models

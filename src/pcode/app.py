@@ -61,8 +61,8 @@ from pcode.preferences import (
     effort_for,
     hints_preference,
     load_preferences,
+    overlay_popups,
     parse_height,
-    popup_view,
     preference_count,
     save_preferences,
     thinking_mode_preference,
@@ -1112,7 +1112,7 @@ class PreviewApp:
             self._command_popup_generation = self._popup_generation
 
     def popups_overlay(self) -> bool:
-        """Whether popups open in an overlay beside the conversation (`popup_view overlay`).
+        """Whether popups open in an overlay beside the conversation (unless `popup_view popup`).
 
         Only in a terminal that answered the overlay probe, on this machine
         (it finds pcode's socket by path), and until two in a row failed to open.
@@ -1126,7 +1126,7 @@ class PreviewApp:
             return False
         if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
             return False
-        return popup_view() == "overlay"
+        return overlay_popups()
 
     def _superseded(self) -> bool:
         return (
@@ -2350,7 +2350,7 @@ class PreviewApp:
         """The session host a drawer beside the terminal reads threads from (`pcode.drawer`).
 
         Only for a terminal that answered the drawer probe, while `popup_view`
-        says overlay, and
+        is not `popup`, and
         a session host whose socket that terminal can find; else None. Asked
         every frame, so the setting is read again at most once a second.
         """
@@ -2362,7 +2362,7 @@ class PreviewApp:
         now = time.monotonic()
         if now - self._drawer_pref_at > 1.0:
             self._drawer_pref_at = now
-            self._drawer_pref = popup_view() == "overlay"
+            self._drawer_pref = overlay_popups()
         runtime = getattr(self.controller, "runtime", None)
         if not (self._drawer_pref and getattr(runtime, "remote", False)):
             return None

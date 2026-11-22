@@ -1,4 +1,4 @@
-"""Experimental: /btw threads in a drawer beside the terminal (`popup_view overlay`).
+"""Experimental: /btw threads in a drawer beside the terminal (`popup_view auto`).
 
 Ghostty Smooth (the pcode fork of Ghostty) can lay a second terminal over the
 right of a pane. pcode asks for it with one short APC, which names what to

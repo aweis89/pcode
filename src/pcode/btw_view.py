@@ -1,6 +1,6 @@
 """The /btw thread view: a side thread the main editor replies to.
 
-With `popup_view overlay` in a terminal that has a drawer (`pcode.drawer`),
+With `popup_view auto` (the default) in a terminal that has a drawer (`pcode.drawer`),
 opening a thread draws it in a drawer beside the terminal, and the screen
 keeps the conversation. While a thread is open the main editor, with
 everything it can do, sends follow-ups to it, and Ctrl+Q or Esc goes back to

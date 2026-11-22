@@ -27,6 +27,10 @@ from pcode.ui import Activity, CursorSafeOutput, Handoff, TerminalOutput, Transc
 HOST = "0123abcd"
 
 
+# Kept before the autouse stand-in replaces it, for the test of the real one.
+REAL_DRAWER_HOST = PreviewApp.drawer_host
+
+
 @pytest.fixture(autouse=True)
 def drawer(monkeypatch):
     """A drawer to show threads in (`PreviewApp.drawer_host`): thread mode."""
@@ -466,21 +470,29 @@ def test_a_thread_closes_when_the_drawer_goes(monkeypatch):
 
 
 def test_the_drawer_is_there_only_with_overlay_popups_and_a_host(monkeypatch):
-    """`drawer_host`: an answered probe, `popup_view overlay` and a reachable host."""
+    """`drawer_host`: an answered probe, `popup_view` not `popup`, and a reachable host."""
     from pcode import drawer, theme
     from pcode.preferences import save_preferences
 
-    monkeypatch.undo()  # The real `drawer_host`, not the autouse stand-in.
+    # The real `drawer_host`, not the autouse stand-in. Not `monkeypatch.undo()`:
+    # that would also undo conftest's isolation and save to the user's own preferences.
+    monkeypatch.setattr(PreviewApp, "drawer_host", REAL_DRAWER_HOST)
     app, _ = seeded_app()
     app.controller.runtime = SimpleNamespace(remote=True, id=HOST)
-    monkeypatch.setattr(theme, "drawer_supported", lambda: True)
+    supported = True
+    monkeypatch.setattr(theme, "drawer_supported", lambda: supported)
     monkeypatch.setattr(drawer, "reachable", lambda directory: True)
     monkeypatch.setattr(drawer, "valid_host", lambda identity: True)
-    save_preferences(popup_view="overlay")
+    # The default, `auto`, opens the drawer wherever the terminal answered the probe.
     assert app.drawer_host() == HOST and app.btw_drawer()
-    save_preferences(popup_view="popup")
-    app._drawer_pref_at = float("-inf")  # The setting is read again at most once a second.
-    assert app.drawer_host() is None and not app.btw_drawer()
+    supported = False
+    assert app.drawer_host() is None
+    supported = True
+    for view, expected in (("overlay", HOST), ("popup", None)):
+        save_preferences(popup_view=view)
+        app._drawer_pref_at = float("-inf")  # The setting is read again at most once a second.
+        assert app.drawer_host() == expected
+    assert not app.btw_drawer()
     # Ctrl+Q is then a bare /btw: the viewer.
     sent = []
     app._submit_typed = sent.append

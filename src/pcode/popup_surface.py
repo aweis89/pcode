@@ -6,7 +6,7 @@ Every popup is a prompt_toolkit `Application` given an input and an output.
 - The full screen (`popup_view popup`, or wherever an overlay can't open):
   the editor is suspended and the popup takes pcode's own terminal, and the
   conversation is drawn again after it.
-- An overlay (`popup_view overlay` in Ghostty Smooth): the terminal lays a
+- An overlay (`popup_view auto`, the default, in Ghostty Smooth): the terminal lays a
   second terminal over pcode's pane and runs `pcode.popup_bridge` in it, which
   hands that terminal's fd to this process. The popup then runs here, as ever,
   with every callback it has, but reads keys from and draws on the overlay. The
