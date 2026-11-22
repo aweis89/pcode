@@ -846,9 +846,14 @@ these actions alongside the current popup's navigation and editing keys:
 With an explicitly configured `key_prefix ctrl+b`, press Ctrl+B then the letter
 instead: Ctrl+B `y` copies.
 
+In the model picker, Esc clears the filter first, as in the other lists with a
+search line, and Ctrl+L, the key that opened it, closes it straight away.
+
 Where Ghostty Smooth draws `/model`, `/links` and `/attach` as native lists
 (`popup_view overlay`), their shortcuts are Cmd and the letter instead (Cmd+N
-starts a new session from `/attach`), and Cmd+W closes the list.
+starts a new session from `/attach`), and Cmd+W closes the list. Cmd+X in
+`/attach` stops the selected session (twice) rather than cutting text from the
+search field.
 
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus; popup bodies keep the terminal's default background. With

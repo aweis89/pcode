@@ -59,6 +59,7 @@ import os
 import secrets
 import select
 import socket
+import struct
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
@@ -192,6 +193,11 @@ class PopupSurface:
     # The overlay's AppSession, whose `app` is the popup once it runs.
     session: AppSession | None = field(default=None, repr=False)
     native: "_NativePicker | None" = field(default=None, repr=False)
+    # For a native surface (`App.popup`): the full screen, as an async context
+    # manager yielding a surface, taken while the popup is still held; and
+    # what to do when the native picker fails.
+    full_screen: Callable[[], Any] | None = field(default=None, repr=False)
+    native_failed: Callable[[str], None] | None = field(default=None, repr=False)
 
     async def pick(
         self,
@@ -205,13 +211,16 @@ class PopupSurface:
         match: "Match" = "fuzzy",
         actions: "tuple[PickAction, ...]" = (),
         custom: str | None = None,
+        cancel_keys: tuple[str, ...] = (),
         style=None,
     ) -> "Picked | None":
         """Pick from `items`; None when cancelled. See `pick_ui` for the options.
 
         Natively the terminal draws the list; otherwise `PickList` does, with
         `style` (the editor's). Call it again on the same surface to show
-        another list in its place, as a toggle does.
+        another list in its place, as a toggle does. If the native picker
+        fails (an older or newer terminal that cannot read the list), this
+        pick and every later one on the surface take the full screen.
         """
         options = dict(
             title=title,
@@ -222,55 +231,115 @@ class PopupSurface:
             match=match,
             actions=actions,
             custom=custom,
+            cancel_keys=cancel_keys,
         )
+        if self.native is not None and not self.native.broken:
+            try:
+                return await self.native.pick(items, **options)
+            except NativeUnavailable as error:
+                if self.native_failed is not None:
+                    self.native_failed(str(error))
         if self.native is not None:
-            return await self.native.pick(items, **options)
+            if self.full_screen is None:
+                return None
+            async with self.full_screen() as screen:
+                return await screen.pick(items, **options, style=style)
         from pcode.pick_ui import PickList
 
         picker = PickList(items, **options, input=self.input, output=self.output, style=style)
         return await picker.run()
 
+    def leave_native(self) -> None:
+        """Close the native picker now, before the surface ends (to take the full screen)."""
+        if self.native is not None:
+            self.native.hang_up()
+
+
+class NativeUnavailable(Exception):
+    """The native picker could not show a list: `PopupSurface.pick` falls back."""
+
 
 class _NativePicker:
     """The terminal's native pick list, over the socket it connected to."""
 
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        hang_up: Callable[[], None],
+    ) -> None:
         self.reader = reader
         self.writer = writer
+        self.hang_up = hang_up
         self.cancelled = asyncio.Event()
+        # The terminal said it showed a list; until then, a hangup is a failure.
+        self.shown = False
+        self.broken = False
 
     def cancel(self) -> None:
         self.cancelled.set()
 
     async def pick(self, items: "list[PickItem]", **options) -> "Picked | None":
+        """The pick, or None when cancelled; raises `NativeUnavailable` if no list was shown."""
         from pcode.pick_ui import checked, payload
 
         if self.cancelled.is_set():
             return None
         message = json.dumps(payload(items, **options), ensure_ascii=False) + "\n"
-        reading = waiting = None
+        # Raced as a whole: a cancel from pcode's pane must not wait on a
+        # terminal that stopped reading.
+        talk = asyncio.ensure_future(self._exchange(message.encode("utf-8")))
+        waiting = asyncio.ensure_future(self.cancelled.wait())
         try:
-            self.writer.write(message.encode("utf-8"))
-            await self.writer.drain()
-            reading = asyncio.ensure_future(self.reader.readline())
-            waiting = asyncio.ensure_future(self.cancelled.wait())
-            await asyncio.wait({reading, waiting}, return_when=asyncio.FIRST_COMPLETED)
-            line = reading.result() if reading.done() else b""
-        except OSError, ValueError, asyncio.LimitOverrunError, asyncio.IncompleteReadError:
-            line = b""
+            await asyncio.wait({talk, waiting}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            for task in (reading, waiting):
-                if task is not None and not task.done():
+            for task in (talk, waiting):
+                if not task.done():
                     task.cancel()
+        if not talk.done() or talk.cancelled():
+            return None
         try:
-            # A line cut short is the terminal closing the picker.
-            reply = json.loads(line) if line.endswith(b"\n") else None
-        except ValueError:
-            reply = None
+            reply = talk.result()
+        except NativeUnavailable:
+            self.broken = True
+            self.hang_up()
+            raise
         picked = checked(reply, items, options["actions"], options["custom"])
         if picked is None:
             self.cancel()
         return picked
+
+    async def _exchange(self, message: bytes) -> object:
+        """Send a list and read the reply: `{"shown": true}`, then the pick or `{"error": …}`."""
+        try:
+            self.writer.write(message)
+            async with asyncio.timeout(_WRITE_TIMEOUT):
+                await self.writer.drain()
+            while True:
+                line = await self.reader.readline()
+                if not line.endswith(b"\n"):
+                    break  # The terminal closed the picker.
+                try:
+                    reply = json.loads(line)
+                except ValueError:
+                    return None
+                if isinstance(reply, dict) and "error" in reply:
+                    raise NativeUnavailable(
+                        f"it could not read the list: {str(reply['error'])[:200]}"
+                    )
+                if isinstance(reply, dict) and reply.get("shown") is True:
+                    self.shown = True
+                    continue
+                return reply
+        except TimeoutError:
+            if not self.shown:
+                raise NativeUnavailable("it did not take the list") from None
+            return None
+        except OSError, ValueError, asyncio.LimitOverrunError, asyncio.IncompleteReadError:
+            pass
+        if not self.shown:
+            raise NativeUnavailable("it closed the picker before showing a list")
+        return None
 
 
 class _OverlayWriter:
@@ -517,7 +586,12 @@ async def overlay(
                     path.unlink()
             server.close()
         fd = fds[0] if fds else None
-        if not message.startswith(HELLO) or fd is None or not os.isatty(fd):
+        if (
+            not message.startswith(HELLO)
+            or fd is None
+            or not os.isatty(fd)
+            or not _same_user(connection)
+        ):
             _give_up(main_output, token)
             raise OverlayUnavailable("the popup's terminal did not check out")
         writer = _OverlayWriter(fd, title)
@@ -585,6 +659,27 @@ async def overlay(
             os.close(fd)
 
 
+def _peer_uid(connection: socket.socket) -> int | None:
+    """The uid of the process at the other end of a unix socket, where the system says."""
+    with suppress(OSError, struct.error):
+        if sys.platform == "darwin":
+            # SOL_LOCAL, LOCAL_PEERCRED: struct xucred {u_int version; uid_t uid; ...}.
+            return struct.unpack_from("=II", connection.getsockopt(0, 1, 76))[1]
+        if hasattr(socket, "SO_PEERCRED"):
+            # struct ucred {pid_t pid; uid_t uid; gid_t gid;}.
+            size = struct.calcsize("3i")
+            return struct.unpack(
+                "3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size)
+            )[1]
+    return None
+
+
+def _same_user(connection: socket.socket) -> bool:
+    """False only if the system says another user connected (the directory should stop that)."""
+    uid = _peer_uid(connection)
+    return uid is None or uid == os.getuid()
+
+
 @asynccontextmanager
 async def pick_overlay(
     main_output: Output,
@@ -606,6 +701,20 @@ async def pick_overlay(
         raise OverlayUnavailable(str(error)) from error
     loop = asyncio.get_running_loop()
     writer: asyncio.StreamWriter | None = None
+    closed = False
+
+    def hang_up() -> None:
+        """Close the socket and tell the terminal: once, whoever asks first."""
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        if writer is not None:
+            # Not `close()`, which waits to flush to a terminal that may not read.
+            with suppress(Exception):
+                writer.transport.abort()
+        _give_up(main_output, token)
+
     try:
         try:
             server.bind(str(address))
@@ -618,15 +727,18 @@ async def pick_overlay(
         try:
             async with asyncio.timeout(timeout):
                 connection, _ = await loop.sock_accept(server)
+                if not _same_user(connection):
+                    connection.close()
+                    raise OSError("the picker is another user's")
                 reader, writer = await asyncio.open_unix_connection(
                     sock=connection, limit=_PICK_REPLY_LIMIT
                 )
                 hello = await reader.readline()
         except (TimeoutError, OSError, ValueError, asyncio.LimitOverrunError) as error:
-            _give_up(main_output, token)
+            hang_up()
             raise OverlayUnavailable("the terminal did not open the picker") from error
         except asyncio.CancelledError:
-            _give_up(main_output, token)
+            hang_up()
             raise
         finally:
             # Found once; nothing else may connect.
@@ -634,15 +746,14 @@ async def pick_overlay(
                 address.unlink()
             server.close()
         if hello != PICK_HELLO:
-            _give_up(main_output, token)
+            hang_up()
             raise OverlayUnavailable("the picker did not check out")
-        picker = _NativePicker(reader, writer)
+        picker = _NativePicker(reader, writer, hang_up)
         with _inert_editor(main_input, picker.cancel):
             yield PopupSurface(None, None, overlay=True, native=picker)
     finally:
+        # The terminal closes the picker on EOF; `popup-close` covers one that missed it.
+        hang_up()
         if writer is not None:
-            writer.close()
             with suppress(Exception):
-                await writer.wait_closed()
-            # The terminal closes it on EOF; this covers one that missed it.
-            _give_up(main_output, token)
+                await asyncio.wait_for(writer.wait_closed(), 1)

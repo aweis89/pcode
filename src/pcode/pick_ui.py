@@ -13,7 +13,7 @@ as a casefolded substring. Ghostty ports `fuzzy_match`, `tree_guides` and
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -90,6 +90,29 @@ class Picked:
     query: str = ""
 
 
+def key_hints(text: str, label: Callable[[str], str]) -> str:
+    """`text` with each `{action:K}` replaced by how to press action K here (`label(K)`).
+
+    So an empty list can say which key starts something, in a terminal
+    (Ctrl+N) or natively (Cmd+N), which fills these in itself.
+    """
+    return re.sub(r"\{action:([a-z])\}", lambda match: label(match[1]), text)
+
+
+def cut(text: str, width: int) -> str:
+    """`text` cut to `width` cells, ending in … when cut."""
+    if get_cwidth(text) <= width:
+        return text
+    kept, used = [], 0
+    for char in text:
+        size = get_cwidth(char)
+        if used + size > width - 1:
+            break
+        kept.append(char)
+        used += size
+    return "".join(kept) + "…"
+
+
 def matches(item: PickItem, terms: Sequence[str], match: Match = "fuzzy") -> bool:
     """Every casefolded query word matches one of the item's texts."""
     texts = item.texts()
@@ -158,10 +181,12 @@ def payload(
     match: Match = "fuzzy",
     actions: Sequence[PickAction] = (),
     custom: str | None = None,
+    cancel_keys: Sequence[str] = (),
 ) -> dict:
     """The list as the native picker reads it (see `popup_surface`)."""
     return {
         "title": title,
+        "cancel_keys": list(cancel_keys),
         "header": header,
         "empty": empty,
         "selected": selected,
@@ -234,6 +259,7 @@ class PickList:
         match: Match = "fuzzy",
         actions: Sequence[PickAction] = (),
         custom: str | None = None,
+        cancel_keys: Sequence[str] = (),
         input=None,
         output=None,
         style=None,
@@ -318,6 +344,10 @@ class PickList:
         @keys.add("c-c")
         def cancel(event):
             event.app.exit(result=None)
+
+        # Such as the chord that opened the list (Ctrl+L for /model), to close it again.
+        for key in cancel_keys:
+            keys.add(key, eager=True)(cancel)
 
         for action in self.actions:
             shortcuts.add(action.key, action.label)(self._runner(action))
@@ -421,9 +451,7 @@ class PickList:
         self.select(next((i for i, item in enumerate(self.matches) if item.id == wanted), 0))
 
     def line(self, item: PickItem, guide: str) -> str:
-        label = guide + item.label
-        if get_cwidth(label) > self.label_width:
-            label = label[: max(1, self.label_width - 1)] + "…"
+        label = cut(guide + item.label, self.label_width)
         text = label
         if item.detail:
             text += " " * (self.label_width - get_cwidth(label)) + "  " + item.detail
@@ -436,7 +464,7 @@ class PickList:
 
     def fragments(self):
         if not self.matches:
-            return [("class:plan", self.empty)]
+            return [("class:plan", key_hints(self.empty, self.shortcuts.label))]
         nested = not self.search.text.strip()
         result = []
         for index, item in enumerate(self.matches):

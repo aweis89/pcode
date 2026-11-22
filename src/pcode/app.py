@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import importlib.metadata
+import logging
 import os
 import re
 import shlex
@@ -309,6 +310,8 @@ class PreviewApp:
         # (`pcode.popup_surface`) stop being tried once two failed to open.
         self._popup_lock = asyncio.Lock()
         self._overlay_failures = 0
+        # A native pick list failed once: the terminal and pcode disagree on it.
+        self._native_pick_off = False
         # `/merge` and `/summarize` sent from a /btw thread in the drawer, while they run.
         self._btw_tasks: set[asyncio.Task] = set()
         # The popup generation an auto-open `/btw` was queued in. That viewer
@@ -777,6 +780,8 @@ class PreviewApp:
                     header=model_ui.HEADER,
                     empty=model_ui.EMPTY,
                     custom=model_ui.custom_pattern(),
+                    # The chord that opens it closes it too.
+                    cancel_keys=("c-l",),
                     style=session.app.style,
                 )
         except _PopupSuperseded:
@@ -1167,7 +1172,9 @@ class PreviewApp:
             # Shown meanwhile, another popup may have superseded this one.
             if self._superseded():
                 raise _PopupSuperseded
-            native = pick and overlay and theme.native_pick_supported()
+            native = (
+                pick and overlay and theme.native_pick_supported() and not self._native_pick_off
+            )
             if native and self.popups_overlay():
                 async with AsyncExitStack() as stack:
                     try:
@@ -1181,6 +1188,8 @@ class PreviewApp:
                     else:
                         self._overlay_failures = 0
                         self._claim_popup()
+                        surface.full_screen = lambda: self._full_screen_popup(output, session)
+                        surface.native_failed = self._native_pick_failed
                         yield surface
                         return
             elif overlay and self.popups_overlay():
@@ -1203,6 +1212,19 @@ class PreviewApp:
                         return
             async with self._full_screen_popup(output, session) as surface:
                 yield surface
+
+    def _native_pick_failed(self, reason: str) -> None:
+        """The terminal's native picker took the socket but showed no list (a version skew).
+
+        That pick takes the full screen; later ones open in a terminal overlay.
+        """
+        logging.getLogger(__name__).warning("Native pick list failed: %s", reason)
+        self._native_pick_off = True
+        self._overlay_failed()
+        self.transcript.warning(
+            f"The terminal could not show a native list ({reason}); "
+            "lists open in a terminal popup for the rest of this session."
+        )
 
     def _overlay_failed(self) -> None:
         """An overlay did not open; this one takes the full screen, and after two all do."""
@@ -1447,12 +1469,13 @@ class PreviewApp:
                         command = link_editor_command(url)
                     except RuntimeError as error:
                         editor_error = str(error)
-                native = surface.native is not None
-                if command is not None and not native:
-                    editor_error = await self._run_link_editor(command, stack)
-            if command is not None and native:
-                # A native list has no terminal: $EDITOR takes pcode's own, as on the full screen.
-                async with self.popup(output, session, overlay=False):
+                if command is not None and surface.full_screen is not None:
+                    # A native list has no terminal: $EDITOR takes pcode's own, as
+                    # on the full screen, while this popup still holds the lock.
+                    surface.leave_native()
+                    async with surface.full_screen():
+                        editor_error = await self._run_link_editor(command, stack)
+                elif command is not None:
                     editor_error = await self._run_link_editor(command, stack)
         if url is None:
             return

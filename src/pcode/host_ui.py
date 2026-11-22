@@ -145,7 +145,9 @@ def header(entries: list[HostEntry]) -> str:
 
 
 def empty(entries: list[HostEntry]) -> str:
-    return "No matching sessions." if entries else "No background sessions are running."
+    if entries:
+        return "No matching sessions."
+    return f"No background sessions are running. {{action:{NEW_SESSION.key}}} starts one."
 
 
 def choice(picked: Picked | None) -> tuple[str, str | None] | None:

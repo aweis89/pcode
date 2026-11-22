@@ -457,7 +457,16 @@ def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(
         async def fake_popup(_output, _session, **options):
             popups.append(options)
             if native and options.get("pick"):
-                yield PopupSurface(None, None, overlay=True, native=object())
+
+                @asynccontextmanager
+                async def full_screen():
+                    popups.append("full screen")
+                    yield PopupSurface(None, _session.app.output)
+
+                native_picker = SimpleNamespace(hang_up=lambda: popups.append("hung up"))
+                yield PopupSurface(
+                    None, None, overlay=True, native=native_picker, full_screen=full_screen
+                )
             else:
                 yield PopupSurface(None, _session.app.output)
 
@@ -480,7 +489,7 @@ def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(
     assert ran_opener == [image_file.as_uri()]
     picks = [{"layout": "sheet", "title": "Links", "pick": True}] * 2
     if native:
-        # The editor got a full-screen popup of its own after the first list.
-        assert popups == [picks[0], {"overlay": False}, picks[1]]
+        # The native list closed, then the editor took the full screen inside that popup.
+        assert popups == [picks[0], "hung up", "full screen", picks[1]]
     else:
         assert popups == picks

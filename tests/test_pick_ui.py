@@ -9,8 +9,10 @@ import json
 import re
 import socket
 import threading
+import time
 from contextlib import asynccontextmanager
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
@@ -36,37 +38,22 @@ from pcode.popup_ui import fuzzy_match, nest_forks
 
 PICK = re.compile(r"\x1b_pcode;pick;([0-9a-f]{16});(sheet|wide)\x1b\\")
 
-# Ghostty's Swift port of `fuzzy_match` must agree on every case
-# (macos/Tests/PCode/PCodePickMatchTests.swift holds the same table).
-FUZZY_CASES = [
-    ("edit_ui", "src/pcode/edit_ui.py", True),
-    ("ed_ui", "src/pcode/edit_ui.py", True),
-    ("pc/edui", "src/pcode/edit_ui.py", True),
-    ("edui", "src/pcode/edit_ui.py", True),
-    ("dtui", "src/pcode/edit_ui.py", False),
-    ("sel_row", "+self.selected_row = 1", True),
-    ("_", "anything", False),
-    ("", "anything", True),
-    ("anthopus", "anthropic claude-opus-5", True),
-    ("anthopus", "anthropic:claude-sonnet-5", False),
-    ("claopus", "anthropic:claude-opus-5", True),
-    ("codluna", "openai-codex:gpt-5.6-luna", True),
-    ("gpt-5.6", "openai-codex:gpt-5.6-luna", True),
-    ("gpt56", "openai-codex:gpt-5.6-luna", True),
-    ("g5l", "openai-codex:gpt-5.6-luna", True),
-    ("lunagpt", "openai-codex:gpt-5.6-luna", False),
-    ("aab", "aa ab", True),
-    ("abc", "a-b-c", True),
-    ("abd", "ab-c", False),
-    ("café", "le café", True),
-    ("cafe", "le café", False),
-    ("x", "", False),
-]
+# Ghostty's Swift port of `fuzzy_match` must agree on every case: its
+# `PCodePickMatchTests` reads a byte-for-byte copy of this file.
+FUZZY_FIXTURE = Path(__file__).parent / "data" / "pick_fuzzy_cases.json"
+FIXTURE = json.loads(FUZZY_FIXTURE.read_text())
+FUZZY_CASES = [(case["term"], case["text"], case["match"]) for case in FIXTURE["fuzzy"]]
 
 
 @pytest.mark.parametrize(("term", "text", "expected"), FUZZY_CASES)
 def test_fuzzy_match_table(term, text, expected):
     assert fuzzy_match(term, text) is expected
+
+
+@pytest.mark.parametrize("case", FIXTURE["casefold"], ids=lambda case: case["text"])
+def test_casefold_table(case):
+    # Queries are casefolded on both sides; Swift's fold must give the same.
+    assert case["text"].casefold() == case["folded"]
 
 
 def test_tree_guides_draw_what_nest_forks_draws():
@@ -284,14 +271,20 @@ class Terminal:
 class Client:
     """The Swift side of one connection: its hello, then lists in and picks out."""
 
-    def __init__(self, connection: socket.socket, hello: bytes = PICK_HELLO) -> None:
+    def __init__(self, connection: socket.socket, hello: bytes = PICK_HELLO, ack=True) -> None:
         self.connection = connection
         self.file = connection.makefile("rb")
+        self.ack = ack
         connection.sendall(hello)
 
     def read(self) -> dict | None:
+        """The next list, said shown as Ghostty does; None at EOF."""
         line = self.file.readline()
-        return json.loads(line) if line else None
+        if not line:
+            return None
+        if self.ack:
+            self.connection.sendall(b'{"shown": true}\n')
+        return json.loads(line)
 
     def reply(self, **pick) -> None:
         self.connection.sendall(json.dumps(pick).encode() + b"\n")
@@ -550,3 +543,209 @@ def test_an_older_terminal_picks_in_a_terminal_overlay(monkeypatch):
 
     assert asyncio.run(main()) == "overlay"
     assert opened == ["overlay"]
+
+
+def test_a_cancel_does_not_wait_on_a_picker_that_stopped_reading():
+    """A list bigger than the socket's buffers, to a terminal that never reads it."""
+    hold = threading.Event()
+
+    def answer(connection, token):
+        Client(connection)
+        hold.wait(10)
+
+    terminal = Terminal(answer)
+    items = [PickItem(str(n), f"item {n} " + "x" * 80) for n in range(5000)]
+    editor = EditorInput([KeyPress(Keys.ControlC, "\x03")])
+
+    async def main():
+        async with pick_overlay(terminal, editor) as surface:
+            task = asyncio.ensure_future(surface.pick(items, title="Big"))
+            await asyncio.sleep(0.2)
+            assert not task.done()
+            # pcode is stuck in drain(): the list does not fit the socket.
+            assert surface.native.writer.transport.get_write_buffer_size() > 0
+            started = time.monotonic()
+            editor.read_keys()  # Ctrl+C in pcode's pane.
+            result = await asyncio.wait_for(task, 1)
+        return result, time.monotonic() - started
+
+    try:
+        result, took = asyncio.run(main())
+    finally:
+        hold.set()
+        terminal.join()
+    assert result is None
+    # The surface closed too, without flushing to the stalled reader.
+    assert took < 1
+
+
+def fallback_screen(seen: list):
+    @asynccontextmanager
+    async def full_screen():
+        class Screen:
+            async def pick(self, items, **options):
+                seen.append(("full screen", [item.id for item in items], options["title"]))
+                return Picked(items[-1].id)
+
+        yield Screen()
+
+    return full_screen
+
+
+@pytest.mark.parametrize("error", [True, False], ids=["error", "hangup"])
+def test_a_picker_that_cannot_show_the_list_falls_back(error):
+    """A version skew: the terminal cannot read pcode's list."""
+
+    def answer(connection, token):
+        client = Client(connection, ack=False)
+        client.file.readline()
+        if error:
+            connection.sendall(b'{"error": "unknown key: items"}\n')
+
+    terminal = Terminal(answer)
+    seen: list = []
+    failures: list[str] = []
+
+    async def main():
+        async with pick_overlay(terminal, EditorInput()) as surface:
+            surface.full_screen = fallback_screen(seen)
+            surface.native_failed = failures.append
+            first = await surface.pick(ITEMS, title="One")
+            # Every later pick on the surface takes the full screen at once.
+            second = await surface.pick(ITEMS[:1], title="Two")
+            assert surface.native.broken
+            return first, second
+
+    assert asyncio.run(main()) == (Picked("b"), Picked("a"))
+    terminal.join()
+    assert seen == [("full screen", ["a", "b"], "One"), ("full screen", ["a"], "Two")]
+    assert len(failures) == 1
+    assert ("unknown key: items" in failures[0]) is error
+    token = PICK.search(terminal.written[0])[1]
+    assert popup_surface.close_apc(token) in terminal.written
+
+
+def test_a_hangup_after_the_list_was_shown_is_a_cancel():
+    def answer(connection, token):
+        Client(connection).read()
+
+    terminal = Terminal(answer)
+    seen: list = []
+
+    async def main():
+        async with pick_overlay(terminal, EditorInput()) as surface:
+            surface.full_screen = fallback_screen(seen)
+            return await surface.pick(ITEMS, title="t")
+
+    assert asyncio.run(main()) is None
+    terminal.join()
+    assert seen == []
+
+
+def test_cancel_keys_close_the_list_and_escape_clears_first():
+    with create_pipe_input() as pipe:
+        picker = PickList(ITEMS, title="t", cancel_keys=("c-l",), input=pipe, output=DummyOutput())
+        assert run_list(picker, "ban\x0c", pipe) is None
+    with create_pipe_input() as pipe:
+        picker = PickList(ITEMS, title="t", cancel_keys=("c-l",), input=pipe, output=DummyOutput())
+
+        async def run():
+            task = asyncio.create_task(picker.run())
+            await asyncio.sleep(0.05)
+            pipe.send_text("ban\x1b")
+            await asyncio.sleep(0.6)
+            assert picker.search.text == "" and not task.done()
+            pipe.send_text("\r")
+            return await asyncio.wait_for(task, 3)
+
+        # The row picked while searching stays selected.
+        assert asyncio.run(run()) == Picked("b")
+
+
+def test_the_model_list_closes_on_the_key_that_opens_it():
+    from pcode.pick_ui import payload
+
+    assert payload([], title="t", cancel_keys=("c-l",))["cancel_keys"] == ["c-l"]
+
+
+def test_an_empty_attach_list_says_how_to_start_one():
+    with create_pipe_input() as pipe:
+        picker = PickList(
+            [],
+            title="t",
+            empty=host_ui.empty([]),
+            actions=(host_ui.NEW_SESSION,),
+            input=pipe,
+            output=DummyOutput(),
+        )
+        assert "Ctrl+N starts one" in str(picker.fragments())
+
+
+def test_labels_are_cut_by_display_width():
+    from prompt_toolkit.utils import get_cwidth
+
+    from pcode.pick_ui import cut
+
+    assert cut("短い名前のセッション", 9) == "短い名前…"
+    assert get_cwidth(cut("短い名前のセッション", 9)) <= 9
+    assert cut("short", 9) == "short"
+
+
+def native_app(monkeypatch):
+    """An app whose `popup(pick=True)` opens a native picker that only records."""
+    from types import SimpleNamespace
+
+    app, session, opened = make_app(monkeypatch, native=True)
+
+    @asynccontextmanager
+    async def native(*args, **kwargs):
+        opened.append("native")
+        picker = SimpleNamespace(hang_up=lambda: opened.append("hung up"), broken=False)
+        yield popup_surface.PopupSurface(None, None, overlay=True, native=picker)
+
+    monkeypatch.setattr(popup_surface, "pick_overlay", native)
+    return app, session, opened
+
+
+def test_a_native_surface_takes_the_full_screen_while_it_holds_the_popup(monkeypatch):
+    """/links runs $EDITOR so: a popup queued meanwhile cannot supersede it."""
+    app, session, opened = native_app(monkeypatch)
+    app._command_popup_generation = app._popup_generation
+
+    async def main():
+        async with app.popup(None, session, pick=True) as surface:
+            # A popup requested meanwhile moved the generation on.
+            app._popup_generation += 1
+            surface.leave_native()
+            async with surface.full_screen() as screen:
+                assert app._popup_lock.locked()
+                return screen
+
+    assert asyncio.run(main()) == "full screen"
+    assert opened == ["native", "hung up", "full screen"]
+
+
+def test_a_failed_native_list_turns_native_lists_off(monkeypatch):
+    app, session, opened = native_app(monkeypatch)
+
+    async def main():
+        async with app.popup(None, session, pick=True) as surface:
+            surface.native_failed("it could not read the list")
+        assert app._overlay_failures == 1 and app._native_pick_off
+        async with app.popup(None, session, pick=True) as surface:
+            return surface
+
+    assert asyncio.run(main()) == "overlay"
+    assert opened == ["native", "overlay"]
+    assert "could not show a native list" in app.transcript.console.file.getvalue()
+
+
+def test_the_swift_copy_of_the_fixture_is_in_sync():
+    """Ghostty Smooth's `PCodePickMatchTests` reads a copy; point at a checkout to compare."""
+    import os
+
+    root = os.environ.get("PCODE_GHOSTTY_DIR")
+    if not root:
+        pytest.skip("set PCODE_GHOSTTY_DIR to a Ghostty Smooth checkout")
+    copy = Path(root) / "macos" / "Tests" / "Features" / "PCode" / FUZZY_FIXTURE.name
+    assert copy.read_bytes() == FUZZY_FIXTURE.read_bytes()
