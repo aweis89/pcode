@@ -544,6 +544,12 @@ SETTINGS = {
         description="Experimental: glide new rows into view; auto uses it in terminals that "
         "answer for it (a patched Ghostty) and needs paced_scrollback not off",
     ),
+    "native_pacing": Setting(
+        "auto",
+        ("auto", "off"),
+        description="Pace settled output inside Ghostty Smooth (batch conveyor glide and "
+        "120 Hz Metal reveal) when smooth_scroll is active; off keeps Python pacing",
+    ),
     "show_edits": Setting(
         "on",
         ("on", "off"),
@@ -794,13 +800,14 @@ SETTINGS = {
     ),
     # Read each time a popup opens, so `/config set` applies without a restart.
     "popup_view": Setting(
-        "popup",
-        ("popup", "overlay"),
+        "auto",
+        ("auto", "popup", "overlay"),
         description=(
-            "Where popups and /btw threads open: full screen, or (experimental) "
-            "overlay, laid over the conversation by Ghostty Smooth, which keeps "
-            "streaming behind them; there /btw threads open in a drawer the "
-            "editor replies to (with a session host)"
+            "Where popups and /btw threads open: auto (an overlay in Ghostty "
+            "Smooth, else full screen), popup (always full screen), or overlay "
+            "(experimental; same as auto, kept for older configs). The overlay is "
+            "laid over the conversation, which keeps streaming behind it; there "
+            "/btw threads open in a drawer the editor replies to (with a session host)"
         ),
     ),
     # Read when a job finishes, so `/config set` applies without a restart.
@@ -956,19 +963,13 @@ def load_preferences() -> dict[str, str]:
     return merged
 
 
-def popup_view() -> str:
-    """The `popup_view` setting: `popup` or `overlay`."""
-    preferences = load_preferences()
-    if "popup_view" in preferences:
-        return preferences["popup_view"]
-    # It replaced `btw_view`, whose `drawer` was the overlay's first part.
-    legacy = None
-    for path in (preferences_path(), project_preferences_path()):
-        try:
-            legacy = read_preferences(path).get("btw_view", legacy) if path else legacy
-        except OSError, ValueError:
-            continue
-    return "overlay" if legacy == "drawer" else SETTINGS["popup_view"].default
+def overlay_popups() -> bool:
+    """Whether `popup_view` lets popups and /btw threads open as overlays.
+
+    `auto` and `overlay` alike: either way the overlay needs a terminal that
+    answered the startup probe (Ghostty Smooth), which the caller checks.
+    """
+    return load_preferences().get("popup_view", SETTINGS["popup_view"].default) != "popup"
 
 
 def subagent_models() -> list[str]:

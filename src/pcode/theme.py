@@ -72,7 +72,14 @@ def glide_supported() -> bool:
     """Whether the startup probe found a terminal that speaks pcode's glide protocol."""
     from pcode import smooth_scroll
 
-    return _glide_protocol == smooth_scroll.PROTOCOL
+    return _glide_protocol in smooth_scroll.SUPPORTED_PROTOCOLS
+
+
+def native_pacing_supported() -> bool:
+    """Whether the terminal supports protocol 8 native batch glide and Metal reveal."""
+    from pcode import smooth_scroll
+
+    return _glide_protocol == smooth_scroll.NATIVE_PACING_PROTOCOL
 
 
 def drawer_supported() -> bool:

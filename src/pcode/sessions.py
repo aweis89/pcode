@@ -822,7 +822,11 @@ class SessionJournal:
                 "turn_cancelled",
             }:
                 continue
-            if kind == "ToolSummary" and record.get("parent_call_id"):
+            # Rows that land whenever a sub-agent or background job reports,
+            # not where the model is: live, they never split a thought.
+            if (kind in {"ToolSummary", "EditCompleted"} and record.get("parent_call_id")) or (
+                kind in {"ToolSummary", "JobFinished"} and record.get("execution") == "background"
+            ):
                 yield record
                 continue
             if thinking:
