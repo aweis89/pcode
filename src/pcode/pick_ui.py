@@ -178,8 +178,10 @@ def native_style(style=None) -> dict[str, str]:
 
     Read from the merged style `PickList` draws with (`style` is the editor's):
     the selected row's background (`selected`) and its text (`accent`), and
-    muted text (`dim`, as an empty list's text). A color the terminal names
-    rather than pcode (`/syntax terminal`'s ANSI names, a reversed row, plain
+    muted text (`dim`, as an empty list's text). A reversed row shows its
+    text color as its background, so that is sent as `selected`, and its text,
+    the terminal's background, is left to the native list. A color the
+    terminal names rather than pcode (`/syntax terminal`'s ANSI names, plain
     `dim`) is left out: the native list then takes it from the terminal's own
     config, which is where those come from anyway.
     """
@@ -187,13 +189,14 @@ def native_style(style=None) -> dict[str, str]:
     colors: dict[str, str] = {}
     row = merged.get_attrs_for_style_str("class:popup class:selected")
     muted = merged.get_attrs_for_style_str("class:popup class:plan")
-    wanted = [
-        ("accent", row.color, row.reverse),
-        ("selected", row.bgcolor, row.reverse),
-        ("dim", muted.color, muted.reverse),
-    ]
-    for key, color, reverse in wanted:
-        if not reverse and color and _HEX_COLOR.fullmatch(color):
+    if row.reverse:
+        wanted = [("selected", row.color)]
+    else:
+        wanted = [("accent", row.color), ("selected", row.bgcolor)]
+    if not muted.reverse:
+        wanted.append(("dim", muted.color))
+    for key, color in wanted:
+        if color and _HEX_COLOR.fullmatch(color):
             colors[key] = "#" + color.lower()
     return colors
 

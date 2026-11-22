@@ -680,13 +680,15 @@ def _palette_styles():
     from pcode.ui import PALETTES, syntax_palette
 
     for name, palette in PALETTES.items():
-        yield name, palette.prompt_style()
+        yield pytest.param(name, palette.prompt_style(), id=name)
         # A syntax style colors the list's selected row (the menu palette).
         for syntax in ("gruvbox-dark", "solarized-light", "bw"):
-            yield f"{name}+{syntax}", palette.prompt_style(syntax_palette(syntax, palette))
+            name_syntax = f"{name}+{syntax}"
+            style = palette.prompt_style(syntax_palette(syntax, palette))
+            yield pytest.param(name_syntax, style, id=name_syntax)
 
 
-@pytest.mark.parametrize(("name", "style"), list(_palette_styles()), ids=lambda v: str(v)[:20])
+@pytest.mark.parametrize(("name", "style"), list(_palette_styles()))
 def test_a_native_list_wears_the_terminal_lists_colors(name, style):
     from pcode.pick_ui import native_style, payload
 
@@ -707,6 +709,17 @@ def test_the_palettes_own_colors_are_the_ones_sent():
         "selected": light.selected,
         "dim": light.muted,
     }
+
+
+def test_a_reversed_row_sends_its_text_color_as_the_selected_background():
+    """A reversed row draws its text color behind the terminal's background."""
+    from prompt_toolkit.styles import Style
+
+    from pcode.pick_ui import native_style
+
+    colors = native_style(Style.from_dict({"popup selected": "reverse bg:default #2AA1B3"}))
+    assert colors["selected"] == "#2aa1b3"
+    assert "accent" not in colors
 
 
 def test_colors_the_terminal_names_itself_are_left_to_it():
