@@ -458,7 +458,6 @@ def test_btw_runs_in_the_background_and_reports_in_the_footer_and_transcript():
 
 def test_btw_asks_and_reads_while_a_turn_is_running():
     """The real command path: neither asking nor reading waits for the turn."""
-    save_preferences(btw_view="popup")  # The viewer this exercises.
 
     async def run():
         printed = StringIO()
@@ -546,7 +545,6 @@ def test_btw_asks_and_reads_while_a_turn_is_running():
 
 def test_a_ready_side_answer_opens_the_viewer_unless_auto_open_is_off():
     """The answer arrives where the reader is looking, without a second /btw."""
-    save_preferences(btw_view="popup")
 
     async def run():
         printed = StringIO()

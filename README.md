@@ -77,7 +77,7 @@ Running one coding agent is easy. Running five or ten at once breaks down fast: 
 - **Inspectors that hide nothing.**
   - **`/tools`**: Every tool call's exact input, timing, and full output—live mid-turn and across resumed sessions—with failure/edit filters and one-key copy.
   - **`/diffs`**: Full git diff browser with persistent **`Since review`** checkpoints (`Ctrl+A`) and **inline line-anchored review notes** (`Ctrl+N`) that inject `path:line`, diff context, and your notes straight back into your prompt.
-  - **`/btw`**: Threaded side questions against the live running turn—supporting multi-model fan-out and scrollback `swap` mode—that you can `/summarize` or `/merge` back into the main thread.
+  - **`/btw`**: Threaded side questions against the live running turn—supporting multi-model fan-out and an experimental Ghostty Smooth drawer—that you can `/summarize` or `/merge` back into the main thread.
   - **`/tree`**: Rewind to any earlier prompt, edit it, and branch without losing the path you left (inspired by [pi](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/tree.md)).
 - **Vim mode & custom keybindings.** Full vi editing with a Space leader in normal mode, custom escape sequences like `jj`, and `/bind` to map keys to commands with arguments ([keybindings](https://cruxwell.github.io/pcode/keybindings/)).
 

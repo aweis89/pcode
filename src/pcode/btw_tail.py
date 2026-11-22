@@ -2,8 +2,8 @@
 
 The terminal app runs this in the drawer's own terminal (`pcode.drawer`), on the
 session host's interpreter. It watches the host's side questions as an
-observer, which may call nothing, and draws one thread the way the swap does
-(`btw_view.ThreadWriter`), so the drawer has the terminal's font, size and
+observer, which may call nothing, and draws one thread with
+`btw_view.ThreadWriter`, so the drawer has the terminal's font, size and
 colors. A width change draws the thread again at the new width; the only key
 it reads is Esc (or `q`), which gives the keyboard back to pcode's pane.
 """

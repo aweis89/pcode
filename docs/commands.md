@@ -193,10 +193,10 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   Browsable at any time; forking waits for the running turn.
 - `/btw QUESTION` (alias `/side`): [ask a side question](side-questions.md) against the context the model
   is working with right now, without interrupting or queueing it. Answers open in a
-  [full-screen viewer](side-questions.md#the-popup) by default (`btw_view popup`,
-  auto-opened when ready via `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any
-  time; `btw_view swap` [swaps a thread in](side-questions.md#swapping-a-thread-in) for
-  the conversation instead. You can send a [follow-up](side-questions.md#following-up) to
+  [viewer](side-questions.md#the-popup) by default (auto-opened when ready via
+  `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any time; with `popup_view overlay`
+  in Ghostty Smooth, a hosted session [opens threads in a drawer](side-questions.md#threads-in-a-drawer)
+  instead. You can send a [follow-up](side-questions.md#following-up) to
   the thread, or [keep it](side-questions.md#keeping-a-thread) in the conversation.
   `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
   instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
@@ -340,7 +340,7 @@ it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+T | Choose where thinking shows: `o` off, `a` activity panel, `b` scrollback (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard; with an empty editor, `/copy` chooses a response |
 | Ctrl+Q | Open or toggle [`/btw`](side-questions.md) side-question threads (`@side-threads`) |
-| Ctrl+\\ | Cycle to the next [`/btw`](side-questions.md#swapping-a-thread-in) thread in swap view (`@next-side-thread`) |
+| Ctrl+\\ | Cycle to the next [`/btw`](side-questions.md#threads-in-a-drawer) thread in the drawer (`@next-side-thread`) |
 | Ctrl+G | Cycle where shell command output shows: off, live in the activity panel, also mirrored to scrollback (`/show-commands`, saves the default) |
 | Ctrl+V | Paste an image from the system clipboard (`/paste-image`): see [images in a prompt](#images-in-a-prompt) |
 | Ctrl+Z | Show/hide edit diffs in scrollback (`/show-edits`, saves the default) |

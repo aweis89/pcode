@@ -309,7 +309,7 @@ class PreviewApp:
         # being tried once the terminal failed to open one.
         self._overlay_lock = asyncio.Lock()
         self._overlay_failed = False
-        # `/merge` and `/summarize` sent from a swapped-in /btw thread, while they run.
+        # `/merge` and `/summarize` sent from a /btw thread in the drawer, while they run.
         self._btw_tasks: set[asyncio.Task] = set()
         # The popup generation an auto-open `/btw` was queued in. That viewer
         # opens on the answer, not the editor, since it can land mid-keystroke.
@@ -1334,7 +1334,7 @@ class PreviewApp:
         if thread := self.btw_thread():
             from pcode.aside_ui import thread_tree
 
-            # With a /btw thread on screen, /copy reads that thread.
+            # With a /btw thread open, /copy reads that thread.
             tree = thread_tree(thread)
         history = answers(tree) if tree is not None else []
         if not history:
@@ -1374,7 +1374,7 @@ class PreviewApp:
         if thread := self.btw_thread():
             from pcode.aside_ui import thread_links
 
-            # With a /btw thread on screen, /links reads that thread.
+            # With a /btw thread open, /links reads that thread.
             links = message_links = thread_links(thread)
         else:
             has_tree = tree is not None and tree.nodes
@@ -2252,7 +2252,7 @@ class PreviewApp:
         """Whether a settled side answer should open the viewer by itself."""
         from pcode.btw_view import current
 
-        if self.aside_view_open or current(self.activity) or self._swap_hides_draft():
+        if self.aside_view_open or current(self.activity) or self._thread_takes_draft():
             return False
         default = SETTINGS["btw_auto_open"].default
         return load_preferences().get("btw_auto_open", default) == "on"
@@ -2260,10 +2260,11 @@ class PreviewApp:
     async def read_asides(self):
         """The side-answer viewer; returns a thread to bring into the conversation, if any.
 
-        With `btw_view swap` it draws the thread in the conversation's place
-        and returns at once: the view keeps a thread itself (`keep_thread`), so
-        no command waits on it. Asked for with several threads, it lets the
-        reader pick which; Ctrl+Q already goes straight back to the last one.
+        With a drawer (`btw_drawer`) it opens the thread there, for the main
+        editor to reply to, and returns at once: the view keeps a thread itself
+        (`keep_thread`), so no command waits on it. Asked for with several
+        threads, it lets the reader pick which; Ctrl+Q already goes straight
+        back to the last one.
         """
         from pcode.btw_view import current, open_thread
 
@@ -2272,12 +2273,12 @@ class PreviewApp:
             self._command_popup_generation is not None
             and self._command_popup_generation == self._auto_open_generation
         )
-        if self.btw_swaps():
+        if self.btw_drawer():
             if latest is None:  # The command said so already.
                 return None
             # Queued when the answer arrived: since then the reader may have
             # opened a thread and be mid-reply, which this must not take over.
-            if auto and (current(self.activity) or self._swap_hides_draft()):
+            if auto and (current(self.activity) or self._thread_takes_draft()):
                 return None
             thread = latest.thread
             if not auto and len(self.asides.threads()) > 1:
@@ -2322,22 +2323,20 @@ class PreviewApp:
         finally:
             self.aside_view_open = False
 
-    # --- The /btw thread in the conversation's place (`pcode.btw_view`) ---
+    # --- The /btw thread in the drawer, replied to from the editor (`pcode.btw_view`) ---
 
-    def btw_swaps(self) -> bool:
-        """Whether /btw threads are drawn in the conversation's place (`btw_view swap`).
+    def btw_drawer(self) -> bool:
+        """Whether /btw threads open in a drawer, where the main editor replies to them.
 
-        Only a terminal can be rebuilt; anywhere else the popup shows them.
+        Without one (`drawer_host`), the popup viewer shows them.
         """
-        view = load_preferences().get("btw_view", SETTINGS["btw_view"].default)
-        # A drawer replies from the editor as a swap does; with none, it is one.
-        return view in ("swap", "drawer") and self.transcript.console.is_terminal
+        return self.transcript.console.is_terminal and self.drawer_host() is not None
 
     def drawer_host(self) -> str | None:
         """The session host a drawer beside the terminal reads threads from (`pcode.drawer`).
 
         Only for a terminal that answered the drawer probe (asked with
-        `btw_view drawer` at startup), while the setting still says drawer, and
+        `popup_view overlay` at startup), while the setting still says overlay, and
         a session host whose socket that terminal can find; else None. Asked
         every frame, so the setting is read again at most once a second.
         """
@@ -2349,7 +2348,7 @@ class PreviewApp:
         now = time.monotonic()
         if now - self._drawer_pref_at > 1.0:
             self._drawer_pref_at = now
-            self._drawer_pref = load_preferences().get("btw_view") == "drawer"
+            self._drawer_pref = popup_view() == "overlay"
         runtime = getattr(self.controller, "runtime", None)
         if not (self._drawer_pref and getattr(runtime, "remote", False)):
             return None
@@ -2357,27 +2356,27 @@ class PreviewApp:
             return None
         return runtime.id
 
-    def _swap_hides_draft(self) -> bool:
-        """Whether swapping a thread in now would hide a draft to the conversation.
+    def _thread_takes_draft(self) -> bool:
+        """Whether opening a thread now would take a draft meant for the conversation.
 
         An answer that opens by itself must not: Enter would then send the
         draft to the thread instead.
         """
         session = self.prompt_session
         draft = session.default_buffer.text.strip() if session is not None else ""
-        return bool(draft) and self.btw_swaps()
+        return bool(draft) and self.btw_drawer()
 
     def btw_key(self) -> None:
         """Ctrl+Q: toggle between the conversation and the thread last shown.
 
-        With `btw_view popup` it is a bare /btw: the viewer.
+        Without a drawer it is a bare /btw: the viewer.
         """
         from pcode.btw_view import current, open_thread, reopen_thread
 
         activity = self.activity
         if current(activity):
             self.close_btw()
-        elif not self.btw_swaps():
+        elif not self.btw_drawer():
             self._submit_typed("/btw")
         elif (thread := reopen_thread(activity)) is None:
             self.transcript.flash("No side questions yet. Ask one with /btw QUESTION.")
@@ -2401,7 +2400,7 @@ class PreviewApp:
             seen(identities)
 
     def btw_thread(self) -> list:
-        """The /btw thread on screen, which the editor, /copy and /links then go to."""
+        """The open /btw thread, which the editor, /copy and /links then go to."""
         from pcode.btw_view import current
 
         return current(self.activity)
@@ -2413,11 +2412,11 @@ class PreviewApp:
         self.redraw()
 
     def btw_submit(self, text: str) -> bool | None:
-        """Send `text` to the /btw thread on screen.
+        """Send `text` to the open /btw thread.
 
         None leaves it to the conversation: commands other than the thread's
-        own, and anything typed while the conversation is shown. Those bring
-        the conversation back first, where their output goes; /copy and
+        own, and anything typed while no thread is open. Those close the
+        thread first, as their output goes to the conversation; /copy and
         /links read the thread, and /btw asks beside it, so they stay.
         True keeps the draft, refused with the reason shown.
         """
@@ -3102,7 +3101,7 @@ class PreviewApp:
             kitty_spinners=self._kitty_spinners,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )
-        # A thread on screen is read: a host's other terminals stop calling it ready.
+        # A thread shown in the drawer is read: a host's other terminals stop calling it ready.
         thread_view = getattr(session, "btw_view", None)
         if thread_view is not None:
             thread_view.on_read = self.asides_seen
@@ -3230,7 +3229,7 @@ class PreviewApp:
                 self._kitty_spinners = None
             await self.leave_controller(self.controller)
             if thread_view is not None:
-                # Leave the conversation in scrollback, never a side thread.
+                # Close any open thread, and with it the drawer.
                 self.close_btw()
                 thread_view.sync()
                 # The editor no longer renders, so a drawer's close goes out now.
