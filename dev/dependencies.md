@@ -790,6 +790,17 @@ was verified live against the bundled CLI, and most of them are traps:
   odd-looking instruction delivered this way (Haiku ignored one as a possible
   injection). This path is for user input; pcode no longer injects plan reminders
   by default.
+- A resumed or forked transcript keeps the system prompt it was first recorded
+  with (a `prompt_snapshot` attachment) and ignores the one passed to the new
+  process. Only the tool list follows the options, so an `/advisor` or plan-mode
+  change left the model describing tools it did not have. `CLI_ENV` sets
+  `CLAUDE_CODE_HOST_PROMPT_SUPERSEDES_RECORD=1`, which re-renders from pcode's
+  prompt on the first turn when it differs (verified on CLI 2.1.321: the
+  request's system blocks carry the new prompt, and an unchanged fork still
+  reads its prompt from cache). "Unchanged" means byte-identical: anything
+  per-process in pcode's prompt would re-render, and miss the cache, on every
+  fork. The variable is undocumented; on an upgrade, check that a fork under a
+  changed prompt still sees it.
 - `--thinking-display summarized` works without `--thinking`. Without it, thinking
   blocks arrive empty, carrying only a signature.
 - `resume` + `fork_session` + `resume_session_at=<assistant uuid>` truncates the

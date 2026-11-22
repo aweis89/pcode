@@ -180,8 +180,11 @@ Advisor: anthropic:claude-fable-5-2 (next turn).
 ```
 
 - `/advisor` alone opens the model picker. `/advisor off` removes the advisor.
-- The choice lasts until you quit pcode, including across `/new` and `/resume`. Add
-  `--save` to make it the default for later launches too (`/advisor anthropic:claude-fable-5-2 --save`), or set it from the
+- The choice carries across `/new` and `/resume`, and the session remembers it, so
+  resuming that session later (or moving it into a background host) brings it back.
+  Resuming a session that picked its own advisor, or turned it off, switches to
+  that choice, even if your saved default has changed since. Add `--save` to make
+  it the default for later launches too (`/advisor anthropic:claude-fable-5-2 --save`), or set it from the
   shell with `pcode config set advisor_model anthropic:claude-fable-5-2`.
   `/advisor off --save` clears the default.
 - Changes apply from the next turn. Adding or removing the advisor changes the

@@ -615,6 +615,20 @@ def test_settings_change_moves_to_a_resumed_process(world):
     assert world.clients[1].options.resume == world.clients[0].session_id
 
 
+def test_a_changed_prompt_forks_with_the_new_prompt_superseding_the_record(world):
+    agent, _ = make_agent()
+    world.replies = [[("text", "one")], [("text", "two")]]
+    first = run(lambda: agent.run("hi"))
+    changed = Agent(claude.claude_model(f"claude:{MODEL}"), instructions="Be verbose.")
+
+    run(lambda: changed.run("again", message_history=first.all_messages()))
+    fork = world.clients[1]
+    assert fork.options.resume == world.clients[0].session_id
+    assert "Be verbose." in fork.system_prompt
+    # Without it the CLI keeps the transcript's first system prompt ("Be terse.").
+    assert fork.options.env["CLAUDE_CODE_HOST_PROMPT_SUPERSEDES_RECORD"] == "1"
+
+
 def test_a_one_off_request_leaves_the_conversations_process_warm(world):
     """A session title asked on the side must not evict the turn's process (idle cap 1)."""
     from pydantic_ai.direct import model_request_stream

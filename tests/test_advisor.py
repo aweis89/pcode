@@ -2,6 +2,8 @@
 
 import asyncio
 from io import StringIO
+from types import SimpleNamespace
+from unittest import mock
 
 from anthropic import AsyncAnthropic
 from prompt_toolkit.completion import CompleteEvent
@@ -232,6 +234,95 @@ def test_the_session_agent_reads_the_choice_and_keeps_it_across_a_reload(tmp_pat
         app.runtime.close()
 
     asyncio.run(scenario())
+
+
+def test_a_session_records_its_choice_and_a_resume_adopts_it():
+    from pcode.advisor import adopt, record
+
+    info = SimpleNamespace(advisor=None)
+    record(AdvisorChoice("a:x"), info)
+    assert info.advisor is None  # never chosen here: nothing to pin
+    record(AdvisorChoice("a:x", chosen=True), info)
+    assert info.advisor == "a:x"
+    record(AdvisorChoice(None, chosen=True), info)
+    assert info.advisor == ""  # turned off, which a later default must not undo
+
+    choice = AdvisorChoice("a:x")
+    assert not adopt(choice, SimpleNamespace(advisor=None))
+    assert (choice.name, choice.chosen) == ("a:x", False)  # nothing recorded: kept
+    assert adopt(choice, SimpleNamespace(advisor=""))
+    assert (choice.name, choice.chosen) == (None, True)
+    assert adopt(choice, SimpleNamespace(advisor="b:y"))
+    assert not adopt(choice, SimpleNamespace(advisor="b:y"))
+    assert (choice.name, choice.chosen) == ("b:y", True)
+
+
+def test_a_restart_or_resume_keeps_the_sessions_unsaved_choice(tmp_path, monkeypatch):
+    """A host and `--resume` reopen the saved session; `/resume` switches to it."""
+    from pcode.sessions import SavedSession, read_info
+
+    root = tmp_path / "sessions"
+    model = FunctionModel(lambda messages, info: None)
+    monkeypatch.setattr(agent_module, "side_model", fake_side_model({"a:x": model}))
+
+    async def answer(messages, info):
+        yield "ok"
+
+    def make_app(saved=None):
+        from pcode.ui import TerminalOutput
+
+        console = Console(file=StringIO())
+        app = PreviewApp(
+            model="test:local",
+            workspace=tmp_path,
+            save=True,
+            session_dir=root,
+            saved_session=saved,
+            console=console,
+        )
+        app.output = TerminalOutput(console, SimpleNamespace(invalidate=lambda: None))
+        return app
+
+    with mock.patch(
+        "pcode.agent.create_agent",
+        side_effect=lambda *a, **k: Agent(FunctionModel(stream_function=answer)),
+    ):
+        first = make_app()
+
+        async def chosen_then_turn():
+            await first._initialize_runtime()
+            await first.controller.run_command("/advisor a:x")
+            await first.controller.run_turn("hi")
+
+        asyncio.run(chosen_then_turn())
+        identity = first.runtime.session.info.id
+        assert first.runtime.session.info.advisor == "a:x"
+        assert "advisor_model" not in load_preferences()
+        first.runtime.close()
+
+        restarted = make_app(SavedSession.open(identity, root))
+        asyncio.run(restarted._initialize_runtime())
+        assert restarted.controller.advisor.name == "a:x"
+
+        async def turned_off():
+            await restarted.controller.run_command("/advisor off")
+
+        # Recorded at once, before any turn.
+        asyncio.run(turned_off())
+        assert read_info(root / identity).advisor == ""
+        restarted.runtime.close()
+
+        other = make_app()
+
+        async def resume():
+            await other._initialize_runtime()
+            await other.controller.run_command("/advisor a:x")
+            await other.controller.resume_session(identity)
+
+        # The resumed session turned it off; that beats this process's choice.
+        asyncio.run(resume())
+        assert other.controller.advisor.name is None
+        other.runtime.close()
 
 
 def test_the_command_completes_models_off_and_save(tmp_path, monkeypatch):

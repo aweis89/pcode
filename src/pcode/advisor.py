@@ -1,8 +1,10 @@
 """The advisor: a stronger model the session's model may consult mid-turn.
 
-`advisor_model` is the saved default and `/advisor` changes it until pcode
-exits. Each turn resolves the choice afresh (`DynamicCapability`), so a change
-needs no agent rebuild and reaches the next turn.
+`advisor_model` is the saved default and `/advisor` changes it for the
+session: the choice is recorded in the session's manifest, so a resume, a
+restart or a move into a host keeps it. Each turn resolves the choice afresh
+(`DynamicCapability`), so a change needs no agent rebuild and reaches the next
+turn.
 
 Two paths, as Harness's `Advisor` offers them:
 
@@ -49,9 +51,29 @@ class AdvisorChoice:
     """The session's advisor model name, or None for no advisor."""
 
     name: str | None = field(default_factory=saved_advisor)
+    # Set by /advisor; until then `name` follows the default and nothing is recorded.
+    chosen: bool = False
     # Native advisors by (name, model ID). They hold no credentials, unlike a local
     # one, which is resolved each turn so a /login or /logout reaches it.
     _native: dict = field(default_factory=dict, repr=False)
+
+
+def record(choice: AdvisorChoice, info) -> None:
+    """Write an /advisor choice into a session manifest (`SessionInfo`)."""
+    if choice.chosen:
+        info.advisor = choice.name or ""
+
+
+def adopt(choice: AdvisorChoice, info) -> bool:
+    """Take a resumed session's recorded choice; one that made none keeps the current one.
+
+    Returns whether the advisor changed, so the switch can be shown.
+    """
+    if info.advisor is None:
+        return False
+    previous = choice.name
+    choice.name, choice.chosen = info.advisor or None, True
+    return choice.name != previous
 
 
 def native_id(name: str) -> str | None:

@@ -12,11 +12,14 @@ from collections.abc import Callable
 from contextlib import aclosing, suppress
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
 from pcode.advisor import AdvisorChoice
+from pcode.advisor import adopt as adopt_advisor
+from pcode.advisor import record as record_advisor
 from pcode.aside import (
     EFFORT_MARK,
     MODEL_MARK,
@@ -553,7 +556,8 @@ class SessionController:
         self.borrowed_turn = None
         # User extensions load with the runtime; their commands register once it exists.
         self.extensions = None
-        # The /advisor choice: `advisor_model` until changed, kept across agent rebuilds.
+        # The /advisor choice: `advisor_model` until changed, kept across agent
+        # rebuilds and recorded in the session (see `pcode.advisor`).
         self.advisor = AdvisorChoice()
         self.extension_command_names: list[str] = []
         self.skill_command_names: list[str] = []
@@ -1595,6 +1599,7 @@ class SessionController:
             self.view.note(text)
 
         runtime.compaction_notice = compaction_notice
+        runtime.record_settings = partial(record_advisor, self.advisor)
 
         def retry_notice(text):
             # Separate abandoned partial text/thinking from the next attempt.
@@ -2627,8 +2632,10 @@ class SessionController:
     async def set_advisor(self, argument: str) -> None:
         """`/advisor` picks the advisor; `MODEL` or `off` sets it; `--save` makes it the default.
 
-        Without `--save` the choice lasts until pcode exits. It reaches the next
-        turn: the agent resolves its advisor once per turn.
+        The choice is recorded in the session, so resuming it (or moving it into
+        a host) keeps it, even after the default changes; `--save` also makes it
+        the default for new sessions. It reaches the next turn: the agent
+        resolves its advisor once per turn.
         """
         from pcode.advisor import SETTING, native_id
 
@@ -2662,6 +2669,15 @@ class SessionController:
                     raise ValueError(f"Not in the /model catalog: {name}. Check the spelling.")
                 self.view.warning(f"Not in the /model catalog, so check the spelling: {name}")
         self.advisor.name = name
+        self.advisor.chosen = True
+        session = getattr(self.runtime, "session", None)
+        if session is not None:
+            # Recorded now, not only with the next turn: a restart before it keeps it.
+            record_advisor(self.advisor, session.info)
+            try:
+                session.save_info(touch=False)
+            except OSError as error:
+                self.view.warning(f"Could not record the advisor in this session: {error}")
         saved = ""
         if save:
             if name is None:
@@ -2797,6 +2813,9 @@ class SessionController:
         from pcode.live import AgentRuntime
 
         self.extensions = self._load_extensions()
+        # Off the loop: an /advisor typed while this runs is newer and wins.
+        if self._saved_session is not None and not self.advisor.chosen:
+            adopt_advisor(self.advisor, self._saved_session.info)
         return AgentRuntime(
             create_agent(
                 self.model,
@@ -3631,6 +3650,8 @@ class SessionController:
         if target != self.workspace:
             self._switch_workspace(target, extensions)
         self.runtime = runtime
+        if adopt_advisor(self.advisor, saved.info):
+            self.view.note(f"Advisor: {self.advisor.name or 'off'} (chosen in this session).")
         self._seen_stopped_host()
         self.restore_side_threads()
         self.model = saved.info.model

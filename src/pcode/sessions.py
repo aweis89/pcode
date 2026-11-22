@@ -55,6 +55,9 @@ class SessionInfo(BaseModel):
     title: str | None = None
     # The session this one was copied from (`--fork`, `/fork`); /resume nests it there.
     forked_from: str | None = None
+    # The /advisor choice made in this session ("" for off), restored on resume
+    # and by a host; None leaves the resuming process's choice (or the default).
+    advisor: str | None = None
     turns: int = 0
     input_tokens: int = 0
     output_tokens: int = 0

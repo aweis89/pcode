@@ -97,7 +97,7 @@ from pcode.runtime import (
     ToolSummary,
     WorkerStatus,
 )
-from pcode.sessions import SavedSession, SessionError
+from pcode.sessions import SavedSession, SessionError, SessionInfo
 from pcode.shell_mode import ShellRun, reduce_result, shell_exchange
 from pcode.shell_tools import JobShell
 from pcode.steering import STEERING_REMINDER, Steering
@@ -246,6 +246,8 @@ class AgentRuntime:
         self.notice = lambda text: None
         # A note that survives redraws, for output a model sends between turns.
         self.retained_notice = lambda text: None
+        # Copies session settings (the /advisor choice) into the manifest a turn saves.
+        self.record_settings: Callable[[SessionInfo], None] = lambda info: None
         # A session title reported by a model that names its own sessions (`antigravity:`).
         self.title_notice = lambda title: None
         # Callback invoked when `antigravity:` emits unsolicited post-turn updates.
@@ -1269,6 +1271,7 @@ class AgentRuntime:
                 sync=True,
             )
             saved.info.status = "running"
+            self.record_settings(saved.info)
             saved.save_info()
         else:
             self.tree.consume(
