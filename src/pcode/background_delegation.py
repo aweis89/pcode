@@ -101,6 +101,7 @@ class DelegatesPending(CapabilityEvent, namespace="pcode_delegation", name="pend
 
 WAIT_ADVICE = (
     "Do not repeat or poll it: its result will arrive automatically as a later message. "
+    "Minutes without visible progress are normal, so do not stop or replace it as stalled. "
     "A shared-mode sub-agent is still editing the live files, so leave the files it is "
     "working on alone until it reports."
 )

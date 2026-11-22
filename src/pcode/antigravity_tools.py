@@ -108,7 +108,10 @@ DELEGATION_PROMPT_NOTE = (
     "or `workspace_mode='isolated'`). Unlike `invoke_subagent`, pcode shows "
     "`mcp_pcode_delegate_task` sub-agents live in the user's task panel and `/agents` "
     "and keeps the turn active while they run; set `purpose` and pass "
-    "`run_in_background=True` for parallel or long-running tasks (over ~2 minutes)."
+    "`run_in_background=True` for parallel or long-running tasks (over ~2 minutes). "
+    "Never stop a running pcode worker to redo its task with `invoke_subagent`: a quiet "
+    "worker or one showing 0 tokens is normally mid model call, so check `liveness` in "
+    "`mcp_pcode_manage_worker` list and keep waiting."
 )
 
 

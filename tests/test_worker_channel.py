@@ -355,3 +355,72 @@ def test_manage_worker_says_which_argument_is_missing(tmp_path, args, error):
 
     run(runtime(tmp_path, parent, child))
     assert error in seen[-1]
+
+
+def test_list_reports_a_live_worker_mid_model_call_as_live(tmp_path):
+    in_model_call = asyncio.Event()
+    release = asyncio.Event()
+    listings: list[str] = []
+
+    async def parent(messages, info):
+        text = request_text(messages)
+        if "REPORT DONE" in text:
+            yield "Final"
+        elif "liveness" in text:
+            listings.append(text)
+            release.set()
+            yield "Waiting."
+        elif "Started in the background" in text:
+            await in_model_call.wait()
+            yield call("manage_worker", "list", action="list")
+        else:
+            yield call(
+                "delegate_task",
+                "delegate",
+                agent_name="worker",
+                task="Survey it",
+                run_in_background=True,
+            )
+
+    async def child(messages, info):
+        if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+            # A long model call: no events reach the parent until it answers.
+            in_model_call.set()
+            await release.wait()
+            yield "REPORT DONE"
+        else:
+            yield call("list_files", "look", path=".")
+
+    run(runtime(tmp_path, parent, child))
+    (listing,) = listings
+    # The tool return reaches the model as the list's repr.
+    assert "'tool_calls': 1" in listing
+    assert "'tokens': None" in listing
+    assert "'running_tools': []" in listing
+    assert "In a model call" in listing and "Live: keep waiting" in listing
+
+
+def test_liveness_flags_a_long_silence_and_running_tools(monkeypatch):
+    from pcode import worker_channel
+    from pcode.worker_channel import STALL_SECONDS, Question, WorkerHandle
+
+    clock = [1000.0]
+    monkeypatch.setattr(worker_channel, "monotonic", lambda: clock[0])
+    handle = WorkerHandle(id="w1", call_id="c1", task="Review")
+    handle.mark_started()
+    handle.running_tools = ["run_command"]
+    clock[0] += 30
+    summary = handle.summary()
+    assert summary["elapsed_seconds"] == 30 and summary["seconds_since_progress"] == 30
+    assert summary["liveness"].startswith("Running run_command; last progress 30s ago.")
+    assert "keep waiting" in summary["liveness"]
+
+    handle.running_tools = []
+    clock[0] += STALL_SECONDS
+    assert "may be stuck; tell the user" in handle.summary()["liveness"]
+
+    handle.question = Question(text="Which branch?")
+    assert "Waiting on your answer" in handle.summary()["liveness"]
+
+    handle.status = "done"
+    assert "liveness" not in handle.summary()

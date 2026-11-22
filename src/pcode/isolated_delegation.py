@@ -340,11 +340,16 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         handle.status = "running"
         handle.started = True
         handle.previous = None
+        slots = self.worker_slots if agent_name == "worker" else None
+        handle.mark_started(
+            "Queued for a worker slot" if slots is not None and slots.locked() else "Starting"
+        )
         unread = 0
         try:
             await notify(handle, ctx, status="running")
-            if agent_name == "worker" and self.worker_slots is not None:
-                async with self.worker_slots:
+            if slots is not None:
+                async with slots:
+                    handle.mark_started()  # Elapsed counts from when it got a slot.
                     result = await self._delegate(ctx, agent_name, brief, workspace_mode, model)
             else:
                 result = await self._delegate(ctx, agent_name, brief, workspace_mode, model)
@@ -576,7 +581,9 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
 
         Args:
             action: answer (its ask_parent question), message (read before its next
-                step), stop (background workers only), or list.
+                step), stop (background workers only), or list. list gives each running
+                worker's elapsed_seconds, seconds_since_progress, activity, running_tools
+                and a `liveness` verdict; tokens is null until a model call ends.
             worker_id: The worker, such as w3; not needed for list.
             text: The answer or message.
         """
