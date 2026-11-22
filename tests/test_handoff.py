@@ -15,7 +15,7 @@ import pytest
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Size
 
-from pcode.ui import SYNC_END, SYNC_START, suspended_editor
+from pcode.ui import SYNC_END, SYNC_START, install_resize_repaint, suspended_editor
 
 
 class FakeApp(Application):
@@ -284,3 +284,155 @@ def test_stand_in_app_passes_straight_through():
             pass
 
     asyncio.run(run())
+
+
+def resizable_app():
+    """A painted, running app whose terminal size the test changes, as a pane resize does."""
+    app = fake_app(cpr_replies=True)
+    app.size = SIZE
+    app.output.get_size = lambda: app.size
+    app.renderer._last_size = SIZE
+    app.create_background_task = lambda coroutine: asyncio.get_running_loop().create_task(coroutine)
+    redraw = app._redraw
+
+    def paint():
+        redraw()
+        if not app._running_in_terminal:
+            app.renderer._last_size = app.size  # As Renderer.render records it.
+
+    app._redraw = app.invalidate = paint
+    install_resize_repaint(app)
+    return app
+
+
+RESIZE_REPAINT = [SYNC_START, "erase", "reset", SYNC_END, "cpr", "report", "paint"]
+WIDER = Size(rows=50, columns=140)
+
+
+async def settle():
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+def test_resize_paints_the_editor_once_after_the_cursor_report():
+    """Painting before the report would land the editor part way up the pane."""
+    app = resizable_app()
+
+    async def run():
+        app.size = WIDER
+        app._on_resize()
+        # A spinner tick lands while the report is outstanding.
+        asyncio.get_running_loop().call_soon(app.invalidate)
+        await settle()
+
+    asyncio.run(run())
+    assert app.renderer.log == RESIZE_REPAINT
+
+
+def test_resize_holds_paints_while_an_earlier_report_is_outstanding():
+    """A streaming flush leaves a report outstanding, and the erase waits for it.
+
+    A paint in that wait would land at the new size with stale free rows and
+    record the new size, which the reflow-aware erase needs at the old width.
+    """
+    app = resizable_app()
+    sizes_at_erase = []
+    erase = app.renderer.erase
+
+    def recording_erase():
+        sizes_at_erase.append(app.renderer._last_size)
+        erase()
+
+    app.renderer.erase = recording_erase
+
+    async def run():
+        outstanding = Future()
+        app.renderer.futures.append(outstanding)
+        app.size = WIDER
+        app._on_resize()
+        app.invalidate()  # A spinner tick, synchronously after the signal.
+        await settle()
+        app.renderer.log.append("old-report")
+        outstanding.set_result(None)
+        await settle()
+
+    asyncio.run(run())
+    assert app.renderer.log == ["old-report", *RESIZE_REPAINT]
+    assert sizes_at_erase == [SIZE]
+
+
+def test_size_poll_after_a_resize_does_not_repaint_again():
+    """prompt_toolkit's poller re-reports a size SIGWINCH already delivered."""
+    app = resizable_app()
+
+    async def run():
+        app.size = WIDER
+        app._on_resize()  # SIGWINCH
+        await settle()
+        app._on_resize()  # The 500 ms poll, comparing against its stale copy.
+        await settle()
+
+    asyncio.run(run())
+    assert app.renderer.log == RESIZE_REPAINT
+
+
+def test_resize_storm_coalesces_into_one_repaint_at_the_final_size():
+    app = resizable_app()
+
+    async def run():
+        for columns in (100, 110, 120):
+            app.size = Size(rows=40, columns=columns)
+            app._on_resize()
+        await asyncio.sleep(0)  # The repaint starts, then the drag continues.
+        app.size = Size(rows=40, columns=130)
+        app._on_resize()
+        await settle()
+
+    asyncio.run(run())
+    assert app.renderer.log == RESIZE_REPAINT
+    assert app.renderer._last_size == Size(rows=40, columns=130)
+
+
+def test_resize_during_a_handoff_leaves_the_repaint_to_it():
+    """The handoff in flight repaints at the terminal's size when it exits."""
+    app = resizable_app()
+    # The handoff shadows it only after its own waits; a signal or poll can
+    # still reach the installed handler before then.
+    on_resize = app._on_resize
+
+    async def run():
+        async with suspended_editor(app):
+            app.size = WIDER
+            on_resize()
+            await settle()
+        await settle()
+
+    asyncio.run(run())
+    assert app.renderer.log == ["erase", "reset", "cpr", "report", "paint"]
+    assert app.renderer._last_size == WIDER
+
+
+def test_resize_undone_before_the_repaint_releases_the_hold():
+    app = resizable_app()
+
+    async def run():
+        app.size = WIDER
+        app._on_resize()
+        app.size = SIZE  # Back to the painted size before the repaint runs.
+        await settle()
+
+    asyncio.run(run())
+    assert not app._running_in_terminal
+    assert app.renderer.log == ["paint"]
+
+
+def test_handoff_restores_the_installed_resize_handler():
+    app = resizable_app()
+    handler = app._on_resize
+
+    async def run():
+        async with suspended_editor(app):
+            assert app._on_resize is not handler
+
+    asyncio.run(run())
+    assert app._on_resize is handler

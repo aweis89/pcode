@@ -1800,12 +1800,17 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
             # task keeps calling ``_on_resize`` on any size change. That erases
             # from the cursor down (over the popup) and requests a CPR the popup
             # then reads as input. Ignore resizes until the handoff repaints below.
+            # Restore whatever handler was installed (`install_resize_repaint`).
+            resize = vars(app).get("_on_resize")
             app._on_resize = lambda: None
             try:
                 with app.input.detach(), nullcontext() if atomic else app.input.cooked_mode():
                     yield handoff
             finally:
-                del app._on_resize
+                if resize is None:
+                    del app._on_resize
+                else:
+                    app._on_resize = resize
                 app.renderer.reset()
                 if handoff.top_row is not None and handoff.rows_written is not None:
                     rows = app.output.get_size().rows
@@ -1837,6 +1842,74 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     finally:
         if not done.done():
             done.set_result(None)
+
+
+def install_resize_repaint(app: Application) -> None:
+    """Repaint the editor once per resize, after the cursor report.
+
+    prompt_toolkit's ``_on_resize`` erases and repaints before the report it
+    has just requested arrives, the same race ``suspended_editor`` avoids for
+    scrollback writes: the paint knows nothing about the rows below the cursor,
+    so the editor lands directly under the transcript, part way up the pane,
+    until the report re-renders it at the bottom ~1/30 s later. Routing the
+    resize through an atomic handoff erases, waits for the report, and paints
+    once, with the cursor hidden for the round trip.
+
+    Rendering is held from the signal on, not just from the handoff's erase:
+    the handoff first collects any report a streaming flush left outstanding,
+    and a spinner paint in that wait would land at the new size with stale
+    free rows (the jump again) and overwrite ``_last_size``, which
+    ``ReflowAwareRenderer.erase`` needs at the old width. A handoff already in
+    flight repaints at the terminal's size when it exits, so the repaint just
+    waits for it and only runs its own if the size still differs.
+
+    prompt_toolkit also polls the size every half second, comparing against a
+    local copy SIGWINCH never updates, so one resize calls ``_on_resize`` again
+    up to 500 ms later, often just after the resize replay. A size the editor
+    was last painted at is ignored, and a resize storm (a border drag)
+    coalesces into the running repaint, which repeats until the size holds.
+
+    Must run before the app starts: SIGWINCH binds ``app._on_resize`` then.
+    """
+    task: asyncio.Task | None = None
+    held = False
+
+    def in_flight() -> Future[None] | None:
+        previous = app._running_in_terminal_f
+        return previous if previous is not None and not previous.done() else None
+
+    async def repaint() -> None:
+        nonlocal task, held
+        try:
+            while app._is_running:
+                if (previous := in_flight()) is not None:
+                    # It clears the hold and repaints on exit. Shielded: a
+                    # cancel here must not cancel the handoff's own future.
+                    await asyncio.shield(previous)
+                    held = False
+                    continue
+                if app.output.get_size() == app.renderer._last_size:
+                    break
+                with getattr(app.output, "hidden_cursor", nullcontext)():
+                    async with suspended_editor(app, atomic=True):
+                        held = False
+                if app.renderer._last_size is None:
+                    break  # Nothing painted (the app is exiting); don't spin.
+        finally:
+            task = None
+            if held:
+                held = app._running_in_terminal = False
+                app.invalidate()
+
+    def on_resize() -> None:
+        nonlocal task, held
+        if task is not None or app.output.get_size() == app.renderer._last_size:
+            return
+        if in_flight() is None:
+            held = app._running_in_terminal = True
+        task = app.create_background_task(repaint())
+
+    app._on_resize = on_resize
 
 
 class ReflowAwareRenderer(Renderer):
@@ -4254,6 +4327,7 @@ def create_prompt(
         # The app runs for the whole session, redrawn by streaming output and
         # animation; cap that at the paced output's frame rate.
         session.app.min_redraw_interval = 1 / 30
+    install_resize_repaint(session.app)
     session.app.before_render += prompt_layout.before_render
     session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:

@@ -36,10 +36,18 @@ def test_application_state_used_by_the_scrollback_handoff(app):
     assert app._is_running is False
     assert app._running_in_terminal is False
     assert app._running_in_terminal_f is None or isinstance(app._running_in_terminal_f, Future)
-    # suspended_editor shadows the method with an instance attribute and then
-    # deletes it; that only restores resizing if the method lives on the class.
+    # install_resize_repaint and suspended_editor shadow the method with an
+    # instance attribute; deleting it only restores resizing if the method
+    # lives on the class.
     assert "_on_resize" in vars(Application) and "_on_resize" not in vars(app)
     assert parameters(app._on_resize) == []
+    # install_resize_repaint replaces it per instance before the app runs: that
+    # only takes effect while SIGWINCH binds it at run time and the size poller
+    # looks it up on every call.
+    assert "attach_winch_signal_handler(self._on_resize)" in inspect.getsource(
+        Application.run_async
+    )
+    assert "self._on_resize()" in inspect.getsource(Application._poll_output_size)
     assert parameters(app._request_absolute_cursor_position) == []
     assert "render_as_done" in parameters(app._redraw)
     assert app._merged_style is not None
