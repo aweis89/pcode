@@ -29,18 +29,21 @@ CATCH_UP_SECONDS = 3.0
 # no-overscan flag, 6 negative advances (content moved down) with the
 # innermost of nested regions winning, 7 an optional rate hint on `advance`
 # for steady-rate conveyor scrolling, 8 native pacing (batch conveyor glides
-# with soft bottom-edge dissolve and 120 Hz Metal reveal shaders).
+# with soft bottom-edge dissolve and 120 Hz Metal reveal shaders), 9 queued
+# multi-segment reveals, signed scrollback reveal rows, and 128-row batch glide.
 PROTOCOL = 7
 NATIVE_PACING_PROTOCOL = 8
-SUPPORTED_PROTOCOLS = frozenset({PROTOCOL, NATIVE_PACING_PROTOCOL})
+QUEUED_PACING_PROTOCOL = 9
+SUPPORTED_PROTOCOLS = frozenset({PROTOCOL, NATIVE_PACING_PROTOCOL, QUEUED_PACING_PROTOCOL})
 QUERY = b"\x1b_smooth;?\x1b\\"
 # Any smooth-scroll reply, so a future shape is still kept out of typing; only
 # `ok;N` with N in SUPPORTED_PROTOCOLS turns the glide on.
 REPLY = re.compile(rb"\x1b_smooth;([^\x1b\x07]{0,32})\x1b\\")
 VERSION = re.compile(rb"ok;(\d{1,4})")
 
-# Protocol 8 native pacing flags and limits.
+# Protocol 8/9 native pacing flags and limits.
 MAX_BATCH_GLIDE = 32
+MAX_QUEUED_BATCH_GLIDE = 128
 ADVANCE_BATCH = 1
 ADVANCE_FADE = 2
 REVEAL_SWEEP = 0

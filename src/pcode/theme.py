@@ -76,10 +76,17 @@ def glide_supported() -> bool:
 
 
 def native_pacing_supported() -> bool:
-    """Whether the terminal supports protocol 8 native batch glide and Metal reveal."""
+    """Whether the terminal supports protocol 8+ native batch glide and Metal reveal."""
     from pcode import smooth_scroll
 
-    return _glide_protocol == smooth_scroll.NATIVE_PACING_PROTOCOL
+    return _glide_protocol is not None and _glide_protocol >= smooth_scroll.NATIVE_PACING_PROTOCOL
+
+
+def queued_pacing_supported() -> bool:
+    """Whether the terminal supports protocol 9 queued reveals and 128-row batch glide."""
+    from pcode import smooth_scroll
+
+    return _glide_protocol is not None and _glide_protocol >= smooth_scroll.QUEUED_PACING_PROTOCOL
 
 
 def drawer_supported() -> bool:

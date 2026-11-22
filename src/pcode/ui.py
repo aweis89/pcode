@@ -99,6 +99,7 @@ from pcode.theme import (
     detect_theme,
     glide_supported,
     native_pacing_supported,
+    queued_pacing_supported,
     terminal_background,
 )
 from pcode.theme_gallery import SyntaxGallery
@@ -2273,7 +2274,10 @@ class TerminalOutput:
         # the region last sent and when (None: cleared).
         self.gliding = False
         self.native_pacing = False
-        self._native_commit: tuple[int, int, bool, int] | None = None
+        self.native_queued = False
+        self._native_commit: (
+            tuple[int, int, bool, int, list[tuple[int, int, bool]] | None] | None
+        ) = None
         self._native_backlog = 0.0
         self._native_rate = smooth_scroll.MIN_ROWS_PER_SECOND
         self._native_at = 0.0
@@ -2604,11 +2608,13 @@ class TerminalOutput:
                             # the final committed rows when scanning reveal spans.
                             if counter.rows > 0:
                                 chars = sum(row.visible for row in chunk)
+                                runs = self._native_runs(chunk) if self.native_queued else None
                                 self._native_commit = (
                                     counter.rows,
                                     scrolled,
                                     native_batch_prose,
                                     chars,
+                                    runs,
                                 )
                         elif scrolled and self._declared is not None:
                             # Same frame as the rows: the terminal draws the
@@ -2851,6 +2857,25 @@ class TerminalOutput:
         self._native_reveal_mode = None
         self._native_reveal_split = False
 
+    @staticmethod
+    def _native_runs(chunk: list[QueuedRow]) -> list[tuple[int, int, bool]]:
+        """Group committed rows into contiguous `(offset, count, is_prose)` runs."""
+        runs: list[tuple[int, int, bool]] = []
+        if not chunk:
+            return runs
+        first_vis = next((r for r in chunk if r.visible), None)
+        cur_prose = bool(first_vis.typed) if first_vis is not None else False
+        cur_start = 0
+        for idx, row in enumerate(chunk):
+            if row.visible and bool(row.typed) != cur_prose:
+                if idx > cur_start:
+                    runs.append((cur_start, idx - cur_start, cur_prose))
+                cur_prose = bool(row.typed)
+                cur_start = idx
+        if len(chunk) > cur_start:
+            runs.append((cur_start, len(chunk) - cur_start, cur_prose))
+        return runs
+
     def _native_batch_cap(self) -> int:
         """Maximum rows to commit in one native handoff without exceeding viewport or overscan."""
         size_rows = max(1, self.app.output.get_size().rows)
@@ -2858,14 +2883,18 @@ class TerminalOutput:
             vis_cap = max(1, self._declared[0][0] - 1)
         else:
             vis_cap = max(1, size_rows - 4)
+        if self.native_queued:
+            if self._editor_pinned():
+                return smooth_scroll.MAX_QUEUED_BATCH_GLIDE
+            return min(smooth_scroll.MAX_QUEUED_BATCH_GLIDE, vis_cap, size_rows)
         return min(smooth_scroll.MAX_BATCH_GLIDE, vis_cap, size_rows)
 
     def _native_batch(self) -> tuple[int, bool]:
         """Contiguous batch of queued rows to hand off to Ghostty Smooth's native pacer.
 
-        Groups same-style rows (prose vs whole-row blocks) up to the terminal's
-        overscan and visible transcript budget, holding excess rows of a huge
-        burst or conflicting reveal modes until the active reveal finishes.
+        Protocol 9 (`native_queued`) hands off mixed prose/code bursts up to 128
+        rows in a single write without stalling between reveal modes. Protocol 8
+        groups same-style rows up to 32 rows and waits when switching modes.
         """
         if not self.rows:
             return 0, False
@@ -2874,6 +2903,16 @@ class TerminalOutput:
             elapsed = max(0.0, now - self._native_at)
             self._native_backlog = max(0.0, self._native_backlog - elapsed * self._native_rate)
             self._native_at = now
+        if self.native_queued:
+            cap = self._native_batch_cap()
+            room = min(cap, int(smooth_scroll.MAX_QUEUED_BATCH_GLIDE - self._native_backlog))
+            if room <= 0:
+                return 0, False
+            total = len(self.rows)
+            min_chunk = min(16, max(1, cap // 2))
+            if total > room and room < min_chunk:
+                return 0, False
+            return min(total, room), False
         if now >= self._native_reveal_until:
             self._native_reveal_mode = None
             self._native_reveal_split = False
@@ -2907,18 +2946,82 @@ class TerminalOutput:
         return min(run, room), is_prose
 
     def _emit_native_commit(self, app) -> None:
-        """Emit protocol 8 batch-glide and reveal sequences for the just-committed rows."""
+        """Emit protocol 8/9 batch-glide and reveal sequences for the just-committed rows."""
         commit, self._native_commit = self._native_commit, None
         if commit is None or self._declared is None:
             return
-        written, scrolled, is_prose, chars = commit
+        written, scrolled, is_prose, chars, runs = commit
         bottom = self._declared[0][0]
         end_row = bottom - 2
         if end_row < 0:
             return
+        now = monotonic()
+        if self.native_queued and runs is not None:
+            max_glide = smooth_scroll.MAX_QUEUED_BATCH_GLIDE
+            base_row = end_row - written + 1
+            if scrolled > 0:
+                self._end_insert()
+                self._end_panel()
+                elapsed = max(0.0, now - self._native_at) if self._native_backlog > 0.0 else 0.0
+                backlog = max(0.0, self._native_backlog - elapsed * self._native_rate) + scrolled
+                backlog = min(backlog, float(max_glide))
+                self._native_backlog = backlog
+                self._native_rate = min(30.0, max(smooth_scroll.MIN_ROWS_PER_SECOND, backlog / 2.5))
+                self._native_at = now
+                flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
+                # Rate 0 lets Ghostty's native adaptive conveyor drive velocity directly.
+                app.output.write_raw(smooth_scroll.advance(scrolled, rate=0.0, flags=flags))
+                # In `typed` mode (or whenever prose is present), emit reveals for every
+                # run so adjacent prose/code commits chain seamlessly without gaps.
+                if self.typed or any(run_prose for _, _, run_prose in runs):
+                    for off, rlen, run_prose in runs:
+                        r_start = base_row + off
+                        r_end = min(r_start + rlen, end_row + 1)
+                        if r_end <= -max_glide:
+                            continue
+                        r_start = max(-max_glide, r_start)
+                        r_count = min(r_end - r_start, max_glide)
+                        if r_count > 0:
+                            r_flags = (
+                                smooth_scroll.REVEAL_SWEEP
+                                if run_prose
+                                else smooth_scroll.REVEAL_CURTAIN
+                            )
+                            app.output.write_raw(
+                                smooth_scroll.reveal(r_start, r_count, flags=r_flags)
+                            )
+                else:
+                    in_place = written - scrolled
+                    if in_place > 0:
+                        c_end = min(base_row + in_place, end_row + 1)
+                        if c_end > -max_glide:
+                            c_start = max(-max_glide, base_row)
+                            c_count = min(c_end - c_start, max_glide)
+                            if c_count > 0:
+                                app.output.write_raw(
+                                    smooth_scroll.reveal(
+                                        c_start, c_count, flags=smooth_scroll.REVEAL_CURTAIN
+                                    )
+                                )
+            else:
+                for off, rlen, run_prose in runs:
+                    r_start = base_row + off
+                    r_end = min(r_start + rlen, end_row + 1)
+                    if r_end <= 0:
+                        continue
+                    r_start = max(0, r_start)
+                    r_count = min(r_end - r_start, max_glide)
+                    if r_count > 0:
+                        r_flags = (
+                            smooth_scroll.REVEAL_SWEEP
+                            if run_prose
+                            else smooth_scroll.REVEAL_CURTAIN
+                        )
+                        app.output.write_raw(smooth_scroll.reveal(r_start, r_count, flags=r_flags))
+            return
+
         count = min(written, end_row + 1, smooth_scroll.MAX_BATCH_GLIDE)
         start_row = end_row - count + 1
-        now = monotonic()
         if scrolled > 0:
             self._end_insert()
             self._end_panel()
@@ -4671,6 +4774,7 @@ class Transcript:
             output.native_pacing = (
                 output.gliding and self.native_pacing == "auto" and native_pacing_supported()
             )
+            output.native_queued = output.native_pacing and queued_pacing_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
             if self.replays_on_resize:
                 output.resize_replay = self.replay

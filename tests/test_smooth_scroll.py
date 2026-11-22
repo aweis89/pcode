@@ -475,17 +475,26 @@ def test_repeated_rows_follow_the_block_but_do_not_vote():
     assert _block_move({1: "a", 3: "b", 4: "b"}, {1: "a", 2: "b", 3: "b"}) is None
 
 
-def test_probe_accepts_protocol_8_for_native_pacing(monkeypatch):
+def test_probe_accepts_protocol_8_and_9_for_native_pacing(monkeypatch):
+    reply9 = b"\x1b_smooth;ok;9\x1b\\"
+    _, left = _probe(monkeypatch, answer=reply9)
+    assert theme.glide_supported()
+    assert theme.native_pacing_supported()
+    assert theme.queued_pacing_supported()
+    assert left == b""
+
     reply8 = b"\x1b_smooth;ok;8\x1b\\"
     _, left = _probe(monkeypatch, answer=reply8)
     assert theme.glide_supported()
     assert theme.native_pacing_supported()
+    assert not theme.queued_pacing_supported()
     assert left == b""
 
     # Protocol 7 still glides, without native pacing.
     _, left = _probe(monkeypatch, answer=REPLY)
     assert theme.glide_supported()
     assert not theme.native_pacing_supported()
+    assert not theme.queued_pacing_supported()
     assert left == b""
 
 
@@ -560,14 +569,14 @@ def test_emit_native_commit_sends_batch_glide_and_reveal_sequences(monkeypatch):
     output._declared = ((21, 80), clock[0])
 
     # Scrolled prose commit: batch advance + soft fade + horizontal ink sweep.
-    output._native_commit = (6, 6, True, 240)
+    output._native_commit = (6, 6, True, 240, None)
     output._emit_native_commit(output.app)
     sent = "".join(out.written)
     assert sent == ("\x1b_smooth;advance;7;6;500;3\x1b\\\x1b_smooth;reveal;7;14;6;0\x1b\\")
 
     # Scrolled non-prose commit: batch advance + soft fade, no horizontal sweep.
     out.written.clear()
-    output._native_commit = (10, 10, False, 300)
+    output._native_commit = (10, 10, False, 300, None)
     output._emit_native_commit(output.app)
     assert "".join(out.written) == "\x1b_smooth;advance;7;10;533;3\x1b\\"
 
@@ -583,14 +592,14 @@ def test_emit_native_commit_sends_batch_glide_and_reveal_sequences(monkeypatch):
     out.written.clear()
     output._reset_native_state()
     output._declared = ((15, 80), clock[0])
-    output._native_commit = (4, 0, True, 160)
+    output._native_commit = (4, 0, True, 160, None)
     output._emit_native_commit(output.app)
     assert "".join(out.written) == "\x1b_smooth;reveal;7;10;4;0\x1b\\"
 
     # In-place non-prose (screen not full, scrolled=0): vertical curtain reveal.
     out.written.clear()
     output._reset_native_state()
-    output._native_commit = (4, 0, False, 160)
+    output._native_commit = (4, 0, False, 160, None)
     output._emit_native_commit(output.app)
     assert "".join(out.written) == "\x1b_smooth;reveal;7;10;4;0;1\x1b\\"
 
@@ -599,8 +608,86 @@ def test_emit_native_commit_sends_batch_glide_and_reveal_sequences(monkeypatch):
     out.written.clear()
     output._reset_native_state()
     output._declared = ((21, 80), clock[0])
-    output._native_commit = (6, 2, False, 200)
+    output._native_commit = (6, 2, False, 200, None)
     output._emit_native_commit(output.app)
     assert "".join(out.written) == (
         "\x1b_smooth;advance;7;2;500;3\x1b\\\x1b_smooth;reveal;7;14;4;0;1\x1b\\"
+    )
+
+
+def test_protocol_9_queued_batch_and_mixed_reveals(monkeypatch):
+    from pcode.ui import QueuedRow
+
+    clock = [10.0]
+    output, out = _glide_output(monkeypatch, clock)
+    output.native_pacing = True
+    output.native_queued = True
+    output._declared = ((21, 80), clock[0])
+    output.app.output.size = output.app.output.size._replace(rows=25)
+    monkeypatch.setattr(output, "_editor_pinned", lambda: True)
+
+    # Mixed prose -> code -> prose commits in ONE single handoff without splitting or stalling.
+    output.rows = [
+        QueuedRow("prose 1\n", typed=True),
+        QueuedRow("prose 2\n", typed=True),
+        QueuedRow("\n", typed=False),
+        QueuedRow("code 1\n", typed=False),
+        QueuedRow("code 2\n", typed=False),
+        QueuedRow("prose 3\n", typed=True),
+    ]
+    assert output._native_batch() == (6, False)
+    runs = output._native_runs(output.rows)
+    assert runs == [(0, 3, True), (3, 2, False), (5, 1, True)]
+
+    # Emits ONE rate-0 batch advance + queued sweep -> curtain -> sweep reveals.
+    output._native_commit = (6, 6, False, 120, runs)
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == (
+        "\x1b_smooth;advance;7;6;0;3\x1b\\"
+        "\x1b_smooth;reveal;7;14;3;0\x1b\\"
+        "\x1b_smooth;reveal;7;17;2;0;1\x1b\\"
+        "\x1b_smooth;reveal;7;19;1;0\x1b\\"
+    )
+
+    # Large 40-row burst on a 20-row transcript emits signed negative top rows for
+    # content already scrolled into the 128-row glide window.
+    out.written.clear()
+    output._reset_native_state()
+    big_runs = [(0, 15, True), (15, 15, False), (30, 10, True)]
+    output._native_commit = (40, 40, False, 800, big_runs)
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == (
+        "\x1b_smooth;advance;7;40;0;3\x1b\\"
+        "\x1b_smooth;reveal;7;-20;15;0\x1b\\"
+        "\x1b_smooth;reveal;7;-5;15;0;1\x1b\\"
+        "\x1b_smooth;reveal;7;10;10;0\x1b\\"
+    )
+
+    # Pure non-prose scrolled commit in `rows` mode uses batch glide + soft bottom fade only.
+    out.written.clear()
+    output._reset_native_state()
+    output.typed = False
+    output._native_commit = (10, 10, False, 200, [(0, 10, False)])
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == "\x1b_smooth;advance;7;10;0;3\x1b\\"
+
+    # In `typed` mode, a pure non-prose scrolled commit still emits a curtain reveal so
+    # it chains cleanly with adjacent prose sweeps, and trailing non-newline rows never
+    # spill past `end_row`.
+    out.written.clear()
+    output._reset_native_state()
+    output.typed = True
+    output._native_commit = (5, 5, False, 100, [(0, 6, False)])
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == (
+        "\x1b_smooth;advance;7;5;0;3\x1b\\\x1b_smooth;reveal;7;15;5;0;1\x1b\\"
+    )
+
+    # In-place (`scrolled == 0`) clips negative prefix without shifting/overlapping later runs.
+    out.written.clear()
+    output._reset_native_state()
+    output._native_commit = (25, 0, False, 400, [(0, 10, True), (10, 15, False)])
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == (
+        "\x1b_smooth;reveal;7;0;5;0\x1b\\\x1b_smooth;reveal;7;5;15;0;1\x1b\\"
     )
