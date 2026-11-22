@@ -124,8 +124,18 @@ IDLE_QUIET = 1.5
 DEFERRED_FINALIZE_DEBOUNCE = 3.0
 # Safety cap while waiting for an unsolicited follow-up reply's `usage_update`.
 OPEN_REPLY_QUIET_LIMIT = 120.0
+# Longest a held turn waits for a native `invoke_subagent` to report back. `agy`
+# gives no signal when one dies silently, or when it reported before settlement
+# and the parent replied with text only; past this the turn ends, and a late
+# report still opens a provider continuation turn.
+SUBAGENT_WAIT_LIMIT = 1800.0
 # Tool titles Antigravity leaves in_progress across `session/prompt` settlement.
 SCHEDULE_TITLES = frozenset({"Run schedule", "Running schedule"})
+# Tool names/titles for Antigravity's native async subagent launcher: `agy`
+# marks the call `completed` as soon as the subagent spawns, then settles
+# `session/prompt` while the subagent runs and later wakes the parent.
+SUBAGENT_LAUNCH_NAMES = frozenset({"invoke_subagent"})
+SUBAGENT_LAUNCH_TITLES = frozenset({"Run invoke_subagent"})
 # Sessions remembered in the ledger; older ones replay instead of resuming.
 LEDGER_SIZE = 500
 
@@ -1756,6 +1766,11 @@ class _ToolState:
         return self.kind == "execute" and not self.is_daemon
 
 
+def _is_subagent_launch(name: str, state: _ToolState) -> bool:
+    """Whether a tool call is Antigravity's native async `invoke_subagent` launcher."""
+    return name in SUBAGENT_LAUNCH_NAMES or state.title in SUBAGENT_LAUNCH_TITLES
+
+
 @dataclass
 class AntigravityStream(StreamedResponse):
     """One Antigravity turn as Pydantic AI stream events."""
@@ -1788,6 +1803,12 @@ class AntigravityStream(StreamedResponse):
     # True while `session/prompt` has settled (or in a continuation turn) and we
     # are waiting for background tools and unsolicited follow-up replies to finish.
     holding: bool = field(default=False, init=False)
+    # True when the most recent non-daemon tool activity was a completed native
+    # `invoke_subagent` launch; cleared as soon as another non-daemon tool runs.
+    subagent_launched: bool = field(default=False, init=False)
+    # True while holding after `session/prompt` (or a held reply's `usage_update`)
+    # waiting for that launched subagent's first substantive wakeup update.
+    awaiting_subagent: bool = field(default=False, init=False)
     part_count: int = field(default=0, init=False)
     part_kind: str = field(default="", init=False)
     calls: dict[str, tuple[str, dict]] = field(default_factory=dict, init=False)
@@ -1829,7 +1850,7 @@ class AntigravityStream(StreamedResponse):
             return False
         if reply.result().get("stopReason") == "cancelled":
             return False
-        return self._has_outliving_tools()
+        return self._has_outliving_tools() or self.subagent_launched
 
     def _vendor(self, kind: str) -> str:
         """A part ID that starts a new part whenever the kind of output changes."""
@@ -1892,6 +1913,8 @@ class AntigravityStream(StreamedResponse):
         loop = asyncio.get_running_loop()
         reply_open = False
         quiet_deadline: float | None = None
+        # When the current wait for a launched native subagent gives up.
+        subagent_deadline: float | None = None
         if self.continuation:
             self.holding = True
             quiet_deadline = loop.time() + DEFERRED_FINALIZE_DEBOUNCE
@@ -1901,6 +1924,8 @@ class AntigravityStream(StreamedResponse):
                 await self._steer(updates)
                 if self.reply is not previous:
                     self.holding = False
+                    self.subagent_launched = False
+                    self.awaiting_subagent = False
                     reply_open = False
                     quiet_deadline = None
             timeout = STEER_POLL
@@ -1927,27 +1952,40 @@ class AntigravityStream(StreamedResponse):
                         self.holding = False
                         break
                     self.holding = True
+                    self.awaiting_subagent = self.subagent_launched
+                    self.subagent_launched = False
                     reply_open = False
                     quiet_deadline = None
+                    if self.awaiting_subagent:
+                        subagent_deadline = loop.time() + SUBAGENT_WAIT_LIMIT
+                        if not self._has_running_tools():
+                            quiet_deadline = subagent_deadline
                 continue  # A prompt a steering message took over, or held for background work.
             kind = update.get("sessionUpdate")
+            substantive_wake = _is_wake_update(
+                update, buffering=reply_open, daemon_tools=session.daemon_tools
+            )
+            if self.holding and self.awaiting_subagent and substantive_wake:
+                self.awaiting_subagent = False
             for event in self._map(update):
                 self.events_seen = True
                 yield event
             if self.holding:
                 if kind == "usage_update":
                     reply_open = False
-                elif kind in {
-                    "agent_message_chunk",
-                    "agent_thought_chunk",
-                    "tool_call",
-                    "tool_call_update",
-                }:
+                    if self.subagent_launched:
+                        self.awaiting_subagent = True
+                        self.subagent_launched = False
+                        subagent_deadline = loop.time() + SUBAGENT_WAIT_LIMIT
+                elif substantive_wake:
                     reply_open = True
                 # Any active non-daemon tool (including long MCP delegations) pauses
-                # the quiet timer while already holding or continuing a turn.
+                # the quiet timer while holding; an awaited native subagent swaps it
+                # for the much longer `SUBAGENT_WAIT_LIMIT`.
                 if self._has_running_tools():
                     quiet_deadline = None
+                elif self.awaiting_subagent:
+                    quiet_deadline = subagent_deadline
                 else:
                     limit = OPEN_REPLY_QUIET_LIMIT if reply_open else DEFERRED_FINALIZE_DEBOUNCE
                     quiet_deadline = loop.time() + limit
@@ -2066,6 +2104,8 @@ class AntigravityStream(StreamedResponse):
         if not call_id:
             return
         state = self.tools.setdefault(call_id, _ToolState())
+        if self.session is not None and call_id in self.session.daemon_tools:
+            state.is_daemon = True
         if isinstance(update.get("kind"), str) and update["kind"]:
             state.kind = update["kind"]
         if isinstance(update.get("title"), str) and update["title"]:
@@ -2103,6 +2143,15 @@ class AntigravityStream(StreamedResponse):
                     tool_name=name, args=args, tool_call_id=call_id, provider_name=SYSTEM
                 ),
             )
+        if not was_terminal:
+            tool_name = str(update.get("name") or "") or (
+                self.calls[call_id][0] if call_id in self.calls else ""
+            )
+            if _is_subagent_launch(tool_name, state):
+                if status == "completed":
+                    self.subagent_launched = True
+            elif not state.is_daemon:
+                self.subagent_launched = False
         if status in {"completed", "failed"}:
             name, _ = self.calls[call_id]
             self._vendor("tool")

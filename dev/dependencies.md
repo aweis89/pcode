@@ -885,20 +885,32 @@ for what pcode sends and spawns via `agy acp`. Traps found while building it:
   `AutomaticRepoContext` forward only the non-native repository instruction
   files, leaving plain side completions untouched.
 - `agy` keeps working after a turn ends: a background command or schedule may
-  stay `in_progress` across `session/prompt` settlement (held open until
-  active non-daemon tools finish and the follow-up's `usage_update` + quiet
-  debounce settle), and a background sub-agent or delayed wakeup can emit
-  updates after a turn has already finalized. When a `SessionController` is
-  attached (`wake_listener`), `AntigravityModel._idle_update` buffers those
-  updates (including a trailing `usage_update` once output has arrived) and
-  triggers a provider continuation turn (`provider_continuation=True`) that
-  drains the buffer and streams live updates without sending `session/prompt`,
-  keeping bridged MCP tools, steering, and Ctrl+C working. A user Ctrl+C sets
-  `_wake_quarantined` until the next prompt so trailing cancel frames cannot
-  reopen a turn. Standalone callers without a controller fall back to
-  `listener` transcript notes. `agy` writes a prompt's reply and immediate
-  post-turn updates back to back, so the reader queues the reply's future in
-  line; a done-callback ran after both and folded the report into the turn.
+  stay `in_progress` across `session/prompt` settlement, and a native
+  `invoke_subagent` call reports `completed` immediately when spawned and then
+  wakes the parent later. `AntigravityStream` holds the turn open across
+  settlement when an outliving tool is still `in_progress` or when the final
+  non-daemon tool activity before settlement was a completed `invoke_subagent`
+  launch (paused until the subagent's wakeup arrives and its `usage_update` +
+  quiet debounce settle; cleared if another non-daemon tool runs afterwards so
+  a subagent that already reported during later work cannot hang the turn).
+  `agy` sends nothing when a subagent dies silently or reported before
+  settlement, so the wait gives up after `SUBAGENT_WAIT_LIMIT` (30 minutes).
+  The hold tracks one pending subagent, not a count: with two in flight, or a
+  held command finishing first, the first wake clears it, and the parent's
+  "still waiting" reply ends the turn; the later report then arrives as a
+  continuation. Ctrl+C during the wait quarantines wakes, so that subagent's
+  report is dropped rather than reopening a turn.
+  Delayed wakeups that still arrive after a turn has finalized are buffered by
+  `AntigravityModel._idle_update` when a `SessionController` is attached
+  (`wake_listener`) and open a provider continuation turn
+  (`provider_continuation=True`) that drains the buffer and streams live
+  updates without sending `session/prompt`, keeping bridged MCP tools,
+  steering, and Ctrl+C working. A user Ctrl+C sets `_wake_quarantined` until
+  the next prompt so trailing cancel frames cannot reopen a turn. Standalone
+  callers without a controller fall back to `listener` transcript notes. `agy`
+  writes a prompt's reply and immediate post-turn updates back to back, so the
+  reader queues the reply's future in line; a done-callback ran after both and
+  folded the report into the turn.
 - `agy` 1.5.13 never forwards a background sub-agent's
   `session/request_permission` (t3code#39029); the sub-agent waits about a
   minute and fails. Hence `--dangerously-skip-permissions`. Session modes do

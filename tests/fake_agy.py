@@ -249,6 +249,135 @@ def prompt(request):
         sys.stdout.flush()
         os._exit(3)
     if (
+        "SUBAGENT_HOLD" in trigger
+        or "SUBAGENT_THEN_TOOL" in trigger
+        or "SUBAGENT_FAIL" in trigger
+        or "SUBAGENT_CHAIN" in trigger
+        or "SUBAGENT_HANG" in trigger
+    ):
+        failed = "SUBAGENT_FAIL" in trigger
+        sub_call = {
+            "toolCallId": "sub-1",
+            "name": "invoke_subagent",
+            "kind": "other",
+            "title": "Run invoke_subagent",
+            "rawInput": {"role": "Code Reviewer", "typeName": "research", "prompt": "review diff"},
+        }
+        update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **sub_call})
+        update(
+            session,
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "sub-1",
+                "status": "failed" if failed else "completed",
+            },
+        )
+        if "SUBAGENT_HOLD" in trigger and "DAEMON_PING" in trigger:
+            # A daemon started in an earlier turn emitting an update without rawInput
+            # must not clear subagent_launched or prematurely end the hold.
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "bg-1",
+                    "status": "in_progress",
+                },
+            )
+        if "SUBAGENT_THEN_TOOL" in trigger:
+            edit_call = {
+                "toolCallId": "after-sub-1",
+                "name": "edit_file",
+                "kind": "edit",
+                "title": "File a.py",
+                "rawInput": {"Path": "a.py"},
+            }
+            update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **edit_call})
+            update(
+                session,
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "after-sub-1",
+                    "status": "completed",
+                    "content": [{"type": "diff", "path": "a.py", "newText": "ok"}],
+                },
+            )
+            chunk(session, "agent_message_chunk", "All done.")
+        elif failed:
+            chunk(session, "agent_message_chunk", "Could not launch subagent.")
+        else:
+            chunk(session, "agent_message_chunk", "Waiting for the code review subagent.")
+        update(session, {"sessionUpdate": "usage_update", "used": 60, "size": 1_048_576})
+        result = {"stopReason": "end_turn", "usage": {"inputTokens": 10, "outputTokens": 5}}
+        send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        running.remove(request["id"])
+        if "SUBAGENT_HOLD" in trigger or "SUBAGENT_CHAIN" in trigger:
+
+            def finish_subagent():
+                # Trailing metadata/whitespace frames while waiting must not start the quiet timer.
+                threading.Event().wait(0.02)
+                update(
+                    session,
+                    {"sessionUpdate": "session_info_update", "title": "Code Review In Progress"},
+                )
+                chunk(session, "agent_message_chunk", "\n")
+                update(session, {"sessionUpdate": "usage_update", "used": 60, "size": 1_048_576})
+                # Wait longer than the test's DEFERRED_FINALIZE_DEBOUNCE before waking up.
+                threading.Event().wait(0.12)
+                if "SUBAGENT_CHAIN" in trigger:
+                    sub2 = {
+                        "toolCallId": "sub-2",
+                        "name": "invoke_subagent",
+                        "kind": "other",
+                        "title": "Run invoke_subagent",
+                        "rawInput": {"role": "Second Reviewer", "typeName": "research"},
+                    }
+                    update(session, {"sessionUpdate": "tool_call", "status": "in_progress", **sub2})
+                    update(
+                        session,
+                        {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "sub-2",
+                            "status": "completed",
+                        },
+                    )
+                    chunk(session, "agent_message_chunk", "\n\nWaiting for second reviewer.")
+                    update(
+                        session, {"sessionUpdate": "usage_update", "used": 75, "size": 1_048_576}
+                    )
+                    threading.Event().wait(0.12)
+                    chunk(session, "agent_message_chunk", "\n\nSecond review clean.")
+                    update(
+                        session, {"sessionUpdate": "usage_update", "used": 90, "size": 1_048_576}
+                    )
+                    return
+                chunk(session, "agent_thought_chunk", "applying review feedback")
+                edit_call = {
+                    "toolCallId": "review-edit-1",
+                    "name": "edit_file",
+                    "kind": "edit",
+                    "title": "File tests/test_smooth_scroll.py",
+                    "rawInput": {"Path": "tests/test_smooth_scroll.py"},
+                }
+                update(
+                    session, {"sessionUpdate": "tool_call", "status": "in_progress", **edit_call}
+                )
+                update(
+                    session,
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "review-edit-1",
+                        "status": "completed",
+                        "content": [
+                            {"type": "diff", "path": "tests/test_smooth_scroll.py", "newText": "ok"}
+                        ],
+                    },
+                )
+                chunk(session, "agent_message_chunk", "\n\nReview addressed and merged.")
+                update(session, {"sessionUpdate": "usage_update", "used": 95, "size": 1_048_576})
+
+            threading.Thread(target=finish_subagent, daemon=True).start()
+        return
+    if (
         "BGCMD" in trigger
         or "BGDAEMON" in trigger
         or "BGSCHED" in trigger

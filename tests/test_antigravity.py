@@ -2610,6 +2610,132 @@ def test_active_non_execute_tool_pauses_quiet_timer_while_holding(fake_agy, tmp_
     )
 
 
+def test_invoke_subagent_holds_turn_open_until_wakeup_settles(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    model = AntigravityModel("fake-flash")
+    app, _root, buffer = _controller_app(model, tmp_path)
+    dropped_idle_mid_wait = False
+
+    async def exercise():
+        nonlocal dropped_idle_mid_wait
+        consumer = asyncio.create_task(app.controller.consume())
+        try:
+            app.controller.submit("SUBAGENT_HOLD review diff", "queue")
+            saw_waiting = False
+            for _ in range(250):
+                text = buffer.getvalue()
+                if "Waiting for the code review subagent." in text:
+                    saw_waiting = True
+                    if "Review addressed and merged." not in text and not app.activity.busy:
+                        dropped_idle_mid_wait = True
+                if (
+                    "Review addressed and merged." in text
+                    and not app.activity.busy
+                    and not app.activity.queued_prompts
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            assert saw_waiting
+            assert not dropped_idle_mid_wait
+            assert "Review addressed and merged." in buffer.getvalue()
+            # Completed in a single turn with no extra prompt or continuation turn.
+            assert len(prompts(fake_agy)) == 1
+            assert model._session is not None and model._session.turns == 1
+        finally:
+            app.controller.running = False
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    run(exercise())
+
+
+def test_invoke_subagent_followed_by_another_tool_does_not_hold(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        return await asyncio.wait_for(
+            agent_for(model, tmp_path).run("SUBAGENT_THEN_TOOL"), timeout=2.0
+        )
+
+    result = run(go())
+    assert "All done." in result.output
+
+
+def test_failed_invoke_subagent_does_not_hold(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        return await asyncio.wait_for(agent_for(model, tmp_path).run("SUBAGENT_FAIL"), timeout=2.0)
+
+    result = run(go())
+    assert "Could not launch subagent." in result.output
+
+
+def test_chained_invoke_subagent_during_held_wakeup_keeps_holding(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        return await asyncio.wait_for(agent_for(model, tmp_path).run("SUBAGENT_CHAIN"), timeout=3.0)
+
+    result = run(go())
+    texts = [
+        p.content
+        for m in result.all_messages()
+        for p in m.parts
+        if isinstance(p, TextPart) and p.content
+    ]
+    joined = "".join(texts)
+    assert "Waiting for the code review subagent." in joined
+    assert "Waiting for second reviewer." in result.output
+    assert "Second review clean." in result.output
+
+
+def test_cross_turn_daemon_update_does_not_clear_subagent_hold(fake_agy, tmp_path, monkeypatch):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        agent = agent_for(model, tmp_path)
+        first = await asyncio.wait_for(agent.run("BGDAEMON"), timeout=2.0)
+        second = await asyncio.wait_for(
+            agent.run("SUBAGENT_HOLD DAEMON_PING", message_history=first.all_messages()),
+            timeout=3.0,
+        )
+        assert model._session is not None and model._session.turns == 2
+        return second
+
+    result = run(go())
+    assert "Review addressed and merged." in result.output
+
+
+def test_cancelling_held_subagent_turn_sends_cancel_and_quarantines(
+    fake_agy, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        agent = agent_for(model, tmp_path)
+        task = asyncio.create_task(agent.run("SUBAGENT_HANG"))
+        # Under load, startup can outlast a fixed sleep: wait for the prompt to go out.
+        for _ in range(500):
+            if prompts(fake_agy):
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.15)  # Settled and holding for the subagent.
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert model._wake_quarantined
+
+    run(go())
+    assert any(m.get("method") == "session/cancel" for m in fake_agy())
+
+
 def test_post_settle_wake_opens_continuation_turn_end_to_end(fake_agy, tmp_path, monkeypatch):
     from pcode.sessions import first_prompt, list_sessions, session_turns
 
@@ -3655,3 +3781,19 @@ def test_worker_session_forwards_only_non_native_repo_instructions(fake_agy, tmp
     assert "REPO_WORKER_LOCAL" in append
     assert "REPO_NATIVE_RULE" not in append
     assert PCODE_CLIENT_INSTRUCTIONS not in append
+
+
+def test_subagent_wait_gives_up_after_its_limit(fake_agy, tmp_path, monkeypatch):
+    # A subagent that never reports must not hold the turn (and spinner) forever.
+    monkeypatch.setattr(antigravity, "DEFERRED_FINALIZE_DEBOUNCE", 0.04)
+    monkeypatch.setattr(antigravity, "SUBAGENT_WAIT_LIMIT", 0.2)
+
+    async def go():
+        model = AntigravityModel("fake-neon")
+        started = asyncio.get_running_loop().time()
+        result = await asyncio.wait_for(agent_for(model, tmp_path).run("SUBAGENT_HANG"), 3.0)
+        return result, asyncio.get_running_loop().time() - started
+
+    result, elapsed = run(go())
+    assert "Waiting for the code review subagent." in result.output
+    assert elapsed >= 0.2
