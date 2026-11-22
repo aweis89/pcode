@@ -42,7 +42,7 @@ def _steady_width(frames: list[str]) -> bool:
 
 
 # Rich's named spinners that fit the status row, plus Kitty smooth spinner
-# styles (`swept`, `orbit`, `diamond`, `dual`, `wave`, `comet`):
+# styles (`helix`, `gyro`, `octa`, `swept`, `dual`, `orbit`, `wave`, `comet`):
 # `pcode config set spinner NAME`.
 SPINNERS = tuple(
     sorted(
@@ -62,6 +62,8 @@ COMMAND_MODES = ("off", "activity-panel", "scrollback")
 RENAMED_VALUES = {
     "show_thinking": {"status-line": "activity-panel"},
     "show_commands": {"on": "scrollback"},
+    "spinner": {"diamond": "octa"},
+    "tool_spinner": {"diamond": "octa"},
 }
 
 

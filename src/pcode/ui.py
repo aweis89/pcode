@@ -871,10 +871,20 @@ def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[st
     fitted = []
     remaining = max(0, width)
     for style, text in fragments:
+        width_cells = cell_len(text)
+        # Kitty spinner placeholders are atomic multi-cell images: never crop
+        # them in half or append an ellipsis styled with the image-ID color.
+        if style.startswith("class:kitty.spinner."):
+            if width_cells <= remaining:
+                fitted.append((style, text))
+                remaining -= width_cells
+                if remaining > 0:
+                    continue
+            break
         # Strictly less: the fragment that overflows needs a cell for the ellipsis.
-        if cell_len(text) < remaining:
+        if width_cells < remaining:
             fitted.append((style, text))
-            remaining -= cell_len(text)
+            remaining -= width_cells
             continue
         part = Text(text)
         part.truncate(remaining, overflow="ellipsis" if remaining > 1 else "crop")
@@ -3893,45 +3903,35 @@ class PromptLayout:
             shaded = self.frame_shaded()
             if activity.startup_label:
                 elapsed = max(0.0, monotonic() - activity.startup_started)
-                # Brand diamond pulses gently during startup, keeping the braille
+                # Animated startup mark while booting, keeping the status
                 # spinner reserved for active model turns.
                 mark = self.startup_spinner_mark(elapsed)
-                mark_text = mark[1] if isinstance(mark, tuple) else mark
                 mark_frags = (
                     [mark, ("class:activity.spinner", " ")]
                     if isinstance(mark, tuple)
                     else [("class:activity.spinner", f"{mark} ")]
                 )
                 label = plain(activity.startup_label, limit=None)
+                lead = self.heading_lead()
                 if shaded:
-                    lead = self.heading_lead()
                     head = [
                         ("", lead),
                         *mark_frags,
                         ("class:activity.phase", label),
                     ]
                     return fit_fragments(head, columns)
-                lead = self.heading_lead()
-                text = f"{mark_text} {label}"
                 max_text = max(0, columns - len(lead) - 2)
-                if cell_len(text) > max_text:
-                    clipped = Text(text)
-                    clipped.truncate(max_text, overflow="ellipsis")
-                    text = clipped.plain
-                rule_len = max(0, columns - len(lead) - cell_len(text) - 2)
-                if not text:
+                head = fit_fragments([*mark_frags, ("class:activity.phase", label)], max_text)
+                if not head:
                     return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
+                used_text = sum(cell_len(t) for _, t in head)
+                rule_len = max(0, columns - len(lead) - used_text - 2)
                 pulse = min(6, max(2, rule_len // 6))
                 span = rule_len + pulse
                 pos = int((elapsed * 48) % max(1, span)) - pulse
-                mark_len = len(mark_text) + 1
-                head_frags = (
-                    mark_frags if len(text) >= mark_len else [("class:activity.spinner", text)]
-                )
                 return [
                     ("class:frame.border", lead),
-                    *head_frags,
-                    ("class:activity.phase", text[mark_len:]),
+                    *head,
                     ("class:frame.border", " "),
                     *_shimmer_rule(rule_len, pos, pulse, "class:activity.spinner"),
                     ("class:frame.border", "┐"),
