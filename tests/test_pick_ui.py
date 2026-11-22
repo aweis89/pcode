@@ -320,6 +320,8 @@ ITEMS = [
 
 
 def test_a_native_pick_sends_the_list_and_returns_the_reply():
+    from pcode.ui import PALETTES
+
     seen: list = []
 
     def answer(connection, token):
@@ -340,6 +342,7 @@ def test_a_native_pick_sends_the_list_and_returns_the_reply():
                 selected="a",
                 custom=r"p:\w+",
                 actions=(PickAction("n", "New", needs_item=False),),
+                style=PALETTES["dark"].prompt_style(),
             )
 
     assert asyncio.run(main()) == Picked("b", None, "ban")
@@ -348,6 +351,8 @@ def test_a_native_pick_sends_the_list_and_returns_the_reply():
     assert after is None
     assert sent["title"] == "Fruit" and sent["header"] == "2 fruit"
     assert sent["selected"] == "a" and sent["match"] == "fuzzy" and sent["custom"] == r"p:\w+"
+    # The editor's colors ride along, for the terminal to draw the list in.
+    assert sent["style"] == {"accent": "#88c0d0", "selected": "#384457", "dim": "#8994a6"}
     assert sent["items"][0] == {
         "id": "a",
         "label": "Apple",
@@ -666,6 +671,65 @@ def test_the_model_list_closes_on_the_key_that_opens_it():
     from pcode.pick_ui import payload
 
     assert payload([], title="t", cancel_keys=("c-l",))["cancel_keys"] == ["c-l"]
+
+
+HEX_COLOR = re.compile(r"#[0-9a-f]{6}")
+
+
+def _palette_styles():
+    from pcode.ui import PALETTES, syntax_palette
+
+    for name, palette in PALETTES.items():
+        yield pytest.param(name, palette.prompt_style(), id=name)
+        # A syntax style colors the list's selected row (the menu palette).
+        for syntax in ("gruvbox-dark", "solarized-light", "bw"):
+            name_syntax = f"{name}+{syntax}"
+            style = palette.prompt_style(syntax_palette(syntax, palette))
+            yield pytest.param(name_syntax, style, id=name_syntax)
+
+
+@pytest.mark.parametrize(("name", "style"), list(_palette_styles()))
+def test_a_native_list_wears_the_terminal_lists_colors(name, style):
+    from pcode.pick_ui import native_style, payload
+
+    colors = native_style(style)
+    assert set(colors) == {"accent", "selected", "dim"}
+    assert all(HEX_COLOR.fullmatch(color) for color in colors.values()), colors
+    sent = json.loads(json.dumps(payload(ITEMS, title="t", style=colors)))
+    assert sent["style"] == colors
+
+
+def test_the_palettes_own_colors_are_the_ones_sent():
+    from pcode.pick_ui import native_style
+    from pcode.ui import PALETTES
+
+    light = PALETTES["light"]
+    assert native_style(light.prompt_style()) == {
+        "accent": light.accent,
+        "selected": light.selected,
+        "dim": light.muted,
+    }
+
+
+def test_a_reversed_row_sends_its_text_color_as_the_selected_background():
+    """A reversed row draws its text color behind the terminal's background."""
+    from prompt_toolkit.styles import Style
+
+    from pcode.pick_ui import native_style
+
+    colors = native_style(Style.from_dict({"popup selected": "reverse bg:default #2AA1B3"}))
+    assert colors["selected"] == "#2aa1b3"
+    assert "accent" not in colors
+
+
+def test_colors_the_terminal_names_itself_are_left_to_it():
+    """`/syntax terminal` names ANSI colors and reverses the row: nothing to send."""
+    from pcode.pick_ui import native_style, payload
+    from pcode.ui import TERMINAL_PALETTE
+
+    assert native_style(TERMINAL_PALETTE.prompt_style()) == {}
+    assert native_style(None) == {}
+    assert payload([], title="t")["style"] == {}
 
 
 def test_an_empty_attach_list_says_how_to_start_one():

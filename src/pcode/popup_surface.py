@@ -45,6 +45,18 @@ token's socket itself and speaks newline-delimited JSON (UTF-8) over it.
     terminal -> pcode   the pick: `{"id": str|null, "action": str|null, "query": str}`
     pcode -> terminal   another list to show in its place, or EOF: close it
 
+A list's `style` object holds the colors pcode's own terminal list would
+wear, as `#rrggbb` (`pick_ui.native_style`), each optional:
+
+    accent      the selected row's text
+    selected    the selected row's background
+    dim         muted text (details, hints)
+
+A color the terminal's own config already gives (`/syntax terminal`) is left
+out, and an older pcode sends no `style` at all, so the terminal reads each
+key as optional, falls back on its own config for any that is missing or
+unreadable, and ignores keys it does not know. It is not a protocol change.
+
 The terminal shows and focuses the picker only once the first list arrives.
 It closing the socket (Escape, Cmd+W, a click outside) is a cancel; so is
 Escape or Ctrl+C in pcode's own pane, after which pcode closes the socket and
@@ -234,8 +246,10 @@ class PopupSurface:
             cancel_keys=cancel_keys,
         )
         if self.native is not None and not self.native.broken:
+            from pcode.pick_ui import native_style
+
             try:
-                return await self.native.pick(items, **options)
+                return await self.native.pick(items, **options, style=native_style(style))
             except NativeUnavailable as error:
                 if self.native_failed is not None:
                     self.native_failed(str(error))
