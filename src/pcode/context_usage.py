@@ -18,6 +18,17 @@ def compact_tokens(tokens: int | None) -> str:
     return str(tokens)
 
 
+def measured_context(message: ModelResponse) -> int | None:
+    """The context fill a multi-step ACP turn (Antigravity) reported, if any.
+
+    Such a turn reports cumulative billing across its internal requests in
+    `usage.input_tokens`, which re-counts the context once per step and can be
+    many times the window. `context_used` is the actual fill.
+    """
+    used = (message.provider_details or {}).get("context_used")
+    return used if type(used) is int and used > 0 else None
+
+
 def context_label(
     model: str | Model, history: Sequence[ModelMessage], *, compact_at: int | None = None
 ) -> str:
@@ -41,10 +52,7 @@ def context_label(
         if (message.metadata or {}).get(MARKER):
             return f" · ~{compact_tokens(context_estimate(history))}/{compact_tokens(window)}"
         if isinstance(message, ModelResponse):
-            # Multi-step ACP turns (Antigravity) report cumulative turn billing
-            # in `usage.input_tokens` and the current context fill in `context_used`.
-            context_used = (message.provider_details or {}).get("context_used")
-            if type(context_used) is int and context_used > 0:
+            if context_used := measured_context(message):
                 used = context_used
                 break
             if message.usage.input_tokens:
