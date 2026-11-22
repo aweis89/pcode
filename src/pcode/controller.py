@@ -4118,6 +4118,9 @@ class SessionController:
         except ValueError as error:
             self.view.warning(f"Side thread summary not sent: {error}.")
             return
+        # The model reads it as a plain message; only the transcript says where
+        # it came from (and the journal, through `mark_side` below).
+        self.view.note("Sent the side thread's summary to the model.")
         self.submit(summary_message(summary), "steering")
         follows.bridged = "summarized"
         if follows.recorded:

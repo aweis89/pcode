@@ -490,6 +490,8 @@ def test_a_summary_sent_mid_turn_steers_it(tmp_path):
     asyncio.run(run())
     assert sent_on == [(summary_message("Summary: the parser is LL(1)."), "steering")]
     assert app.asides.items[0].bridged == "summarized"
+    # Only the transcript says where the message came from.
+    assert "Sent the side thread's summary" in app.transcript.console.file.getvalue()
 
 
 def test_a_summary_that_is_stopped_or_has_lost_its_conversation_sends_nothing(tmp_path):
