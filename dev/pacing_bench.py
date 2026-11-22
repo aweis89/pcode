@@ -4,8 +4,9 @@
     uv run --no-sync python dev/pacing_bench.py --profile fast --spinners kitty
     uv run --no-sync python dev/pacing_bench.py --src .worktrees/base   # before/after a change
 
-Each run opens a fresh Ghostty Smooth window (your Ghostty config: with the
-default config the window does not answer the smooth probe in time) that
+One Ghostty Smooth window opens (your Ghostty config: with the default config
+it does not answer the smooth probe in time) and every run takes its turn in
+it, a fresh pcode process with the terminal reset in between. Each run
 streams a scripted mixed reply (prose, lists, code, tables) through the real
 interactive app with `paced_scrollback typed`. Setups cross `smooth_scroll`
 (native = `auto`, python = `off`) with `smooth_spinner` (kitty = `auto`,
@@ -27,6 +28,10 @@ A run that glided when it shouldn't (or didn't when it should), or whose
 spinners were the wrong kind, measured the wrong setup; the script prints what
 it has and stops. Results are noisy (roughly +/-20% run to run): compare
 averages over several runs. With `typical`, each run takes about a minute.
+
+`PACING_BENCH_CPROFILE=/tmp/p` cProfiles the streamed part of each run into
+`/tmp/p.<setup>.pstats` (`native-kitty`, ...; a later run of a setup replaces
+an earlier one's), so `--runs 1` profiles each setup once.
 """
 
 import argparse
@@ -161,6 +166,12 @@ def child(out: Path, frames: Path, profile: dict) -> None:
     ghostty_cpu: list[tuple[float, float]] = []  # (time, seconds), sampled by a thread
     mark: dict[str, float] = {}
     ghostty = _ghostty_pid()
+    # Set to a path, cProfile the streamed part (all threads) into it.
+    profiler = None
+    if os.environ.get("PACING_BENCH_CPROFILE"):
+        import cProfile
+
+        profiler = cProfile.Profile()
 
     def cpu() -> float:
         usage = resource.getrusage(resource.RUSAGE_SELF)
@@ -215,6 +226,9 @@ def child(out: Path, frames: Path, profile: dict) -> None:
             if stats["handoffs"] == seen:
                 break
         counting["on"] = False  # includes up to SETTLE_S of idle; both modes alike
+        if profiler is not None:
+            setup = Path(os.environ["PCODE_CONFIG_DIR"]).name
+            profiler.dump_stats(f"{os.environ['PACING_BENCH_CPROFILE']}.{setup}.pstats")
         # Measure up to the last handoff, not through the idle settle wait.
         end = stats["last"] or time.perf_counter()
         time.sleep(0.3)  # one more Ghostty sample past `end`
@@ -295,6 +309,8 @@ def child(out: Path, frames: Path, profile: dict) -> None:
             # Frame-log lines from startup animations are not part of the run.
             frames=frames.stat().st_size if frames.exists() else 0,
         )
+        if profiler is not None:
+            profiler.enable()
         for n, text in enumerate(sections):
             if n and profile["pause_s"]:
                 await asyncio.sleep(profile["pause_s"])
@@ -318,59 +334,127 @@ def child(out: Path, frames: Path, profile: dict) -> None:
     app.run()
 
 
-def run_one(
-    app: Path, setup: str, work: Path, n: int, timeout: float, profile: str, src: Path | None
-) -> dict | None:
-    mode, spinner = setup.split("/")
-    config = work / f"{mode}-{spinner}"
-    config.mkdir(exist_ok=True)
-    prefs = {
-        "smooth_scroll": MODES[mode],
-        "smooth_spinner": SPINNERS[spinner],
-        "paced_scrollback": "typed",
-        "session_host": "off",
-    }
-    (config / "preferences.json").write_text(json.dumps(prefs))
-    mode = f"{mode}-{spinner}"
-    out, frames, err = (work / f"{mode}-{n}.{ext}" for ext in ("json", "frames", "err"))
-    launcher = work / f"{mode}-{n}.sh"
-    q = shlex.quote
-    launcher.write_text(
-        "#!/bin/sh\n"
-        f"cd {q(str(work))}\n"
-        + (f"PYTHONPATH={q(str(src))} " if src else "")
-        + f"PCODE_CONFIG_DIR={q(str(config))} XDG_STATE_HOME={q(str(work / 'state'))} "
-        f"exec {q(sys.executable)} {q(str(Path(__file__).resolve()))} "
-        f"--child {q(str(out))} --frames {q(str(frames))} --profile {profile} "
-        f"2>{q(str(err))}\n"
-    )
-    launcher.chmod(0o755)
-    command = ["open", "-na", str(app), "--env", f"GHOSTTY_SMOOTH_FRAME_LOG={frames}", "--args"]
-    command += ["--window-width=110", "--window-height=40"]
-    command += ["--quit-after-last-window-closed=true"]
-    subprocess.run([*command, "-e", str(launcher)], check=True)
-    # The child `exec`s Python, so only the Ghostty instance has the launcher
-    # path on its command line: matching it finds (and kills) that instance.
-    deadline = time.monotonic() + timeout
-    started = False
-    while not out.exists():
-        alive = subprocess.run(["pgrep", "-f", str(launcher)], capture_output=True).returncode == 0
-        started = started or alive
-        if time.monotonic() > deadline or (started and not alive):
-            subprocess.run(["pkill", "-f", str(launcher)])
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+class HostWindow:
+    """One Ghostty Smooth window that runs every benchmark run in turn.
+
+    It opens once (taking focus once) and runs a shell loop: each run's
+    launcher, dropped in as `next.sh`, runs in it as a fresh pcode process,
+    then the loop restores the terminal (the child exits without tidying up)
+    before the next. One frame log serves the whole instance; each run reads
+    it from the byte offset it started at.
+    """
+
+    def __init__(self, app: Path, work: Path):
+        self.work = work
+        self.frames = work / "frames"
+        self.next = work / "next.sh"
+        self.stop = work / "stop"
+        self.host_pid = work / "host.pid"
+        q = lambda path: shlex.quote(str(path))  # noqa: E731
+        host = work / "host.sh"
+        # RIS resets modes, kitty images and smooth-scroll state; 3J drops scrollback.
+        host.write_text(
+            "#!/bin/sh\n"
+            f"echo $$ > {q(self.host_pid)}\n"
+            f"while [ ! -e {q(self.stop)} ]; do\n"
+            f"  if [ -e {q(self.next)} ]; then\n"
+            f"    mv {q(self.next)} {q(work / 'running.sh')}\n"
+            f"    sh {q(work / 'running.sh')}\n"
+            "    stty sane; printf '\\033c\\033[3J'\n"
+            "  else\n"
+            "    sleep 0.1\n"
+            "  fi\n"
+            "done\n"
+        )
+        host.chmod(0o755)
+        command = ["open", "-na", str(app), "--env", f"GHOSTTY_SMOOTH_FRAME_LOG={self.frames}"]
+        command += ["--args", "--window-width=110", "--window-height=40"]
+        command += ["--quit-after-last-window-closed=true", "-e", str(host)]
+        subprocess.run(command, check=True)
+        deadline = time.monotonic() + 30
+        while not self.host_pid.exists():
+            if time.monotonic() > deadline:
+                sys.exit("the Ghostty Smooth host window never started")
+            time.sleep(0.2)
+        self.pid = int(self.host_pid.read_text())
+
+    def close(self) -> None:
+        """End the loop, closing the window (and the instance) before `work` goes."""
+        self.stop.touch()
+        deadline = time.monotonic() + 5
+        while _alive(self.pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if _alive(self.pid):
+            subprocess.run(["kill", str(self.pid)], capture_output=True)
+
+    def run(
+        self, setup: str, n: int, timeout: float, profile: str, src: Path | None
+    ) -> dict | None:
+        work = self.work
+        mode, spinner = setup.split("/")
+        config = work / f"{mode}-{spinner}"
+        config.mkdir(exist_ok=True)
+        prefs = {
+            "smooth_scroll": MODES[mode],
+            "smooth_spinner": SPINNERS[spinner],
+            "paced_scrollback": "typed",
+            "session_host": "off",
+        }
+        (config / "preferences.json").write_text(json.dumps(prefs))
+        mode = f"{mode}-{spinner}"
+        out, err, pid_file = (work / f"{mode}-{n}.{ext}" for ext in ("json", "err", "pid"))
+        q = shlex.quote
+        staged = work / "next.tmp"
+        staged.write_text(
+            f"cd {q(str(work))}\n"
+            f"echo $$ > {q(str(pid_file))}\n"
+            + (f"PYTHONPATH={q(str(src))} " if src else "")
+            + f"PCODE_CONFIG_DIR={q(str(config))} XDG_STATE_HOME={q(str(work / 'state'))} "
+            f"exec {q(sys.executable)} {q(str(Path(__file__).resolve()))} "
+            f"--child {q(str(out))} --frames {q(str(self.frames))} --profile {profile} "
+            f"2>{q(str(err))}\n"
+        )
+        staged.rename(self.next)  # whole, so the loop never runs half a script
+
+        def give_up(why: str) -> None:
+            if pid_file.exists():
+                subprocess.run(["kill", pid_file.read_text().strip()], capture_output=True)
             tail = err.read_text()[-2000:] if err.exists() else ""
-            print(f"  {mode} run {n}: no result\n{tail}", file=sys.stderr)
-            return None
+            print(f"  {mode} run {n}: no result ({why})\n{tail}", file=sys.stderr)
+
+        deadline = time.monotonic() + timeout
+        while not out.exists():
+            if not _alive(self.pid):
+                sys.exit("the host window closed; benchmark stopped")
+            if time.monotonic() > deadline:
+                give_up("timed out")
+                return None
+            if pid_file.exists() and not _alive(int(pid_file.read_text())):
+                give_up("pcode exited")
+                return None
+            time.sleep(0.5)
+        # The child exits on its own once it has written its result; wait for
+        # it, and the loop's reset, so runs never overlap.
+        child = int(pid_file.read_text())
+        while _alive(child) and time.monotonic() < deadline + 10:
+            time.sleep(0.1)
+        if _alive(child):
+            subprocess.run(["kill", str(child)], capture_output=True)
         time.sleep(0.5)
-    time.sleep(1)
-    subprocess.run(["pkill", "-f", str(launcher)])
-    time.sleep(1)  # let the instance exit before the next run
-    result = json.loads(out.read_text())
-    if frames.exists():
-        with frames.open() as log:
-            log.seek(result.pop("frame_log_from"))
-            result["frames"] = [json.loads(line) for line in log if line.strip()]
-    return result
+        result = json.loads(out.read_text())
+        if self.frames.exists():
+            with self.frames.open() as log:
+                log.seek(result.pop("frame_log_from"))
+                result["frames"] = [json.loads(line) for line in log if line.strip()]
+        return result
 
 
 def frame_summary(runs: list[dict]) -> dict:
@@ -520,11 +604,12 @@ def main() -> None:
     spinners = list(SPINNERS) if args.spinners == "both" else [args.spinners]
     setups = [f"{mode}/{spinner}" for spinner in spinners for mode in MODES]
     results: dict[str, list[dict]] = {setup: [] for setup in setups}
+    window = HostWindow(args.app, work)
     try:
         for n in range(1, args.runs + 1):
             order = setups if n % 2 else list(reversed(setups))
             for setup in order:
-                result = run_one(args.app, setup, work, n, args.timeout, args.profile, src)
+                result = window.run(setup, n, args.timeout, args.profile, src)
                 if result is None:
                     continue
                 mode, spinner = setup.split("/")
@@ -544,6 +629,7 @@ def main() -> None:
                 print(f"  {mode} run {n}: {json.dumps(shown)}")
         report(results)
     finally:
+        window.close()
         if args.keep:
             print(f"\nraw results in {work}")
         else:

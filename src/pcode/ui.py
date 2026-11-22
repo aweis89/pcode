@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field, replace
 from functools import cache, cached_property, lru_cache, partial, wraps
 from io import StringIO
 from time import monotonic
+from time import time as wall_time
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, get_app_or_none
@@ -604,6 +605,8 @@ THOUGHT_HOLD_SECONDS = STATUS_HOLD_SECONDS
 # vanish when they settled. Their result is already in the tool row and
 # scrollback. A watched job skips the wait: the user asked to see it.
 COMMAND_PREVIEW_DELAY_SECONDS = 1.0
+# Streamed deltas redraw the live panel at most this often (`redraw_streamed`).
+STREAM_REDRAW_SECONDS = 1 / 20
 # Status text the row leads with verbatim; anything longer is detail.
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
@@ -2249,6 +2252,7 @@ class TerminalOutput:
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
+        self._stream_redraw: tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None = None
         self.commit_user = self.user
         self.commit_message = self.message
         self.commit_thinking = lambda text: self.print(
@@ -2389,6 +2393,39 @@ class TerminalOutput:
             if part.endswith("\n"):
                 self._commit_blocks()
         self.changed.set()
+
+    def redraw_streamed(self) -> None:
+        """Redraw for a streamed delta, no sooner than `STREAM_REDRAW_SECONDS` after the last frame.
+
+        A fast stream sends a delta every few milliseconds, and each frame
+        re-renders the whole layout. Within the interval one redraw is
+        scheduled for its end, and skipped if anything else (the pacer, a
+        spinner, a keystroke) has drawn the delta by then.
+        """
+        app = self.app
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if not isinstance(app, Application) or loop is None or loop is not app.loop:
+            app.invalidate()
+            return
+        # One pending at a time, unless it was left on a loop that stopped.
+        if self._stream_redraw is not None and self._stream_redraw[0] is loop:
+            return
+        drawn = app._last_redraw_time
+        # Clamped: a wall clock stepping back must not hold redraws for long.
+        wait = min(drawn + STREAM_REDRAW_SECONDS - wall_time(), STREAM_REDRAW_SECONDS)
+        if wait <= 0:
+            app.invalidate()
+            return
+
+        def due() -> None:
+            self._stream_redraw = None
+            if app._last_redraw_time == drawn:
+                app.invalidate()
+
+        self._stream_redraw = (loop, loop.call_later(wait, due))
 
     def _commit_blocks(self, *, thinking: bool = False) -> None:
         source = self._thinking_tail if thinking else self.tail
@@ -2681,19 +2718,26 @@ class TerminalOutput:
         if self.gliding and isinstance(self.app, Application):
             self._declare(None)
 
-    def _editor_pinned(self) -> bool:
+    def _editor_pinned(self, *, just_drawn: bool = False) -> bool:
         """Whether the editor sits at the bottom, so written rows scroll the screen.
 
         The layout's filler takes any rows left below scrollback; none are
         left once the drawn height is no more than the layout needs.
+        ``just_drawn``, right after a render, reuses the height that render
+        measured (`_MeasuredSplit`) rather than measuring the layout again.
         """
         renderer = self.app.renderer
         screen = renderer._last_screen
         if screen is None or renderer._in_alternate_screen or not self.app._is_running:
             return False
         size = self.app.output.get_size()
-        needed = self.app.layout.container.preferred_height(size.columns, size.rows)
-        return screen.height <= needed.preferred
+        root = self.app.layout.container
+        drawn = getattr(root, "drawn", None) if just_drawn else None
+        if drawn is not None and drawn[:2] == (size.columns, size.rows):
+            needed = drawn[2]
+        else:
+            needed = root.preferred_height(size.columns, size.rows).preferred
+        return screen.height <= needed
 
     def _drawn_height(self) -> int | None:
         """Rows the layout was last drawn over, from the bottom of the screen."""
@@ -2855,9 +2899,7 @@ class TerminalOutput:
     def _track_layout(self, app) -> None:
         top = layout_top_row(app)
         screen = app.renderer._last_screen
-        # Measured once: after the render the per-render cache is gone, so each
-        # call re-measures the whole layout, and this runs after every render.
-        pinned = self._editor_pinned()
+        pinned = self._editor_pinned(just_drawn=True)
         if top is not None and screen is not None and pinned:
             # Pinned, the layout fills the bottom ``screen.height`` rows. Not
             # `layout_top_row`: after a write that scrolled, it rests on the
@@ -2902,8 +2944,7 @@ class TerminalOutput:
         grown = screen.height - last[0]
         if not (pinned and last[1] and grown > 0):
             # Nothing scrolled: rows may still have moved within the panel.
-            shaded = _shaded_rows(screen, getattr(app, "_merged_style", None))
-            self._glide_moves(app, screen.height, keys, last_keys, shaded, grown)
+            self._glide_moves(app, screen.height, keys, last_keys, grown=grown)
             return
         app.output.write_raw(smooth_scroll.advance(grown))
         self._glide_panel(app, screen.height, grown, spans, last_spans)
@@ -2914,10 +2955,14 @@ class TerminalOutput:
         height: int,
         keys,
         last_keys,
-        shaded: set[int] | frozenset[int] = frozenset(),
+        shaded: set[int] | frozenset[int] | None = None,
         grown: int = 0,
     ) -> None:
         """Glide live panel rows that moved up or down since the last render.
+
+        ``shaded`` defaults to the last screen's `_shaded_rows`, worked out only
+        once rows did move: it resolves a style per row, and this runs after
+        nearly every render.
 
         A row leaving the panel drops the rows above it into its place, and
         one arriving while the screen has room lifts them. Rows are matched by
@@ -2932,6 +2977,8 @@ class TerminalOutput:
                 self._end_panel()
             return
         distance, low, high = move
+        if shaded is None:
+            shaded = _shaded_rows(app.renderer._last_screen, getattr(app, "_merged_style", None))
         rows = app.output.get_size().rows
         top, bottom = rows - high, rows - low  # 0-based screen rows, where they are now
         floor = rows - height + 2
@@ -3087,6 +3134,33 @@ def _per_render(method):
     return cached
 
 
+class _MeasuredSplit(HSplit):
+    """The layout root, remembering the height it was measured at for its last frame.
+
+    The renderer measures the root and then draws it. Code that runs right
+    after a render (`TerminalOutput._track_layout`, on every frame while
+    gliding) reads that measurement from `drawn` instead of walking the whole
+    layout again, uncached once the redraw is over.
+    """
+
+    _measured: tuple[int, int, int] | None = None
+    # (width, max height, preferred height) the last drawn frame was measured at.
+    drawn: tuple[int, int, int] | None = None
+
+    def begin_frame(self) -> None:
+        """Forget measurements taken between redraws; called before each one."""
+        self._measured = None
+
+    def preferred_height(self, width: int, max_available_height: int):
+        dimension = super().preferred_height(width, max_available_height)
+        self._measured = (width, max_available_height, dimension.preferred)
+        return dimension
+
+    def write_to_screen(self, *args, **kwargs) -> None:
+        self.drawn, self._measured = self._measured, None
+        super().write_to_screen(*args, **kwargs)
+
+
 def _preview_body(diff: bool, body: str, width: int, theme: str):
     # Only the most recent body is retained. Titles and height/tail allocation
     # stay outside this cache; width, kind and syntax theme affect rendering.
@@ -3234,6 +3308,7 @@ class PromptLayout:
         self.kitty_spinners = kitty_spinners
         self.editor = _fit_editor(session)
         self.render_cache = None
+        self.root: _MeasuredSplit | None = None  # set by `layout()`
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
         self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
@@ -3263,10 +3338,17 @@ class PromptLayout:
         self.menu_overflowed = False
 
     def size(self):
+        # Read once per redraw, as prompt_toolkit's renderer does: layout
+        # callbacks ask over a hundred times a frame, each a syscall.
+        cache = self.render_cache
+        if cache is not None and (size := cache.get("size")) is not None:
+            return size
         size = self.session.app.output.get_size()
         # Every layout read comes through here, so the activity panel's size rule
         # follows a resize or split before anything is measured against it.
         self.activity.fit_screen(size.columns, size.rows)
+        if cache is not None:
+            cache["size"] = size
         return size
 
     # Heights and rows, each computed at most once per redraw.
@@ -4375,13 +4457,11 @@ class PromptLayout:
             children[:0] = [self.typing(), self.glide_reserve(), Window()]
         if self.session.bottom_toolbar is not None:
             children.append(self.bottom_toolbar())
-        return Layout(
-            HSplit(
-                children,
-                align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
-            ),
-            focused_element=self.editor,
+        self.root = _MeasuredSplit(
+            children,
+            align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
         )
+        return Layout(self.root, focused_element=self.editor)
 
     # Redraw hooks: the per-render cache and the spinner's animation timer.
 
@@ -4411,6 +4491,8 @@ class PromptLayout:
 
     def before_render(self, app) -> None:
         self.render_cache = {}
+        if self.root is not None:
+            self.root.begin_frame()
         self.btw.sync()
         transcript, activity = self.transcript, self.activity
         if (

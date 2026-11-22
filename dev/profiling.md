@@ -209,8 +209,9 @@ session persistence, or a long-lived conversation's memory.
 
 ## Native vs Python pacing in a real terminal
 
-`dev/pacing_bench.py` opens fresh Ghostty Smooth windows (macOS) and streams a
-scripted reply through the real interactive app. It crosses `smooth_scroll auto`
+`dev/pacing_bench.py` opens one Ghostty Smooth window (macOS), taking focus once,
+and streams a scripted reply through the real interactive app in it, a fresh pcode
+process per run with the terminal reset in between. It crosses `smooth_scroll auto`
 (native protocol 9 pacing) and `off` (the Python pacer) with kitty and text
 spinners, in ABBA order. The `typical` profile thinks for 10 s first, measured
 separately, then streams at about 40 tokens/s; `fast` is one burst. It prints
@@ -233,7 +234,7 @@ should, measured the wrong pacer: usually the terminal answered no protocol or a
 older one (`probe`). The script prints what it has and stops rather than mixing
 setups. CPU varies about ±20% run to run, so a two-run difference meant nothing in
 practice: keep five runs or more. Ghostty stops drawing hidden windows, so frame
-gaps need the benchmark windows on screen, and they are timed when Ghostty draws
+gaps need the benchmark window on screen (park it in a corner, not behind others), and they are timed when Ghostty draws
 (render-thread pacing, not compositor presentation). A window started with
 `--config-default-files=false` never answered the smooth probe in time, so the
 benchmark uses your Ghostty config.

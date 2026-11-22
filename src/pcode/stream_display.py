@@ -142,6 +142,8 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         output.finish()
         output.thinking_delta(event.text)
         activity.think(event.text)
+        output.redraw_streamed()  # The thinking rows follow at a capped frame rate.
+        return
     elif isinstance(event, Thinking):
         output.finish_thinking(event.text, complete=True)
         if activity.thought_done and event.text:
@@ -156,6 +158,10 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         activity.status = "Responding…"
         if event.text.strip():  # An empty part start says nothing yet.
             activity.forget_thought()
+        # The pacer redraws as it types the text out; a delta itself changes
+        # little on screen, so its redraws are capped.
+        output.redraw_streamed()
+        return
     elif isinstance(event, CacheBust):
         # A footer note, not a scrollback line: the session journal keeps the
         # full notice (and its cause) for anyone diagnosing it later.
