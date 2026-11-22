@@ -760,3 +760,25 @@ def test_gemini_summaries_think_little_so_the_answer_fits():
     assert summary_settings(gemini, 1_048_576) == {"max_tokens": 6000, "thinking": "low"}
     # Other providers' thinking is left as it is: asking could turn it on.
     assert summary_settings(FunctionModel(lambda *_: None), 40_000) == {"max_tokens": 5000}
+
+
+def test_compact_on_antigravity_that_never_saw_the_history_says_so(monkeypatch):
+    """A conversation begun on another model is not "within the budget"."""
+    from pcode.antigravity import AntigravityModel
+
+    async def unseen(self, history, cwd, focus=""):
+        return None
+
+    monkeypatch.setattr(AntigravityModel, "compact", unseen)
+
+    async def run():
+        runtime = AgentRuntime(Agent(AntigravityModel("fake-neon")))
+        empty = await runtime.compact()
+        runtime.history = history()
+        started_elsewhere = await runtime.compact()
+        return empty, started_elsewhere
+
+    empty, started_elsewhere = asyncio.run(run())
+    assert "within the recent-context budget" in empty.description()
+    assert not started_elsewhere.changed
+    assert "hasn't seen this conversation" in started_elsewhere.description()

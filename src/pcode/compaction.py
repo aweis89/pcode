@@ -168,8 +168,17 @@ class CompactionResult:
     changed: bool
     # The model compacted its own context (`antigravity:`): pcode's history is as it was.
     native: bool = False
+    # Antigravity was asked but holds none of this history (it began on
+    # another model and no turn has run since), so nothing was compacted.
+    unseen: bool = False
 
     def description(self) -> str:
+        if self.unseen:
+            return (
+                "Nothing compacted: Antigravity hasn't seen this conversation yet, since "
+                "it started on another model. Send a turn first, or /compact on the "
+                "earlier model before switching."
+            )
         if self.native:
             # Right after, it reports the compaction request itself, which in a
             # small session is more than it freed.

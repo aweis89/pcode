@@ -887,7 +887,9 @@ class AgentRuntime:
 
             sizes = await native.compact(self.history, str(self._workspace_dir()), focus)
             if sizes is None:
-                return CompactionResult(self.history, 0, 0, False)
+                # With history, None means Antigravity never saw it, not that
+                # it is small: "within the budget" would be false.
+                return CompactionResult(self.history, 0, 0, False, unseen=bool(self.history))
             return CompactionResult(self.history, sizes[0] or 0, sizes[1] or 0, False, native=True)
         usage = RunUsage()
         # Size the kept history and summary to the autocompact cap, as automatic
