@@ -57,6 +57,8 @@ DELTA_EVENTS = (TextDelta, ThinkingDelta)
 # How long a host with nothing to do waits for a terminal before stopping, when
 # `session_host_idle_minutes` is 0: long enough to /attach away and back.
 IDLE_GRACE_SECONDS = 15.0
+# How often drawers watching the side questions hear of changes (`pcode.drawer`).
+OBSERVER_INTERVAL = 0.08
 SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 
 # View calls that change what the conversation is, so a terminal attaching
@@ -468,6 +470,13 @@ class SessionHost:
         self._host_asides = 0
         # A remote profile's per-turn wall clock, while a turn runs.
         self._turn_clock: asyncio.TimerHandle | None = None
+        # Drawers watching the side questions (`pcode.drawer`): not terminals,
+        # not connections, and allowed to call nothing.
+        self.observers: set[Peer] = set()
+        # Side questions changed since observers last heard, sent together
+        # shortly after, so a streaming answer is not rendered per token.
+        self._observed: dict[str, object] = {}
+        self._observe_flush: asyncio.TimerHandle | None = None
 
     @property
     def socket(self) -> Path:
@@ -553,6 +562,9 @@ class SessionHost:
             hello = await read_message(reader)
         except ValueError:
             hello = None
+        if hello is not None and hello.get("type") == "observe":
+            await self._observe(hello, reader, writer)
+            return
         if hello is None or hello.get("type") != "hello":
             writer.close()
             return
@@ -586,6 +598,55 @@ class SessionHost:
                     self.running_command = None
                 if not self.stopped.is_set():
                     self.update(attached=len(self.terminals()))
+
+    async def _observe(
+        self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """A drawer showing the side questions (`pcode.drawer`), until it goes.
+
+        It gets the page to show them in, every side question, then each
+        change. It may call nothing, and it is not a terminal: it neither keeps
+        an idle host running nor marks a finished turn seen.
+        """
+        from pcode import drawer
+
+        if hello.get("version") != drawer.OBSERVER_VERSION:
+            writer.write(dumps({"type": "error", "message": "Unsupported drawer version."}))
+            await writer.drain()
+            writer.close()
+            return
+        writer.write(
+            dumps({"type": "ready", "version": drawer.OBSERVER_VERSION, "page": drawer.page()})
+        )
+        peer = Peer(reader, writer, object(), allowed=frozenset())
+        counted = False
+        try:
+            self.observers.add(peer)
+            asides = self.controller.asides.items
+            peer.notify(
+                "asides", [drawer.observer_state(self.aside_state(aside)) for aside in asides]
+            )
+            # Counted from hello on, as every connection; no longer once it is a drawer.
+            self.connections -= 1
+            counted = True
+            await peer.serve()
+        except ValueError, ConnectionError:
+            pass
+        finally:
+            if counted:
+                self.connections += 1
+            self.observers.discard(peer)
+            peer.close()
+
+    def _notify_observers(self) -> None:
+        from pcode import drawer
+
+        self._observe_flush = None
+        changed, self._observed = list(self._observed.values()), {}
+        for aside in changed:
+            state = drawer.observer_state(self.aside_state(aside))
+            for peer in list(self.observers):
+                peer.notify("aside_changed", state)
 
     def attach(self, client: _Client) -> dict:
         from pcode.rpc import encode
@@ -830,6 +891,12 @@ class SessionHost:
     def emit_aside(self, aside) -> None:
         for client in list(self.clients.values()):
             client.peer.notify("aside_changed", self.aside_state(aside))
+        if self.observers:
+            self._observed[aside.id] = aside
+            if self._observe_flush is None:
+                self._observe_flush = asyncio.get_running_loop().call_later(
+                    OBSERVER_INTERVAL, self._notify_observers
+                )
 
     def push_state(self) -> None:
         """Send the session state if it changed since the last one sent."""
@@ -1029,6 +1096,12 @@ class SessionHost:
             # Older terminals ignore the argument; newer ones point at the successor.
             client.peer.notify("host_closed", self.successor)
             client.peer.close()
+        if self._observe_flush is not None:
+            self._observe_flush.cancel()
+            self._notify_observers()
+        for peer in list(self.observers):
+            peer.notify("host_closed")
+            peer.close()
         controller.cancel_all()
         viewers = list(self.view.viewers)
         for task in (*self.tasks, *viewers):

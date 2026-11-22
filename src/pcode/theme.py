@@ -42,6 +42,8 @@ _ambiguous_wide: bool | None = None
 _cursor_row: int | None = None
 # The smooth-scroll protocol version the terminal reported; None if it didn't.
 _glide_protocol: int | None = None
+# The drawer protocol the startup probe heard (`pcode.drawer`), or None.
+_drawer_protocol: int | None = None
 
 
 # The last background the terminal reported, as `#rrggbb` with the theme it
@@ -67,6 +69,25 @@ def glide_supported() -> bool:
     from pcode import smooth_scroll
 
     return _glide_protocol == smooth_scroll.PROTOCOL
+
+
+def drawer_supported() -> bool:
+    """Whether the startup probe found a terminal that opens pcode's drawer."""
+    from pcode import drawer
+
+    return _drawer_protocol == drawer.PROTOCOL
+
+
+def _take_drawer_reply(response: bytearray) -> None:
+    global _drawer_protocol
+    from pcode import drawer
+
+    _drawer_protocol = None
+    match = drawer.REPLY.search(response)
+    if match is not None:
+        version = drawer.VERSION.fullmatch(match[1])
+        _drawer_protocol = int(version[1]) if version else None
+        del response[match.start() : match.end()]
 
 
 def _take_glide_reply(response: bytearray) -> None:
@@ -156,6 +177,7 @@ def _query_background(
     probe_width: bool = False,
     probe_cursor: bool = False,
     probe_glide: bool = False,
+    probe_drawer: bool = False,
 ) -> str | None:
     global _unanswered_cprs, _cursor_row, _glide_protocol
     _cursor_row = None
@@ -182,6 +204,12 @@ def _query_background(
         if probe_glide and handle is None and smooth_scroll.worth_asking()
         else b""
     )
+    from pcode import drawer
+
+    # Asked of Ghostty only, as the glide is, for the same reasons.
+    drawer_query = (
+        drawer.QUERY if probe_drawer and handle is None and smooth_scroll.worth_asking() else b""
+    )
     expected_cprs = 2 if probe_width else 1 if probe_cursor else 0
     measured = expected_cprs == 0
     detected = None
@@ -204,7 +232,7 @@ def _query_background(
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
             probe = _WIDTH_PROBE if probe_width else _CURSOR_PROBE if probe_cursor else b""
-            os.write(query_fd, glide_query + b"\x1b]11;?\x1b\\" + probe)
+            os.write(query_fd, glide_query + drawer_query + b"\x1b]11;?\x1b\\" + probe)
             deadline = time.monotonic() + timeout
             while detected is None or not measured:
                 remaining = deadline - time.monotonic()
@@ -225,6 +253,8 @@ def _query_background(
             if glide_query:
                 _glide_protocol = None
                 _take_glide_reply(response)
+            if drawer_query:
+                _take_drawer_reply(response)
             if not measured:
                 _unanswered_cprs = expected_cprs - len(_CPR.findall(response))
                 response[:] = _CPR.sub(b"", response)
@@ -264,16 +294,24 @@ def replay_pending_input(app, on_theme=None) -> None:
 
 
 def detect_theme(
-    *, probe_width: bool = False, probe_cursor: bool = False, probe_glide: bool = False
+    *,
+    probe_width: bool = False,
+    probe_cursor: bool = False,
+    probe_glide: bool = False,
+    probe_drawer: bool = False,
 ) -> str:
     """Use OSC 11, then COLORFGBG (when supplied by the terminal), then dark.
 
     `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`);
     `probe_cursor` records the starting cursor row (`take_initial_cursor_row`);
-    `probe_glide` asks whether the terminal glides (`glide_supported`).
+    `probe_glide` asks whether the terminal glides (`glide_supported`);
+    `probe_drawer` whether it opens pcode's drawer (`drawer_supported`).
     """
     detected = _query_background(
-        probe_width=probe_width, probe_cursor=probe_cursor, probe_glide=probe_glide
+        probe_width=probe_width,
+        probe_cursor=probe_cursor,
+        probe_glide=probe_glide,
+        probe_drawer=probe_drawer,
     )
     if detected is not None:
         return detected

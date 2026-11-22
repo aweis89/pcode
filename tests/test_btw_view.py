@@ -685,3 +685,37 @@ def test_keep_thread_is_a_host_query():
     from pcode.controller import QUERIES
 
     assert "keep_thread" in QUERIES
+
+
+def test_a_drawer_shows_the_thread_beside_the_conversation(monkeypatch):
+    """`btw_view drawer`: an APC names the thread; the screen keeps the conversation."""
+    screen = Screen(monkeypatch)
+    transcript, activity = screen.transcript, screen.activity
+    transcript.message("CONVERSATION")
+    screen.flush()
+    writes: list[str] = []
+    screen.output.app.output.write_raw = writes.append
+    aside = answered("why?", "Because.")
+    aside.read = False
+    activity.asides = [aside]
+    view = ThreadView(activity, transcript)
+    view.drawer_host = lambda: "a1234567"
+    seen = []
+    view.on_read = seen.append
+    view.sync()
+    assert writes == [], "no thread, no drawer: nothing to say"
+    open_thread(activity, aside.thread)
+    view.sync()
+    view.sync()
+    assert writes == [f"\x1b_pcode;btw;a1234567;{aside.thread}\x1b\\"]
+    assert screen.output.view is None and "why?" not in screen.flush()
+    assert seen == [[aside.id]]
+    close(activity)
+    view.sync()
+    assert writes[-1] == "\x1b_pcode;close\x1b\\"
+    # Without a drawer any more (another session), an open one closes and the swap draws.
+    open_thread(activity, aside.thread)
+    view.sync()
+    view.drawer_host = lambda: None
+    view.sync()
+    assert writes[-1] == "\x1b_pcode;close\x1b\\" and "Because." in screen.flush()

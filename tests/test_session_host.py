@@ -2228,3 +2228,49 @@ def test_restart_lets_the_host_start_its_successor_and_attaches_to_it(monkeypatc
         assert runtime.stopped_with is True and started == ["session-1"]
 
     asyncio.run(run())
+
+
+def test_a_drawer_watches_side_questions_read_only_and_never_holds_the_host(tmp_path, host_dir):
+    """`pcode.drawer`: an observer gets rendered side answers, may call nothing, is no terminal."""
+    import json
+
+    from pcode.aside import Aside
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            aside = Aside(question="why?", status="answered", answer="**because** <b>x</b>")
+            host.controller.asides.items.append(aside)
+            reader, writer = await asyncio.open_unix_connection(str(host.socket), limit=2**24)
+
+            async def message():
+                return json.loads(await asyncio.wait_for(reader.readline(), 5))
+
+            writer.write(b'{"type": "observe", "version": 1}\n')
+            ready = await message()
+            assert ready["type"] == "ready" and "<html" in ready["page"]
+            [state] = (await message())["args"][0]
+            assert state["answer_html"] == "<p><strong>because</strong> &lt;b&gt;x&lt;/b&gt;</p>\n"
+            await until(lambda: host.connections == 0)
+            assert host.idle() and not host.clients, "an open drawer is not a terminal"
+
+            aside.answer += " more"
+            host.emit_aside(aside)
+            changed = await message()
+            assert changed["method"] == "aside_changed"
+            assert "more" in changed["args"][0]["answer_html"]
+
+            writer.write(
+                b'{"type": "request", "id": 1, "method": "submit", "args": ["ls", "shell"]}\n'
+            )
+            refused = await message()
+            assert refused["error"]["type"] == "PermissionError"
+
+            host.stop()
+            await host.close()
+            assert (await message())["method"] == "host_closed"
+            writer.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())

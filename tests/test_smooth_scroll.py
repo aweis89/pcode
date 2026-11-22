@@ -79,13 +79,22 @@ def test_only_ghostty_outside_tmux_is_asked(env, asked):
     assert smooth_scroll.worth_asking(env) is asked
 
 
-def _probe(monkeypatch, *, term="xterm-ghostty", answer=b"", probe_glide=True, background=True):
+def _probe(
+    monkeypatch,
+    *,
+    term="xterm-ghostty",
+    answer=b"",
+    probe_glide=True,
+    probe_drawer=False,
+    background=True,
+):
     """Run the startup query on a pty; return what was sent and the leftover input."""
     master, slave = pty.openpty()
     monkeypatch.setenv("TERM", term)
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TERM_PROGRAM", raising=False)
     monkeypatch.setattr(theme, "_glide_protocol", None)
+    monkeypatch.setattr(theme, "_drawer_protocol", None)
     monkeypatch.setattr(theme, "_pending_input", bytearray())
     received = []
 
@@ -101,7 +110,9 @@ def _probe(monkeypatch, *, term="xterm-ghostty", answer=b"", probe_glide=True, b
             monkeypatch.setattr(sys, "stdout", stdout)
             worker.start()
             timeout = 1.0 if background else 0.3
-            detected = theme._query_background(timeout, probe_glide=probe_glide)
+            detected = theme._query_background(
+                timeout, probe_glide=probe_glide, probe_drawer=probe_drawer
+            )
             assert detected == ("dark" if background else None)
             worker.join(2)
     finally:
@@ -143,7 +154,21 @@ def test_query_is_not_sent_unasked(monkeypatch, term, probe_glide):
     assert not theme.glide_supported()
 
 
-@pytest.mark.parametrize("reply", [REPLY.decode(), "\x1b_smooth;error;7\x1b\\"])
+def test_probe_finds_a_terminal_with_a_drawer_beside_the_glide(monkeypatch):
+    sent, left = _probe(monkeypatch, answer=REPLY + b"\x1b_pcode;ok;1\x1b\\", probe_drawer=True)
+    assert sent.startswith(smooth_scroll.QUERY + b"\x1b_pcode;?\x1b\\")
+    assert theme.glide_supported() and theme.drawer_supported()
+    assert left == b""
+
+
+def test_the_drawer_is_not_asked_after_unless_wanted(monkeypatch):
+    sent, _ = _probe(monkeypatch, answer=REPLY)
+    assert b"pcode;" not in sent and not theme.drawer_supported()
+
+
+@pytest.mark.parametrize(
+    "reply", [REPLY.decode(), "\x1b_smooth;error;7\x1b\\", "\x1b_pcode;ok;1\x1b\\"]
+)
 def test_a_late_reply_is_kept_out_of_typing(reply):
     text = "ab" + reply + "c\x1b[A"
     for split in range(len(text) + 1):

@@ -4415,6 +4415,7 @@ class Transcript:
                 probe_width=probe_width,
                 probe_cursor=probe_cursor,
                 probe_glide=probe_glide and self.smooth_scroll == "auto",
+                probe_drawer=probe_glide and preferences.get("btw_view") == "drawer",
             )
             if detected_theme is None
             else detected_theme

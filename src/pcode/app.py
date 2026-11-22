@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from contextlib import ExitStack, aclosing, asynccontextmanager, nullcontext
 from pathlib import Path
@@ -297,6 +298,9 @@ class PreviewApp:
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
+        # `btw_view` as `drawer_host` last read it, and when.
+        self._drawer_pref = False
+        self._drawer_pref_at = float("-inf")
         # `/merge` and `/summarize` sent from a swapped-in /btw thread, while they run.
         self._btw_tasks: set[asyncio.Task] = set()
         # The popup generation an auto-open `/btw` was queued in. That viewer
@@ -2250,7 +2254,32 @@ class PreviewApp:
         Only a terminal can be rebuilt; anywhere else the popup shows them.
         """
         view = load_preferences().get("btw_view", SETTINGS["btw_view"].default)
-        return view == "swap" and self.transcript.console.is_terminal
+        # A drawer replies from the editor as a swap does; with none, it is one.
+        return view in ("swap", "drawer") and self.transcript.console.is_terminal
+
+    def drawer_host(self) -> str | None:
+        """The session host a drawer beside the terminal reads threads from (`pcode.drawer`).
+
+        Only for a terminal that answered the drawer probe (asked with
+        `btw_view drawer` at startup), while the setting still says drawer, and
+        a session host whose socket that terminal can find; else None. Asked
+        every frame, so the setting is read again at most once a second.
+        """
+        from pcode import drawer, theme
+        from pcode.host_protocol import host_dir
+
+        if not theme.drawer_supported():
+            return None
+        now = time.monotonic()
+        if now - self._drawer_pref_at > 1.0:
+            self._drawer_pref_at = now
+            self._drawer_pref = load_preferences().get("btw_view") == "drawer"
+        runtime = getattr(self.controller, "runtime", None)
+        if not (self._drawer_pref and getattr(runtime, "remote", False)):
+            return None
+        if not drawer.reachable(host_dir()) or not drawer.valid_host(runtime.id):
+            return None
+        return runtime.id
 
     def _swap_hides_draft(self) -> bool:
         """Whether swapping a thread in now would hide a draft to the conversation.
@@ -2996,6 +3025,7 @@ class PreviewApp:
         thread_view = getattr(session, "btw_view", None)
         if thread_view is not None:
             thread_view.on_read = self.asides_seen
+            thread_view.drawer_host = self.drawer_host
         output = TerminalOutput(
             self.transcript.console,
             session.app,
@@ -3119,6 +3149,8 @@ class PreviewApp:
                 # Leave the conversation in scrollback, never a side thread.
                 self.close_btw()
                 thread_view.sync()
+                # The editor no longer renders, so a drawer's close goes out now.
+                output.app.output.flush()
             await output.flush(drain=True)
             self.transcript.output = None
         self.print_resume_hint()

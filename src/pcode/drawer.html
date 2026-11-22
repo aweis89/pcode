@@ -1,0 +1,158 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Served by the session host to the terminal's drawer (`pcode.drawer`). Nothing loads
+     from anywhere: answers arrive as HTML already rendered with raw HTML escaped. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline-script'; base-uri 'none'; form-action 'none'">
+<!-- `pcode.drawer.page` puts the hash of the script below in place of 'unsafe-inline-script'. -->
+<style>
+  :root {
+    --bg: #1e1e1e; --fg: #d4d4d4; --muted: #8a8a8a; --accent: #c586c0;
+    --line: rgba(127,127,127,.25); --code: rgba(127,127,127,.14); --link: #4fa3ff;
+    --error: #f2777a;
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    padding: 0 14px 24px; overflow-wrap: anywhere;
+  }
+  header {
+    position: sticky; top: 0; background: var(--bg); padding: 10px 0 8px;
+    border-bottom: 1px solid var(--line); margin-bottom: 10px; z-index: 1;
+  }
+  .badge {
+    display: inline-block; background: var(--accent); color: var(--bg); font-weight: 600;
+    border-radius: 4px; padding: 0 6px; margin-right: 6px; font-size: 11px;
+  }
+  .title { font-weight: 600; }
+  .meta, .status { color: var(--muted); font-size: 12px; }
+  .question {
+    margin: 16px 0 8px; padding: 6px 10px; border-left: 3px solid var(--accent);
+    white-space: pre-wrap; background: var(--code); border-radius: 0 4px 4px 0;
+  }
+  .question:first-child { margin-top: 0; }
+  .answer p { margin: 0 0 10px; }
+  .answer pre {
+    background: var(--code); padding: 8px 10px; border-radius: 6px; overflow-x: auto;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .answer code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .answer :not(pre) > code { background: var(--code); border-radius: 3px; padding: 0 3px; }
+  .answer table { border-collapse: collapse; margin: 0 0 10px; }
+  .answer th, .answer td { border: 1px solid var(--line); padding: 3px 8px; }
+  .answer blockquote { margin: 0 0 10px; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+  .answer a { color: var(--link); }
+  .error { color: var(--error); }
+  .empty { color: var(--muted); padding-top: 40px; text-align: center; }
+  .spinner::before { content: "●"; animation: pulse 1s ease-in-out infinite; margin-right: 4px; }
+  @keyframes pulse { 50% { opacity: .2; } }
+</style>
+</head>
+<body>
+<header><span class="badge">btw</span><span class="title" id="title"></span>
+  <div class="meta" id="meta"></div></header>
+<main id="thread"><div class="empty">No side thread shown.</div></main>
+<script>
+"use strict";
+(() => {
+  const asides = new Map();   // id -> state, in the order they arrived
+  let shown = null;           // the thread the terminal asked for
+  let closed = false;
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  function thread() {
+    return [...asides.values()].filter((a) => a.thread === shown)
+      .sort((a, b) => (a.started || 0) - (b.started || 0));
+  }
+
+  function nearBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+  }
+
+  function render() {
+    const stick = nearBottom();
+    const items = thread();
+    const main = $("thread");
+    main.replaceChildren();
+    if (!items.length) {
+      $("title").textContent = "";
+      $("meta").textContent = closed ? "The session host has stopped." : "";
+      main.append(el("div", "empty", closed ? "Session closed." : "No side thread shown."));
+      return;
+    }
+    const first = items[0];
+    $("title").textContent = first.question.split("\n")[0].slice(0, 120);
+    const running = items.some((a) => a.status === "running");
+    $("meta").textContent = [first.label, `${items.length} question${items.length > 1 ? "s" : ""}`,
+      running ? "answering…" : "", "reply from the terminal editor"]
+      .filter(Boolean).join(" · ");
+    for (const aside of items) {
+      main.append(el("div", "question", aside.question));
+      const answer = el("div", "answer");
+      // Rendered by the host with raw HTML escaped (`pcode.drawer.markdown_html`).
+      answer.innerHTML = aside.answer_html || "";
+      main.append(answer);
+      if (aside.status === "running") {
+        main.append(el("div", "status spinner", aside.activity || "Thinking"));
+      } else if (aside.error) {
+        main.append(el("div", "status error", aside.error));
+      } else if (aside.status && aside.status !== "done") {
+        main.append(el("div", "status", aside.status));
+      }
+    }
+    if (stick) window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  let pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; render(); });
+  }
+
+  window.pcode = {
+    // One message from the session host, as the observer connection sent it.
+    message(msg) {
+      if (!msg || msg.type !== "notify") return;
+      const [arg] = msg.args || [];
+      if (msg.method === "asides") {
+        asides.clear();
+        for (const state of arg || []) asides.set(state.id, state);
+      } else if (msg.method === "aside_changed" && arg) {
+        asides.set(arg.id, arg);
+      } else if (msg.method === "host_closed") {
+        closed = true;
+      } else {
+        return;
+      }
+      schedule();
+    },
+    // The terminal asked for this thread (`ESC _ pcode;btw;<host>;<thread>`).
+    show(thread) {
+      const jump = thread !== shown;
+      shown = thread;
+      render();
+      if (jump) window.scrollTo(0, document.body.scrollHeight);
+    },
+    theme(colors) {
+      const root = document.documentElement.style;
+      for (const [name, value] of Object.entries(colors || {})) {
+        if (/^#[0-9a-f]{6}$/i.test(value)) root.setProperty(`--${name}`, value);
+      }
+    },
+  };
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") window.webkit?.messageHandlers?.pcode?.postMessage("focus_terminal");
+  });
+})();
+</script>
+</body>
+</html>

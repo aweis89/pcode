@@ -13,6 +13,10 @@ stays on the editor's border, and the side question's own row in the live
 panel above the editor. Its warnings and errors flash there as well.
 
 What is shown lives on `Activity.btw_thread`: the thread on screen, or None.
+
+With `btw_view drawer` in a terminal that has one (`pcode.drawer`), the thread
+is drawn in a drawer beside the terminal instead, and the screen keeps the
+conversation; the editor still replies to the thread.
 """
 
 from dataclasses import dataclass
@@ -21,6 +25,7 @@ from rich.text import Text
 
 from pcode.aside import Aside
 from pcode.conversation_tree import excerpt
+from pcode.drawer import CLOSE
 from pcode.markdown import Markdown
 from pcode.terminal_text import safe_text
 
@@ -114,6 +119,10 @@ class ThreadView:
         # Told the ids of answers once they are on screen whole, e.g. so a
         # session host stops announcing them to its other terminals.
         self.on_read = None
+        # The session host whose drawer shows threads (`pcode.drawer`), or None
+        # to draw them here; asked before every sync.
+        self.drawer_host = lambda: None
+        self._drawn: tuple[str, str | None] | None = None
         self._shown: str | None = None
         self._written: dict[str, _Written] = {}
 
@@ -124,6 +133,14 @@ class ThreadView:
             return
         thread = current(self.activity)
         shown = thread[0].thread if thread else None
+        host = self.drawer_host()
+        if host is not None:
+            self._sync_drawer(output, host, shown, thread)
+            return
+        if self._drawn is not None:
+            # The drawer went (another session, say): close it, and draw here.
+            self._drawn = None
+            output.app.output.write_raw(CLOSE)
         # Judged against the screen too, not only the last call: whatever
         # left a view open, or replaced the output under one, this frame
         # puts the screen back where `Activity` says it is. (`open_view` keeps
@@ -142,6 +159,27 @@ class ThreadView:
             output.open_view(self.replay)
         else:
             output.view_print(entries)
+
+    def _sync_drawer(self, output, host: str, shown: str | None, thread: list[Aside]) -> None:
+        """Point the drawer at the thread on `Activity`; the screen keeps the conversation."""
+        from pcode.drawer import open_btw
+
+        if output.view is not None:
+            self._shown = None
+            output.close_view(self.transcript.replay)
+        drawn = (host, shown)
+        if drawn != self._drawn:
+            # Never opened, nothing to close: a terminal with no drawer open hears nothing.
+            if shown is not None or self._drawn is not None:
+                output.app.output.write_raw(open_btw(host, shown) if shown else CLOSE)
+            self._drawn = drawn if shown is not None else None
+        # Shown whole in the drawer is read, as on screen.
+        seen = []
+        for aside in thread:
+            if not aside.running and not aside.read:
+                aside.read = True
+                seen.append(aside.id)
+        self._report(seen)
 
     def replay(self) -> list[Entry]:
         """The whole view from the top, as the rebuild that opens or redraws it asks."""

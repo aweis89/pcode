@@ -783,10 +783,12 @@ SETTINGS = {
     # Read each time the viewer opens, so `/config set` applies without a restart.
     "btw_view": Setting(
         "popup",
-        ("popup", "swap"),
+        ("popup", "swap", "drawer"),
         description=(
             "Show /btw threads in a full-screen popup, or swap them into the "
-            "conversation's place on screen, where the editor replies to them"
+            "conversation's place on screen, where the editor replies to them; "
+            "drawer (experimental) shows them beside the terminal in Ghostty "
+            "Smooth with a session host, else as swap"
         ),
     ),
     # Read when a job finishes, so `/config set` applies without a restart.
