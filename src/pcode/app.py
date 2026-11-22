@@ -262,6 +262,7 @@ class PreviewApp:
         # The tab's progress bar, while this terminal runs its prompt.
         self._progress: TabProgress | None = None
         self._title: TabTitle | None = None
+        self._pane_session = None
         self._appearance: AppearanceWatch | None = None
         self._kitty_spinners: KittySpinners | None = None
         # The in-process controller's loops, while this terminal runs them.
@@ -3218,6 +3219,11 @@ class PreviewApp:
             )
             # Whichever controller is on screen: /attach replaces it.
             self._title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
+            from pcode import drawer, theme
+
+            # Over ssh the session is the remote machine's: a restored local pane can't reopen it.
+            if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
+                self._pane_session = drawer.PaneSession(self.active_session_id, terminal)
             self._appearance = AppearanceWatch(
                 terminal, active=lambda: self.transcript.theme == "auto"
             )
@@ -3263,6 +3269,8 @@ class PreviewApp:
                 session.app.create_background_task(self._progress.run())
             if self._title is not None:
                 session.app.create_background_task(self._title.run())
+            if self._pane_session is not None:
+                session.app.create_background_task(self._pane_session.run())
             if self._appearance is not None:
                 session.app.create_background_task(self._appearance.run())
             if early is not None:
@@ -3305,6 +3313,9 @@ class PreviewApp:
             if self._title is not None:
                 self._title.close()
                 self._title = None
+            if self._pane_session is not None:
+                self._pane_session.close()
+                self._pane_session = None
             if self._appearance is not None:
                 self._appearance.close()
                 self._appearance = None

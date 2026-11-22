@@ -10,6 +10,8 @@ show and never carries it:
     ESC _ pcode;hide ESC \\                  hide it, still running (under a full-screen popup)
     ESC _ pcode;show ESC \\                  show it again
     ESC _ pcode;focus ESC \\                 (from the drawer) give the keyboard back
+    ESC _ pcode;session;<id> ESC \\          this pane shows session <id> (empty: none);
+                                            restored windows run `pcode -c <id>` there
 
 The drawer's terminal runs `pcode.btw_tail` with the session host's own Python
 (`HostEntry.python`), which connects to the host as an observer
@@ -60,6 +62,54 @@ def open_btw(host: str, thread: str) -> str:
     if not (_ID.fullmatch(host) and _THREAD.fullmatch(thread)):
         raise ValueError(f"Not a drawer host and thread: {host!r}, {thread!r}")
     return f"\x1b_pcode;btw;{host};{thread}\x1b\\"
+
+
+_SESSION = re.compile(r"[0-9A-Za-z_-]{1,64}")
+
+
+def session_marker(identity: str | None) -> str:
+    """Tell the terminal which session this pane shows, so a restored window reopens it."""
+    identity = identity if identity and _SESSION.fullmatch(identity) else ""
+    return f"\x1b_pcode;session;{identity}\x1b\\"
+
+
+class PaneSession:
+    """Keep Ghostty Smooth told of the session on screen, sampled once a second.
+
+    `source` is read each tick, so /attach, /resume and /new need no hook.
+    On close the marker is cleared: a pane whose pcode quit reopens a shell.
+    """
+
+    def __init__(self, source, fd: int | None) -> None:
+        self.source = source
+        self.fd = fd
+        self.sent: str | None = None
+
+    def tick(self) -> None:
+        from pcode.terminal_notify import _write_all
+
+        try:
+            identity = self.source() or ""
+        except Exception:  # noqa: BLE001 - never worth an error.
+            return
+        if identity != self.sent and _write_all(self.fd, session_marker(identity).encode()):
+            self.sent = identity
+
+    def close(self) -> None:
+        from pcode.terminal_notify import _write_all
+
+        if self.sent and _write_all(self.fd, session_marker(None).encode()):
+            self.sent = None
+
+    async def run(self) -> None:
+        import asyncio
+
+        try:
+            while True:
+                self.tick()
+                await asyncio.sleep(1.0)
+        finally:
+            self.close()
 
 
 def default_host_dir() -> Path:
