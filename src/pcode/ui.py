@@ -2162,6 +2162,60 @@ class QueuedRow:
         return len(self._plain) - len(self._plain.lstrip())
 
 
+@dataclass
+class Pacer:
+    """How fast queued rows come out, frame by frame; see ``advance``.
+
+    The rates are fixed when rows arrive rather than recomputed as they
+    leave, or the tail of a backlog would crawl. ``reset`` once it drains.
+    """
+
+    reveal_rate: int = 0
+    type_rate: int = 0
+    # Frames skipped since the last typing step; see TYPED_STEP_FRAMES.
+    skipped: int = 0
+
+    def reset(self) -> None:
+        self.reveal_rate = self.type_rate = self.skipped = 0
+
+    def advance(self, rows: list[QueuedRow], typed: int) -> tuple[int, int]:
+        """One paced frame: whole rows now due, and characters shown of the next.
+
+        ``typed`` is how much of ``rows[0]`` is already shown. Rows roll in one
+        at a time and prose types out a few characters a step; both speed up so
+        a backlog never falls far behind. Blank rows are free, so the gap
+        between paragraphs does not stall the reveal, and so is a typed row's
+        indentation.
+        """
+        self.reveal_rate = max(self.reveal_rate, -(-len(rows) // PACED_DRAIN_FRAMES))
+        if typed and rows[0].typed and self.skipped < TYPED_STEP_FRAMES - 1:
+            # Mid-row and between steps: nothing moves this frame.
+            self.skipped += 1
+            return 0, typed
+        self.skipped = 0
+        backlog = sum(row.visible for row in rows if row.typed) - typed
+        self.type_rate = max(
+            self.type_rate,
+            TYPED_CHARS_PER_STEP,
+            -(-backlog // TYPED_DRAIN_STEPS),
+        )
+        reveal, chars = self.reveal_rate, self.type_rate
+        due = 0
+        for row in rows:
+            if row.typed:
+                typed = max(typed, row.lead)
+                if row.visible - typed > chars:
+                    return due, typed + chars
+                chars -= row.visible - typed
+                typed = 0
+            elif row.visible:
+                if not reveal:
+                    break
+                reveal -= 1
+            due += 1
+        return due, 0
+
+
 def split_rows(text: str) -> list[str]:
     """Split rendered output into rows, each keeping its newline.
 
@@ -2274,12 +2328,7 @@ class TerminalOutput:
         # Characters of ``rows[0]`` already shown in the live area.
         self._typed = 0
         self._preview: tuple[tuple[str, int], StyleAndTextTuples] | None = None
-        # Frames skipped since the last typing step; see TYPED_STEP_FRAMES.
-        self._skipped = 0
-        # Rows and characters per step for the current backlog. Fixed when rows
-        # arrive rather than recomputed as they leave, or the tail would crawl.
-        self._reveal_rate = 0
-        self._type_rate = 0
+        self._pacer = Pacer()
         # Transient writes already rendered into ``rows`` but not yet written,
         # with the absolute index just past their last row. A replay drops the
         # queued rows, so these must join it, just as ``transient_pending`` does.
@@ -2509,40 +2558,8 @@ class TerminalOutput:
         ]
 
     def _advance(self) -> tuple[int, int]:
-        """One paced frame: whole rows now due, and characters shown of the next.
-
-        Rows roll in one at a time and prose types out a few characters a step;
-        both speed up so a backlog never falls far behind. Blank rows are free,
-        so the gap between paragraphs does not stall the reveal, and so is a
-        typed row's indentation.
-        """
-        self._reveal_rate = max(self._reveal_rate, -(-len(self.rows) // PACED_DRAIN_FRAMES))
-        if self._typed and self.rows[0].typed and self._skipped < TYPED_STEP_FRAMES - 1:
-            # Mid-row and between steps: nothing moves this frame.
-            self._skipped += 1
-            return 0, self._typed
-        self._skipped = 0
-        backlog = sum(row.visible for row in self.rows if row.typed) - self._typed
-        self._type_rate = max(
-            self._type_rate,
-            TYPED_CHARS_PER_STEP,
-            -(-backlog // TYPED_DRAIN_STEPS),
-        )
-        rows, chars, typed = self._reveal_rate, self._type_rate, self._typed
-        due = 0
-        for row in self.rows:
-            if row.typed:
-                typed = max(typed, row.lead)
-                if row.visible - typed > chars:
-                    return due, typed + chars
-                chars -= row.visible - typed
-                typed = 0
-            elif row.visible:
-                if not rows:
-                    break
-                rows -= 1
-            due += 1
-        return due, 0
+        """One paced frame: whole rows now due, and characters shown of the next."""
+        return self._pacer.advance(self.rows, self._typed)
 
     def typing_fragments(self) -> StyleAndTextTuples:
         """The prose row being typed out, as far as it has got."""
@@ -2653,7 +2670,8 @@ class TerminalOutput:
                 # Keep the run loop ticking at its frame rate until drained.
                 self.changed.set()
             else:
-                self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
+                self._typed = 0
+                self._pacer.reset()
 
     def _drop_settled_regions(self, app) -> None:
         """Clear the panel region once its glide has settled.
