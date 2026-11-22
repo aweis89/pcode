@@ -15,6 +15,7 @@ from rich.cells import cell_len
 from rich.spinner import SPINNERS as RICH_SPINNERS
 
 from pcode.delta import LAYOUTS as DIFF_LAYOUTS
+from pcode.kitty_spinner import SMOOTH_NAMES as SMOOTH_SPINNERS
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
@@ -40,9 +41,14 @@ def _steady_width(frames: list[str]) -> bool:
     )
 
 
-# Rich's named spinners that fit the status row: `pcode config set spinner NAME`.
+# Rich's named spinners that fit the status row, plus Kitty smooth spinner
+# styles (`swept`, `orbit`, `diamond`, `dual`, `wave`, `comet`):
+# `pcode config set spinner NAME`.
 SPINNERS = tuple(
-    sorted(name for name, spec in RICH_SPINNERS.items() if _steady_width(spec["frames"]))
+    sorted(
+        {name for name, spec in RICH_SPINNERS.items() if _steady_width(spec["frames"])}
+        | set(SMOOTH_SPINNERS)
+    )
 )
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
@@ -686,13 +692,19 @@ SETTINGS = {
     "spinner": Setting(
         "dots",
         SPINNERS,
-        description="Animation on the status row while the model works (a Rich spinner name)",
+        description="Animation on the status row while the model works (Rich or smooth name)",
     ),
     # Distinct from `spinner` so a running command never reads as the model.
     "tool_spinner": Setting(
         "arc",
         SPINNERS,
-        description="Animation on a running tool call's row (a Rich spinner name)",
+        description="Animation on a running tool call's row (Rich or smooth name)",
+    ),
+    "smooth_spinner": Setting(
+        "auto",
+        ("auto", "off"),
+        description="Animate spinners via Kitty graphics in Ghostty and kitty "
+        "(auto: on when supported, else Rich spinners)",
     ),
     "show_thinking": Setting(
         "scrollback",

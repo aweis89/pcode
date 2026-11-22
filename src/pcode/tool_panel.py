@@ -375,7 +375,15 @@ def panel_fragments(lines: list, width: int):
             fragments.extend(row)
             continue
         style, line = row
-        text = Text(plain(line, limit=None))
+        if "plan.in_progress" in style:
+            guides = _TREE_GUIDE.match(line).end()
+            if line[guides : guides + 1] == "\U0010eeee":
+                sanitized = line[: guides + 1] + plain(line[guides + 1 :], limit=None)
+            else:
+                sanitized = plain(line, limit=None)
+        else:
+            sanitized = plain(line, limit=None)
+        text = Text(sanitized)
         text.truncate(max(1, width), overflow="ellipsis")
         if index:
             fragments.append(("", "\n"))
@@ -401,6 +409,9 @@ def _row_parts(style: str, line: str) -> list[tuple[str, str]]:
         icon_end, icon_style = (len(line) if name_end < 0 else name_end), f"{style} bold"
     else:
         icon_style = f"class:plan.icon.{kind[1]}"
+        if kind[1] == "in_progress" and line[guides : guides + 1] == "\U0010eeee":
+            icon_end = guides + 1
+            icon_style = "class:kitty.spinner.accent"
     parts = [
         ("class:plan.tree", line[:guides]),
         (icon_style, line[guides:icon_end]),

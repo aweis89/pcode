@@ -44,6 +44,8 @@ _cursor_row: int | None = None
 _glide_protocol: int | None = None
 # The drawer protocol the startup probe heard (`pcode.drawer`), or None.
 _drawer_protocol: int | None = None
+# Whether the startup probe heard an OK reply to the Kitty graphics query.
+_kitty_graphics: bool | None = None
 
 
 # The last background the terminal reported, as `#rrggbb` with the theme it
@@ -76,6 +78,22 @@ def drawer_supported() -> bool:
     from pcode import drawer
 
     return _drawer_protocol == drawer.PROTOCOL
+
+
+def kitty_graphics_supported() -> bool:
+    """Whether the startup probe confirmed Kitty graphics support."""
+    return _kitty_graphics is True
+
+
+def _take_kitty_reply(response: bytearray) -> None:
+    global _kitty_graphics
+    from pcode import kitty_spinner
+
+    _kitty_graphics = None
+    match = kitty_spinner.REPLY.search(response)
+    if match is not None:
+        _kitty_graphics = match[1] == b"OK"
+        del response[match.start() : match.end()]
 
 
 def _take_drawer_reply(response: bytearray) -> None:
@@ -178,9 +196,12 @@ def _query_background(
     probe_cursor: bool = False,
     probe_glide: bool = False,
     probe_drawer: bool = False,
+    probe_kitty: bool = False,
 ) -> str | None:
-    global _unanswered_cprs, _cursor_row, _glide_protocol
+    global _unanswered_cprs, _cursor_row, _glide_protocol, _kitty_graphics
     _cursor_row = None
+    if probe_kitty:
+        _kitty_graphics = None
     # Nothing will be colored, so there is no palette to match: stay quiet
     # rather than write an escape sequence into whatever stdout is.
     if os.environ.get("TERM") == "dumb" or not (sys.stdout.isatty() or sys.stderr.isatty()):
@@ -210,6 +231,13 @@ def _query_background(
     drawer_query = (
         drawer.QUERY if probe_drawer and handle is None and smooth_scroll.worth_asking() else b""
     )
+    from pcode import kitty_spinner
+
+    kitty_query = (
+        kitty_spinner.QUERY
+        if probe_kitty and handle is None and kitty_spinner.worth_asking()
+        else b""
+    )
     expected_cprs = 2 if probe_width else 1 if probe_cursor else 0
     measured = expected_cprs == 0
     detected = None
@@ -232,7 +260,10 @@ def _query_background(
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
             probe = _WIDTH_PROBE if probe_width else _CURSOR_PROBE if probe_cursor else b""
-            os.write(query_fd, glide_query + drawer_query + b"\x1b]11;?\x1b\\" + probe)
+            os.write(
+                query_fd,
+                glide_query + drawer_query + kitty_query + b"\x1b]11;?\x1b\\" + probe,
+            )
             deadline = time.monotonic() + timeout
             while detected is None or not measured:
                 remaining = deadline - time.monotonic()
@@ -255,6 +286,8 @@ def _query_background(
                 _take_glide_reply(response)
             if drawer_query:
                 _take_drawer_reply(response)
+            if kitty_query:
+                _take_kitty_reply(response)
             if not measured:
                 _unanswered_cprs = expected_cprs - len(_CPR.findall(response))
                 response[:] = _CPR.sub(b"", response)
@@ -299,19 +332,22 @@ def detect_theme(
     probe_cursor: bool = False,
     probe_glide: bool = False,
     probe_drawer: bool = False,
+    probe_kitty: bool = False,
 ) -> str:
     """Use OSC 11, then COLORFGBG (when supplied by the terminal), then dark.
 
     `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`);
     `probe_cursor` records the starting cursor row (`take_initial_cursor_row`);
     `probe_glide` asks whether the terminal glides (`glide_supported`);
-    `probe_drawer` whether it opens pcode's drawer (`drawer_supported`).
+    `probe_drawer` whether it opens pcode's drawer (`drawer_supported`);
+    `probe_kitty` whether it speaks Kitty graphics (`kitty_graphics_supported`).
     """
     detected = _query_background(
         probe_width=probe_width,
         probe_cursor=probe_cursor,
         probe_glide=probe_glide,
         probe_drawer=probe_drawer,
+        probe_kitty=probe_kitty,
     )
     if detected is not None:
         return detected

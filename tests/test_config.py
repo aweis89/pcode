@@ -73,6 +73,7 @@ def test_defaults_and_path_do_not_create_files():
         "stall_log": "on",
         "spinner": "dots",
         "tool_spinner": "arc",
+        "smooth_spinner": "auto",
         "show_thinking": "activity-panel",
         "thinking_max_lines": "10",
         "show_activity": "on",

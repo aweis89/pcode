@@ -44,6 +44,7 @@ from pcode.controller import (
 )
 from pcode.drafts import Drafts, default_dir
 from pcode.error_report import error_message
+from pcode.kitty_spinner import KittySpinners
 from pcode.library_log import install as install_library_log
 from pcode.preferences import (
     ANTHROPIC_THINKS_BY_DEFAULT,
@@ -82,6 +83,7 @@ from pcode.terminal_notify import TabProgress, TabTitle
 from pcode.theme import (
     THEMES,
     ambiguous_wide,
+    kitty_graphics_supported,
     replay_pending_input,
     take_initial_cursor_row,
     terminal_background,
@@ -259,6 +261,7 @@ class PreviewApp:
         self._progress: TabProgress | None = None
         self._title: TabTitle | None = None
         self._appearance: AppearanceWatch | None = None
+        self._kitty_spinners: KittySpinners | None = None
         # The in-process controller's loops, while this terminal runs them.
         self._loops: list = []
         agent = getattr(self.runtime, "agent", None)
@@ -2994,6 +2997,10 @@ class PreviewApp:
 
         self._submit_typed = submit
         drafts = Drafts(default_dir())
+        self._kitty_spinners = KittySpinners.from_preferences(
+            load_preferences(),
+            supported=self.transcript.console.is_terminal and kitty_graphics_supported(),
+        )
         session = create_prompt(
             self.registry,
             activity=self.activity,
@@ -3019,6 +3026,7 @@ class PreviewApp:
             # Whichever controller is on screen: /attach replaces it.
             session_title=lambda: self.controller.session_title(),
             drafts=drafts,
+            kitty_spinners=self._kitty_spinners,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )
         # A thread on screen is read: a host's other terminals stop calling it ready.
@@ -3144,6 +3152,11 @@ class PreviewApp:
             if self._appearance is not None:
                 self._appearance.close()
                 self._appearance = None
+            if self._kitty_spinners is not None:
+                self._kitty_spinners.close(
+                    session.app.output.write_raw, session.app.output.flush
+                )
+                self._kitty_spinners = None
             await self.leave_controller(self.controller)
             if thread_view is not None:
                 # Leave the conversation in scrollback, never a side thread.

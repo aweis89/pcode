@@ -47,7 +47,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode import glyphs, smooth_scroll
+from pcode import glyphs, kitty_spinner, smooth_scroll
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
@@ -423,6 +423,7 @@ class Palette:
                 "auto-suggestion": self.muted,
                 **(ICON_TASK_STYLES if task_style == "icons" else {}),
                 **(shaded_styles(*shades) if shades is not None else {}),
+                **kitty_spinner.STYLE_CLASSES,
             }
         )
 
@@ -655,7 +656,7 @@ def status_spinner(setting: str = "spinner") -> Spinner:
     `spinner` is the status row's (waits on a model), `tool_spinner` running
     tool calls'.
     """
-    name = load_preferences().get(setting, SETTINGS[setting].default)
+    name = kitty_spinner.rich_fallback(load_preferences().get(setting, SETTINGS[setting].default))
     frames = RICH_SPINNERS.get(name, {}).get("frames", "")
     if glyphs.active() and not "".join(frames).isascii():
         # Stand-ins would freeze it on one character; keep the two kinds of
@@ -702,11 +703,17 @@ class StatusLine:
     # The hue slot of the sub-agent the detail describes, if it describes one.
     hue: int | None = None
 
-    def fragments(self, spinner: str, width: int, *, rule: bool = False) -> list[tuple[str, str]]:
+    def fragments(
+        self, spinner: str | tuple[str, str], width: int, *, rule: bool = False
+    ) -> list[tuple[str, str]]:
         """The row, `width` cells wide when it has meta; `rule` draws the gap as border."""
         if width < 1:
             return []
-        head = [("class:activity.spinner", f"{spinner} ")]
+        head = (
+            [spinner, ("class:activity.spinner", " ")]
+            if isinstance(spinner, tuple)
+            else [("class:activity.spinner", f"{spinner} ")]
+        )
         if self.badge:
             head.append(("class:activity.badge", f"{self.badge} "))
         head.append(("class:activity.phase", self.phase))
@@ -847,7 +854,10 @@ def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[st
     cannot break the row. The ellipsis goes on the last fragment kept; a
     spinner or badge that cannot fit whole is cropped without one.
     """
-    fragments = [(style, plain(text, limit=None)) for style, text in fragments]
+    fragments = [
+        (style, text if style.startswith("class:kitty.spinner.") else plain(text, limit=None))
+        for style, text in fragments
+    ]
     if sum(cell_len(text) for _, text in fragments) <= width:
         return fragments
     fitted = []
@@ -1146,7 +1156,7 @@ class Activity:
             self.startup_done_at = 0.0
         return False
 
-    def wait_fragments(self, spinner: str, width: int):
+    def wait_fragments(self, spinner: str | tuple[str, str], width: int):
         """The newest wait past its grace period, as a system row; empty otherwise.
 
         A running status row already says what the host is doing (a turn, or a
@@ -1160,6 +1170,11 @@ class Activity:
         if not shown or width < 1:
             return []
         wait = shown[-1]
+        if isinstance(spinner, tuple):
+            rest = Text(f" {SYSTEM_BADGE} {plain(wait.label, limit=None)}")
+            rest.append(f" \u00b7 {now - shown[0].started:.0f}s")
+            rest.truncate(max(0, width - cell_len(spinner[1])), overflow="ellipsis")
+            return [spinner, ("class:activity.system", rest.plain)]
         text = Text(f"{spinner} {SYSTEM_BADGE} {plain(wait.label, limit=None)}")
         text.append(f" \u00b7 {now - shown[0].started:.0f}s")
         text.truncate(width, overflow="ellipsis")
@@ -1169,7 +1184,7 @@ class Activity:
     def asides_running(self) -> bool:
         return any(aside.running for aside in self.asides)
 
-    def aside_rows(self, spinner: str, width: int, budget: int = ASIDE_ROWS):
+    def aside_rows(self, spinner: str | tuple[str, str], width: int, budget: int = ASIDE_ROWS):
         """One muted spinner row per running side question, folded to the budget."""
         running = [aside for aside in self.asides if aside.running]
         if budget <= 0 or not running or width < 1:
@@ -1177,15 +1192,26 @@ class Activity:
         shown = running if len(running) <= budget else running[: max(0, budget - 1)]
         rows = []
         for aside in shown:
-            parts = [f"{spinner} btw", plain(aside.question, limit=None)]
-            if aside.label:
-                parts.insert(1, aside.label)
-            if aside.activity:
-                parts.append(plain(aside.activity, limit=None))
-            parts.append(f"{aside.elapsed:.0f}s")
-            text = Text(" \u00b7 ".join(parts))
-            text.truncate(width, overflow="ellipsis")
-            rows.append(("class:activity.aside", text.plain))
+            if isinstance(spinner, tuple):
+                parts = ["btw", plain(aside.question, limit=None)]
+                if aside.label:
+                    parts.insert(1, aside.label)
+                if aside.activity:
+                    parts.append(plain(aside.activity, limit=None))
+                parts.append(f"{aside.elapsed:.0f}s")
+                rest = Text(" " + " \u00b7 ".join(parts))
+                rest.truncate(max(0, width - cell_len(spinner[1])), overflow="ellipsis")
+                rows.append([spinner, ("class:activity.aside", rest.plain)])
+            else:
+                parts = [f"{spinner} btw", plain(aside.question, limit=None)]
+                if aside.label:
+                    parts.insert(1, aside.label)
+                if aside.activity:
+                    parts.append(plain(aside.activity, limit=None))
+                parts.append(f"{aside.elapsed:.0f}s")
+                text = Text(" \u00b7 ".join(parts))
+                text.truncate(width, overflow="ellipsis")
+                rows.append(("class:activity.aside", text.plain))
         if len(shown) < len(running):
             rows.append(("class:activity.aside", f"\u2026 {len(running) - len(shown)} more (/btw)"))
         return rows
@@ -1490,7 +1516,12 @@ class Activity:
         ]
 
     def _tool_row(
-        self, call: ToolCall, line: StatusLine, width: int, spinner: str, repeats: int = 1
+        self,
+        call: ToolCall,
+        line: StatusLine,
+        width: int,
+        spinner: str | tuple[str, str],
+        repeats: int = 1,
     ) -> list[tuple[str, str]]:
         """One call's row: its state mark, then its verb's glyph (`◜ $ ls -la`).
 
@@ -1514,14 +1545,15 @@ class Activity:
             filter(None, (call.change and f" · {call.change}", repeats > 1 and f" ×{repeats}"))
         )
         if call.settled is None:
-            mark = ("class:activity.tool", spinner)
+            mark = spinner if isinstance(spinner, tuple) else ("class:activity.tool", spinner)
         elif call.failed:
             mark = ("class:activity.tool.failed", "✗")
         else:
             mark = ("class:activity.tool.done", TOOL_DONE_MARK)
         # A wide spinner (`dots12`) would push running rows' text past
         # settled ones'; pad the settled mark's column to its width.
-        pad = "" if call.settled is None else " " * max(0, cell_len(spinner) - 1)
+        spinner_width = cell_len(spinner[1] if isinstance(spinner, tuple) else spinner)
+        pad = "" if call.settled is None else " " * max(0, spinner_width - 1)
         body = ("class:activity.tool", pad + " " + " ".join(filter(None, (glyph, text))))
         if not tail:
             return fit_fragments([mark, body], width)
@@ -3064,12 +3096,14 @@ class PromptLayout:
         transcript: "Transcript | None",
         shortcuts: PrefixKeys,
         session_title: Callable[[], str] = lambda: "",
+        kitty_spinners: kitty_spinner.KittySpinners | None = None,
     ):
         self.session = session
         self.activity = activity
         self.transcript = transcript
         self.shortcuts = shortcuts
         self.session_title = session_title
+        self.kitty_spinners = kitty_spinners
         self.editor = _fit_editor(session)
         self.render_cache = None
         self.animation_task = None
@@ -3139,7 +3173,16 @@ class PromptLayout:
 
     def refresh_interval(self) -> float:
         """Seconds until the next frame."""
-        interval = min(self.spinner.interval, self.tool_spinner.interval) / 1000
+        ks = self.kitty_spinners
+        status_iv = (
+            0.5 if ks is not None and ks.active_for("status") else self.spinner.interval / 1000
+        )
+        tool_iv = (
+            (0.25 if self.activity.tools.delegates else 0.5)
+            if ks is not None and ks.active_for("tool")
+            else self.tool_spinner.interval / 1000
+        )
+        interval = min(status_iv, tool_iv)
         if self.startup_border_active():
             return min(interval, STARTUP_FRAME_SECONDS)
         return interval
@@ -3153,6 +3196,36 @@ class PromptLayout:
     def tool_spinner_frame(self) -> str:
         """This redraw's frame for running tool calls and commands."""
         return self.tool_spinner.render(monotonic()).plain
+
+    def status_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("status"):
+            return self.kitty_spinners.fragment("status")
+        return self.spinner_frame()
+
+    def tool_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("tool"):
+            return self.kitty_spinners.fragment("tool")
+        return self.tool_spinner_frame()
+
+    def aside_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("aside"):
+            return self.kitty_spinners.fragment("aside")
+        return self.spinner_frame()
+
+    def wait_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("accent"):
+            return self.kitty_spinners.fragment("accent")
+        return self.tool_spinner_frame()
+
+    def plan_spinner_icon(self) -> str:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("accent"):
+            return kitty_spinner.PLACEHOLDER
+        return self.tool_spinner_frame()
+
+    def startup_spinner_mark(self, elapsed: float) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("startup"):
+            return self.kitty_spinners.fragment("startup")
+        return "◆" if int(elapsed * 4) % 2 == 0 else "◇"
 
     @_per_render
     def base_plan_rows(self, budget: int | None = None):
@@ -3174,7 +3247,7 @@ class PromptLayout:
                 )
             )
         # The active step turns with the running commands' spinner.
-        return self.activity.plan_rows(budget, self.tool_spinner_frame())
+        return self.activity.plan_rows(budget, self.plan_spinner_icon())
 
     @_per_render
     def preview_layout(self):
@@ -3387,7 +3460,7 @@ class PromptLayout:
         """
         limit = self.size().rows // 4 - int(bool(self.shown_thought()))
         return self.activity.tool_rows(
-            self.status_line(), self.size().columns - 1, limit, self.tool_spinner_frame()
+            self.status_line(), self.size().columns - 1, limit, self.tool_spinner_mark()
         )
 
     def band_width(self) -> int:
@@ -3450,12 +3523,12 @@ class PromptLayout:
 
     @_per_render
     def aside_rows(self):
-        return self.activity.aside_rows(self.spinner_frame(), self.size().columns - 1)
+        return self.activity.aside_rows(self.aside_spinner_mark(), self.size().columns - 1)
 
     @_per_render
     def wait_rows(self):
         """The terminal's own wait (the host starting, a command running there)."""
-        return self.activity.wait_fragments(self.tool_spinner_frame(), self.size().columns - 1)
+        return self.activity.wait_fragments(self.wait_spinner_mark(), self.size().columns - 1)
 
     @_per_render
     def typing_row(self):
@@ -3674,7 +3747,7 @@ class PromptLayout:
                 meta.insert(0, activity.panel_title())
             line = replace(self.status_line(), tally=" · ".join(part for part in meta if part))
             lead = self.heading_lead()
-            status = line.fragments(self.spinner_frame(), columns - 3 - len(lead), rule=True)
+            status = line.fragments(self.status_spinner_mark(), columns - 3 - len(lead), rule=True)
             if not status:
                 return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
             used = len(lead) + sum(cell_len(text) for _, text in status)
@@ -3723,18 +3796,24 @@ class PromptLayout:
                 elapsed = max(0.0, monotonic() - activity.startup_started)
                 # Brand diamond pulses gently during startup, keeping the braille
                 # spinner reserved for active model turns.
-                mark = "◆" if int(elapsed * 4) % 2 == 0 else "◇"
+                mark = self.startup_spinner_mark(elapsed)
+                mark_text = mark[1] if isinstance(mark, tuple) else mark
+                mark_frags = (
+                    [mark, ("class:activity.spinner", " ")]
+                    if isinstance(mark, tuple)
+                    else [("class:activity.spinner", f"{mark} ")]
+                )
                 label = plain(activity.startup_label, limit=None)
                 if shaded:
                     lead = self.heading_lead()
                     head = [
                         ("", lead),
-                        ("class:activity.spinner", f"{mark} "),
+                        *mark_frags,
                         ("class:activity.phase", label),
                     ]
                     return fit_fragments(head, columns)
                 lead = self.heading_lead()
-                text = f"{mark} {label}"
+                text = f"{mark_text} {label}"
                 max_text = max(0, columns - len(lead) - 2)
                 if cell_len(text) > max_text:
                     clipped = Text(text)
@@ -3746,10 +3825,15 @@ class PromptLayout:
                 pulse = min(6, max(2, rule_len // 6))
                 span = rule_len + pulse
                 pos = int((elapsed * 48) % max(1, span)) - pulse
-                mark_len = len(mark) + 1
+                mark_len = len(mark_text) + 1
+                head_frags = (
+                    mark_frags
+                    if len(text) >= mark_len
+                    else [("class:activity.spinner", text)]
+                )
                 return [
                     ("class:frame.border", lead),
-                    ("class:activity.spinner", text[:mark_len]),
+                    *head_frags,
                     ("class:activity.phase", text[mark_len:]),
                     ("class:frame.border", " "),
                     *_shimmer_rule(rule_len, pos, pulse, "class:activity.spinner"),
@@ -4205,6 +4289,19 @@ class PromptLayout:
         self.render_cache = {}
         self.btw.sync()
         transcript, activity = self.transcript, self.activity
+        if (
+            self.kitty_spinners is not None
+            and self.kitty_spinners.enabled
+            and transcript is not None
+        ):
+            self.kitty_spinners.sync(
+                transcript.chrome_palette,
+                transcript.palette,
+                write_raw=app.output.write_raw,
+                flush=app.output.flush,
+                invalidate=app.invalidate,
+                schedule=app.create_background_task,
+            )
         if transcript is None or not (
             (transcript.live_edit_previews and activity.edit_previews)
             or (transcript.command_preview and activity.command_outputs)
@@ -4271,6 +4368,7 @@ def create_prompt(
     key_prefix: str | None = None,
     session_title: Callable[[], str] = lambda: "",
     drafts: Drafts | None = None,
+    kitty_spinners: kitty_spinner.KittySpinners | None = None,
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
@@ -4345,7 +4443,9 @@ def create_prompt(
         else None
     )
 
-    prompt_layout = PromptLayout(session, activity, transcript, shortcuts, session_title)
+    prompt_layout = PromptLayout(
+        session, activity, transcript, shortcuts, session_title, kitty_spinners=kitty_spinners
+    )
     if transcript is not None:
 
         def accept(buffer):
@@ -4428,6 +4528,8 @@ class Transcript:
                 probe_cursor=probe_cursor,
                 probe_glide=probe_glide and self.smooth_scroll == "auto",
                 probe_drawer=probe_glide and preferences.get("btw_view") == "drawer",
+                probe_kitty=probe_glide
+                and preferences.get("smooth_spinner", SETTINGS["smooth_spinner"].default) == "auto",
             )
             if detected_theme is None
             else detected_theme

@@ -192,8 +192,9 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
-| `spinner` | `dots` | The status row's animation while the model works. A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
+| `spinner` | `dots` | The status row's animation while the model works. A Rich spinner name (`dots`, `line`, `point`) or a smooth Kitty spinner style (`swept`, `orbit`, `diamond`, `dual`, `wave`, `comet`; falls back to Rich where unsupported). `/config set spinner` lists the ones that fit; applies on next launch |
 | `tool_spinner` | `arc` | The same, for a running tool call's row and the terminal's own waits, so they look different from the model's |
+| `smooth_spinner` | `auto` | `auto`, `off` (in Ghostty and kitty, outside tmux, animate the default and smooth-named spinners via Kitty Graphics Protocol at ~45 fps instead of redrawing Unicode frames from Python; falls back to Rich spinners elsewhere; applies on next launch) |
 | `show_thinking` | `scrollback` | `off`, `activity-panel`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`. `status-line` is still read as `activity-panel`) |
 | `thinking_max_lines` | `10` | Max rows of thinking in the activity panel in `activity-panel` mode, or a share of the screen (`0.2`). A row count is also capped at a quarter of the pane, so a short pane gets fewer. Applies on next launch |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; Ctrl+Z or `/show-edits`) |
