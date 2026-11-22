@@ -11,7 +11,7 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.widgets import Label, TextArea
 
-from pcode.frame import Dialog
+from pcode.frame import Dialog, ScrollingTextArea
 from pcode.host_protocol import HostEntry, code_fingerprint
 from pcode.popup_ui import (
     SearchDebounce,
@@ -124,7 +124,7 @@ def hosts_dialog(
     visible: list[HostEntry] = []
     tree = nested(entries)
     query = TextArea(height=1, prompt="Search: ", multiline=False)
-    choices = TextArea(
+    choices = ScrollingTextArea(
         read_only=True,
         wrap_lines=False,
         scrollbar=True,

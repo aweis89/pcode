@@ -18,11 +18,11 @@ from prompt_toolkit.filters import Always
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import Label
 from rich.console import Group
 from rich.markdown import BlockQuote, CodeBlock
 
-from pcode.frame import Dialog
+from pcode.frame import Dialog, ScrollingTextArea
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
     bind_list_paging,
@@ -252,7 +252,7 @@ class SnippetPicker:
     def __init__(self, choices: list[Snippet], on_pick, on_cancel, *, shortcuts=None) -> None:
         self.choices = choices
         self.on_pick = on_pick
-        self.list = TextArea(
+        self.list = ScrollingTextArea(
             read_only=True,
             wrap_lines=False,
             scrollbar=True,

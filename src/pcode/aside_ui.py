@@ -28,7 +28,7 @@ from prompt_toolkit.layout import (
     Window,
 )
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import Label
 from rich.text import Text
 from rich.theme import Theme
 
@@ -37,7 +37,7 @@ from pcode.btw_view import outcome_blocks, question_blocks
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
 from pcode.copy_ui import Snippet, snippets
-from pcode.frame import Frame
+from pcode.frame import Frame, ScrollingTextArea
 from pcode.links import Link, extract_links, link_editor_command, open_link, remember_link
 from pcode.links_ui import LinkPicker
 from pcode.markdown import Markdown
@@ -218,7 +218,7 @@ class AsideBrowser:
         self.picker: LinkPicker | None = None
         # `/copy`'s browser in place of the viewer, while one is open.
         self.copying: CopyBrowser | None = None
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(

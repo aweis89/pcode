@@ -18,7 +18,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.diagnostics import strip_controls
-from pcode.frame import Dialog, Frame
+from pcode.frame import Dialog, Frame, ScrollingTextArea
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
     EllipsisProcessor,
@@ -148,7 +148,7 @@ class SessionBrowser:
         self.status = ""
         self.query = TextArea(height=1, prompt="Search: ", multiline=False)
         # Rows hold the whole first prompt; the processor cuts each at the pane's edge.
-        self.list = TextArea(
+        self.list = ScrollingTextArea(
             read_only=True,
             wrap_lines=False,
             scrollbar=True,
@@ -620,7 +620,7 @@ def session_info_dialog(
     """Read-only view of the live session; every key that closes it exits the same way."""
     width = max((len(label) for label, _ in rows), default=0)
     lines = [f"{label.ljust(width)}  {value}" for label, value in rows]
-    body = TextArea(
+    body = ScrollingTextArea(
         text="\n".join(lines),
         read_only=True,
         scrollbar=True,

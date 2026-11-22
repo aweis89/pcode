@@ -17,7 +17,7 @@ from prompt_toolkit.layout import (
     VSplit,
 )
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import Label
 from rich.console import Group
 from rich.padding import Padding
 from rich.text import Text
@@ -26,7 +26,7 @@ from rich.theme import Theme
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode, excerpt
 from pcode.copy_ui import Snippet, SnippetMarkdown, SnippetPicker, snippets, turn_snippets
-from pcode.frame import Frame
+from pcode.frame import Frame, ScrollingTextArea
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
     RichPane,
@@ -85,7 +85,7 @@ class TreeBrowser:
         self._refreshing = False
         # The quote/code picker over the tree, while one is open.
         self.picker: SnippetPicker | None = None
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(

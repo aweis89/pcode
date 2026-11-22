@@ -18,6 +18,7 @@ The overlay protocol (`ESC _ pcode;… ESC \\`):
     pcode;popup;<token>;<layout>    open a popup (`sheet` or `wide`) running the bridge
     pcode;popup-close;<token>       give up on that popup (it never came, say)
     pcode;ready                     (from the overlay) shown it: focus it
+    pcode;title;<base64 utf-8>      (from the overlay) the popup's title, for its header
     pcode;done                      (from the overlay) close it
 
 The token names a socket and an entry file in `popup_dir()`, which this user
@@ -30,6 +31,7 @@ every popup's cancel does.
 """
 
 import asyncio
+import base64
 import json
 import os
 import secrets
@@ -43,7 +45,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from prompt_toolkit.application.current import AppSession, create_app_session
+from prompt_toolkit.application.current import AppSession, create_app_session, get_app_or_none
 from prompt_toolkit.input import Input
 from prompt_toolkit.input.typeahead import clear_typeahead
 from prompt_toolkit.keys import Keys
@@ -65,6 +67,8 @@ CONNECT_TIMEOUT = 3.0
 _STALE_AFTER = 600.0
 # How long a frame may wait for the overlay to take it.
 _WRITE_TIMEOUT = 2.0
+# Characters of a title the header shows; the terminal cuts it there too.
+TITLE_MAX = 200
 
 
 class _Terminal:
@@ -88,6 +92,38 @@ def open_apc(token: str, layout: str) -> str:
 
 def close_apc(token: str) -> str:
     return f"\x1b_pcode;popup-close;{token}\x1b\\"
+
+
+def title_apc(title: str) -> bytes:
+    encoded = base64.b64encode(title[:TITLE_MAX].encode("utf-8", "replace"))
+    return b"\x1b_pcode;title;" + encoded + b"\x1b\\"
+
+
+def _overlay_writer(output: Output | None) -> "_OverlayWriter | None":
+    # An overlay's output is a Vt100_Output (perhaps wrapped, which forwards
+    # `stdout`) writing to the overlay's tty.
+    writer = getattr(output, "stdout", None)
+    return writer if isinstance(writer, _OverlayWriter) else None
+
+
+def drawn_in_overlay() -> bool:
+    """True while the app being drawn draws on an overlay, which has its own frame.
+
+    Asked at render: a popup's widgets may be built before its surface is.
+    """
+    app = get_app_or_none()
+    return app is not None and _overlay_writer(app.output) is not None
+
+
+def set_title(title: str) -> None:
+    """Show `title` in the overlay's header, if the app being drawn is on one.
+
+    Sent with the next frame, and only when it changed.
+    """
+    app = get_app_or_none()
+    writer = _overlay_writer(app.output if app is not None else None)
+    if writer is not None:
+        writer.title = title
 
 
 def terminal_fds() -> dict[str, Any]:
@@ -124,12 +160,15 @@ class _OverlayWriter:
     encoding = "utf-8"
     errors = "replace"
 
-    def __init__(self, fd: int) -> None:
+    def __init__(self, fd: int, title: str = "") -> None:
         self.fd = fd
         self._pending: list[bytes] = []
         self.gone = False
         # Sent with the first frame, so the terminal never shows an empty popup.
         self.ready = READY
+        # The header's title, sent before the next frame whenever it changes.
+        self.title = title
+        self._sent_title = ""
 
     def fileno(self) -> int:
         return self.fd
@@ -145,6 +184,9 @@ class _OverlayWriter:
         data, self._pending = b"".join(self._pending), []
         if data and self.ready:
             data, self.ready = self.ready + data, b""
+        # Before `ready`, so the popup is shown with its header.
+        if self.title != self._sent_title:
+            data, self._sent_title = title_apc(self.title) + data, self.title
         deadline = time.monotonic() + _WRITE_TIMEOUT
         while data and not self.gone:
             try:
@@ -306,10 +348,14 @@ async def overlay(
     main_input: Input,
     *,
     layout: str = "wide",
+    title: str = "",
     timeout: float = CONNECT_TIMEOUT,
     python: str | None = None,
 ) -> AsyncIterator[PopupSurface]:
-    """Open an overlay popup surface; raises `OverlayUnavailable` before yielding if it can't."""
+    """Open an overlay popup surface; raises `OverlayUnavailable` before yielding if it can't.
+
+    `title` heads the overlay until the popup sets its own (`set_title`).
+    """
     token = secrets.token_hex(8)
     try:
         directory = _private_dir()
@@ -351,7 +397,7 @@ async def overlay(
         if not message.startswith(HELLO) or fd is None or not os.isatty(fd):
             _give_up(main_output, token)
             raise OverlayUnavailable("the popup's terminal did not check out")
-        writer = _OverlayWriter(fd)
+        writer = _OverlayWriter(fd, title)
         session_box: list[AppSession] = []
 
         def cancel() -> None:

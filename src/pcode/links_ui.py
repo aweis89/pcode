@@ -11,7 +11,7 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.widgets import Label, TextArea
 
-from pcode.frame import Dialog
+from pcode.frame import Dialog, ScrollingTextArea
 from pcode.links import Link
 from pcode.popup_ui import (
     SearchDebounce,
@@ -68,7 +68,7 @@ class LinkPicker:
         self.show_tools = True
         self.visible: list[Link] = []
         self.query = TextArea(height=1, prompt="Search: ", multiline=False)
-        self.list = TextArea(
+        self.list = ScrollingTextArea(
             read_only=True,
             wrap_lines=False,
             scrollbar=True,

@@ -147,7 +147,7 @@ def stub_popup(monkeypatch, app) -> None:
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(app, "popup", lambda output, session: Popup())
+    monkeypatch.setattr(app, "popup", lambda output, session, **_: Popup())
     app.prompt_session = SimpleNamespace(
         app=SimpleNamespace(output=None, style=None),
         default_buffer=SimpleNamespace(text=""),
@@ -394,7 +394,7 @@ def test_the_popup_shows_threads_without_a_drawer_and_off_a_terminal(monkeypatch
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(app, "popup", lambda output, session: Popup())
+    monkeypatch.setattr(app, "popup", lambda output, session, **_: Popup())
     app.prompt_session = type(
         "Session", (), {"app": type("App", (), {"output": None, "style": None})()}
     )()

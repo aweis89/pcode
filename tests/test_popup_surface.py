@@ -187,6 +187,24 @@ def test_a_popup_runs_on_the_overlay_and_gives_it_back(terminal):
     assert terminal.bridge.wait(5) is not None
 
 
+def test_the_overlay_is_titled_before_it_is_shown(terminal):
+    seen: list = []
+
+    async def main():
+        async with overlay(terminal, EditorInput(), title="Diffs") as surface:
+            app = picker(surface, seen)
+            task = asyncio.ensure_future(app.run_async())
+            await _wait_for(lambda: b"pick one" in terminal.screen)
+            terminal.type(b"\r")
+            await asyncio.wait_for(task, 5)
+
+    asyncio.run(main())
+    screen = bytes(terminal.screen)
+    title = popup_surface.title_apc("Diffs")
+    assert screen.count(title) == 1
+    assert screen.index(title) < screen.index(popup_surface.READY)
+
+
 def test_closing_the_overlay_cancels_the_popup(terminal):
     seen: list = []
 

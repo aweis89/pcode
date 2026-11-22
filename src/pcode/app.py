@@ -768,7 +768,7 @@ class PreviewApp:
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session, layout="sheet") as surface:
+            async with self.popup(output, session, layout="sheet", title="Choose model") as surface:
                 picker = ModelPicker(
                     values,
                     providers,
@@ -786,7 +786,7 @@ class PreviewApp:
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session) as surface:
+            async with self.popup(output, session, title="Jobs") as surface:
                 browser = JobBrowser(
                     self.runtime.jobs,
                     stop=lambda job: self.controller.stop_jobs([job.id]),
@@ -861,7 +861,7 @@ class PreviewApp:
 
         self.config_requested = False
         try:
-            async with self.popup(output, session) as surface:
+            async with self.popup(output, session, title="Settings") as surface:
                 browser = ConfigBrowser(
                     save=self.apply_config,
                     input=surface.input,
@@ -1136,7 +1136,13 @@ class PreviewApp:
 
     @asynccontextmanager
     async def popup(
-        self, output: TerminalOutput, session, *, layout: str = "wide", overlay: bool = True
+        self,
+        output: TerminalOutput,
+        session,
+        *,
+        layout: str = "wide",
+        overlay: bool = True,
+        title: str = "",
     ):
         """Give a modal a terminal of its own, superseding pending popups.
 
@@ -1145,6 +1151,7 @@ class PreviewApp:
         for short lists and prompts, `wide` for browsers), else pcode's own
         terminal, given to the popup whole. `overlay=False` always takes the
         full screen: a secret is typed where nothing else can take keys.
+        `title` heads an overlay's panel until a dialog sets its own.
         One popup at a time, wherever it opens.
         """
         from pcode import popup_surface
@@ -1163,6 +1170,7 @@ class PreviewApp:
                                 session.app.output,
                                 session.app.input,
                                 layout=layout,
+                                title=title,
                             )
                         )
                     except popup_surface.OverlayUnavailable:
@@ -1257,7 +1265,7 @@ class PreviewApp:
         if tree is not None:
             selected = set(tree.path(tree.active))
             archive.calls = [call for call in archive.calls if call.run_id in selected]
-        async with self.popup(output, session) as surface:
+        async with self.popup(output, session, title="Tools") as surface:
             inspector = ToolInspector(
                 archive,
                 failed=failed,
@@ -1357,7 +1365,7 @@ class PreviewApp:
         choices = history[0].snippets()
         choice = choices[0]
         if len(history) > 1 or len(choices) > 1:
-            async with self.popup(output, session) as surface:
+            async with self.popup(output, session, title="Copy") as surface:
                 dialog = copy_dialog(
                     tree,
                     rich_theme=self.transcript.rich_theme,
@@ -1405,7 +1413,7 @@ class PreviewApp:
         opened_in_editor = False
         # ExitStack keeps appearance queries paused until popup() restores raw mode.
         with ExitStack() as stack:
-            async with self.popup(output, session, layout="sheet") as surface:
+            async with self.popup(output, session, layout="sheet", title="Links") as surface:
                 dialog = links_dialog(
                     links,
                     message_links=message_links,
@@ -1487,13 +1495,14 @@ class PreviewApp:
         self.reviewed_checkpoint = checkpoint
 
     async def browse_diffs(self, output: TerminalOutput, session) -> None:
-        from pcode.edit_ui import DiffBrowser, notes_prompt, render_review
+        from pcode.edit_ui import DIFF_CHROME, DiffBrowser, notes_prompt, render_review
         from pcode.git_diff import GitDiffError
 
         self.diffs_requested = False
         delta, dedent = self.transcript.delta, self.transcript.diff_dedent
-        # The diff pane's width: the screen less its frame and scrollbar.
-        width = max(1, session.app.output.get_size().columns - 4)
+        # The diff pane's width: the screen less its frame and scrollbar. A
+        # popup on an overlay of another width lays it out again (`rewidth`).
+        width = max(1, session.app.output.get_size().columns - DIFF_CHROME)
 
         def load():
             review = self.load_review()
@@ -1510,7 +1519,7 @@ class PreviewApp:
                 " Each file tool's edits are in /tools edits."
             )
             return
-        async with self.popup(output, session) as surface:
+        async with self.popup(output, session, title="Diffs") as surface:
             browser = DiffBrowser(
                 review,
                 reload=self.load_review,
@@ -1982,7 +1991,7 @@ class PreviewApp:
         entries = await asyncio.to_thread(lambda: list_hosts() + list_stopped())
         from pcode.host_ui import hosts_dialog
 
-        async with self.popup(output, session, layout="sheet") as surface:
+        async with self.popup(output, session, layout="sheet", title="Sessions") as surface:
             dialog = hosts_dialog(
                 entries,
                 current=current,
@@ -2318,7 +2327,7 @@ class PreviewApp:
         output, session = self.output, self.prompt_session
         self.aside_view_open = True
         try:
-            async with self.popup(output, session) as surface:
+            async with self.popup(output, session, title="Side questions") as surface:
                 browser = AsideBrowser(
                     self.asides,
                     stop=self.controller.cancel_asides,
@@ -2497,7 +2506,7 @@ class PreviewApp:
         from pcode.worker_ui import WorkerBrowser
 
         self.worker_view_requested = False
-        async with self.popup(output, session) as surface:
+        async with self.popup(output, session, title="Agents") as surface:
             browser = WorkerBrowser(
                 self.activity.workers,
                 rich_theme=self.transcript.rich_theme,
@@ -2529,7 +2538,7 @@ class PreviewApp:
         # a running turn owns the history it would be replaced with. Browse now,
         # fork when the turn ends — or ask the branch a side question with /btw.
         navigable = not (self.activity.busy or self.activity.queued)
-        async with self.popup(output, session) as surface:
+        async with self.popup(output, session, title="Conversation tree") as surface:
             dialog = tree_dialog(
                 tree,
                 navigable=navigable,
@@ -2574,7 +2583,7 @@ class PreviewApp:
             self.transcript.note("No saved sessions for this workspace.")
             return
         active_id = self.active_session_id()
-        async with self.popup(output, session) as surface:
+        async with self.popup(output, session, title="Sessions") as surface:
             browser = SessionBrowser(
                 records,
                 root=self.session_dir or session_root(),
@@ -2630,7 +2639,7 @@ class PreviewApp:
             else:
                 host = status_rows(entry)
             rows = [*host, *rows]
-        async with self.popup(output, session, layout="sheet") as surface:
+        async with self.popup(output, session, layout="sheet", title="Session") as surface:
             dialog = session_info_dialog(
                 rows,
                 input=surface.input,
