@@ -41,23 +41,8 @@ from pcode.sessions import (
 )
 from pcode.task_prompt import TaskPrompt
 from pcode.text_selection import copy_drags
-from pcode.tool_display import plain, tool_summary_lines
+from pcode.tool_display import literal, plain, tool_summary_lines
 from pcode.worktree import SESSION_WORKTREE_PREFIX, repo_scope
-
-
-def literal(text: str) -> str:
-    """Every line of a prompt or response, safe for the terminal.
-
-    Nothing is dropped: the pane scrolls, and a turn read here should say what
-    the turn said. Blank lines inside are structure, so only the surrounding
-    ones go, which would otherwise draw an empty quote rail.
-    """
-    lines = [plain(line, limit=None) for line in strip_controls(text).splitlines()]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    return "\n".join(lines)
 
 
 def names_session(word: str, info: SessionInfo) -> bool:

@@ -31,10 +31,9 @@ from pcode.popup_ui import (
 )
 from pcode.prefix_keys import PrefixKeys
 from pcode.runtime import ToolSummary
-from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 from pcode.text_selection import copy_drags
-from pcode.tool_display import label, plain
+from pcode.tool_display import label, literal, plain
 from pcode.tool_panel import ACTIVE_TASK_ICON, plan_row
 from pcode.workers import Worker, Workers
 

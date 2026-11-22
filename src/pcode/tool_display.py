@@ -57,6 +57,21 @@ def plain(value: str, limit: int | None = 90) -> str:
     return text if limit is None or len(text) <= limit else text[: limit - 1] + "…"
 
 
+def literal(text: str) -> str:
+    """Every line of a prompt or response, safe for the terminal.
+
+    Nothing is dropped: the pane scrolls, and a turn read here should say what
+    the turn said. Blank lines inside are structure, so only the surrounding
+    ones go, which would otherwise draw an empty quote rail.
+    """
+    lines = [plain(line, limit=None) for line in strip_controls(text).splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def label(name: str) -> str:
     return LABELS.get(name, plain(name))
 

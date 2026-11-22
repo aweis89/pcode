@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from pcode.aside import Aside, Asides
+from pcode.aside import Aside, Asides, apply_state
 from pcode.commands import Command, CommandRegistry
 from pcode.controller import (
     MODEL_COMMANDS,
@@ -418,27 +418,7 @@ class RemoteController:
         if new:
             aside = Aside(question=state["question"], id=state["id"])
             self.asides.items.append(aside)
-        for name in (
-            "model",
-            "label",
-            "effort",
-            "status",
-            "answer",
-            "activity",
-            "error",
-            "started",
-            "finished",
-            "thread",
-            "conversation",
-            "base",
-            "bridged",
-        ):
-            if name in state:
-                setattr(aside, name, state[name])
-        # The reply lives in the host; a follow-up only needs to know there is one.
-        aside.reply = True if state.get("replied") else None
-        # Read here and not yet reported stays read.
-        aside.read = aside.read or bool(state.get("read"))
+        apply_state(aside, state)
         if new:
             # The host dropped its oldest settled threads the same way.
             self.asides._trim()

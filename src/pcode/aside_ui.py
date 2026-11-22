@@ -33,6 +33,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode.aside import Aside, Asides, Bridge
+from pcode.btw_view import outcome_blocks, question_blocks
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
 from pcode.copy_ui import Snippet, snippets
@@ -52,10 +53,8 @@ from pcode.popup_ui import (
     popup_style,
 )
 from pcode.prefix_keys import PrefixKeys
-from pcode.session_ui import literal
-from pcode.task_prompt import TaskPrompt
 from pcode.text_selection import copy_drags
-from pcode.tool_display import plain
+from pcode.tool_display import literal, plain
 from pcode.tree_ui import CopyBrowser
 from pcode.ui import StatusLine, status_parts, status_spinner
 
@@ -91,35 +90,6 @@ def thread_tree(thread: list[Aside]) -> ConversationTree:
         )
         tree.active = aside.id
     return tree
-
-
-def question_blocks(aside: Aside, *, first: bool = True) -> list:
-    """A question as a thread shows it, and the blank row its answer starts after."""
-    blocks: list = [TaskPrompt(literal(aside.question))]
-    where = " ".join(
-        part
-        for part in (
-            f"on {aside.model}" if aside.model else "",
-            f"at {aside.effort} effort" if aside.effort else "",
-        )
-        if part
-    )
-    # A follow-up runs where its thread began, so only the first says where.
-    if where and first:
-        blocks.append(Text(f"  {where}", style="dim"))
-    blocks.append(Text(""))
-    return blocks
-
-
-def outcome_blocks(aside: Aside, answered: bool) -> list:
-    """What follows a settled answer: why it stopped, or that there is none."""
-    if aside.running:
-        return []  # Its progress is the viewer's status row, not text here.
-    if aside.error:
-        return [Text(f"  {aside.status}: {aside.error}", style="dim")]
-    if not answered:
-        return [Text(f"  ({aside.status}; no answer)", style="dim")]
-    return []
 
 
 def exchange(aside: Aside, *, code_theme: str, first: bool = True) -> list:

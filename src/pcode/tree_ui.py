@@ -39,9 +39,9 @@ from pcode.popup_ui import (
     popup_style,
 )
 from pcode.prefix_keys import PrefixKeys
-from pcode.session_ui import literal
 from pcode.task_prompt import TaskPrompt
 from pcode.text_selection import copy_drags
+from pcode.tool_display import literal
 
 Selection = tuple[str | None, bool]
 

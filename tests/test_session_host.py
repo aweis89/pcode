@@ -2231,7 +2231,7 @@ def test_restart_lets_the_host_start_its_successor_and_attaches_to_it(monkeypatc
 
 
 def test_a_drawer_watches_side_questions_read_only_and_never_holds_the_host(tmp_path, host_dir):
-    """`pcode.drawer`: an observer gets rendered side answers, may call nothing, is no terminal."""
+    """`pcode.drawer`: an observer gets the side questions, may call nothing, is no terminal."""
     import json
 
     from pcode.aside import Aside
@@ -2239,18 +2239,17 @@ def test_a_drawer_watches_side_questions_read_only_and_never_holds_the_host(tmp_
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
         try:
-            aside = Aside(question="why?", status="answered", answer="**because** <b>x</b>")
+            aside = Aside(question="why?", status="answered", answer="because")
             host.controller.asides.items.append(aside)
             reader, writer = await asyncio.open_unix_connection(str(host.socket), limit=2**24)
 
             async def message():
                 return json.loads(await asyncio.wait_for(reader.readline(), 5))
 
-            writer.write(b'{"type": "observe", "version": 1}\n')
-            ready = await message()
-            assert ready["type"] == "ready" and "<html" in ready["page"]
+            writer.write(b'{"type": "observe", "version": 2}\n')
+            assert (await message()) == {"type": "ready", "version": 2}
             [state] = (await message())["args"][0]
-            assert state["answer_html"] == "<p><strong>because</strong> &lt;b&gt;x&lt;/b&gt;</p>\n"
+            assert state["answer"] == "because" and state["thread"] == aside.thread
             await until(lambda: host.connections == 0)
             assert host.idle() and not host.clients, "an open drawer is not a terminal"
 
@@ -2258,7 +2257,7 @@ def test_a_drawer_watches_side_questions_read_only_and_never_holds_the_host(tmp_
             host.emit_aside(aside)
             changed = await message()
             assert changed["method"] == "aside_changed"
-            assert "more" in changed["args"][0]["answer_html"]
+            assert changed["args"][0]["answer"] == "because more"
 
             writer.write(
                 b'{"type": "request", "id": 1, "method": "submit", "args": ["ls", "shell"]}\n'
@@ -2271,6 +2270,49 @@ def test_a_drawer_watches_side_questions_read_only_and_never_holds_the_host(tmp_
             assert (await message())["method"] == "host_closed"
             writer.close()
         finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_the_drawer_viewer_draws_a_hosts_thread_in_its_own_terminal(tmp_path, host_dir):
+    """`python -m pcode.btw_tail`, as the terminal app runs it, on a pty."""
+    import pty
+    import select
+    import subprocess
+    import sys
+
+    from pcode.aside import Aside
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        master, slave = pty.openpty()
+        process = None
+        try:
+            aside = Aside(question="why is it blue?", status="answered")
+            aside.answer = "Rayleigh scattering."
+            host.controller.asides.items.append(aside)
+            process = subprocess.Popen(
+                [sys.executable, "-m", "pcode.btw_tail", "aaaa1111", aside.thread],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                env={**os.environ, "TERM": "xterm-256color"},
+            )
+            seen = b""
+            deadline = asyncio.get_running_loop().time() + 10
+            while b"Rayleigh" not in seen and asyncio.get_running_loop().time() < deadline:
+                ready = await asyncio.to_thread(select.select, [master], [], [], 0.2)
+                if ready[0]:
+                    seen += os.read(master, 4096)
+            assert b"why is it blue?" in seen and b"Rayleigh scattering." in seen, seen
+            assert host.idle() and not host.clients
+        finally:
+            if process is not None:
+                process.terminate()
+                process.wait(5)
+            os.close(master)
+            os.close(slave)
             await stop_host(host)
 
     asyncio.run(run())

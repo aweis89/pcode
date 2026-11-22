@@ -604,28 +604,25 @@ class SessionHost:
     ) -> None:
         """A drawer showing the side questions (`pcode.drawer`), until it goes.
 
-        It gets the page to show them in, every side question, then each
-        change. It may call nothing, and it is not a terminal: it neither keeps
-        an idle host running nor marks a finished turn seen.
+        It gets every side question, then each change. It may call nothing,
+        and it is not a terminal: it neither keeps an idle host running nor
+        marks a finished turn seen.
         """
         from pcode import drawer
 
         if hello.get("version") != drawer.OBSERVER_VERSION:
-            writer.write(dumps({"type": "error", "message": "Unsupported drawer version."}))
+            message = "This session host's pcode does not speak this drawer's version."
+            writer.write(dumps({"type": "error", "message": message}))
             await writer.drain()
             writer.close()
             return
-        writer.write(
-            dumps({"type": "ready", "version": drawer.OBSERVER_VERSION, "page": drawer.page()})
-        )
+        writer.write(dumps({"type": "ready", "version": drawer.OBSERVER_VERSION}))
         peer = Peer(reader, writer, object(), allowed=frozenset())
         counted = False
         try:
             self.observers.add(peer)
             asides = self.controller.asides.items
-            peer.notify(
-                "asides", [drawer.observer_state(self.aside_state(aside)) for aside in asides]
-            )
+            peer.notify("asides", [self.aside_state(aside) for aside in asides])
             # Counted from hello on, as every connection; no longer once it is a drawer.
             self.connections -= 1
             counted = True
@@ -639,12 +636,10 @@ class SessionHost:
             peer.close()
 
     def _notify_observers(self) -> None:
-        from pcode import drawer
-
         self._observe_flush = None
         changed, self._observed = list(self._observed.values()), {}
         for aside in changed:
-            state = drawer.observer_state(self.aside_state(aside))
+            state = self.aside_state(aside)
             for peer in list(self.observers):
                 peer.notify("aside_changed", state)
 
@@ -1210,6 +1205,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         workspace=str(workspace),
         log=os.environ.get("PCODE_HOST_LOG", ""),
         code=code_fingerprint(),
+        python=sys.executable,
     )
     write_entry(entry)
     set_project_root(workspace)

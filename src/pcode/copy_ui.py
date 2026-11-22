@@ -47,7 +47,7 @@ class Answer:
     earlier: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        from pcode.session_ui import literal
+        from pcode.tool_display import literal
 
         object.__setattr__(self, "prompt", literal(self.prompt))
         object.__setattr__(self, "text", literal(self.text))

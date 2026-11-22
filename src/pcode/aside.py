@@ -595,3 +595,33 @@ class Asides:
             self.on_failure(aside, error)
         except Exception:
             pass
+
+
+# What a session host sends of a side question (`SessionHost.aside_state`) that
+# a terminal keeps as is.
+STATE_FIELDS = (
+    "model",
+    "label",
+    "effort",
+    "status",
+    "answer",
+    "activity",
+    "error",
+    "started",
+    "finished",
+    "thread",
+    "conversation",
+    "base",
+    "bridged",
+)
+
+
+def apply_state(aside: Aside, state: dict) -> None:
+    """Bring a terminal's copy of a side question up to the host's `state`."""
+    for name in STATE_FIELDS:
+        if name in state:
+            setattr(aside, name, state[name])
+    # The reply lives in the host; a follow-up only needs to know there is one.
+    aside.reply = True if state.get("replied") else None
+    # Read here and not yet reported stays read.
+    aside.read = aside.read or bool(state.get("read"))

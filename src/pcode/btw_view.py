@@ -108,6 +108,95 @@ class _Written:
     done: bool = False
 
 
+def question_blocks(aside: Aside, *, first: bool = True) -> list:
+    """A question as a thread shows it, and the blank row its answer starts after."""
+    from pcode.task_prompt import TaskPrompt
+    from pcode.tool_display import literal
+
+    blocks: list = [TaskPrompt(literal(aside.question))]
+    where = " ".join(
+        part
+        for part in (
+            f"on {aside.model}" if aside.model else "",
+            f"at {aside.effort} effort" if aside.effort else "",
+        )
+        if part
+    )
+    # A follow-up runs where its thread began, so only the first says where.
+    if where and first:
+        blocks.append(Text(f"  {where}", style="dim"))
+    blocks.append(Text(""))
+    return blocks
+
+
+def outcome_blocks(aside: Aside, answered: bool) -> list:
+    """What follows a settled answer: why it stopped, or that there is none."""
+    if aside.running:
+        return []  # Its progress is the viewer's status row, not text here.
+    if aside.error:
+        return [Text(f"  {aside.status}: {aside.error}", style="dim")]
+    if not answered:
+        return [Text(f"  ({aside.status}; no answer)", style="dim")]
+    return []
+
+
+class ThreadWriter:
+    """What of a thread is new since the last call, as entries to print.
+
+    Answers go out a whole block at a time once settled, as the conversation's
+    do. Shared by the swap (`ThreadView`) and the drawer (`pcode.btw_tail`).
+    """
+
+    def __init__(self) -> None:
+        self._written: dict[str, _Written] = {}
+
+    def reset(self) -> None:
+        """Nothing is on screen: the next call writes the thread from the top."""
+        self._written = {}
+
+    def entries(self, thread: list[Aside], code_theme: str) -> tuple[list[Entry] | None, list[str]]:
+        """New entries, or None if text already written changed (draw it all again);
+        and the ids of answers now on screen whole, which this marks read.
+        """
+        from pcode.ui import settled_lines
+
+        entries: list[Entry] = []
+        seen: list[str] = []
+        for number, aside in enumerate(thread):
+            written = self._written.get(aside.id)
+            if written is None:
+                written = self._written[aside.id] = _Written()
+                if number:
+                    entries.append(entry())
+                entries += [entry(block) for block in question_blocks(aside, first=not number)]
+            answer = safe_text(aside.answer)
+            if not answer.startswith(written.answer) or (written.done and answer != written.answer):
+                return None, seen
+            if written.done:
+                continue
+            rest = answer[len(written.answer) :]
+            if aside.running:
+                # As the conversation's answers do: whole blocks, once settled,
+                # judged on whole lines (half an indent is not a blank line).
+                complete = rest[: rest.rfind("\n") + 1]
+                settled = "".join(complete.splitlines(keepends=True)[: settled_lines(complete)])
+            else:
+                settled = rest
+            if settled.strip():
+                entries += [entry(Markdown(settled.strip("\n"), code_theme=code_theme)), entry()]
+            written.answer += settled
+            if aside.running:
+                # A follow-up waits for this answer, so nothing comes after it yet.
+                break
+            entries += [entry(block) for block in outcome_blocks(aside, bool(answer.strip()))]
+            written.done = True
+            if not aside.read:
+                # On screen whole is read: the footer stops announcing it.
+                aside.read = True
+                seen.append(aside.id)
+        return entries, seen
+
+
 class ThreadView:
     """Keeps the screen on `Activity.btw_thread`, synced before every redraw."""
 
@@ -124,7 +213,7 @@ class ThreadView:
         self.drawer_host = lambda: None
         self._drawn: tuple[str, str | None] | None = None
         self._shown: str | None = None
-        self._written: dict[str, _Written] = {}
+        self.writer = ThreadWriter()
 
     def sync(self) -> None:
         """Open, switch, close or extend the view to match the thread on `Activity`."""
@@ -183,7 +272,7 @@ class ThreadView:
 
     def replay(self) -> list[Entry]:
         """The whole view from the top, as the rebuild that opens or redraws it asks."""
-        self._written = {}
+        self.writer.reset()
         thread = current(self.activity)
         if not thread:
             return []
@@ -211,45 +300,7 @@ class ThreadView:
 
     def _entries(self, thread: list[Aside]) -> list[Entry] | None:
         """What of ``thread`` is new since the last call; None if written text changed."""
-        from pcode.aside_ui import outcome_blocks, question_blocks
-        from pcode.ui import settled_lines
-
-        code_theme = self.transcript.code_theme
-        entries: list[Entry] = []
-        seen: list[str] = []
-        for number, aside in enumerate(thread):
-            written = self._written.get(aside.id)
-            if written is None:
-                written = self._written[aside.id] = _Written()
-                if number:
-                    entries.append(entry())
-                entries += [entry(block) for block in question_blocks(aside, first=not number)]
-            answer = safe_text(aside.answer)
-            if not answer.startswith(written.answer) or (written.done and answer != written.answer):
-                self._report(seen)
-                return None
-            if written.done:
-                continue
-            rest = answer[len(written.answer) :]
-            if aside.running:
-                # As the conversation's answers do: whole blocks, once settled,
-                # judged on whole lines (half an indent is not a blank line).
-                complete = rest[: rest.rfind("\n") + 1]
-                settled = "".join(complete.splitlines(keepends=True)[: settled_lines(complete)])
-            else:
-                settled = rest
-            if settled.strip():
-                entries += [entry(Markdown(settled.strip("\n"), code_theme=code_theme)), entry()]
-            written.answer += settled
-            if aside.running:
-                # A follow-up waits for this answer, so nothing comes after it yet.
-                break
-            entries += [entry(block) for block in outcome_blocks(aside, bool(answer.strip()))]
-            written.done = True
-            if not aside.read:
-                # On screen whole is read: the footer stops announcing it.
-                aside.read = True
-                seen.append(aside.id)
+        entries, seen = self.writer.entries(thread, self.transcript.code_theme)
         self._report(seen)
         return entries
 

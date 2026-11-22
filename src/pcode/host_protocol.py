@@ -166,6 +166,9 @@ class HostEntry:
     held: str = ""
     # `code_fingerprint()` when the host started, to spot hosts on older code.
     code: str = ""
+    # The interpreter it runs on, so a drawer in the terminal app can start
+    # `pcode.btw_tail` on the same pcode (`pcode.drawer`).
+    python: str = ""
 
     @property
     def socket(self) -> Path:
