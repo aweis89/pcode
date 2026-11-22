@@ -29,7 +29,7 @@ side question is reading the answer while the turn is still running. A bare
 
 Unless a [drawer](#threads-in-a-drawer) shows them, threads show in a viewer
 with a follow-up editor of its own. It takes the whole terminal while it is
-open, or with `popup_view overlay` opens over the conversation.
+open, or in Ghostty Smooth opens over the conversation.
 **Ctrl+Q** opens it, as a bare `/btw` does:
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
@@ -72,8 +72,7 @@ Ctrl+/ browses the current popup's help.
 
 ## Threads in a drawer
 
-Experimental. With `pcode config set popup_view overlay`, in
-Ghostty Smooth with a [session host](sessions.md#background-sessions), a thread opens in a drawer
+Experimental. In Ghostty Smooth with a [session host](sessions.md#background-sessions), a thread opens in a drawer
 beside the conversation instead of the popup. The drawer is a terminal of its
 own, so the thread keeps your terminal's font and colors, and you can scroll
 and select it there. The thread is headed ` btw ` and its first question in a
