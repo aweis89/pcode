@@ -26,6 +26,7 @@ import asyncio
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 
 import anyio
@@ -45,6 +46,12 @@ ASK_WAIT_SECONDS = 600
 ASK_WAIT_BOUNDS = (30, 3600)
 # A shielded notice gives up after this, as Harness bounds its own shielded emits.
 NOTIFY_SECONDS = 5
+# Quiet this long before `manage_worker` list calls a running worker possibly
+# stuck. Long: one thinking-heavy model call or test run can go many minutes.
+STALL_SECONDS = 900
+# `WorkerHandle.activity` before the worker's own stream starts.
+QUEUED = "Queued for a worker slot"
+SETTING_UP = "Setting up its worktree"
 
 _current: ContextVar[WorkerHandle | None] = ContextVar("current_worker", default=None)
 
@@ -70,7 +77,11 @@ CHILD_INSTRUCTIONS = (
 PARENT_INSTRUCTIONS = (
     "\nResults name a worker id (w1, ...). Answer a worker's question with `manage_worker`, "
     "asking the user if only they can decide; relay the user's 'Answer for w3: ...' or "
-    "'Message for w3: ...' with action answer or message."
+    "'Message for w3: ...' with action answer or message. A running worker can go "
+    "minutes without visible progress inside one model call, and its token count stays "
+    "0 until a call ends: that is not a stall. Judge it by `liveness` in manage_worker "
+    "list, and stop or redo a running worker only when the user asks or it is clearly "
+    "off track."
 )
 
 
@@ -137,13 +148,31 @@ class WorkerHandle:
     started: bool = False
     # Dedicated `AntigravityModel(worker=True)` for this worker, reused across `continue_worker`.
     worker_model: Any = None
+    # Liveness for `manage_worker(action='list')`, as `monotonic()` times. Without
+    # it a running worker read as just "running, 0 tokens" (tokens only move when a
+    # model call ends, and an `antigravity:` worker is one call), and parents
+    # stopped live workers as stalled.
+    started_at: float | None = None
+    progressed_at: float | None = None
+    activity: str = ""
+    running_tools: list[str] = field(default_factory=list)
+    tool_calls: int = 0
 
     @property
     def running(self) -> bool:
         return self.status == "running"
 
+    def mark_started(self, activity: str = "Starting") -> None:
+        self.started_at = self.progressed_at = monotonic()
+        self.activity = activity
+        self.running_tools = []
+        self.tool_calls = 0
+
+    def mark_progress(self) -> None:
+        self.progressed_at = monotonic()
+
     def summary(self) -> dict[str, Any]:
-        return {
+        info: dict[str, Any] = {
             "worker_id": self.id,
             "agent": self.agent,
             "purpose": self.purpose or " ".join(self.task.split())[:80],
@@ -155,6 +184,48 @@ class WorkerHandle:
             "review": self.review,
             "waiting_on_answer": self.question is not None,
         }
+        if self.running and self.started_at is not None:
+            now = monotonic()
+            quiet = round(now - (self.progressed_at or self.started_at))
+            if not self.tokens:
+                # Not counted yet, rather than none used.
+                info["tokens"] = None
+            info.update(
+                elapsed_seconds=round(now - self.started_at),
+                seconds_since_progress=quiet,
+                activity=self.activity or "Starting",
+                running_tools=list(self.running_tools),
+                tool_calls=self.tool_calls,
+                liveness=self.liveness(quiet),
+            )
+        return info
+
+    def liveness(self, quiet: int) -> str:
+        """What a running worker is doing, worded so a quiet one does not read as stuck."""
+        if self.question is not None:
+            return (
+                "Waiting on your answer; reply with "
+                f"manage_worker(action='answer', worker_id='{self.id}')."
+            )
+        if self.activity == QUEUED:
+            # Waiting on other workers, never stuck on its own account.
+            return f"{QUEUED}; it starts when another worker finishes."
+        if self.running_tools:
+            text = f"Running {', '.join(self.running_tools)}; last progress {quiet}s ago."
+        elif self.activity == SETTING_UP:
+            text = f"{SETTING_UP}; last progress {quiet}s ago."
+        else:
+            text = (
+                f"In a model call; last progress {quiet}s ago. One model call can run "
+                "for minutes with no visible progress, and tokens update only when it "
+                "ends, so quiet or zero tokens is normal."
+            )
+        if quiet >= STALL_SECONDS:
+            return (
+                f"{text} No progress for over {STALL_SECONDS // 60} minutes, so it may be "
+                "stuck; tell the user before stopping it."
+            )
+        return f"{text} Live: keep waiting; its result arrives on its own."
 
 
 class WorkerHub:

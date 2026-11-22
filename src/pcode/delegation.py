@@ -159,6 +159,10 @@ class ResumableAgent(WrapperAgent):
                     attempt,
                     attempts,
                 )
+                if handle is not None:
+                    handle.activity = f"Reconnecting {attempt}/{attempts}"
+                    handle.running_tools = []  # The resent request starts over.
+                    handle.mark_progress()
                 if (parent := _parent.get()) is not None:
                     await parent.emit(ChildActivity(activity=f"Reconnecting {attempt}/{attempts}"))
                 await asyncio.sleep(retries.RETRY_DELAY)
@@ -185,6 +189,9 @@ async def stream_child_activity(_ctx, events):
     async for event in events:
         if parent is None:
             continue
+        if worker is not None:
+            # Any child event, streamed text and thinking included, shows it is alive.
+            worker.mark_progress()
         if isinstance(event, FileChangeEvent):
             parent_id = parent.tool_call_id or ""
             await parent.emit(
@@ -306,6 +313,11 @@ async def stream_child_activity(_ctx, events):
             elif isinstance(event.part, NativeToolCallPart):
                 activity = "Working"
         if child is not None or activity != phase:
+            if worker is not None:
+                worker.activity = activity
+                worker.running_tools = [name for name, _args, _started in tools.values()]
+                if isinstance(child, ToolStarted):
+                    worker.tool_calls += 1
             await parent.emit(ChildActivity(activity=activity, child=child))
             phase = activity
             if worker is not None and usage is not None:
