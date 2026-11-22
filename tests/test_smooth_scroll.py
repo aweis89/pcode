@@ -139,6 +139,19 @@ def test_sequences():
     assert smooth_scroll.advance(1, rate=7.55) == "\x1b_smooth;advance;7;1;755\x1b\\"
     assert smooth_scroll.advance(1, rate=150.0) == "\x1b_smooth;advance;7;1;10000\x1b\\"
     assert smooth_scroll.advance(1, smooth_scroll.PANEL_ID) == "\x1b_smooth;advance;8;1\x1b\\"
+    assert (
+        smooth_scroll.advance(
+            12,
+            rate=6.0,
+            flags=smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE,
+        )
+        == "\x1b_smooth;advance;7;12;600;3\x1b\\"
+    )
+    assert smooth_scroll.reveal(10, 4) == "\x1b_smooth;reveal;7;10;4;0\x1b\\"
+    assert (
+        smooth_scroll.reveal(10, 4, rate=300, flags=smooth_scroll.REVEAL_CURTAIN)
+        == "\x1b_smooth;reveal;7;10;4;300;1\x1b\\"
+    )
     assert smooth_scroll.OFF == "".join(f"\x1b_smooth;off;{i}\x1b\\" for i in (7, 8, 9))
 
 
@@ -460,3 +473,134 @@ def test_repeated_rows_follow_the_block_but_do_not_vote():
     assert _block_move(after, before) == (1, 5, 6)
     # Nothing unique moved: nothing to go on.
     assert _block_move({1: "a", 3: "b", 4: "b"}, {1: "a", 2: "b", 3: "b"}) is None
+
+
+def test_probe_accepts_protocol_8_for_native_pacing(monkeypatch):
+    reply8 = b"\x1b_smooth;ok;8\x1b\\"
+    _, left = _probe(monkeypatch, answer=reply8)
+    assert theme.glide_supported()
+    assert theme.native_pacing_supported()
+    assert left == b""
+
+    # Protocol 7 still glides, without native pacing.
+    _, left = _probe(monkeypatch, answer=REPLY)
+    assert theme.glide_supported()
+    assert not theme.native_pacing_supported()
+    assert left == b""
+
+
+@pytest.mark.parametrize(
+    "smooth, native_pref, proto8, expected_native",
+    [
+        ("auto", "auto", True, True),
+        ("auto", "off", True, False),
+        ("auto", "auto", False, False),
+        ("off", "auto", True, False),
+    ],
+)
+def test_native_pacing_setting_and_probe_gating(
+    monkeypatch, smooth, native_pref, proto8, expected_native
+):
+    monkeypatch.setattr("pcode.ui.glide_supported", lambda: True)
+    monkeypatch.setattr("pcode.ui.native_pacing_supported", lambda: proto8)
+    console = Console(force_terminal=True, width=80)
+    transcript = Transcript(
+        console,
+        detected_theme="dark",
+        preferences={"smooth_scroll": smooth, "native_pacing": native_pref},
+    )
+    with create_pipe_input() as pipe:
+        app = Application(input=pipe, output=DummyOutput())
+        output = TerminalOutput(console, app)
+        transcript.output = output
+    assert output.native_pacing is expected_native
+
+
+def test_native_batch_groups_same_style_and_respects_overscan_budget(monkeypatch):
+    from pcode.ui import QueuedRow
+
+    clock = [10.0]
+    output, _ = _glide_output(monkeypatch, clock)
+    output.native_pacing = True
+    output._declared = ((40, 80), clock[0])
+    output.app.output.size = output.app.output.size._replace(rows=50)
+    output.rows = [
+        QueuedRow("prose line 1\n", typed=True),
+        QueuedRow("prose line 2\n", typed=True),
+        QueuedRow("\n", typed=False),  # blank spacer joins the prose run
+        QueuedRow("code line 1\n", typed=False),
+        QueuedRow("code line 2\n", typed=False),
+    ]
+    assert output._native_batch() == (3, True)
+
+    # Large burst exceeding MAX_BATCH_GLIDE commits up to 32 rows, then waits
+    # until enough overscan room opens rather than trickling 1 row at a time.
+    output.rows = [QueuedRow(f"row {i}\n", typed=False) for i in range(45)]
+    assert output._native_batch() == (smooth_scroll.MAX_BATCH_GLIDE, False)
+    output._native_backlog = float(smooth_scroll.MAX_BATCH_GLIDE)
+    output._native_rate = 8.0
+    output._native_at = clock[0]
+    assert output._native_batch() == (0, False)
+    clock[0] += 0.5  # 4 rows drained (< 8 threshold for a big burst)
+    assert output._native_batch() == (0, False)
+    clock[0] += 0.6  # ~8.8 rows drained -> commits 8 rows cleanly
+    assert output._native_batch() == (8, False)
+
+    # Short pane (< 32 transcript rows) caps batches to visible transcript rows.
+    output._reset_native_state()
+    output._declared = ((16, 80), clock[0])  # 15 visible transcript rows (0..14)
+    output.app.output.size = output.app.output.size._replace(rows=24)
+    assert output._native_batch() == (15, False)
+
+
+def test_emit_native_commit_sends_batch_glide_and_reveal_sequences(monkeypatch):
+    clock = [10.0]
+    output, out = _glide_output(monkeypatch, clock)
+    output.native_pacing = True
+    output._declared = ((21, 80), clock[0])
+
+    # Scrolled prose commit: batch advance + soft fade + horizontal ink sweep.
+    output._native_commit = (6, 6, True, 240)
+    output._emit_native_commit(output.app)
+    sent = "".join(out.written)
+    assert sent == ("\x1b_smooth;advance;7;6;500;3\x1b\\\x1b_smooth;reveal;7;14;6;0\x1b\\")
+
+    # Scrolled non-prose commit: batch advance + soft fade, no horizontal sweep.
+    out.written.clear()
+    output._native_commit = (10, 10, False, 300)
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == "\x1b_smooth;advance;7;10;533;3\x1b\\"
+
+    # A second prose block waits until the first prose sweep finishes (split by code).
+    from pcode.ui import QueuedRow
+
+    output.rows = [QueuedRow("second prose\n", typed=True)]
+    assert output._native_batch() == (0, False)
+    clock[0] += 3.0
+    assert output._native_batch() == (1, True)
+
+    # In-place prose (screen not full, scrolled=0): sweep reveal only.
+    out.written.clear()
+    output._reset_native_state()
+    output._declared = ((15, 80), clock[0])
+    output._native_commit = (4, 0, True, 160)
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == "\x1b_smooth;reveal;7;10;4;0\x1b\\"
+
+    # In-place non-prose (screen not full, scrolled=0): vertical curtain reveal.
+    out.written.clear()
+    output._reset_native_state()
+    output._native_commit = (4, 0, False, 160)
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == "\x1b_smooth;reveal;7;10;4;0;1\x1b\\"
+
+    # Partial-to-full boundary crossing (0 < scrolled < written) for non-prose:
+    # glides the scrolled rows and dissolves the in-place rows with a curtain.
+    out.written.clear()
+    output._reset_native_state()
+    output._declared = ((21, 80), clock[0])
+    output._native_commit = (6, 2, False, 200)
+    output._emit_native_commit(output.app)
+    assert "".join(out.written) == (
+        "\x1b_smooth;advance;7;2;500;3\x1b\\\x1b_smooth;reveal;7;14;4;0;1\x1b\\"
+    )

@@ -25,17 +25,26 @@ MIN_ROWS_PER_SECOND = 5.0
 MAX_ROWS_PER_SECOND = 10.0
 CATCH_UP_SECONDS = 3.0
 
-# The smooth-scroll protocol version pcode speaks: 4 added `advance`, 5 the
+# The smooth-scroll protocol versions pcode speaks: 4 added `advance`, 5 the
 # no-overscan flag, 6 negative advances (content moved down) with the
 # innermost of nested regions winning, 7 an optional rate hint on `advance`
-# for steady-rate conveyor scrolling. Exact, since `Glide` mirrors the
-# terminal's motion.
+# for steady-rate conveyor scrolling, 8 native pacing (batch conveyor glides
+# with soft bottom-edge dissolve and 120 Hz Metal reveal shaders).
 PROTOCOL = 7
+NATIVE_PACING_PROTOCOL = 8
+SUPPORTED_PROTOCOLS = frozenset({PROTOCOL, NATIVE_PACING_PROTOCOL})
 QUERY = b"\x1b_smooth;?\x1b\\"
 # Any smooth-scroll reply, so a future shape is still kept out of typing; only
-# `ok;N` with N == PROTOCOL turns the glide on.
+# `ok;N` with N in SUPPORTED_PROTOCOLS turns the glide on.
 REPLY = re.compile(rb"\x1b_smooth;([^\x1b\x07]{0,32})\x1b\\")
 VERSION = re.compile(rb"ok;(\d{1,4})")
+
+# Protocol 8 native pacing flags and limits.
+MAX_BATCH_GLIDE = 32
+ADVANCE_BATCH = 1
+ADVANCE_FADE = 2
+REVEAL_SWEEP = 0
+REVEAL_CURTAIN = 1
 
 # Region ids are per app; any constants will do. The transcript region, and
 # the live panel's rows above a row just added to it.
@@ -229,13 +238,34 @@ def _rate_centi(rate: float) -> int:
     return min(MAX_RATE_CENTI, max(1, round(rate * 100)))
 
 
-def advance(rows: int, region: int = REGION_ID, rate: float = 0.0) -> str:
+def advance(rows: int, region: int = REGION_ID, rate: float = 0.0, flags: int = 0) -> str:
     """The region's content just moved up ``rows`` rows: glide it in.
 
     When ``rate`` is positive (rows per second), the terminal cruises at that
     steady speed while more rows follow instead of braking between each row.
+    Protocol 8 adds ``flags`` (``ADVANCE_BATCH`` / ``ADVANCE_FADE``).
     """
     centi = _rate_centi(rate)
+    if flags:
+        return f"\x1b_smooth;advance;{region};{rows};{centi};{flags}\x1b\\"
     if centi:
         return f"\x1b_smooth;advance;{region};{rows};{centi}\x1b\\"
     return f"\x1b_smooth;advance;{region};{rows}\x1b\\"
+
+
+def reveal(
+    top: int,
+    count: int,
+    region: int = REGION_ID,
+    rate: int = 0,
+    flags: int = REVEAL_SWEEP,
+) -> str:
+    """Animate newly committed rows ``top .. top + count - 1`` inside ``region`` (protocol 8).
+
+    ``REVEAL_SWEEP`` runs a 120 Hz feathered horizontal ink sweep across each row
+    in order; ``REVEAL_CURTAIN`` dissolves the block in top-to-bottom. ``rate`` 0
+    uses the terminal's default speed (cells/s for sweep, centi-rows/s for curtain).
+    """
+    if flags:
+        return f"\x1b_smooth;reveal;{region};{top};{count};{rate};{flags}\x1b\\"
+    return f"\x1b_smooth;reveal;{region};{top};{count};{rate}\x1b\\"
