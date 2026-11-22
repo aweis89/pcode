@@ -538,7 +538,9 @@ def test_modal_result_is_applied_only_on_accept(monkeypatch, selection):
     monkeypatch.setattr("pcode.app.suspended_editor", terminal)
 
     async def run():
-        app.output = SimpleNamespace(lock=asyncio.Lock(), flush=AsyncMock())
+        app.output = SimpleNamespace(
+            lock=asyncio.Lock(), flush=AsyncMock(), release_screen=lambda: None
+        )
         app.prompt_session = SimpleNamespace(
             app=SimpleNamespace(input=object(), output=object(), style=None)
         )

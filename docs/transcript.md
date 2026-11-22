@@ -362,7 +362,7 @@ it types: line breaks and styling are final from the first character, and
 indentation appears at once. Code blocks, tables, rules, and tool output roll in
 a row per frame instead, since half a code line or table border reads badly.
 
-Typing runs at about 360 characters a second, close to a model's own pace. When
+Typing runs at about 270 characters a second, a little under a model's own pace. When
 a burst arrives faster than that, typing speeds up to finish it in about two
 seconds. Rows rolled in whole go one per frame, sped up to finish in about a
 second. The two queue behind each other, so prose followed by a long code block

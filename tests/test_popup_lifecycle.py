@@ -52,7 +52,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
 
         monkeypatch.setattr("pcode.app.suspended_editor", suspend)
         monkeypatch.setattr(app.transcript, "regenerate", regenerate)
-        output = SimpleNamespace(lock=lock, flush=flush)
+        output = SimpleNamespace(lock=lock, flush=flush, release_screen=lambda: None)
 
         async def popup():
             async with app.popup(output, session) as inp:
