@@ -140,3 +140,19 @@ def test_a_typed_row_keeps_its_escapes_and_cuts_on_visible_characters():
     assert _typed_part(row, 7) == f"\x1b[1mBold\x1b[0m {link}li"
     assert _typed_part(row, 4) == "\x1b[1mBold"
     assert _typed_part("plain\n", 3) == "pla"
+
+
+def test_live_rows_are_erased_exactly_and_an_unchanged_frame_writes_nothing():
+    from pcode.btw_tail import CLOSE_ROW, ERASE_DOWN
+
+    view, out, frames = paced_tail("typed")
+    notify(view, out, "asides", [state(activity="Answering")])
+    answer = "A settled sentence that is long enough to take several frames.\n\nx"
+    first = notify(view, out, "aside_changed", state(answer=answer, activity="Answering"))
+    assert CLOSE_ROW + "\n" in first, "a cut-off row closes its styles and links"
+    out.seek(0)
+    out.truncate()
+    frames.due()
+    assert out.getvalue().startswith("\x1b[1A" + ERASE_DOWN), "both live rows taken back"
+    # Nothing new, and the frame still pending: nothing to write.
+    assert notify(view, out, "aside_changed", state(answer=answer, activity="Answering")) == ""

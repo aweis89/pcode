@@ -72,8 +72,9 @@ class Tail:
         self._pacer = Pacer()
         self._frame: asyncio.TimerHandle | None = None
         # Rows under the text, never wrapped (a row being typed, the status
-        # row): erased before anything more is written.
-        self._live = 0
+        # row): erased before anything more is written. Kept as written, so a
+        # frame that changes nothing writes nothing.
+        self._live: list[str] = []
 
     def apply(self, message: dict) -> None:
         if message.get("type") != "notify":
@@ -117,7 +118,8 @@ class Tail:
                 # A whole redraw lands at once, as a rebuilt screen does in the
                 # conversation; it covers whatever was still queued.
                 self.console.file.write(CLEAR)
-                self._live = 0
+                self._live = []
+                self.hold()
                 self.rows, self._typed = [], 0
                 self._pacer.reset()
                 self.writer.reset()
@@ -144,6 +146,12 @@ class Tail:
             prose = typed and typed_prose(objects)
             self.rows += [QueuedRow(row, prose) for row in split_rows(captured.get())]
 
+    def hold(self) -> None:
+        """Stop the frame timer, e.g. while a resize waits to draw everything again."""
+        if self._frame is not None:
+            self._frame.cancel()
+            self._frame = None
+
     def _tick(self) -> None:
         """One paced frame; another is timed while rows wait."""
         self._frame = None
@@ -156,10 +164,7 @@ class Tail:
 
     def _show(self, due: int, typed: int) -> None:
         """Write ``due`` rows, then the live rows: the next row typed so far, the status."""
-        out = self.console.file
-        if self._live:
-            out.write((f"\x1b[{self._live - 1}A" if self._live > 1 else "") + ERASE_DOWN)
-        out.write("".join(row.text for row in self.rows[:due]))
+        written = "".join(row.text for row in self.rows[:due])
         self.rows = self.rows[due:]
         self._typed = typed
         live = []
@@ -172,8 +177,14 @@ class Tail:
             with self.console.capture() as captured:
                 self.console.print(row, end="", crop=True)
             live.append(captured.get())
-        out.write("\n".join(live))
-        self._live = len(live)
+        if not written and live == self._live:
+            return
+        out = self.console.file
+        if self._live:
+            up = len(self._live) - 1
+            out.write((f"\x1b[{up}A" if up else "") + ERASE_DOWN)
+        out.write(written + "\n".join(live))
+        self._live = live
         out.flush()
 
     @staticmethod
@@ -231,6 +242,9 @@ async def run(host: str, thread: str) -> None:
         nonlocal redraw
         if redraw is not None:
             redraw.cancel()
+        # Rows queued at the old width would wrap and spoil the erase; the
+        # redraw writes them whole at the new one.
+        tail.hold()
         redraw = loop.call_later(RESIZE_SETTLE, lambda: tail.draw(whole=True))
 
     loop.add_signal_handler(signal.SIGWINCH, resized)
