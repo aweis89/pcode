@@ -298,6 +298,9 @@ class EventTranslator:
             elapsed_seconds=max(0, monotonic() - started),
             command=invocation(name, args),
             purpose=stated_purpose(args),
+            # A delayed completion, like a job's exit: it lands whenever the
+            # child finishes, often mid-word in the parent's reply.
+            execution="background",
         )
 
     def on_child_output(self, event: ChildOutput) -> Iterator[Event]:

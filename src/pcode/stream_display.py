@@ -163,8 +163,10 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
 
         activity.cache_note = footer_label(event.text)
     elif isinstance(event, EditCompleted):
-        output.finish_thinking()
-        output.finish()
+        # As for a settled call below: only a diff that is written interrupts.
+        if transcript.writes_edit(event):
+            output.finish_thinking()
+            output.finish()
         present((event,))
     elif isinstance(event, (CommandOutput, EditPreview)):
         present((event,))
@@ -185,8 +187,11 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         # Settled calls land in scrollback, so thinking and prose must be
         # committed first. Nothing else interrupts them: not a suppressed call,
         # such as successful planning, and not a background worker's own calls,
-        # which arrive in the middle of a word the model is still streaming.
-        if transcript.writes_tool_result(event):
+        # which arrive in the middle of a word the model is still streaming,
+        # and not a background worker's own completion row, which lands
+        # whenever it finishes; like a job's exit notice, it is written above
+        # the unfinished paragraph instead.
+        if transcript.writes_tool_result(event) and event.execution != "background":
             output.finish_thinking()
             output.finish()
         present((event,))

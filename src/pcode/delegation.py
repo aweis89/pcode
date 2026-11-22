@@ -186,11 +186,13 @@ async def stream_child_activity(_ctx, events):
         if parent is None:
             continue
         if isinstance(event, FileChangeEvent):
+            parent_id = parent.tool_call_id or ""
             await parent.emit(
                 FileChangeEvent(
                     change=replace(
                         event.change,
-                        call_id=f"{parent.tool_call_id or ''}:{event.change.call_id}",
+                        call_id=f"{parent_id}:{event.change.call_id}",
+                        parent_call_id=parent_id,
                     )
                 )
             )

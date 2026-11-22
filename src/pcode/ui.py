@@ -81,7 +81,15 @@ from pcode.preferences import (
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
-from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
+from pcode.runtime import (
+    CacheBust,
+    CommandOutput,
+    EditCompleted,
+    Event,
+    Message,
+    Thinking,
+    ToolSummary,
+)
 from pcode.shell_mode import SHELL_PREFIX
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
@@ -4665,9 +4673,17 @@ class Transcript:
         """Whether a not-yet-applied edit is previewed in the live panel."""
         return self.show_edits and self.live_edits
 
+    def writes_edit(self, event: EditCompleted) -> bool:
+        """Report whether this change's diff is written to scrollback.
+
+        A sub-agent's is not: its edit is a line beneath its delegate, like
+        its other calls, and `/diffs` has the diff.
+        """
+        return self.show_edits and not event.parent_call_id
+
     @recorded
     def edit(self, event) -> None:
-        if self.show_edits:
+        if self.writes_edit(event):
             self.print(EditTranscript(event))
 
     def replay(self) -> list:
@@ -4960,7 +4976,9 @@ class Transcript:
             return True
         if event.failed:
             return True
-        return event.name not in PLAN_TOOLS and not (event.name in EDIT_TOOLS and self.show_edits)
+        # A sub-agent's diff is never shown, so its edit keeps its line.
+        shown_as_diff = event.name in EDIT_TOOLS and self.show_edits and not event.parent_call_id
+        return event.name not in PLAN_TOOLS and not shown_as_diff
 
     @recorded
     def command_output(self, event: ToolSummary) -> bool:

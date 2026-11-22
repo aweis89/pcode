@@ -49,7 +49,9 @@ class ToolSummary:
     process_id: str = ""
     parent_call_id: str = ""
     purpose: str = ""
-    # Background completion notices share the normal command-result rendering.
+    # "background" marks a delayed completion (a job's exit, a detached
+    # delegate's result) that lands whenever it finishes, not where the model
+    # is; such notices share the normal command-result rendering.
     execution: str = ""
 
 
@@ -72,6 +74,9 @@ class EditCompleted:
     removed: int = 0
     truncated: bool = False
     omitted: str = ""
+    # The delegate whose sub-agent made the change, as on its tool events;
+    # `call_id` is then the child call's `parent:child` id.
+    parent_call_id: str = ""
 
 
 @dataclass(frozen=True)
