@@ -14,6 +14,7 @@ from prompt_toolkit.widgets import Label, TextArea
 from pcode.frame import Dialog
 from pcode.links import Link
 from pcode.popup_ui import (
+    SearchDebounce,
     bind_list_paging,
     fit_width,
     popup_container,
@@ -76,8 +77,8 @@ class LinkPicker:
         )
         self.list.window.cursorline = Always()
         keys = self.key_bindings = KeyBindings()
-        self.query.buffer.on_text_changed += lambda _: self.refresh()
-        steer_list_from_query(keys, self.query, self.list)
+        self.searching = SearchDebounce(self.query.buffer, self.refresh)
+        steer_list_from_query(keys, self.query, self.list, self.searching)
         bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
         # Modal, so the bindings of whatever frames it cannot reach here.
         keys.add("tab")(focus_next)
@@ -86,6 +87,7 @@ class LinkPicker:
         # The picker opens in the search line, so Enter picks from there too.
         @keys.add("enter", eager=True)
         def pick(event):
+            self.searching.flush()
             url = self.selected()
             if url is not None:
                 on_pick(url)

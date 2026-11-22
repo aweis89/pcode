@@ -28,6 +28,7 @@ from pcode.inspection import InspectedCall, ToolArchive
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
     RichPane,
+    SearchDebounce,
     bind_list_paging,
     list_pane_height,
     popup_container,
@@ -215,7 +216,7 @@ class ToolInspector:
             color_system=color_system,
             notify=lambda text: setattr(self, "notice", text),
         )
-        self.query.buffer.on_text_changed += lambda _: self.refresh()
+        self.searching = SearchDebounce(self.query.buffer, self.refresh)
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
         self.detail.bind_scrolling(keys)
@@ -227,11 +228,12 @@ class ToolInspector:
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
-        steer_list_from_query(keys, self.query, self.list)
+        steer_list_from_query(keys, self.query, self.list, self.searching)
         bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
 
         @keys.add("enter", filter=has_focus(self.query))
         def search_done(event):
+            self.searching.flush()
             event.app.layout.focus(self.list)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)

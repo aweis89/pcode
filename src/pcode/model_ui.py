@@ -12,7 +12,7 @@ from prompt_toolkit.widgets import Label, TextArea
 
 from pcode.frame import Dialog
 from pcode.models import PROVIDERS
-from pcode.popup_ui import fuzzy_match, popup_container, popup_style
+from pcode.popup_ui import SearchDebounce, fuzzy_match, popup_container, popup_style
 from pcode.prefix_keys import PrefixKeys
 
 
@@ -33,7 +33,7 @@ class ModelPicker:
         self.selected = 0
         self.matches = list(models)
         self.search = TextArea(height=1, prompt="Filter: ", multiline=False)
-        self.search.buffer.on_text_changed += self.filter
+        self.searching = SearchDebounce(self.search.buffer, lambda: self.filter(self.search.buffer))
         rows = FormattedTextControl(
             self.fragments, get_cursor_position=lambda: Point(x=0, y=self.selected)
         )
@@ -86,6 +86,7 @@ class ModelPicker:
 
         @keys.add("enter", eager=True)
         def accept(event):
+            self.searching.flush()
             if self.matches:
                 event.app.exit(result=self.matches[self.selected])
 

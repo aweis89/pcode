@@ -1,6 +1,8 @@
 """Temporary session popups; the editor is suspended while one owns the terminal."""
 
+import asyncio
 import re
+import threading
 from pathlib import Path
 
 from prompt_toolkit.application import Application
@@ -21,6 +23,7 @@ from pcode.markdown import Markdown
 from pcode.popup_ui import (
     EllipsisProcessor,
     RichPane,
+    SearchDebounce,
     bind_list_paging,
     fit_width,
     nest_forks,
@@ -126,6 +129,14 @@ class SessionBrowser:
         # Each turn's casefolded search text, per session and search mode, so a
         # keystroke does not rebuild it from every transcript in scope.
         self._haystacks: dict[tuple[str, bool], list[str]] = {}
+        # The first search reads every transcript in scope (seconds for
+        # hundreds of sessions), so that happens in a thread while typing goes on.
+        self._warming: asyncio.Task | None = None
+        self._keep_selection = True
+        self._resume_when_ready = False
+        self._closed = threading.Event()
+        # Where ↑/↓ went meanwhile: that session if the results hold it, else that row.
+        self._steered: tuple[SessionInfo | None, int] | None = None
         self.first_match: int | None = None
         self._titles: dict[str, tuple[str, str]] = {}
         # Each visible session's fork guide (`├─ `), empty while searching.
@@ -148,7 +159,7 @@ class SessionBrowser:
             color_system=color_system,
             notify=lambda text: setattr(self, "status", text),
         )
-        self.query.buffer.on_text_changed += lambda _: self.refresh(keep_selection=False)
+        self.searching = SearchDebounce(self.query.buffer, self.typed)
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
         self.detail.bind_scrolling(keys)
@@ -160,13 +171,17 @@ class SessionBrowser:
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
-        steer_list_from_query(keys, self.query, self.list)
+        steer_list_from_query(keys, self.query, self.list, self.searching)
         bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
 
         @keys.add("enter")
         def resume(event):
-            # Like the model picker: Enter while typing accepts the selection.
-            if self.selected is not None:
+            # Like the model picker: Enter while typing accepts the selection,
+            # the best match once a search still reading transcripts is done.
+            self.searching.flush()
+            if self._warming is not None:
+                self._resume_when_ready = True
+            elif self.selected is not None:
                 event.app.exit(result=self.selected.id)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
@@ -190,12 +205,12 @@ class SessionBrowser:
         @shortcuts.add("r", "Prompts only/all")
         def responses(event):
             self.responses = not self.responses
-            self.refresh()
+            self.search()
 
         @shortcuts.add("g", "All workspaces")
         def workspaces(event):
             self.everywhere = not self.everywhere
-            self.refresh()
+            self.search()
 
         @shortcuts.add("x", "Delete (twice)")
         @keys.add("delete", filter=has_focus(self.list))
@@ -207,6 +222,7 @@ class SessionBrowser:
                 f"Sessions · {len(self.visible)}/{len(self.in_scope())} · "
                 f"Workspace: {'all' if self.everywhere else self.workspace.name} · "
                 f"Search: {'prompts + responses + tools' if self.responses else 'prompts'}"
+                + (" · Searching…" if self._warming is not None else "")
                 + (f" · {self.status}" if self.status else "")
             )
         )
@@ -264,16 +280,23 @@ class SessionBrowser:
         # Keep the cursor on the same row so repeated deletes walk down the list.
         row = self.list.document.cursor_position_row
         self.selected = None
+        if self._warming is not None:
+            # Re-filtering now would read the cold transcripts on this thread;
+            # the warm-up's own refresh redoes the list without this session.
+            self.visible = [record for record in self.visible if record is not info]
+            self.show(row)
+            return
         self.refresh()
         if self.visible:
-            row = min(row, len(self.visible) - 1)
-            position = self.list.document.translate_row_col_to_index(row, 0)
-            self.list.buffer.cursor_position = position
+            self.move_to(row)
 
     def turns(self, info: SessionInfo) -> list[Turn]:
+        # The warming thread and the UI can both load a session (one selected
+        # while warming); the first list wins, so each haystack lines up with
+        # the turns it was built from.
         if info.id not in self._turns:
-            self._turns[info.id] = session_turns(info, self.root)
-        return self._turns[info.id] or []
+            self._turns.setdefault(info.id, session_turns(info, self.root))
+        return self._turns.get(info.id) or []
 
     def workspace_scope(self, workspace: Path) -> Path:
         """Group linked checkouts, resolving each workspace only once per browser."""
@@ -291,8 +314,8 @@ class SessionBrowser:
             if self.workspace_scope(Path(info.workspace)) == self.workspace
         ]
 
-    def search_text(self, turn: Turn) -> str:
-        if not self.responses:
+    def search_text(self, turn: Turn, responses: bool) -> str:
+        if not responses:
             return turn.prompt.casefold()
         # Every block, not just the final text: a turn's answer is often split
         # by tool calls, and a remembered file or command lives in a call.
@@ -302,11 +325,70 @@ class SessionBrowser:
         ]
         return "\n".join(parts).casefold()
 
-    def haystacks(self, info: SessionInfo) -> list[str]:
-        key = (info.id, self.responses)
+    def haystacks(self, info: SessionInfo, responses: bool | None = None) -> list[str]:
+        # The warming thread passes the mode it started in, so a toggle
+        # mid-warm can't file one mode's text under the other's key.
+        responses = self.responses if responses is None else responses
+        key = (info.id, responses)
         if key not in self._haystacks:
-            self._haystacks[key] = [self.search_text(turn) for turn in self.turns(info)]
+            texts = [self.search_text(turn, responses) for turn in self.turns(info)]
+            self._haystacks[key] = texts
         return self._haystacks[key]
+
+    def typed(self) -> None:
+        """The query changed: a new query selects its best match, not the old row."""
+        self._resume_when_ready = False
+        self._steered = None
+        self.search(keep_selection=False)
+
+    def search(self, *, keep_selection: bool = True) -> None:
+        """Refresh now when every haystack in scope is built, else build them first."""
+        if self._warming is not None:
+            # Any new query in the meantime means its best match, not the old row.
+            self._keep_selection = self._keep_selection and keep_selection
+            return
+        cold = [
+            info for info in self.in_scope() if (info.id, self.responses) not in self._haystacks
+        ]
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            cold = []  # Not running yet (setup, tests): build them inline.
+        if not self.words() or not cold:
+            self.refresh(keep_selection=keep_selection)
+        else:
+            self._keep_selection = keep_selection
+            self._warming = asyncio.create_task(self._warm(cold, self.responses))
+
+    async def _warm(self, cold: list[SessionInfo], responses: bool) -> None:
+        def build() -> None:
+            for info in cold:
+                if self._closed.is_set():
+                    return
+                self.haystacks(info, responses)
+
+        try:
+            await asyncio.to_thread(build)
+        except Exception as error:
+            self._resume_when_ready = False
+            self.status = f"Search failed: {error}"
+            self.app.invalidate()
+            return
+        finally:
+            self._warming = None
+        # Scope, mode, or query may have moved on meanwhile; search() rechecks.
+        self.search(keep_selection=self._keep_selection)
+        if self._warming is not None or not self.app.is_running:
+            return
+        steered, self._steered = self._steered, None
+        if steered is not None and self.visible:
+            info, row = steered
+            self.move_to(self.visible.index(info) if info in self.visible else row)
+        self.app.invalidate()
+        if self._resume_when_ready:
+            self._resume_when_ready = False
+            if self.selected is not None:
+                self.app.exit(result=self.selected.id)
 
     def words(self) -> list[str]:
         return self.query.text.casefold().split()
@@ -405,7 +487,11 @@ class SessionBrowser:
             forest = fork_forest(self.visible)
             self.visible = [info for info, _ in forest]
             self._guides = {info.id: guide for info, guide in forest if guide}
-        selected = next((i for i, info in enumerate(self.visible) if info is previous), 0)
+        self.show(next((i for i, info in enumerate(self.visible) if info is previous), 0))
+
+    def show(self, selected: int) -> None:
+        """Render `visible` into the list with row `selected` (clamped) chosen."""
+        selected = max(0, min(selected, len(self.visible) - 1))
         lines = [self.title(info) for info in self.visible]
         text = "\n".join(lines) or "No matching sessions."
         position = sum(len(line) + 1 for line in lines[:selected])
@@ -414,11 +500,17 @@ class SessionBrowser:
         self._refreshing = False
         self.select(force=True)
 
+    def move_to(self, row: int) -> None:
+        row = min(row, len(self.visible) - 1)
+        self.list.buffer.cursor_position = self.list.document.translate_row_col_to_index(row, 0)
+
     def select(self, force: bool = False) -> None:
         if self._refreshing:
             return
         row = self.list.document.cursor_position_row
         info = self.visible[row] if row < len(self.visible) else None
+        if self._warming is not None:
+            self._steered = (info, row)
         if info is self.selected and info is not None and not force:
             return
         if info is not self.selected and self.pending_delete:
@@ -509,7 +601,15 @@ class SessionBrowser:
         return blocks
 
     async def run(self) -> str | None:
-        return await self.app.run_async()
+        try:
+            return await self.app.run_async()
+        finally:
+            # Stop everything still working for a closed popup: the pending
+            # filter, the warm-up task, and its thread between sessions.
+            self.searching.cancel()
+            self._closed.set()
+            if self._warming is not None:
+                self._warming.cancel()
 
 
 def session_info_dialog(

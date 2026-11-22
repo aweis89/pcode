@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from io import StringIO
 from unittest.mock import Mock, patch
 
@@ -74,6 +75,45 @@ def test_browser_keyboard(tmp_path, keys, expected):
             pipe.send_text(keys)
             result = await asyncio.wait_for(task, 2)
             assert result == (ids[expected] if expected else None)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "keys,expected",
+    [
+        # Enter waits for the search to land, then resumes its best match.
+        ("cache warn\r", "older"),
+        # ↓ during the search picked `older` from the old list; the results
+        # hold it, so it stays picked instead of jumping to the best match.
+        ("a\x1b[B\r", "older"),
+    ],
+)
+def test_browser_searches_transcripts_off_the_event_loop(tmp_path, keys, expected):
+    async def run():
+        with create_pipe_input() as pipe:
+            app, ids = browser(tmp_path, input=pipe)
+            started, release = threading.Event(), threading.Event()
+            load = app.turns
+
+            def slow_turns(info):
+                started.set()
+                release.wait(2)
+                return load(info)
+
+            task = asyncio.create_task(app.run())
+            await asyncio.sleep(0.05)
+            with patch.object(app, "turns", slow_turns):
+                pipe.send_text(keys)
+                assert await asyncio.to_thread(started.wait, 2)
+                for _ in range(100):  # Typing stays live while transcripts load.
+                    if app.query.text == keys.split("\x1b")[0].rstrip("\r"):
+                        break
+                    await asyncio.sleep(0.01)
+                assert app._warming is not None and not task.done()
+                release.set()
+                result = await asyncio.wait_for(task, 2)
+            assert result == ids[expected]
 
     asyncio.run(run())
 

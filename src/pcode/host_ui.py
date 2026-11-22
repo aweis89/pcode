@@ -14,6 +14,7 @@ from prompt_toolkit.widgets import Label, TextArea
 from pcode.frame import Dialog
 from pcode.host_protocol import HostEntry, code_fingerprint
 from pcode.popup_ui import (
+    SearchDebounce,
     bind_list_paging,
     fit_width,
     nest_forks,
@@ -166,12 +167,13 @@ def hosts_dialog(
             return "No matching sessions."
         return f"No background sessions are running. {shortcuts.label('n')} starts one."
 
-    query.buffer.on_text_changed += lambda _: refresh()
-    steer_list_from_query(bindings, query, choices)
+    searching = SearchDebounce(query.buffer, refresh)
+    steer_list_from_query(bindings, query, choices, searching)
     bind_list_paging(bindings, choices, has_focus(choices) | has_focus(query))
 
     @bindings.add("enter", eager=True)
     def accept(event):
+        searching.flush()
         entry = selected()
         if entry is not None:
             event.app.exit(result=("attach", entry.id))

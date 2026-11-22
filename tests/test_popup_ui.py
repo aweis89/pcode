@@ -13,7 +13,7 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
-from pcode.popup_ui import RichPane, fuzzy_match
+from pcode.popup_ui import RichPane, SearchDebounce, fuzzy_match
 
 
 @pytest.mark.parametrize(
@@ -515,3 +515,45 @@ def test_a_selection_inside_the_cursor_row_still_shows():
     style = popup_style(Style.from_dict({"selected": "reverse", "cursor-line": "reverse"}))
     attrs = style.get_attrs_for_style_str("class:popup class:cursor-line class:selected")
     assert attrs.underline and attrs.reverse
+
+
+def test_search_debounce_waits_for_a_pause_once_filtering_is_slow():
+    import time
+
+    from prompt_toolkit.buffer import Buffer
+
+    runs = []
+    slow = False
+
+    def refresh():
+        runs.append(buffer.text)
+        if slow:
+            time.sleep(0.05)
+
+    buffer = Buffer()
+    # A wide instant/slow gap, so a loaded machine can't misjudge a run.
+    search = SearchDebounce(buffer, refresh, pause=0.05, instant=0.025)
+    # No event loop (setup, tests): every change filters at once.
+    buffer.text = "a"
+    assert runs == ["a"]
+
+    async def typing():
+        nonlocal slow
+        with patch("pcode.popup_ui.get_app"):
+            buffer.text = "ab"  # Fast so far: still instant.
+            assert runs[-1] == "ab"
+            slow = True
+            buffer.text = "abc"  # This run is slow, so later keys wait.
+            buffer.text = "abcd"
+            buffer.text = "abcde"
+            assert runs[-1] == "abc" and search.pending
+            await asyncio.sleep(0.1)
+            assert runs[-1] == "abcde" and not search.pending
+            # Enter flushes a pending filter before acting on it.
+            buffer.text = "abcdef"
+            assert search.pending
+            search.flush()
+            assert runs[-1] == "abcdef" and not search.pending
+        assert "abcd" not in runs  # Keys typed during the pause never filtered.
+
+    asyncio.run(typing())

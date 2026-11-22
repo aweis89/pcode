@@ -1,6 +1,8 @@
 """Shared terminal-native styling for alternate-screen popups."""
 
+import asyncio
 import re
+import time
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from io import StringIO
@@ -382,33 +384,112 @@ def bind_list_paging(keys, listing, filter) -> None:
         listing.buffer.cursor_down(half())
 
 
-def steer_list_from_query(keys, query, listing) -> None:
+SEARCH_PAUSE = 0.12
+"""Seconds of no typing before a slow filter re-runs."""
+SEARCH_INSTANT = 0.015
+"""A filter that ran faster than this keeps running on every keystroke."""
+
+
+class SearchDebounce:
+    """Re-run a popup's filter as its query changes, waiting for a pause once it is slow.
+
+    A cheap filter runs on every keystroke, so short lists feel instant. Once
+    a run takes longer than `SEARCH_INSTANT`, later changes wait until typing
+    pauses for `SEARCH_PAUSE`, so a slow filter no longer holds up each key.
+    Without a running event loop (tests, setup) every change filters at once.
+
+    Call `flush()` before acting on the filtered result, as Enter-while-typing
+    does, so a pending re-filter lands first.
+    """
+
+    def __init__(
+        self,
+        buffer,
+        refresh: Callable[[], object],
+        pause: float = SEARCH_PAUSE,
+        instant: float = SEARCH_INSTANT,
+    ):
+        self.refresh = refresh
+        self.pause = pause
+        self.instant = instant
+        self.slow = False
+        self._timer: asyncio.TimerHandle | None = None
+        buffer.on_text_changed += self._changed
+
+    @property
+    def pending(self) -> bool:
+        return self._timer is not None
+
+    def flush(self) -> None:
+        if self._timer is not None:
+            self.cancel()
+            self._run()
+
+    def cancel(self) -> None:
+        """Drop a pending filter, as a closing popup does."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _changed(self, _buffer) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None or not (self.slow or self.pending):
+            self._run()
+            return
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = loop.call_later(self.pause, self._fire)
+
+    def _fire(self) -> None:
+        self._timer = None
+        self._run()
+        get_app().invalidate()
+
+    def _run(self) -> None:
+        start = time.perf_counter()
+        self.refresh()
+        self.slow = time.perf_counter() - start > self.instant
+
+
+def steer_list_from_query(keys, query, listing, search: SearchDebounce | None = None) -> None:
     """Keep typing in the query while ↑/↓ move the selection in a TextArea list.
 
     A one-line query swallows vertical movement otherwise, which is what a
-    filter-as-you-type list makes people expect least.
+    filter-as-you-type list makes people expect least. A pending `search`
+    lands first, so the keys move through the list the query asked for.
     """
     typing = has_focus(query)
 
     def page() -> int:
         return _list_page(listing)
 
+    def flush() -> None:
+        if search is not None:
+            search.flush()
+
     @keys.add("up", filter=typing)
     @keys.add("c-p", filter=typing)
     def previous(event):
+        flush()
         listing.buffer.cursor_up()
 
     @keys.add("down", filter=typing)
     @keys.add("c-n", filter=typing)
     def following(event):
+        flush()
         listing.buffer.cursor_down()
 
     @keys.add("pageup", filter=typing)
     def previous_page(event):
+        flush()
         listing.buffer.cursor_up(page())
 
     @keys.add("pagedown", filter=typing)
     def following_page(event):
+        flush()
         listing.buffer.cursor_down(page())
 
 

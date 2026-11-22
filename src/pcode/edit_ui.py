@@ -33,6 +33,7 @@ from pcode.git_diff import Review
 from pcode.links import editor_command
 from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
+    SearchDebounce,
     bind_list_paging,
     fuzzy_match,
     list_pane_height,
@@ -391,7 +392,7 @@ class DiffBrowser:
         self.diff = TextArea(read_only=True, wrap_lines=False, scrollbar=True, lexer=self.lexer)
         copy_drags(self.diff, lambda text: setattr(self, "notice", text))
         self.diff.window.cursorline = Always()
-        self.query.buffer.on_text_changed += lambda _: self.refresh(first_match=True)
+        self.searching = SearchDebounce(self.query.buffer, lambda: self.refresh(first_match=True))
         self.files.buffer.on_cursor_position_changed += lambda _: self.follow_files()
         self.diff.buffer.on_cursor_position_changed += lambda _: self.follow_diff()
         keys = KeyBindings()
@@ -420,12 +421,13 @@ class DiffBrowser:
             focused = event.app.layout.has_focus(self.diff)
             event.app.layout.focus(self.files if focused else self.diff)
 
-        steer_list_from_query(keys, self.query, self.files)
+        steer_list_from_query(keys, self.query, self.files, self.searching)
         bind_list_paging(keys, self.files, has_focus(self.files) | has_focus(self.query))
         bind_list_paging(keys, self.diff, has_focus(self.diff))
 
         @keys.add("enter", filter=has_focus(self.query))
         def search_done(event):
+            self.searching.flush()
             event.app.layout.focus(self.files if self.scope == "paths" else self.diff)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)
