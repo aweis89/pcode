@@ -197,7 +197,7 @@ def pane(request, tmp_path):
 BUSY_FRAMES = tuple(f"┌─ {frame} " for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 # The footer always names the mode the next Enter sends with.
-SEND_MODES = ("steering", "queue", "interrupt")
+SEND_MODES = ("steering", "queue", "interrupt", "btw reply")
 
 
 def busy(lines):

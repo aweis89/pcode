@@ -149,7 +149,7 @@ def _mix(color: str, toward: str, amount: float) -> str:
     )
 
 
-def shaded_styles(shade: str, top: str) -> dict[str, str]:
+def shaded_styles(shade: str, top: str, btw_hue: str = "") -> dict[str, str]:
     """`frame_style shaded`: the editor and task boxes as surfaces, not outlines.
 
     `shade` fills the box. Border glyphs keep their cells in the shade's own
@@ -160,10 +160,14 @@ def shaded_styles(shade: str, top: str) -> dict[str, str]:
     (status, task heading or session name), and while a turn runs the
     thought under it, so the turn's status and its reason read as one header
     without a drawn line.
+
+    While the editor replies to a `/btw` thread (`btw.reply`), the surface and
+    header take a warm tint toward `btw_hue` so the box visibly pairs with the
+    `/btw` drawer.
     """
     # Appended after the palette's `frame.border`: for equal classes the later
     # rule wins, so these override its muted color.
-    return {
+    styles = {
         "shaded": f"bg:{shade}",
         # nodim: the terminal palette mutes borders with dim, which would
         # leave a faint line in the surface's own color.
@@ -171,6 +175,14 @@ def shaded_styles(shade: str, top: str) -> dict[str, str]:
         "shaded.top": f"bg:{top}",
         "shaded.top frame.border": f"nodim fg:{top}",
     }
+    if btw_hue.startswith("#"):
+        btw_shade = _mix(shade, btw_hue, 0.16)
+        btw_top = _mix(top, btw_hue, 0.24)
+        styles["btw.reply shaded"] = f"bg:{btw_shade}"
+        styles["btw.reply shaded frame.border"] = f"nodim fg:{btw_shade}"
+        styles["btw.reply shaded.top"] = f"bg:{btw_top}"
+        styles["btw.reply shaded.top frame.border"] = f"nodim fg:{btw_top}"
+    return styles
 
 
 @cache
@@ -367,6 +379,10 @@ class Palette:
                 # (`pcode.btw_view`): a hue of its own, the second
                 # sub-agent's, so it is plain at a glance where Enter goes.
                 "btw.reply frame.border": f"nodim {self.agents[1]}",
+                "btw.badge": f"nodim bold reverse {self.agents[1]}",
+                "btw.heading": f"nodim bold {self.agents[1]}",
+                "btw.prompt": f"nodim bold {self.agents[1]}",
+                "btw.hint": self.muted,
                 # The editor box's session name is the session's own metadata,
                 # in the task heading's hue (unbolded) so it never reads as the
                 # reply above it, nor as the accent's busy status row. The last
@@ -395,6 +411,7 @@ class Palette:
                 "bottom-toolbar.sep": self.muted,
                 "bottom-toolbar.location": f"{self.accent} bold",
                 "bottom-toolbar.mode": self.task_heading,
+                "bottom-toolbar.btw": f"nodim bold {self.agents[1]}",
                 "bottom-toolbar.hint": self.muted,
                 "bottom-toolbar.model": self.accent,
                 "bottom-toolbar.context": self.muted,
@@ -429,7 +446,7 @@ class Palette:
                 "reference": f"{self.task_heading} underline",
                 "auto-suggestion": self.muted,
                 **(ICON_TASK_STYLES if task_style == "icons" else {}),
-                **(shaded_styles(*shades) if shades is not None else {}),
+                **(shaded_styles(*shades, self.agents[1]) if shades is not None else {}),
                 **kitty_spinner.STYLE_CLASSES,
             }
         )
@@ -3014,6 +3031,7 @@ class TerminalOutput:
 PROMPT_PREFIX = "❯ "
 # Same width as PROMPT_PREFIX, so wrapping is unchanged when the draft flips.
 SHELL_PROMPT_PREFIX = "$ "
+BTW_PROMPT_PREFIX = "btw ❯ "
 CONTINUATION_PREFIX = "· "
 
 
@@ -3261,15 +3279,23 @@ class PromptLayout:
             return live[3] + tasks + band
         size = self.size()
         gap = self.top_gap()
+        btw = self.btw_bar_height()
         available = max(
             1,
-            size.rows - 4 - gap - self.activity_height() - tasks - band - len(self.queue_rows()),
+            size.rows
+            - 4
+            - gap
+            - btw
+            - self.activity_height()
+            - tasks
+            - band
+            - len(self.queue_rows()),
         )
         cap = self.activity.height_cap(size.rows)
         if cap is not None:
-            available = min(available, max(1, cap - 2 - gap - band - self.tasks_height()))
+            available = min(available, max(1, cap - 2 - gap - btw - band - self.tasks_height()))
         text_height = self.editor.preferred_height(max(1, size.columns - 2), available).preferred
-        return min(text_height, available) + 2 + gap + tasks + band
+        return min(text_height, available) + 2 + gap + btw + tasks + band
 
     def refresh_interval(self) -> float:
         """Seconds until the next frame."""
@@ -3343,6 +3369,7 @@ class PromptLayout:
                     - self.task_chrome()
                     - 3
                     - self.band_height()
+                    - self.btw_bar_height(attached=self.activity.attach_tasks)
                     - (0 if self.activity.attach_tasks else self.top_gap(attached=False)),
                 )
             )
@@ -3411,19 +3438,22 @@ class PromptLayout:
         chrome_rows = 1 if activity.attach_tasks else 2
         task_floor = 1 + chrome_rows if plans else 0
         gap = self.top_gap(attached=activity.attach_tasks and bool(plans))
-        editor_room = max(1, room - 2 - gap - 4 - task_floor)
+        btw = self.btw_bar_height(attached=activity.attach_tasks and bool(plans))
+        editor_room = max(1, room - 2 - gap - btw - 4 - task_floor)
         cap = activity.height_cap(size.rows)
         if cap is not None:
             tasks = len(plans) + chrome_rows if plans else 0
-            editor_room = min(editor_room, max(1, cap - 2 - gap - band - tasks))
+            editor_room = min(editor_room, max(1, cap - 2 - gap - btw - band - tasks))
         editor_rows = min(editor_room, self.editor.preferred_height(width, editor_room).preferred)
-        editor_height = editor_rows + 2 + gap
+        editor_height = editor_rows + 2 + gap + btw
         plan_budget = max(0, room - editor_height - 4 - chrome_rows)
         if len(plans) > plan_budget:
             plans = self.base_plan_rows(plan_budget)
             # Trimmed away entirely, attached tasks no longer stand in for the gap.
-            trimmed_gap = self.top_gap(attached=activity.attach_tasks and bool(plans))
-            editor_height += trimmed_gap - gap
+            trimmed_attached = activity.attach_tasks and bool(plans)
+            trimmed_gap = self.top_gap(attached=trimmed_attached)
+            trimmed_btw = self.btw_bar_height(attached=trimmed_attached)
+            editor_height += (trimmed_gap + trimmed_btw) - (gap + btw)
         plan_height = len(plans) + chrome_rows if plans else 0
         # Chrome: the two rule lines, plus the indented `$ command` a shell
         # preview repeats below its heading, exactly as scrollback does.
@@ -3580,7 +3610,7 @@ class PromptLayout:
             return None
         # Running sub-agents get task rows with no plan at all.
         tasks = activity.tasks_shown and bool(activity.displayed_plan or activity.tools.delegates)
-        return cap - 4 - (1 + self.task_chrome() if tasks else 0)
+        return cap - 4 - int(self.btw_active()) - (1 + self.task_chrome() if tasks else 0)
 
     @_per_render
     def band_rows(self) -> list[list[tuple[str, str]]]:
@@ -3792,15 +3822,17 @@ class PromptLayout:
 
         return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
 
-    def startup_border_active(self) -> bool:
+    def startup_border_active(self, attached: bool | None = None) -> bool:
         """Whether the editor's top border is currently showing the startup animation."""
         if not self.activity.startup_animating or self.activity.status_shown:
             return False
-        if self.plan_attached():
+        if attached is None:
+            attached = self.plan_attached()
+        if attached:
             return False
         if self.activity.startup_label:
             return True
-        return not self.frame_shaded() and not self.idle_title()
+        return not self.frame_shaded() and not self.btw_active() and not self.idle_title()
 
     def startup_border(self) -> Window:
         """Animated top border while starting up, then a fast light sweep once ready."""
@@ -4101,12 +4133,74 @@ class PromptLayout:
         chrome = len(self.heading_lead()) + 3 if self.frame_shaded() else TITLE_CHROME + 1
         return fit_fragments(self.session_label(leads=True), self.size().columns - chrome)
 
+    def btw_active(self) -> bool:
+        """Whether the editor currently sends to an open `/btw` thread."""
+        from pcode.btw_view import current
+
+        return bool(current(self.activity))
+
+    def btw_bar_height(self, attached: bool | None = None) -> int:
+        """1 when an open `/btw` thread needs its own strip inside the editor box.
+
+        When idle, the `/btw` heading takes the top border (0 extra rows). While
+        the top border carries a running status, startup label, or attached
+        tasks, a 1-row strip above the prompt keeps the `/btw` target visible.
+        """
+        if not self.btw_active():
+            return 0
+        if self.activity.status_shown:
+            return 1
+        if attached is None:
+            attached = self.plan_attached()
+        if attached:
+            return 1
+        return int(self.startup_border_active(attached=attached))
+
+    def btw_label(self, width: int) -> list[tuple[str, str]]:
+        """The open `/btw` thread badge, question excerpt, model, and escape hint."""
+        from pcode.btw_view import current, position
+        from pcode.conversation_tree import excerpt
+        from pcode.tool_display import literal
+
+        thread = current(self.activity)
+        if not thread:
+            return []
+        first, newest = thread[0], thread[-1]
+        number, count = position(self.activity)
+        badge = f" btw {number}/{count} " if count > 1 else " btw "
+        tail: list[tuple[str, str]] = []
+        if newest.label:
+            tail.append(("class:btw.hint", f" · {plain(newest.label, limit=40)}"))
+        tail.append(("class:btw.hint", " · Esc back"))
+        tail_width = sum(cell_len(text) for _, text in tail)
+        q_budget = width - cell_len(badge) - tail_width - 1
+        raw_question = excerpt(literal(first.question))
+        question = (
+            plain(raw_question, limit=max(8, q_budget)) if raw_question and q_budget >= 8 else ""
+        )
+        parts: list[tuple[str, str]] = [("class:btw.badge", badge)]
+        if question:
+            parts.append(("class:btw.heading", f" {question}"))
+        parts.extend(tail)
+        return fit_fragments(parts, width)
+
+    def btw_heading(self) -> list[tuple[str, str]]:
+        """The idle editor box's top-border heading while replying to a `/btw` thread."""
+        chrome = len(self.heading_lead()) + 3 if self.frame_shaded() else TITLE_CHROME + 1
+        return self.btw_label(self.size().columns - chrome)
+
+    def btw_bar_fragments(self) -> list[tuple[str, str]]:
+        """The 1-row `/btw` target strip inside the editor box when the top border is busy."""
+        lead = " " * self.task_padding()
+        return [("", lead), *self.btw_label(self.size().columns - 2 - len(lead))]
+
     def top_row_filled(self) -> bool:
         """Whether the editor's top row carries text: a status, tasks, or a title."""
         return (
             self.activity.status_shown
             or bool(self.activity.startup_label)
             or self.plan_attached()
+            or self.btw_active()
             or bool(self.idle_title())
         )
 
@@ -4123,6 +4217,8 @@ class PromptLayout:
         """
         if attached is None:
             attached = self.plan_attached()
+        if self.btw_bar_height(attached=attached):
+            return 0
         return int(
             self.frame_shaded()
             and not attached
@@ -4130,6 +4226,7 @@ class PromptLayout:
             and (
                 self.activity.status_shown
                 or bool(self.activity.startup_label)
+                or self.btw_active()
                 or bool(self.idle_title())
             )
         )
@@ -4171,6 +4268,20 @@ class PromptLayout:
                 VSplit([side(), Window(), side()], height=1),
                 filter=Condition(lambda: bool(self.top_gap())),
             ),
+            ConditionalContainer(
+                VSplit(
+                    [
+                        side(),
+                        Window(
+                            FormattedTextControl(self.btw_bar_fragments, show_cursor=False),
+                            height=1,
+                        ),
+                        side(),
+                    ],
+                    height=1,
+                ),
+                filter=Condition(lambda: bool(self.btw_bar_height())),
+            ),
             middle,
             bottom,
         ]
@@ -4181,12 +4292,13 @@ class PromptLayout:
         startup = Condition(self.startup_border_active)
         attached = Condition(self.plan_attached)
         shaded = Condition(self.frame_shaded)
-        from pcode.btw_view import current
+        btw = Condition(self.btw_active)
+        btw_top = btw & ~status & ~startup & ~attached
 
         # Showing a /btw thread, the box takes the thread's colour: Enter goes
         # to the thread, not the conversation.
         editor_frame.container.style = lambda: (
-            "class:frame class:shaded" + (" class:btw.reply" if current(self.activity) else "")
+            "class:frame class:shaded" + (" class:btw.reply" if self.btw_active() else "")
         )
         band = Condition(lambda: bool(self.band_rows()))
 
@@ -4213,13 +4325,17 @@ class PromptLayout:
                         ConditionalContainer(self.startup_border(), filter=startup),
                         ConditionalContainer(self.plan_heading_border(), filter=attached & ~status),
                         ConditionalContainer(
+                            self.heading_border(self.btw_heading),
+                            filter=btw_top,
+                        ),
+                        ConditionalContainer(
                             top,
-                            filter=~attached & ~status & ~startup & ~shaded,
+                            filter=~attached & ~status & ~startup & ~btw_top & ~shaded,
                         ),
                         # Shaded, the session's name lines up with the prompt chevron.
                         ConditionalContainer(
                             self.heading_border(self.idle_title),
-                            filter=~attached & ~status & ~startup & shaded,
+                            filter=~attached & ~status & ~startup & ~btw_top & shaded,
                         ),
                         self.band_body(side),
                     ],
@@ -4404,10 +4520,39 @@ def create_prompt(
         activity, transcript, callbacks, key_prefix, lambda: session.default_buffer, drafts
     )
 
-    def thread_commands() -> tuple[tuple[str, str], ...]:
-        from pcode.btw_view import THREAD_COMMANDS, current
+    def btw_replying() -> bool:
+        from pcode.btw_view import current
 
-        return THREAD_COMMANDS if on_btw_close is not None and current(activity) else ()
+        return on_btw_close is not None and bool(current(activity))
+
+    def thread_commands() -> tuple[tuple[str, str], ...]:
+        from pcode.btw_view import THREAD_COMMANDS
+
+        return THREAD_COMMANDS if btw_replying() else ()
+
+    def prompt_message() -> list[tuple[str, str]]:
+        text = session.default_buffer.text
+        if text.lstrip().startswith(SHELL_PREFIX):
+            return [("class:prompt", SHELL_PROMPT_PREFIX)]
+        if btw_replying():
+            return [("class:btw.prompt", BTW_PROMPT_PREFIX)]
+        return [("class:prompt", PROMPT_PREFIX)]
+
+    def prompt_prefix_width() -> int:
+        text = session.default_buffer.text
+        if text.lstrip().startswith(SHELL_PREFIX):
+            return get_cwidth(SHELL_PROMPT_PREFIX)
+        if btw_replying():
+            return get_cwidth(BTW_PROMPT_PREFIX)
+        return get_cwidth(PROMPT_PREFIX)
+
+    def prompt_continuation(width: int, line: int, soft: bool) -> list[tuple[str, str]]:
+        if soft:
+            return [("class:prompt", " " * width)]
+        pad = max(0, width - get_cwidth(CONTINUATION_PREFIX))
+        is_shell = session.default_buffer.text.lstrip().startswith(SHELL_PREFIX)
+        style = "class:btw.prompt" if btw_replying() and not is_shell else "class:prompt"
+        return [(style, " " * pad + CONTINUATION_PREFIX)]
 
     kwargs.setdefault("color_depth", color_depth())
     output = kwargs.pop("output", None)
@@ -4415,13 +4560,10 @@ def create_prompt(
         output = CursorSafeOutput(output if output is not None else create_output())
     session = PromptSession(
         output=output,
-        message=lambda: [("class:prompt", prompt_prefix(session.default_buffer.text))],
-        prompt_continuation=lambda width, line, soft: [
-            ("class:prompt", "  " if soft else CONTINUATION_PREFIX)
-        ],
-        # Every prefix is the same width, so wrapped rows all get the same
-        # amount of text space.
-        input_processors=[WordWrapProcessor(prefix_width=get_cwidth(PROMPT_PREFIX))],
+        message=prompt_message,
+        prompt_continuation=prompt_continuation,
+        # Wrapped rows match the active prompt width (2 normally, 6 in `/btw` reply).
+        input_processors=[WordWrapProcessor(prefix_width=prompt_prefix_width)],
         multiline=True,
         erase_when_done=True,
         completer=merge_completers(

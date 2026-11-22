@@ -498,3 +498,179 @@ def test_the_drawer_is_there_only_with_overlay_popups_and_a_host(monkeypatch):
     app._submit_typed = sent.append
     app.btw_key()
     assert sent == ["/btw"]
+
+
+def test_btw_reply_styles_light_up_in_shaded_and_bordered_modes():
+    from pcode.ui import PALETTES
+
+    palette = PALETTES["dark"]
+    bordered = palette.prompt_style(palette, "status", shades=None)
+    assert bordered.get_attrs_for_style_str("class:frame class:btw.reply class:frame.border").color
+    assert (
+        bordered.get_attrs_for_style_str("class:frame class:btw.reply class:frame.border").color
+        != bordered.get_attrs_for_style_str("class:frame class:frame.border").color
+    )
+
+    shaded = palette.prompt_style(palette, "status", shades=("#2b303b", "#20242c"))
+    normal_bg = shaded.get_attrs_for_style_str("class:frame class:shaded").bgcolor
+    btw_bg = shaded.get_attrs_for_style_str("class:frame class:shaded class:btw.reply").bgcolor
+    btw_border_fg = shaded.get_attrs_for_style_str(
+        "class:frame class:shaded class:btw.reply class:frame.border"
+    ).color
+    normal_top = shaded.get_attrs_for_style_str("class:frame class:shaded class:shaded.top").bgcolor
+    btw_top = shaded.get_attrs_for_style_str(
+        "class:frame class:shaded class:btw.reply class:shaded.top"
+    ).bgcolor
+    assert btw_bg != normal_bg
+    assert btw_border_fg == btw_bg
+    assert btw_top != normal_top
+
+
+def test_btw_prompt_prefix_and_word_wrap_width_follow_open_thread():
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+    from prompt_toolkit.input import create_pipe_input
+
+    from pcode.commands import CommandRegistry
+    from pcode.ui import create_prompt
+    from pcode.word_wrap import WordWrapProcessor
+
+    app, _ = seeded_app()
+    second = app.controller.asides.items[-1]
+
+    async def check() -> None:
+        with create_pipe_input() as pipe:
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                on_btw_close=lambda: None,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            wrap = next(p for p in session.input_processors if isinstance(p, WordWrapProcessor))
+            assert fragment_list_to_text(session.message()) == "❯ "
+            assert wrap.prefix_width == 2
+
+            open_thread(app.activity, second.thread)
+            assert fragment_list_to_text(session.message()) == "btw ❯ "
+            assert wrap.prefix_width == 6
+
+            # `!command` still goes to the shell and flips the prefix back to `$ `.
+            session.default_buffer.set_document(Document("!ls"), bypass_readonly=True)
+            assert fragment_list_to_text(session.message()) == "$ "
+            assert wrap.prefix_width == 2
+            assert session.prompt_continuation(2, 1, False) == [("class:prompt", "· ")]
+
+            session.default_buffer.set_document(Document("hello\nworld"), bypass_readonly=True)
+            assert session.prompt_continuation(6, 1, True) == [("class:prompt", "      ")]
+            assert session.prompt_continuation(6, 1, False) == [("class:btw.prompt", "    · ")]
+
+            session.default_buffer.set_document(Document(""), bypass_readonly=True)
+            close(app.activity)
+            assert fragment_list_to_text(session.message()) == "❯ "
+            assert wrap.prefix_width == 2
+
+    asyncio.run(check())
+
+
+def test_btw_header_and_busy_strip_render_and_size_correctly():
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+    from prompt_toolkit.input import create_pipe_input
+
+    from pcode.commands import CommandRegistry
+    from pcode.runtime import EditPreview
+    from pcode.ui import PromptLayout, create_prompt
+
+    app, _ = seeded_app()
+    second = app.controller.asides.items[-1]
+    second.model = "anthropic:claude-haiku"
+    second.label = "haiku"
+
+    async def check() -> None:
+        with create_pipe_input() as pipe:
+            output = DummyOutput()
+            output.get_size = lambda: Size(rows=40, columns=100)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                on_btw_close=lambda: None,
+                input=pipe,
+                output=output,
+            )
+            layout = PromptLayout(session, app.activity, app.transcript, session.shortcuts)
+
+            # Closed: no btw bar, normal height.
+            assert not layout.btw_active()
+            assert layout.btw_bar_height() == 0
+            idle_height = layout.frame_height()
+
+            # Open & idle: heading rides the top border (0 extra rows).
+            open_thread(app.activity, second.thread)
+            assert layout.btw_active()
+            assert layout.btw_bar_height() == 0
+            assert layout.frame_height() == idle_height
+            heading_text = fragment_list_to_text(layout.btw_heading())
+            assert "btw 1/2" in heading_text
+            assert "second?" in heading_text
+            assert "haiku" in heading_text
+            assert "Esc back" in heading_text
+
+            # Long questions truncate with ellipsis while preserving model and Esc back.
+            second.question = "why does this very long side question keep going and going forever?"
+            narrow_label = fragment_list_to_text(layout.btw_label(50))
+            assert "…" in narrow_label
+            assert "haiku" in narrow_label
+            assert "Esc back" in narrow_label
+
+            # `preview_layout()` with `startup_animating` and `btw_active` must not recurse.
+            app.activity.startup_label = "Starting"
+            assert app.activity.startup_animating
+            app.transcript.live_edits = True
+            app.activity.edit_previews["e1"] = EditPreview("e1", "a.py", "+line")
+            assert layout.preview_layout() is not None
+            app.activity.edit_previews.clear()
+            app.activity.startup_label = ""
+
+            # Open & busy: status takes the top border, so a 1-row btw strip appears inside the box.
+            app.activity.prompt_state = "running"
+            assert app.activity.status_shown
+            assert layout.btw_bar_height() == 1
+            assert layout.frame_height() == idle_height + 1
+            bar_text = fragment_list_to_text(layout.btw_bar_fragments())
+            assert "btw 1/2" in bar_text and "Esc back" in bar_text
+
+    asyncio.run(check())
+
+
+def test_btw_toolbar_shows_btw_reply_and_thread_model():
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+
+    app, _ = seeded_app()
+    app.model = "sonnet"
+    second = app.controller.asides.items[-1]
+    second.model = "anthropic:claude-haiku"
+    second.label = "haiku"
+    assert "steering" in fragment_list_to_text(app.toolbar())
+
+    open_thread(app.activity, second.thread)
+    fragments = app.toolbar()
+    text = fragment_list_to_text(fragments)
+    assert ("class:bottom-toolbar.btw", "btw reply") in fragments
+    assert "steering" not in text
+    assert "haiku" in text
+
+    # Effort-only `/btw +high` keeps the main model name alongside the effort.
+    second.model = ""
+    second.effort = "high"
+    second.label = "high"
+    assert "sonnet (high)" in fragment_list_to_text(app.toolbar())
+
+    # A follow-up that switched models updates the toolbar to the newest model.
+    follow = answered("more?", "Yes.", thread=second.thread)
+    follow.model = "openai:gpt-5"
+    follow.label = "gpt-5"
+    app.controller.asides.items.append(follow)
+    assert "gpt-5" in fragment_list_to_text(app.toolbar())
+
+    close(app.activity)
+    assert "steering" in fragment_list_to_text(app.toolbar())
