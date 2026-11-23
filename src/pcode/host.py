@@ -48,7 +48,7 @@ from pcode.host_protocol import (
 from pcode.jobs import registry as job_registry
 from pcode.rpc import Peer
 from pcode.runtime import CommandOutput, EditPreview, TextDelta, ThinkingDelta
-from pcode.ui import Activity
+from pcode.ui import NOTICE_SECONDS, Activity
 
 # Consecutive events of these kinds merge in the catch-up buffer: deltas join,
 # and a newer snapshot of the same call replaces the older one.
@@ -96,6 +96,18 @@ class MirroredActivity(Activity):
     def __setattr__(self, name: str, value) -> None:
         object.__setattr__(self, name, value)
         if name in SESSION_FIELDS and self._send is not None:
+            self.push()
+
+    def flash(self, text: str, seconds: float = NOTICE_SECONDS) -> None:
+        # Text and expiry in one push: a terminal that drew the new text with
+        # the old expiry would show it twice (as a toast, `drawer.toast`).
+        send = self._send
+        object.__setattr__(self, "_send", None)
+        try:
+            super().flash(text, seconds)
+        finally:
+            object.__setattr__(self, "_send", send)
+        if send is not None:
             self.push()
 
     def push(self) -> None:

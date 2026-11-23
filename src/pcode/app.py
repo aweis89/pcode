@@ -322,7 +322,11 @@ class PreviewApp:
         # opens on the answer, not the editor, since it can land mid-keystroke.
         # Matched by generation rather than order: a queued command can be
         # dropped (Ctrl+C) or superseded without ever reaching `read_asides`.
+        # Counted too: a thread opened in the drawer shows no popup, so the
+        # generation stays put, and once its auto-opens are spent a `/btw`
+        # typed in that same generation is the reader's own.
         self._auto_open_generation: int | None = None
+        self._auto_opens_pending = 0
         self.registry = CommandRegistry()
         self._session_commands: set[str] = set()
         for command in (
@@ -678,7 +682,10 @@ class PreviewApp:
         # already using it instead of racing it.
         opening = self.auto_open_asides()
         if opening:
-            self._auto_open_generation = self._popup_generation
+            if self._auto_open_generation != self._popup_generation:
+                self._auto_open_generation = self._popup_generation
+                self._auto_opens_pending = 0
+            self._auto_opens_pending += 1
             self.controller.command("/btw", self._popup_generation)
         on = f"{aside.label}: " if aside.label else ""
         self.transcript.note(
@@ -1406,7 +1413,7 @@ class PreviewApp:
             space = "" if not before or before[-1].isspace() else " "
             buffer.insert_text(f"{space}{reference(path)} ")
             self.prompt_session.app.invalidate()
-        self.transcript.note(f"Pasted an image: {reference(path)}")
+        self.transcript.flash(f"Pasted an image: {reference(path)}")
 
     async def choose_copy(self, output: TerminalOutput, session) -> None:
         from pcode.clipboard import copy as copy_to_clipboard
@@ -1444,7 +1451,7 @@ class PreviewApp:
         name = choice.kind
         limit = " (truncated)" if truncated else ""
         if copied:
-            self.transcript.note(f"Copied {name}{limit}.")
+            self.transcript.flash(f"Copied {name}{limit}.")
         else:
             self.transcript.error(f"Could not copy {name}.")
 
@@ -1498,14 +1505,14 @@ class PreviewApp:
             self.transcript.error(f"Could not open {url}: {editor_error}")
             return
         if command is not None:
-            self.transcript.note(f"Opened {url}")
+            self.transcript.flash(f"Opened {url}")
             return
         try:
             open_link(url)
         except (OSError, RuntimeError) as error:
             self.transcript.error(f"Could not open {url}: {error}")
             return
-        self.transcript.note(f"Opened {url}")
+        self.transcript.flash(f"Opened {url}")
 
     async def _run_link_editor(self, command: list[str], stack: ExitStack) -> str | None:
         """Open a link in $EDITOR in the popup's terminal; an error, or None."""
@@ -1607,7 +1614,7 @@ class PreviewApp:
             buffer.text = f"{draft}\n\n{prompt}" if draft else prompt
             buffer.cursor_position = len(buffer.text)
             count = len(browser.notes)
-            self.transcript.note(f"Added {count} review note{'s' * (count != 1)} to the prompt.")
+            self.transcript.flash(f"Added {count} review note{'s' * (count != 1)} to the prompt.")
 
     def help(self, argument: str) -> None:
         self.transcript.help(self.registry, self.shortcut)
@@ -2083,7 +2090,7 @@ class PreviewApp:
             # Seen once chosen either way; a resumed host forgets it too.
             forget_stopped(entry.session_id)
             if action == "stop":
-                self.transcript.note(f"Removed {entry.label()[:60]} from /attach.")
+                self.transcript.flash(f"Removed {entry.label()[:60]} from /attach.")
                 return
             await self.open_saved_session(entry.session_id, self.active_session_id())
         elif action == "stop":
@@ -2128,7 +2135,7 @@ class PreviewApp:
             return
         with self.activity.waiting(f"Stopping session {entry.id}"):
             await stop_entry(entry)
-        self.transcript.note(f"Stopped session {entry.id} ({entry.label()[:60]}).")
+        self.transcript.flash(f"Stopped session {entry.id} ({entry.label()[:60]}).")
 
     async def attach_host(self, entry) -> None:
         from pcode.host_protocol import list_hosts
@@ -2366,9 +2373,12 @@ class PreviewApp:
 
         latest = self.asides.latest()
         auto = (
-            self._command_popup_generation is not None
+            self._auto_opens_pending > 0
+            and self._command_popup_generation is not None
             and self._command_popup_generation == self._auto_open_generation
         )
+        if auto:
+            self._auto_opens_pending -= 1
         if self.btw_drawer():
             if latest is None:  # The command said so already.
                 return None
@@ -3136,7 +3146,7 @@ class PreviewApp:
             if any(text.split()[0] in MODEL_COMMANDS for text in commands):
                 self.transcript.warning("Pending model command cancelled.")
             if prompts:
-                self.transcript.note(f"Cleared {prompts} queued message(s).")
+                self.transcript.flash(f"Cleared {prompts} queued message(s).")
             self.activity.busy = False
 
         def submit(text, *, mode_override: str | None = None):
@@ -3358,6 +3368,9 @@ class PreviewApp:
 
     def cancel(self) -> None:
         """Ctrl+C, for whichever controller this terminal is showing now."""
+        # It drops queued commands, auto-open `/btw`s among them: left counted,
+        # one would swallow the next `/btw` typed in the same generation.
+        self._auto_opens_pending = 0
         self.controller.cancel()
 
     def run_controller(self, controller: SessionController) -> None:

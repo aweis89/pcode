@@ -35,9 +35,10 @@ make harness-src        # prints "tmp/pydantic-ai @ v<version>"
 
 - Edit in a worktree, never the mainline checkout; `pcode --worktree` sessions
   already are one. Commit after every change.
-- `make test` for most changes; `make test-all` before anything touching
-  layout, streaming, the editor, or the prompt. Save all files before running:
-  xdist collects mid-edit trees inconsistently.
+- Don't run `make test`/`make test-all` locally; run `make lint` and the
+  focused tests for your change, then push and let GitHub Actions run the
+  suite (see AGENTS.md). CI skips the tmux regressions, so run the matching
+  ones locally for layout, streaming, editor, or prompt changes.
 - The running session imported the source that was on disk at first import. A
   fix to `src/pcode` is not live until pcode restarts, and a mid-turn edit to
   an extension is not live until `/reload`. Do not debug "the fix did nothing"

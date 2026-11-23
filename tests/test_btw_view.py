@@ -203,10 +203,16 @@ def test_the_picker_starts_on_the_list_and_enter_picks_the_selection(keys, picks
     assert browser.picked == (None if picks is None else items[picks].thread)
 
 
+def queue_auto_open(app, generation: int = 3) -> None:
+    """An auto-open `/btw` queued in `generation` and now running (`aside_answered`)."""
+    app._command_popup_generation = app._auto_open_generation = generation
+    app._auto_opens_pending += 1
+
+
 def test_an_answer_that_opens_by_itself_never_takes_a_thread_or_a_draft():
     app, _ = seeded_app()
     first, second = app.controller.asides.items
-    app._command_popup_generation = app._auto_open_generation = 3
+    queue_auto_open(app)
     open_thread(app.activity, first.thread)
     assert not app.auto_open_asides()
     asyncio.run(app.read_asides())
@@ -215,12 +221,61 @@ def test_an_answer_that_opens_by_itself_never_takes_a_thread_or_a_draft():
     close(app.activity)
     app.prompt_session = SimpleNamespace(default_buffer=SimpleNamespace(text="half a messa"))
     assert not app.auto_open_asides()
+    queue_auto_open(app)
     asyncio.run(app.read_asides())
     assert app.activity.btw_thread is None
     app.prompt_session.default_buffer.text = ""
     assert app.auto_open_asides()
+    queue_auto_open(app)
     asyncio.run(app.read_asides())
     assert app.activity.btw_thread == second.thread
+
+
+def test_a_typed_btw_after_an_auto_open_in_the_drawer_still_picks(monkeypatch):
+    """Opening a thread in the drawer shows no popup, so the generation stays put.
+
+    A bare `/btw` typed after it, in that same generation, is the reader's own
+    and lists the threads; it is not one more auto-open to skip.
+    """
+    app, _ = seeded_app()
+    first, second = app.controller.asides.items
+    picks = []
+
+    class Browser:
+        def __init__(self, asides, **kwargs):
+            picks.append(kwargs.get("pick"))
+            self.picked = first.thread
+
+        async def run(self):
+            pass
+
+    monkeypatch.setattr("pcode.aside_ui.AsideBrowser", Browser)
+    stub_popup(monkeypatch, app)
+    queue_auto_open(app)
+    asyncio.run(app.read_asides())
+    assert app.activity.btw_thread == second.thread and picks == []
+    app._command_popup_generation = 3  # Typed in the same generation.
+    asyncio.run(app.read_asides())
+    assert picks == [True] and app.activity.btw_thread == first.thread
+
+
+def test_auto_opens_are_counted_per_generation_and_ctrl_c_forgets_them(monkeypatch):
+    app, _ = seeded_app()
+    queued = []
+    app.controller.command = lambda text, tag: queued.append((text, tag))
+    app.controller.cancel = lambda: None
+    monkeypatch.setattr(app, "auto_open_asides", lambda: True)
+    _, second = app.controller.asides.items
+    app.aside_answered(second)
+    app.aside_answered(second)
+    assert queued == [("/btw", 0), ("/btw", 0)] and app._auto_opens_pending == 2
+    # A popup shown since starts the count again in the new generation.
+    app._popup_generation = 1
+    app.aside_answered(second)
+    assert app._auto_open_generation == 1 and app._auto_opens_pending == 1
+    # Ctrl+C drops the queued auto-open; the next typed /btw is the reader's.
+    app.cancel()
+    assert app._auto_opens_pending == 0
 
 
 def test_ctrl_q_toggles_and_ctrl_backslash_moves_between_threads():
