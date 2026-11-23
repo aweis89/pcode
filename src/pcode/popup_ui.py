@@ -56,7 +56,6 @@ from pcode.text_selection import (
     Row,
     Selection,
     copy_selected,
-    drag_capture,
     highlight,
     marked_rendering,
     unmark,
@@ -184,8 +183,7 @@ def popup_container(body, shortcuts: PrefixKeys | None = None):
     """
     if shortcuts is not None:
         body = FloatContainer(body, floats=[Float(shortcut_hint(shortcuts), bottom=1, right=2)])
-    # Bindings here apply wherever focus is, since everything is inside.
-    return HSplit([body], style="class:popup", key_bindings=drag_capture())
+    return HSplit([body], style="class:popup")
 
 
 def shortcut_hint(shortcuts: PrefixKeys):

@@ -32,6 +32,7 @@ from pcode.preferences import (
     parse_key_prefix,
     parse_vi_key_prefix,
 )
+from pcode.text_selection import drag_capture
 
 # Input that is not a keystroke keeps its own handler while a leader waits:
 # a swallowed cursor-position report would stall the renderer, and a paste
@@ -439,8 +440,12 @@ class PrefixKeys:
         return ConditionalKeyBindings(bindings, ~self.waiting)
 
     def key_bindings(self, bindings: KeyBindingsBase) -> KeyBindingsBase:
-        """A surface's own bindings, gated, followed by its shortcuts."""
-        return merge_key_bindings([self.gate(bindings), self.bindings])
+        """A surface's own bindings, gated, followed by its shortcuts.
+
+        Every popup builds its app's bindings here, so it is also where they
+        gain `drag_capture`, which must be app-wide to work under a Dialog.
+        """
+        return merge_key_bindings([drag_capture(), self.gate(bindings), self.bindings])
 
     @property
     def leader_label(self) -> str:

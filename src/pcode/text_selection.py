@@ -264,7 +264,7 @@ class Selection:
             self.anchor = self.cursor = position
             self.active, self.pressed = False, True
             if self.window is not None:
-                _held[get_app()] = self
+                _held[get_app()] = weakref.ref(self)
         elif kind == MouseEventType.MOUSE_MOVE and self.pressed:
             # Any-motion tracking reports hovering too. A move with no button
             # held means the release was never seen: end the drag where it
@@ -396,7 +396,9 @@ def copy_drags(area, notify: Callable[[str], None]) -> None:
 
 
 # The selection whose drag is held, per app: popups run beside the main app.
-_held: "weakref.WeakKeyDictionary[object, Selection]" = weakref.WeakKeyDictionary()
+# Weak both ways, since a selection's callbacks reach its popup's app: an app
+# that exits mid-drag never sees the event that would drop its entry.
+_held: "weakref.WeakKeyDictionary[object, weakref.ref[Selection]]" = weakref.WeakKeyDictionary()
 _DRAG_EVENTS = (MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP)
 
 
@@ -432,11 +434,19 @@ def _to_window(window: Window, event: MouseEvent):
     )
 
 
+def _drawn(app, window: Window | None) -> bool:
+    """Whether ``window`` is on screen and outside no modal part covering it."""
+    layout = app.layout
+    return window in layout.visible_windows and window in layout.walk_through_modal_area()
+
+
 def drag_capture() -> KeyBindings:
     """Mouse reports that send a held drag's moves and release to its own pane.
 
     The report is still decoded by prompt_toolkit's own binding; only the
-    handler it looks up changes, for the length of that one report.
+    handler it looks up changes, for the length of that one report. These go
+    in an app's own bindings: a container's are skipped once focus is inside
+    a modal part of it, as in a Dialog.
     """
     decode = next(
         binding.handler
@@ -447,9 +457,14 @@ def drag_capture() -> KeyBindings:
 
     @bindings.add(Keys.Vt100MouseEvent)
     def _(event):
-        held = _held.get(event.app)
-        if held is None or not held.pressed or held.window is None:
-            _held.pop(event.app, None)
+        app = event.app
+        reference = _held.get(app)
+        held = reference() if reference is not None else None
+        if held is not None and held.pressed and not _drawn(app, held.window):
+            # Its pane was swapped out or covered mid-drag: the drag is over.
+            held.pressed = False
+        if held is None or not held.pressed:
+            _held.pop(app, None)
             return decode(event)
         renderer = event.app.renderer
         drawn = renderer.mouse_handlers

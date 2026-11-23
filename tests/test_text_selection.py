@@ -1,6 +1,8 @@
 """Mouse selection in popup panes copies text, not the screen rows it wraps to."""
 
 import asyncio
+import gc
+import weakref
 from unittest.mock import patch
 
 from prompt_toolkit.application import Application
@@ -295,14 +297,25 @@ def test_a_read_only_text_area_copies_and_shows_its_drag_selection():
     assert drawn == ["abc123"]
 
 
-def _drive(layout, *reports: str) -> None:
-    """Send SGR mouse reports through a real popup app around ``layout``."""
+def _drive(layout, *reports: str, during=None) -> list:
+    """Send SGR mouse reports through a real popup app around ``layout``.
+
+    ``during(app, index)`` runs after each report. Returns a weak reference
+    to the app.
+    """
+    from prompt_toolkit.key_binding import KeyBindings
+
     from pcode.popup_ui import popup_container
+    from pcode.prefix_keys import PrefixKeys
+
+    apps = []
 
     async def run():
         with create_pipe_input() as pipe:
             app = Application(
                 layout=Layout(popup_container(layout)),
+                # Popups take their bindings from here, drag capture with them.
+                key_bindings=PrefixKeys("ctrl+p").key_bindings(KeyBindings()),
                 full_screen=True,
                 mouse_support=True,
                 input=pipe,
@@ -311,15 +324,21 @@ def _drive(layout, *reports: str) -> None:
             task = asyncio.create_task(app.run_async())
             try:
                 await asyncio.sleep(0.05)
-                for report in reports:
+                for index, report in enumerate(reports):
                     pipe.send_text(report)
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.02)
+                    if during is not None:
+                        during(app, index)
+                        app.invalidate()
+                        await asyncio.sleep(0.02)
                 await asyncio.sleep(0.05)
             finally:
                 app.exit()
                 await task
+            apps.append(weakref.ref(app))
 
     asyncio.run(run())
+    return apps
 
 
 def test_a_drag_released_on_a_blank_row_stops_there_not_at_the_top():
@@ -382,3 +401,58 @@ def test_streaming_that_rewrites_the_dragged_rows_keeps_the_drag():
         assert pane.selection.pressed and pane.selection.anchor == (0, 0)
         pane.selection.handle(_event(MouseEventType.MOUSE_UP, 0, 4, MouseButton.NONE))
     copy.assert_called_once_with("alpha")
+
+
+def test_a_drag_inside_a_dialog_is_still_captured():
+    """A Dialog is modal, which hides container bindings above it: capture is app-wide."""
+    from prompt_toolkit.widgets import Dialog
+
+    words = "alpha beta gamma delta"
+    pane = RichPane(color_system=None)
+    pane.set([Text(words)])
+    layout = VSplit([Dialog(pane.window, width=30), Window(FormattedTextControl("NEXT"))])
+    with patch("pcode.text_selection.copy_to_clipboard", return_value=(True, False)) as copy:
+        # Column 2 is "alpha", past the dialog's border; release far right.
+        _drive(layout, "\x1b[<0;2;2M", "\x1b[<32;75;2M", "\x1b[<0;75;2m")
+    copy.assert_called_once()
+    assert copy.call_args.args[0] == words
+
+
+def test_a_popup_closed_mid_drag_is_not_kept_alive():
+    pane = RichPane(color_system=None)
+    pane.set([Text("alpha beta")])
+
+    def hold(app, index):
+        # As a popup's notice does, the copy callback reaches the app.
+        pane.notify = lambda text: app.invalidate()
+
+    (app,) = _drive(pane.window, "\x1b[<0;2;1M", during=hold)
+    assert pane.selection.pressed
+    pane = hold = None
+    gc.collect()
+    assert app() is None
+
+
+def test_a_drag_whose_pane_is_swapped_out_ends_instead_of_copying_it():
+    from prompt_toolkit.layout import DynamicContainer
+
+    first, second = RichPane(color_system=None), RichPane(color_system=None)
+    first.set([Text("AAA first pane")])
+    second.set([Text("BBB second pane")])
+    shown = [first]
+
+    def swap(app, index):
+        if index == 0:
+            shown[0] = second
+            app.layout.focus(second.window)
+
+    with patch("pcode.text_selection.copy_to_clipboard", return_value=(True, False)) as copy:
+        _drive(
+            DynamicContainer(lambda: shown[0].window),
+            "\x1b[<0;1;1M",
+            "\x1b[<32;8;1M",
+            "\x1b[<0;8;1m",
+            during=swap,
+        )
+    assert not first.selection.pressed
+    assert all("AAA" not in call.args[0] for call in copy.call_args_list)
