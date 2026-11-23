@@ -419,6 +419,11 @@ pcode config set regenerate_on_resize off  # Default on; applies on next launch
 With it off, the editor still resizes normally, completed output is left for
 the terminal to reflow, and `/redraw` is still available.
 
+The same setting covers a draft (or completion menu) tall enough to push
+transcript off the top of the screen: once it shrinks again and stays put for a
+moment, the transcript is rebuilt to fill the blank rows it left, so deleting a
+long paste line by line rebuilds once rather than on every line.
+
 Closing a full-screen popup such as `/tree`, `/links`, `/model`, `/resume`,
 `/status`, `/tools`, or `/diffs` (including with Escape) also rebuilds the
 transcript, which restores the conversation if the terminal lost its screen

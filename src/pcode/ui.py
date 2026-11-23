@@ -607,6 +607,10 @@ THOUGHT_HOLD_SECONDS = STATUS_HOLD_SECONDS
 # vanish when they settled. Their result is already in the tool row and
 # scrollback. A watched job skips the wait: the user asked to see it.
 COMMAND_PREVIEW_DELAY_SECONDS = 1.0
+# How long a shrunk layout's blank rows must hold before scrollback is rebuilt
+# to fill them (`PromptLayout.refill_after_shrink`), so deleting a tall draft
+# line by line rebuilds once rather than per line.
+REFILL_DELAY = 0.3
 # Streamed deltas redraw the live panel at most this often (`redraw_streamed`).
 STREAM_REDRAW_SECONDS = 1 / 20
 # Status text the row leads with verbatim; anything longer is detail.
@@ -3426,6 +3430,14 @@ class PromptLayout:
         self.btw = ThreadView(activity, transcript)
         # Whether the open menu made the layout taller than the measured rows.
         self.menu_overflowed = False
+        # Blank rows the layout holds where scrolled-away transcript used to
+        # be (`refill_after_shrink`), when that last changed, and the pending
+        # debounced rebuild. `_refilled` stops a rebuild that left the same
+        # gap from being retried until the gap changes.
+        self._gap = 0
+        self._gap_changed = 0.0
+        self._refill_task: asyncio.Task | None = None
+        self._refilled = False
 
     def size(self):
         # Read once per redraw, as prompt_toolkit's renderer does: layout
@@ -4617,6 +4629,53 @@ class PromptLayout:
             self.animation_task.cancel()
             self.animation_task = None
         self.replay_after_menu(app)
+        self.refill_after_shrink(app)
+
+    def layout_gap(self, app) -> int:
+        """Blank rows above the layout that scrolled-away transcript used to fill.
+
+        prompt_toolkit never shrinks its screen (each render keeps at least the
+        last height). When the draft or the panel grows past the rows below
+        scrollback, the terminal scrolls transcript off the top; when it shrinks
+        again, the justifying filler holds those rows blank. That is the screen
+        height beyond both the rows the layout was given and what it now needs.
+        """
+        renderer = app.renderer
+        screen, available = renderer._last_screen, renderer._min_available_height
+        drawn = getattr(self.root, "drawn", None)
+        if renderer._in_alternate_screen or screen is None or available <= 0 or drawn is None:
+            return 0
+        return max(0, screen.height - max(available, drawn[2]))
+
+    def refill_after_shrink(self, app) -> None:
+        """Rebuild scrollback once a shrunk layout has settled, filling its blank rows.
+
+        Debounced: deleting a tall draft line by line (or holding backspace)
+        changes the gap on every render, and each rebuild clears and repaints
+        the whole screen, so wait until it has held for `REFILL_DELAY`.
+        """
+        transcript = self.transcript
+        if transcript is None or not transcript.replays_on_resize:
+            return
+        # The menu's own replay covers its close, at once. Mid-turn, the next
+        # write fills the gap anyway; a rebuild then would only repaint the
+        # stream, so a gap left at the turn's end is filled once it settles.
+        refills = self.session.default_buffer.complete_state is None and not self.activity.busy
+        gap = self.layout_gap(app) if refills else 0
+        if gap != self._gap:
+            self._gap, self._gap_changed, self._refilled = gap, monotonic(), False
+        if gap > 0 and not self._refilled and self._refill_task is None:
+            self._refill_task = app.create_background_task(self._refill())
+
+    async def _refill(self) -> None:
+        try:
+            while (wait := self._gap_changed + REFILL_DELAY - monotonic()) > 0:
+                await asyncio.sleep(wait)
+            if self._gap > 0 and not self._refilled and self.transcript is not None:
+                self._refilled = True
+                self.transcript.regenerate()
+        finally:
+            self._refill_task = None
 
     def replay_after_menu(self, app) -> None:
         """Rebuild scrollback, as a resize does, once an overflowing menu closes.
@@ -4638,6 +4697,8 @@ class PromptLayout:
         elif self.menu_overflowed:
             self.menu_overflowed = False
             transcript.regenerate()
+            # This replay fills the gap the menu left; no debounced one too.
+            self._refilled, self._gap = True, self.layout_gap(app)
 
 
 def create_prompt(
