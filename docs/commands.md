@@ -54,7 +54,7 @@ since the editor keeps the keyboard, and clicking a row accepts it.
   a `$PROVIDER:MODEL` word anywhere in it (optionally `+EFFORT`, as in `fix this $openai:gpt-5+high`)
   or a bare `+EFFORT` word; that turn runs there and the next prompt is back on the
   conversation's model. Only the first such word counts. `$` completes model names as
-  it does in `/btw`. A `$` word without a full `provider:model` id (`$HOME`, `$opus`)
+  it does in `/btw`. A `$` word without a full id under a known provider (`$HOME`, `$opus`, `$image:latest`)
   or an unknown `+` level is ordinary text. Another model starts without the conversation's prompt cache, and automatic
   compaction is skipped for its turn, since that model's window and summarizer would
   decide what the conversation keeps. Such a prompt never steers a running turn; it

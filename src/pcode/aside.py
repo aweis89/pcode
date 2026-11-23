@@ -35,13 +35,8 @@ MODEL_MARK = "$"
 # `+high` asks on the conversation's model at that effort; `$model+high` on
 # another model. The levels are the ones /effort accepts.
 EFFORT_MARK = "+"
-# How every provider prefix is spelled (`openai-codex`, `google-gla`).
-PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_-]*")
-# A model id starts with a letter or digit and holds a letter, so `8080` in
-# `$host:8080` or `/usr/bin` in `$path:/usr/bin` is no model.
-MODEL_NAME = re.compile(r"(?=\S*[A-Za-z])[A-Za-z0-9]\S*")
-# A `$` or `+` that starts a whitespace-separated word may name a target.
-TARGET_WORD = re.compile(r"(?<!\S)[$+]\S*")
+# Punctuation that may close a target word without being part of it.
+CLOSING = ".,;:!?)"
 ASIDE_MODEL_USAGE = (
     f"Usage: /btw [$PROVIDER:MODEL[+EFFORT] | +EFFORT ...] QUESTION (EFFORT: {'|'.join(EFFORTS)})"
 )
@@ -160,19 +155,20 @@ def word_target(word: str) -> SideTarget | None:
     """The target `word` names, or None when it reads as anything else.
 
     Only an unmistakable word counts, since one can sit anywhere in a
-    question: a model with its provider (`$openai:gpt-5`, never `$HOME`,
-    `$PATH:/usr/bin` or `$host:8080`, whose "provider" or "model" no real one
-    is named like) or a real effort level (`+high`, never `+1`). A bare model
-    name (`$opus`) is text too; the picker turns one into the full id.
+    question: a model under a provider pcode knows (`$openai:gpt-5`, never
+    `$HOME`, `$PATH:/usr/bin`, `$image:latest` or `$host:8080`) or a real
+    effort level (`+high`, never `+1`). A bare model name (`$opus`) is text
+    too; the picker turns one into the full id.
     """
+    from pcode.models import has_provider
+
     if word.startswith(EFFORT_MARK):
         effort = word.removeprefix(EFFORT_MARK)
         return SideTarget(effort=effort) if effort in EFFORTS else None
     if not word.startswith(MODEL_MARK):
         return None
     model, effort = split_effort(word.removeprefix(MODEL_MARK))
-    provider, colon, name = model.partition(":")
-    if colon and PROVIDER_NAME.fullmatch(provider) and MODEL_NAME.fullmatch(name):
+    if has_provider(model) and model.partition(":")[2]:
         return SideTarget(model, effort)
     return None
 
@@ -180,28 +176,46 @@ def word_target(word: str) -> SideTarget | None:
 def _split_targets(text: str, limit: int | None = None) -> tuple[list[SideTarget], str]:
     """Take up to `limit` target words out of `text`, wherever they are.
 
-    Each goes with the spaces after it (or before it, ending a line), so the
-    text around it reads as typed; line breaks are kept.
+    Each goes with the spaces after it, and punctuation closing it
+    (`$openai:gpt-5.`) stays with the text before. A line left holding only
+    spaces goes too; every other line break is kept. Text without a target
+    comes back as it was.
     """
     found: list[SideTarget] = []
-    spans: list[tuple[int, int]] = []
-    for match in TARGET_WORD.finditer(text):
-        target = word_target(match.group())
-        if target is None:
+    lines = []
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        out: list[str] = []
+        changed = skip_space = False
+        for token in re.findall(r"[ \t]+|[^ \t]+", body):
+            core = token.rstrip(CLOSING)
+            target = None
+            if token.startswith((MODEL_MARK, EFFORT_MARK)) and (
+                limit is None or len(found) < limit
+            ):
+                target = word_target(core)
+            if target is not None:
+                found.append(target)
+                changed = True
+                closing = token[len(core) :]
+                if closing and out and out[-1].isspace():
+                    out.pop()
+                out.append(closing)
+                skip_space = not closing
+            elif skip_space and token.isspace():
+                skip_space = False
+            else:
+                out.append(token)
+                skip_space = False
+        if not changed:
+            lines.append(line)
             continue
-        if limit is not None and len(found) == limit:
-            break
-        start, end = match.span()
-        after = len(text) - len(text[end:].lstrip(" \t"))
-        if after > end and after < len(text) and text[after] != "\n":
-            end = after
-        else:
-            start = len(text[:start].rstrip(" \t"))
-        spans.append((start, end))
-        found.append(target)
-    for start, end in reversed(spans):
-        text = text[:start] + text[end:]
-    return found, text.strip()
+        kept = "".join(out).rstrip(" \t")
+        if kept.strip():
+            lines.append(kept + line[len(body) :])
+    if not found:
+        return found, text
+    return found, "".join(lines).strip()
 
 
 def parse_models(argument: str) -> tuple[list[SideTarget], str]:
@@ -212,6 +226,7 @@ def parse_models(argument: str) -> tuple[list[SideTarget], str]:
     the order first given; the same model at two efforts is two targets.
     """
     found, rest = _split_targets(argument)
+    rest = rest.strip()
     models = list(dict.fromkeys(found))
     if models and not rest:
         raise ValueError(f"No question after the model. {ASIDE_MODEL_USAGE}")
