@@ -1,6 +1,7 @@
 # Reader mode plan
 
-Status: design agreed, nothing built. Builds on the terminal-side glide in
+Status: phases 1 and 2 built in the fork (`ghostty-smooth` commits `9c5ca8751`
+and `be9f810b9`, branch `pcode-smooth`), not yet judged by eye. Builds on the terminal-side glide in
 [ghostty-app-plan.md](ghostty-app-plan.md) (protocol 9, `smooth_scroll.py`).
 
 ## Goal
@@ -9,7 +10,7 @@ Read a long response without chasing it. A new turn can stop after its first
 page instead of scrolling away, and vim-style keys move through the
 conversation with the same 120 Hz glide that streamed output has:
 
-- `gg` to the start of the current response, `G` back to the live bottom.
+- `g` to the start of the current response, `G` back to the live bottom.
 - `Space`, `d`, `u`, `j`, `k` to page and step.
 - `c` to cruise at a steady reading speed, `+` and `-` to change it.
 - `[[` and `]]` between turns, `{` and `}` between code blocks and diffs.
@@ -71,24 +72,41 @@ scroll to top or bottom, plus new `jump_to_mark:KIND,±1`, `cruise` and
 
 ## Phases
 
-### 1. Glided scroll and the key table (fork only)
+### 1. Glided scroll and the key table (fork only): built
 
-- Animate the existing viewport scroll actions instead of jumping.
-- Ship a default `reader` key table and a binding that enters it.
-- `gg` goes to the top of scrollback until marks exist.
+- The scroll actions (page, half page, lines, top, bottom) glide.
+  `ViewportGlide.zig` keeps a visual position, moves the viewport in whole
+  rows and draws the remainder through the sub-row offset trackpad scrolling
+  already uses, so no overscan or cell-building changes were needed. Jumps
+  longer than 96 rows jump the excess and glide the rest.
+- A trackpad scroll, the keystroke snap and `scroll-to-bottom = output` cancel
+  a glide. So does any other viewport move (a clear, `jump_to_prompt`, the
+  alternate screen): the glide remembers where it left the viewport and stops
+  if that changed, rather than gliding on from the new place.
+- Default `reader` table, entered with Cmd+R (Ctrl+Shift+R off macOS): `j`/`k`,
+  arrows, `Space`/`f`/`b`, `d`/`u` (and Ctrl), `g`, `G`, `c`, `+`/`-`, and
+  `q`/`Esc`/`i` to leave and go back to the bottom. Shortcuts held with Ctrl,
+  Alt or Cmd skip the table's catch_all and reach their usual bindings. Any other
+  key leaves the table and still reaches pcode (`unconsumed:catch_all`), which
+  snaps to the bottom.
+- `g`, not `gg`: as a key sequence, `g` followed by anything else types both
+  keys into pcode and leaves the table on.
+- Trap found on the way: a table's `catch_all` matched a lone modifier press,
+  so holding Shift to type `G` would have left the table first. `getEvent` now
+  never matches `catch_all` for a modifier key.
+- `g` goes to the top of scrollback until marks exist.
 
-Needs no pcode change, and gives `j`, `k`, `Space`, `d`, `u`, `G` at once.
+### 2. Cruise (fork only): built
 
-### 2. Cruise (fork only)
-
-- Constant-rate viewport scroll, with speed actions.
-- Stops at the live bottom.
+- `smooth_cruise` toggles a constant-speed scroll down (default 2 rows/s);
+  `smooth_cruise_speed:±N` changes it by factors of 1.25, kept between cruises.
+- Stops at the live bottom. Other scroll keys add to the motion while it runs.
 
 ### 3. Marks and jumps
 
 - Fork: `mark`, `jump_to_mark`, protocol bumped to 10.
 - pcode: emit marks in `_enqueue()` where rows are split, only when the
-  terminal answered 10. `gg` becomes "start of the current response".
+  terminal answered 10. `g` becomes "start of the current response".
 
 ### 4. Park
 
@@ -101,6 +119,16 @@ Needs no pcode change, and gives `j`, `k`, `Space`, `d`, `u`, `G` at once.
   from terminal cells.
 
 ## To check in a spike
+
+- **Feel.** Spring stiffness (400), the 96-row jump cap and the default cruise
+  speed are guesses; tune by eye.
+- **Synchronized output.** The glide steps in the renderer's frame update,
+  which is skipped during synchronized output. The step after one is capped at
+  50 ms, so a long pcode frame pauses the glide rather than leaping it.
+- **Lock keys.** Caps Lock is not a modifier to Ghostty, so it still trips the
+  catch_all and leaves the table.
+- **Cmd+R on the alternate screen** enters a table that has nothing to
+  scroll and swallows its keys until `q`.
 
 - **The seam at the bottom.** Cruising down is a viewport glide until the
   viewport becomes active again, where the region conveyor takes over. That
