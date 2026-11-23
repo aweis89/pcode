@@ -1,6 +1,7 @@
 """MCP setup failures retain useful causes without model advice or credentials."""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -253,20 +254,33 @@ def test_stdio_server_stderr_goes_to_its_log_not_the_terminal(tmp_path, capfd):
 
     assert isinstance(error, MCPConnectError)
     log = stderr_log_path("local")
+    # Stamped by the connect itself, so each attempt is findable in a shared log.
+    assert log.read_text().startswith("--- ")
     assert "Failed to fetch: 403" in log.read_text()
     assert "Failed to fetch" not in capfd.readouterr().err
     message = turn_error(error)
     assert f"Its output is in {log}." in message
     # Only the path: what the server printed could carry terminal escapes.
-    assert "403" not in message
+    assert "Failed to fetch" not in message
 
 
-def test_stdio_log_is_bounded(tmp_path):
-    from pcode.mcp import STDERR_LOG_MAX_BYTES, _rotate
+def test_stdio_log_is_bounded_and_marks_each_connect(tmp_path):
+    from pcode.mcp import STDERR_LOG_MAX_BYTES, _prepare_log
 
     log = tmp_path / "mcp" / "local.log"
-    _rotate(log)
-    assert log.parent.is_dir()
+    assert _prepare_log(log) == log
+    assert log.read_text().startswith("--- ")
     log.write_text("x" * (STDERR_LOG_MAX_BYTES + 1))
-    _rotate(log)
-    assert not log.exists() and log.with_name("local.log.1").exists()
+    _prepare_log(log)
+    assert log.with_name("local.log.1").stat().st_size > STDERR_LOG_MAX_BYTES
+    assert log.read_text().startswith("--- ")
+
+
+def test_unwritable_log_discards_stderr_instead_of_failing(tmp_path):
+    import os
+
+    from pcode.mcp import _prepare_log
+
+    blocker = tmp_path / "mcp"
+    blocker.write_text("a file where the directory should be")
+    assert _prepare_log(blocker / "local.log") == Path(os.devnull)

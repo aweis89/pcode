@@ -288,8 +288,8 @@ def _named_toolset() -> type:
             transport = mcp_transport(self.wrapped)
             if hasattr(transport, "failed_status"):
                 transport.failed_status = None
-            if isinstance(getattr(transport, "log_file", None), Path):
-                _rotate(transport.log_file)
+            if self.config is not None and self.config.command:
+                transport.log_file = _prepare_log(stderr_log_path(self.server))
             try:
                 return await super().__aenter__()
             except Exception as error:
@@ -300,8 +300,9 @@ def _named_toolset() -> type:
                     status = None
                 challenge = getattr(transport, "oauth_challenge", False)
                 message = _connect_failure(self.server, self.config, status, challenge, error)
-                if self.config is not None and self.config.command:
-                    message += f" Its output is in {stderr_log_path(self.server)}."
+                log = getattr(transport, "log_file", None)
+                if isinstance(log, Path) and log != Path(os.devnull):
+                    message += f" Its output is in {log}."
                 raise MCPConnectError(self.server, message) from error
 
         async def call_tool(self, name, tool_args, ctx, tool):
@@ -335,14 +336,23 @@ def stderr_log_path(name: str) -> Path:
     return library_log_path().with_name("mcp") / f"{name}.log"
 
 
-def _rotate(path: Path) -> None:
-    """Make sure the log's directory exists and the log stays bounded."""
+def _prepare_log(path: Path) -> Path:
+    """Bound the log and mark this connect in it; the file to hand FastMCP.
+
+    Sessions share the file, so each attempt starts with a stamped line. When it
+    cannot be written, stderr is discarded rather than failing the server.
+    """
+    from datetime import datetime
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.stat().st_size > STDERR_LOG_MAX_BYTES:
+        if path.exists() and path.stat().st_size > STDERR_LOG_MAX_BYTES:
             path.replace(path.with_name(f"{path.name}.1"))
+        with path.open("a", encoding="utf-8") as log:
+            log.write(f"--- {datetime.now().isoformat(timespec='seconds')} pid {os.getpid()}\n")
     except OSError:
-        pass
+        return Path(os.devnull)
+    return path
 
 
 def build_toolset(name: str, raw: Any, *, interactive: bool = True):
