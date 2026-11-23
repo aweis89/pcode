@@ -546,6 +546,14 @@ SETTINGS = {
         description="Experimental: glide new rows into view; auto uses it in terminals that "
         "answer for it (a patched Ghostty) and needs paced_scrollback not off",
     ),
+    # Read at launch. Needs Ghostty Smooth's reader mode (protocol 10), which
+    # the smooth_scroll probe asks after.
+    "reader_park": Setting(
+        "on",
+        ("on", "off"),
+        description="In Ghostty Smooth, stop a new answer after its first page so it doesn't "
+        "scroll away; read on in reader mode",
+    ),
     "show_edits": Setting(
         "on",
         ("on", "off"),

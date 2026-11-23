@@ -534,3 +534,132 @@ def test_startup_banner_survives_a_redraw():
     assert "Type / for commands" in rebuilt
     assert "Loaded repository instructions: AGENTS.md" in rebuilt
     assert "Command output in scrollback" not in rebuilt
+
+
+MARKED_MARKDOWN = "Intro\n\n- item\n\n  ```py\n  x = 1\n  ```\n\nAfter\n"
+SENTINEL = "\u2063"  # Leads every row_marks sentinel.
+DIFF = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+
+
+def marked_output(monkeypatch, *, marks=True, park=True):
+    """A transcript writing to a StringIO, reader-mode marks forced on or off."""
+    from pcode import smooth_scroll
+
+    transcript = view()
+    terminal = DummyOutput()
+    terminal.get_size = lambda: Size(rows=40, columns=80)
+    app = SimpleNamespace(output=CursorSafeOutput(terminal))
+    output = TerminalOutput(transcript.console, app)
+    transcript.output = output
+    output.marks, output.park = marks, park
+    output.resize_replay = transcript.replay
+
+    async def handoff(app, **kwargs):
+        yield Handoff(None)
+
+    monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(handoff))
+    return transcript, output, smooth_scroll
+
+
+def test_render_tags_the_first_row_of_a_turn_a_code_block_and_a_diff():
+    from pcode.edit_transcript import EditTranscript
+    from pcode.markdown import Markdown as PcodeMarkdown
+    from pcode.runtime import EditCompleted
+    from pcode.smooth_scroll import MARK_BLOCK, MARK_TURN
+    from pcode.task_prompt import TaskPrompt
+
+    transcript = view()
+    output = TerminalOutput(transcript.console, SimpleNamespace(output=DummyOutput()))
+    edit = EditTranscript(EditCompleted("1", "x.py", "edited", DIFF, added=1, removed=1))
+    entries = [
+        ((TaskPrompt("TASK"),), "\n", False),
+        ((PcodeMarkdown(MARKED_MARKDOWN),), "\n", False),
+        ((edit,), "\n", False),
+    ]
+    output._enqueue(entries, 80)
+    marked = [(row.mark, row.text.strip()) for row in output.rows if row.mark]
+    # The code block's first row is Rich's blank padding row inside the list item.
+    assert marked == [(MARK_TURN, "▌ TASK"), (MARK_BLOCK, ""), (MARK_BLOCK, marked[2][1])]
+    assert "x.py" in marked[2][1]
+    code = next(i for i, row in enumerate(output.rows) if "x = 1" in row.text)
+    assert output.rows[code - 1].mark == MARK_BLOCK
+    # Nothing else sees the sentinel, and the rows are what an unmarked render gives.
+    console = Console(file=StringIO(), width=80, color_system=None)
+    with console.use_theme(output.rich_theme()):
+        for objects, end, _ in entries:
+            console.print(*objects, end=end)
+    queued = "".join(row.text for row in output.rows)
+    assert SENTINEL not in queued and SENTINEL not in console.file.getvalue()
+    assert queued == console.file.getvalue()
+
+
+def test_consoles_outside_the_transcript_never_see_the_sentinel():
+    from pcode.markdown import Markdown as PcodeMarkdown
+    from pcode.task_prompt import TaskPrompt
+
+    console = Console(file=StringIO(), width=80, force_terminal=True)
+    console.print(TaskPrompt("TASK"), PcodeMarkdown(MARKED_MARKDOWN))
+    assert SENTINEL not in console.file.getvalue()
+
+
+def test_marks_are_written_only_when_the_terminal_takes_them(monkeypatch):
+    async def run(marks):
+        transcript, output, smooth_scroll = marked_output(monkeypatch, marks=marks)
+        output.begin_turn("TASK")
+        transcript.message(MARKED_MARKDOWN)
+        await output.flush()
+        return transcript.console.file.getvalue(), smooth_scroll
+
+    written, _ = asyncio.run(run(False))
+    assert "smooth;" not in written
+    written, smooth_scroll = asyncio.run(run(True))
+    rows = written.split("\n")
+    task = next(row for row in rows if "TASK" in row)
+    assert task.startswith(smooth_scroll.PARK + smooth_scroll.mark(smooth_scroll.MARK_TURN))
+    code = rows.index(next(row for row in rows if "x = 1" in row))
+    assert rows[code - 1].startswith(smooth_scroll.mark(smooth_scroll.MARK_BLOCK))
+    assert written.count("smooth;") == 3
+
+
+def test_park_is_only_for_a_submitted_turn_and_not_replayed(monkeypatch):
+    async def run():
+        transcript, output, smooth_scroll = marked_output(monkeypatch)
+        turn = smooth_scroll.mark(smooth_scroll.MARK_TURN)
+        # A prompt from a loaded session: marked, never parked.
+        transcript.user("OLD")
+        await output.flush()
+        written = transcript.console.file.getvalue()
+        assert turn in written and smooth_scroll.PARK not in written
+        output.begin_turn("NEW")
+        await output.flush()
+        written = transcript.console.file.getvalue()
+        assert written.count(smooth_scroll.PARK) == 1
+        assert smooth_scroll.PARK + turn in written.split("OLD")[1]
+        # The resize replay carries every mark again, but no park.
+        transcript.console.file.seek(0)
+        transcript.console.file.truncate()
+        output.regenerate(transcript.replay)
+        await output.flush()
+        replayed = transcript.console.file.getvalue()
+        assert replayed.count(turn) == 2 and smooth_scroll.PARK not in replayed
+        # A park waiting for a prompt the replay swallowed does not land later.
+        output.begin_turn("SWALLOWED")
+        output.regenerate(transcript.replay)
+        await output.flush()
+        transcript.user("STEER")
+        await output.flush()
+        assert smooth_scroll.PARK not in transcript.console.file.getvalue()
+
+    asyncio.run(run())
+
+
+def test_park_needs_reader_park_on(monkeypatch):
+    async def run():
+        transcript, output, smooth_scroll = marked_output(monkeypatch, park=False)
+        output.begin_turn("NEW")
+        await output.flush()
+        written = transcript.console.file.getvalue()
+        assert smooth_scroll.mark(smooth_scroll.MARK_TURN) in written
+        assert smooth_scroll.PARK not in written
+
+    asyncio.run(run())

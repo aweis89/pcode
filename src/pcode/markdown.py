@@ -4,9 +4,13 @@ import re
 
 from markdown_it import MarkdownIt
 from markdown_it.common.normalize_url import validateLink as _default_validate_link
-from rich.console import JustifyMethod
+from rich.console import Console, ConsoleOptions, JustifyMethod, RenderResult
+from rich.markdown import CodeBlock
 from rich.markdown import Markdown as RichMarkdown
 from rich.style import Style
+
+from pcode.row_marks import row_mark
+from pcode.smooth_scroll import MARK_BLOCK
 
 _FILE_URL = re.compile(r"^file://", re.IGNORECASE)
 
@@ -21,8 +25,18 @@ _PARSER = MarkdownIt().enable("strikethrough").enable("table")
 _PARSER.validateLink = _validate_link  # type: ignore[method-assign]
 
 
+class _BlockCodeBlock(CodeBlock):
+    """A code block whose first row is a reader-mode block mark (`pcode.row_marks`)."""
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield from row_mark(MARK_BLOCK)
+        yield from super().__rich_console__(console, options)
+
+
 class Markdown(RichMarkdown):
     """Rich Markdown that accepts ``file://`` URLs alongside ``http(s)://``."""
+
+    elements = {**RichMarkdown.elements, "fence": _BlockCodeBlock, "code_block": _BlockCodeBlock}
 
     def __init__(
         self,

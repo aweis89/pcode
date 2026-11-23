@@ -356,6 +356,12 @@ def _editing_keys(
             return
         event.current_buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
 
+    # Ghostty Smooth's reader mode sends F20 for its `y`: copy from the
+    # response or snippet being read, whatever the draft holds.
+    @keys.add(Keys.F20, filter=Condition(lambda: callbacks.on_copy_response is not None))
+    def copy_response(event: KeyPressEvent) -> None:
+        callbacks.on_copy_response()
+
     on_btw_close = callbacks.on_btw_close
 
     def thread_shown() -> bool:

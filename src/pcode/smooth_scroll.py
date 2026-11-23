@@ -2,8 +2,8 @@
 
 The ``smooth_scroll`` setting turns it on (``auto``); see dev/ghostty-app-plan.md.
 It needs the Ghostty Smooth fork, which answers the startup query
-(`pcode.theme`) with exactly ``PROTOCOL``. Anything else, including tmux,
-which does not relay the sequences, gets none of them.
+(`pcode.theme`) with a version from ``MIN_PROTOCOL`` to ``PROTOCOL``. Anything
+else, including tmux, which does not relay the sequences, gets none of them.
 
 The transcript rows above the editor and the typing row under them are
 declared as one region, with one reserved blank row below as the region's
@@ -14,6 +14,11 @@ rest on its own frame clock: a conveyor glide whose speed follows its own
 backlog, a soft bottom-edge dissolve, and a queue of ink-sweep (prose) and
 curtain (everything else) reveals, so pcode's busy event loop cannot make the
 motion stutter.
+
+Protocol 10 adds reader mode (dev/reader-mode-plan.md): pcode tags the first
+row of each turn and of each code block or diff with ``mark`` so the
+terminal's reader keys can jump between them, and ``PARK`` asks the terminal
+to stop following output once a new turn's prompt scrolls off the top.
 """
 
 import math
@@ -22,11 +27,15 @@ import re
 
 # The smooth-scroll protocol pcode speaks: 9 adds batch conveyor glides of up
 # to MAX_BATCH_GLIDE rows backed by scrollback, soft bottom-edge dissolve, and
-# queued multi-segment ink-sweep / curtain reveals with signed rows.
-PROTOCOL = 9
+# queued multi-segment ink-sweep / curtain reveals with signed rows; 10 adds
+# reader-mode row marks and park. The glide works from MIN_PROTOCOL up, since
+# older fork builds still answer 9; marks need MARKS_PROTOCOL.
+PROTOCOL = 10
+MIN_PROTOCOL = 9
+MARKS_PROTOCOL = 10
 QUERY = b"\x1b_smooth;?\x1b\\"
 # Any smooth-scroll reply, so a future shape is still kept out of typing; only
-# `ok;PROTOCOL` turns the glide on.
+# `ok;N` with N in MIN_PROTOCOL..PROTOCOL turns the glide on.
 REPLY = re.compile(rb"\x1b_smooth;([^\x1b\x07]{0,32})\x1b\\")
 VERSION = re.compile(rb"ok;(\d{1,4})")
 
@@ -47,6 +56,19 @@ REVEAL_CURTAIN = 1
 REGION_ID = 7
 PANEL_ID = 8
 OFF = "".join(f"\x1b_smooth;off;{id}\x1b\\" for id in (REGION_ID, PANEL_ID))
+
+# Reader-mode row marks (protocol 10), written at the start of the row they
+# tag: a turn's submitted prompt, and the first row of a code block or diff.
+MARK_TURN = 1
+MARK_BLOCK = 2
+# Arms a park: the next turn mark binds to it, and once that row scrolls off
+# the top the terminal stops following output there and enters reader mode.
+PARK = "\x1b_smooth;park\x1b\\"
+
+
+def mark(kind: int) -> str:
+    """Tag the row the cursor is on as a ``MARK_TURN`` or ``MARK_BLOCK``."""
+    return f"\x1b_smooth;mark;{kind}\x1b\\"
 
 
 # The terminal's spring glide (Ghostty Smooth's `State.Smooth`), mirrored so

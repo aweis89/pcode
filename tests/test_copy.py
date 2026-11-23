@@ -350,3 +350,36 @@ def test_ctrl_y_with_an_empty_editor_copies_the_last_response():
 def test_quotes_copy_soft_wrapped_lines_joined_as_they_render():
     quote = "> one\n> two  \n> hard\\\n> break\n>\n> - item\n>   wraps\n>\n> ```\n> a\n> b\n> ```\n"
     assert snippets(quote)[1].text == "one two\nhard\nbreak\n\n- item wraps\n\n```\na\nb\n```"
+
+
+def test_reader_mode_copy_key_chooses_a_response_whatever_the_draft():
+    from pcode.commands import CommandRegistry
+    from pcode.ui import create_prompt
+
+    asked: list[str] = []
+
+    async def run():
+        with create_pipe_input() as pipe:
+            prompt = create_prompt(
+                CommandRegistry(),
+                on_submit=lambda text: None,
+                on_copy_response=lambda: asked.append(prompt.default_buffer.text),
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def feed():
+                # Ghostty Smooth's reader mode sends F20 for its `y`.
+                pipe.send_text("draft\x1b[34~")
+                while not asked:
+                    await asyncio.sleep(0.01)
+                prompt.app.exit(result="")
+
+            task = asyncio.ensure_future(feed())
+            try:
+                await asyncio.wait_for(prompt.prompt_async(), timeout=5)
+            finally:
+                task.cancel()
+
+    asyncio.run(run())
+    assert asked == ["draft"]

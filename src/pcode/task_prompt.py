@@ -6,6 +6,9 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.segment import Segment
 from rich.text import Text
 
+from pcode.row_marks import row_mark
+from pcode.smooth_scroll import MARK_TURN
+
 
 @dataclass(frozen=True)
 class TaskPrompt:
@@ -22,6 +25,7 @@ class TaskPrompt:
             options.update(width=max(1, options.max_width - len(prefix))),
             pad=False,
         )
+        yield from row_mark(MARK_TURN)
         for line in lines:
             yield Segment(prefix, style)
             yield from line

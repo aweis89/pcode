@@ -82,6 +82,7 @@ from pcode.preferences import (
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
+from pcode.row_marks import marking, take_mark
 from pcode.runtime import (
     CacheBust,
     CommandOutput,
@@ -99,6 +100,7 @@ from pcode.terminal_text import safe_text
 from pcode.theme import (
     detect_theme,
     glide_supported,
+    marks_supported,
     terminal_background,
 )
 from pcode.theme_gallery import SyntaxGallery
@@ -2161,6 +2163,10 @@ class QueuedRow:
 
     text: str
     typed: bool = False
+    # The reader-mode mark on this row (`smooth_scroll.MARK_*`), if any, and
+    # whether to arm a park before it: the prompt of a turn just submitted.
+    mark: int | None = None
+    park: bool = False
 
     @cached_property
     def _plain(self) -> str:
@@ -2377,6 +2383,11 @@ class TerminalOutput:
         # copy of that glide, and whether its region is declared.
         self._panel_glide = smooth_scroll.Glide()
         self._panel_declared = False
+        # Reader mode (protocol 10): write each row's mark, and arm a park
+        # before the next submitted prompt (`begin_turn`) once it is rendered.
+        self.marks = False
+        self.park = False
+        self._park_next = False
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -2394,6 +2405,7 @@ class TerminalOutput:
     def begin_turn(self, prompt: str) -> None:
         # The live row shows the running tool, not the prompt, so the quote goes
         # to scrollback as soon as the turn starts rather than waiting for output.
+        self._park_next = self.park
         self.commit_user(prompt)
 
     def user(self, prompt: str) -> None:
@@ -2522,6 +2534,9 @@ class TerminalOutput:
         """
         transient = [] if replay else self.transient_pending
         self.transient_pending = []
+        if replay:
+            # A submitted prompt not yet written is in the replay: no park for it.
+            self._park_next = False
         pieces = [
             (entry, piece, self.typed and not replay and typed_prose(entry[0]))
             for entry, piece in zip(pending, self._render(pending, width), strict=True)
@@ -2533,14 +2548,29 @@ class TerminalOutput:
             for part in split_rows(piece):
                 text, typed = text + part, typed and piece_typed
                 if text.endswith("\n"):
-                    self.rows.append(QueuedRow(text, typed))
+                    self._queue_row(text, typed)
                     text, typed = "", True
             if any(entry is note for note in transient):
                 # Its last character is in the open row, or the one just closed.
                 last = len(self.rows) + (1 if text else 0)
                 self._queued_transient.append((entry, self._row_base + last))
         if text:
-            self.rows.append(QueuedRow(text, typed))
+            self._queue_row(text, typed)
+
+    def _queue_row(self, text: str, typed: bool) -> None:
+        """Queue one rendered row, its reader-mode sentinel taken out into ``mark``."""
+        text, mark = take_mark(text)
+        park = self._park_next and mark == smooth_scroll.MARK_TURN
+        if park:
+            self._park_next = False
+        self.rows.append(QueuedRow(text, typed, mark, park))
+
+    def _row_text(self, row: QueuedRow) -> str:
+        """A row as written to scrollback, led by its reader-mode mark when on."""
+        if not self.marks or row.mark is None:
+            return row.text
+        lead = smooth_scroll.PARK if row.park and self.park else ""
+        return lead + smooth_scroll.mark(row.mark) + row.text
 
     def _render(self, entries: list, width: int) -> list[str]:
         """Each write rendered on its own, as terminal text at ``width``."""
@@ -2548,7 +2578,7 @@ class TerminalOutput:
         pieces = []
         previous_file = self.console._file
         try:
-            with self.console.use_theme(self.rich_theme()):
+            with self.console.use_theme(self.rich_theme()), marking():
                 for objects, end, soft_wrap in entries:
                     self.console.file = rendered = StringIO()
                     with self.console:
@@ -2658,7 +2688,7 @@ class TerminalOutput:
                         self._written(due)
                         self._typed = typed
                         counter = RowCounter(self.console.file)
-                        counter.write("".join(row.text for row in chunk))
+                        counter.write("".join(self._row_text(row) for row in chunk))
                         counter.flush()
                         handoff.rows_written = counter.rows
                         scrolled = self._scrolled(drawn, counter.rows)
@@ -4814,6 +4844,7 @@ class Transcript:
         self.paced_scrollback = preferences.get(
             "paced_scrollback", SETTINGS["paced_scrollback"].default
         )
+        self.reader_park = preferences.get("reader_park", SETTINGS["reader_park"].default)
         self.log = TranscriptLog(
             max_chars=int(
                 preferences.get("transcript_max_chars", SETTINGS["transcript_max_chars"].default)
@@ -4854,6 +4885,8 @@ class Transcript:
             )
             output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
+            output.marks = self.console.is_terminal and marks_supported()
+            output.park = output.marks and self.reader_park == "on"
             if self.replays_on_resize:
                 output.resize_replay = self.replay
 

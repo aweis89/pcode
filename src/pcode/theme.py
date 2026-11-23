@@ -72,7 +72,20 @@ def glide_supported() -> bool:
     """Whether the startup probe found a terminal that speaks pcode's glide protocol."""
     from pcode import smooth_scroll
 
-    return _glide_protocol == smooth_scroll.PROTOCOL
+    return (
+        _glide_protocol is not None
+        and smooth_scroll.MIN_PROTOCOL <= _glide_protocol <= smooth_scroll.PROTOCOL
+    )
+
+
+def marks_supported() -> bool:
+    """Whether that terminal also takes reader-mode row marks and park (protocol 10)."""
+    from pcode import smooth_scroll
+
+    return (
+        _glide_protocol is not None
+        and smooth_scroll.MARKS_PROTOCOL <= _glide_protocol <= smooth_scroll.PROTOCOL
+    )
 
 
 def drawer_supported() -> bool:

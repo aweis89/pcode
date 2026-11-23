@@ -20,7 +20,9 @@ from pcode.block import block_heading, block_rule
 from pcode.delta import Delta, preview_patch
 from pcode.edits import edit_text, patch_text
 from pcode.markdown import Markdown
+from pcode.row_marks import marking, row_mark
 from pcode.runtime import EditCompleted
+from pcode.smooth_scroll import MARK_BLOCK
 from pcode.syntax import transparent_theme
 from pcode.terminal_text import safe_text
 from pcode.tool_display import command_text
@@ -36,6 +38,7 @@ class EditTranscript:
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         change = self.change
+        yield from row_mark(MARK_BLOCK)
         yield block_rule(
             block_heading(
                 glyphs.icon("ok"),
@@ -60,7 +63,9 @@ class EditTranscript:
                         text, "diff", theme=transparent_theme(self.code_theme), word_wrap=True
                     )
                 )
-            rows = console.render_lines(patch, options, pad=False)
+            # The edit is one block: a created file's code blocks are not more.
+            with marking(False):
+                rows = console.render_lines(patch, options, pad=False)
             for row in rows[: self.max_rows]:
                 yield from row
                 yield Segment.line()

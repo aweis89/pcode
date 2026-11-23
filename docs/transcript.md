@@ -389,6 +389,14 @@ soft-edged ink sweep across prose lines and a top-to-bottom curtain for code
 and tables (keeping hyperlinks, ligatures, and instant scrollback search
 intact).
 
+A Ghostty Smooth build with reader mode also lets you read back through a
+long answer without losing your place. Press Cmd+R for reader mode, then `[`
+and `]` to jump between your prompts, `{` and `}` between code blocks and
+diffs, `g` and `G` to the top and bottom, and `y` to copy a response or
+snippet. With `reader_park` on (the default), the screen stops following a
+new answer once your prompt reaches the top, so the answer's start stays in
+view, and you read on from there in reader mode.
+
 ## Regenerating the terminal transcript
 
 `/redraw` rebuilds the retained transcript at the current terminal width with

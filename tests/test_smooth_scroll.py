@@ -131,13 +131,13 @@ def test_probe_finds_a_terminal_that_glides(monkeypatch):
     [
         b"\x1b_smooth;ok;7\x1b\\",
         b"\x1b_smooth;ok;8\x1b\\",
-        b"\x1b_smooth;ok;10\x1b\\",
+        b"\x1b_smooth;ok;11\x1b\\",
         b"\x1b_smooth;ok;9;x\x1b\\",
     ],
 )
-def test_probe_needs_the_exact_protocol(monkeypatch, reply):
+def test_probe_needs_a_known_protocol(monkeypatch, reply):
     _, left = _probe(monkeypatch, answer=reply)
-    assert not theme.glide_supported()
+    assert not theme.glide_supported() and not theme.marks_supported()
     assert left == b""  # Taken out of typing all the same.
 
 
@@ -204,6 +204,34 @@ def test_setting_and_probe_both_gate_the_glide(monkeypatch, setting, supported, 
         output = TerminalOutput(console, app)
         transcript.output = output
     assert output.gliding is gliding
+
+
+@pytest.mark.parametrize(
+    "supported, terminal, park, marks, parked",
+    [
+        (True, True, "on", True, True),
+        (True, True, "off", True, False),
+        (False, True, "on", False, False),
+        (True, False, "on", False, False),
+    ],
+)
+def test_marks_need_protocol_10_and_a_terminal(
+    monkeypatch, supported, terminal, park, marks, parked
+):
+    monkeypatch.setattr("pcode.ui.marks_supported", lambda: supported)
+    console = Console(force_terminal=terminal, width=80)
+    transcript = Transcript(console, detected_theme="dark", preferences={"reader_park": park})
+    with create_pipe_input() as pipe:
+        app = Application(input=pipe, output=DummyOutput())
+        output = TerminalOutput(console, app)
+        transcript.output = output
+    assert (output.marks, output.park) == (marks, parked)
+
+
+def test_mark_sequences():
+    assert smooth_scroll.mark(smooth_scroll.MARK_TURN) == "\x1b_smooth;mark;1\x1b\\"
+    assert smooth_scroll.mark(smooth_scroll.MARK_BLOCK) == "\x1b_smooth;mark;2\x1b\\"
+    assert smooth_scroll.PARK == "\x1b_smooth;park\x1b\\"
 
 
 def test_glide_runs_downward_too_and_never_past_rest():
@@ -327,9 +355,11 @@ def test_repeated_rows_follow_the_block_but_do_not_vote():
     assert _block_move({1: "a", 3: "b", 4: "b"}, {1: "a", 2: "b", 3: "b"}) is None
 
 
-def test_probe_needs_protocol_9(monkeypatch):
-    _, left = _probe(monkeypatch, answer=b"\x1b_smooth;ok;9\x1b\\")
+@pytest.mark.parametrize("version, marks", [(9, False), (10, True)])
+def test_probe_glides_from_protocol_9_and_marks_from_10(monkeypatch, version, marks):
+    _, left = _probe(monkeypatch, answer=b"\x1b_smooth;ok;%d\x1b\\" % version)
     assert theme.glide_supported()
+    assert theme.marks_supported() is marks
     assert left == b""
 
 
