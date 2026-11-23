@@ -102,24 +102,27 @@ _HARD_BREAK = re.compile(r"(  |\\)$")
 def _unwrap(markdown: str) -> str:
     """``markdown`` with each paragraph's soft line breaks joined by spaces.
 
-    Markdown draws a lone newline inside a paragraph as a space, so a quote
-    copied as written would break where nothing on screen does. Hard breaks,
-    blank lines, code, and nested quotes keep their lines.
+    Markdown draws a lone newline inside a paragraph as a space, so text
+    copied as written would break where nothing on screen does: a model that
+    wraps its prose at 80 columns would paste into Slack with those breaks.
+    Hard breaks, blank lines, and code keep their lines. A paragraph inside a
+    quote is joined too, its continuation lines losing their `>` markers.
     """
     lines = markdown.splitlines()
     depth = 0
-    joined: dict[int, int] = {}  # paragraph's first line -> its end
+    joined: dict[int, tuple[int, int]] = {}  # paragraph's first line -> its end, quote depth
     for token in MarkdownIt("commonmark").parse(markdown):
         if token.type == "blockquote_open":
             depth += 1
         elif token.type == "blockquote_close":
             depth -= 1
-        elif token.type == "paragraph_open" and depth == 0 and token.map:
-            joined[token.map[0]] = token.map[1]
+        elif token.type == "paragraph_open" and token.map:
+            joined[token.map[0]] = (token.map[1], depth)
     out: list[str] = []
     index = 0
     while index < len(lines):
-        end = joined.get(index, index + 1)
+        end, depth = joined.get(index, (index + 1, 0))
+        markers = re.compile(rf"^[ \t]*(?:> ?){{0,{depth}}}")
         paragraph = lines[index:end]
         line = paragraph[0]
         for following in paragraph[1:]:
@@ -127,7 +130,7 @@ def _unwrap(markdown: str) -> str:
                 out.append(_HARD_BREAK.sub("", line).rstrip())
                 line = following
             else:
-                line = f"{line.rstrip()} {following.lstrip()}"
+                line = f"{line.rstrip()} {markers.sub('', following, count=1).lstrip()}"
         out.append(line)
         index = end
     return "\n".join(out)
@@ -137,7 +140,7 @@ def snippets(markdown: str) -> list[Snippet]:
     """The whole response, then each top-level quote and code block in order."""
     if not markdown.strip():
         return []
-    found = [Snippet("response", markdown)]
+    found = [Snippet("response", _unwrap(markdown))]
     lines = markdown.splitlines()
     depth = 0
     for token in MarkdownIt("commonmark").parse(markdown):

@@ -26,11 +26,13 @@ zed schema read
 > outer
 > > nested
 """
+# The whole response as copied: soft line breaks joined, as it renders.
+RESPONSE_COPIED = RESPONSE.replace("for\n  > **all** users.\n ", "for **all** users.").rstrip()
 
 
 def test_snippets_pull_top_level_quotes_and_code_without_markers():
     found = snippets(RESPONSE)
-    assert found[0] == Snippet("response", RESPONSE)
+    assert found[0] == Snippet("response", RESPONSE_COPIED)
     assert found[1:] == [
         Snippet("quote", "SAML login fails for **all** users. lazy continuation"),
         # No trailing newline, which would run the command when pasted in a shell.
@@ -111,7 +113,7 @@ UP = "\x1b[A"
         (RESPONSE, UP * 2 + "\r", "outer\n> nested"),
         (RESPONSE, UP * 3 + "\r", "zed schema read"),
         (RESPONSE, UP * 4 + "\r", "SAML login fails for **all** users. lazy continuation"),
-        (RESPONSE, UP * 5 + "\r", RESPONSE.strip()),
+        (RESPONSE, UP * 5 + "\r", RESPONSE_COPIED),
     ],
 )
 def test_main_copy_history_by_keyboard(monkeypatch, older, keys, expected):
@@ -350,6 +352,18 @@ def test_ctrl_y_with_an_empty_editor_copies_the_last_response():
 def test_quotes_copy_soft_wrapped_lines_joined_as_they_render():
     quote = "> one\n> two  \n> hard\\\n> break\n>\n> - item\n>   wraps\n>\n> ```\n> a\n> b\n> ```\n"
     assert snippets(quote)[1].text == "one two\nhard\nbreak\n\n- item wraps\n\n```\na\nb\n```"
+
+
+def test_whole_response_copies_soft_wrapped_prose_joined_as_it_renders():
+    # A model wrapping its source at 80 columns must not paste into Slack broken.
+    response = (
+        "First paragraph wraps\nonto a second line.\n\n- item that\n  wraps\n\n"
+        "> quoted and\n> wrapped\n\n```\nkeep\nlines\n```\nhard  \nbreak\n"
+    )
+    assert snippets(response)[0].text == (
+        "First paragraph wraps onto a second line.\n\n- item that wraps\n\n"
+        "> quoted and wrapped\n\n```\nkeep\nlines\n```\nhard\nbreak"
+    )
 
 
 def test_reader_mode_copy_key_chooses_a_response_whatever_the_draft():

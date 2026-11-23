@@ -278,7 +278,8 @@ class TreeBrowser:
         if len(choices) > 1:
             self.open_picker(choices, output)
             return
-        self.copy_text(name, text, output)
+        # A response's soft line breaks are joined, as it renders (see `snippets`).
+        self.copy_text(name, choices[0].text if choices else text, output)
 
     def copy_text(self, name: str, text: str, output=None) -> None:
         copied, truncated = copy_to_clipboard(text, output)
