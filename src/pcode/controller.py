@@ -2340,6 +2340,11 @@ class SessionController:
     def persist_defaults(self, **updates: str) -> bool:
         try:
             save_preferences(**updates)
+            if updates.get("model"):
+                from pcode.preferences import record_recent_provider
+
+                # The /model list puts recently used providers first.
+                record_recent_provider(updates["model"])
         except OSError, ValueError:
             self.view.warning("Could not save defaults; this selection applies only here.")
             return False

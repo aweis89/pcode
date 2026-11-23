@@ -77,6 +77,12 @@ force inactive providers to appear. The current provider is also hidden if it
 is excluded. This only filters the selector, not explicit `/model PROVIDER:MODEL`
 commands, CLI model overrides, or resumed sessions.
 
+`/model` lists the providers you've used most recently first, so when two
+providers offer the same model (`claude:` and `anthropic:`, say), a search
+like `opus` puts the one you normally use at the top. The rest follow
+alphabetically. pcode keeps this order itself, as `recent_providers` in
+`preferences.json`; delete that key to reset it.
+
 ## Keybindings
 
 Use [`/bind` and `/unbind`](keybindings.md) to customize main-prompt action keys.

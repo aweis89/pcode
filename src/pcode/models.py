@@ -200,7 +200,16 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
         models.update(f"{provider}:{model}" for model in by_source.get(source, ()))
     if current and current.partition(":")[0] in providers:
         models.add(current)
-    return sorted(models, key=model_sort_key)
+    from pcode.preferences import recent_providers
+
+    recent = {name: rank for rank, name in enumerate(recent_providers())}
+    unused = len(recent)
+    # Recently used providers first, the rest alphabetically. The picker filters
+    # without re-ranking, so this also decides which provider's copy of a model
+    # a typed filter offers first.
+    return sorted(
+        models, key=lambda name: (recent.get(name.partition(":")[0], unused), model_sort_key(name))
+    )
 
 
 def model_sort_key(name: str):

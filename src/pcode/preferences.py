@@ -1100,6 +1100,34 @@ def save_model_effort(model: str, effort: str) -> None:
         write_json(path, data)
 
 
+RECENT_PROVIDERS_KEY = "recent_providers"
+
+
+def recent_providers() -> list[str]:
+    """Providers of the models picked as the default, most recent first."""
+    try:
+        data = json.loads(preferences_path().read_text())
+    except OSError, ValueError:
+        return []
+    stored = data.get(RECENT_PROVIDERS_KEY) if isinstance(data, dict) else None
+    if not isinstance(stored, list):
+        return []
+    return [name for name in stored if isinstance(name, str)]
+
+
+def record_recent_provider(model: str) -> None:
+    """Move `model`'s provider to the front of `recent_providers`."""
+    provider = model.partition(":")[0]
+    with FileLock(str(preferences_path()) + ".lock", timeout=5):
+        path = preferences_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = read_preferences(path)
+        stored = data.get(RECENT_PROVIDERS_KEY)
+        stored = stored if isinstance(stored, list) else []
+        data[RECENT_PROVIDERS_KEY] = [provider, *(name for name in stored if name != provider)]
+        write_json(path, data)
+
+
 def anthropic_profile(model: str | None, resolved=None) -> dict:
     """The profile for `model`, from `resolved` when it is a model object.
 

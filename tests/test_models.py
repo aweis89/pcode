@@ -248,3 +248,29 @@ def test_google_cloud_without_project_stays_unresolved(monkeypatch):
     assert resolve_model("google-cloud:gemini-2.5-pro") == "google-cloud:gemini-2.5-pro"
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "   ")
     assert resolve_model("google-cloud:gemini-2.5-pro") == "google-cloud:gemini-2.5-pro"
+
+
+def test_recently_used_providers_lead_the_catalog_and_its_filtered_matches():
+    from pcode.controller import SessionController
+    from pcode.model_ui import model_items
+    from pcode.pick_ui import matches
+    from pcode.preferences import load_preferences, recent_providers
+
+    providers = {"anthropic", "claude", "openai-codex"}
+    assert model_catalog(providers)[0].startswith("anthropic:")
+
+    # Saving a default model, as /model does, records its provider.
+    SessionController.persist_defaults(Mock(), model="anthropic:claude-opus-5-5")
+    SessionController.persist_defaults(Mock(), model="claude:claude-opus-5-5")
+    assert recent_providers() == ["claude", "anthropic"]
+    assert load_preferences()["model"] == "claude:claude-opus-5-5"
+
+    models = model_catalog(providers)
+    order = list(dict.fromkeys(name.partition(":")[0] for name in models))
+    assert order == ["claude", "anthropic", "openai-codex"]
+    # Within a provider, versions keep their newest-first order.
+    claude = [name for name in models if name.startswith("claude:")]
+    assert claude == sorted(claude, key=model_sort_key)
+    # A filter matching the same model under both providers offers claude's first.
+    shown = [item.id for item in model_items(models) if matches(item, ["opus"])]
+    assert shown[0].startswith("claude:")
