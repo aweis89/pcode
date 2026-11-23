@@ -3850,7 +3850,6 @@ class SessionController:
         Bare `/btw` reads the answers.
         """
         models, question = parse_models(argument)
-        models = list(dict.fromkeys(self.qualified(target) for target in models))
         if not question:
             if not self.asides.items:
                 raise ValueError(
@@ -3876,7 +3875,7 @@ class SessionController:
     def qualified(self, target: SideTarget) -> SideTarget:
         """`target` with a bare model name put under this session's provider.
 
-        Done before anything else reads the name, so `$NAME` for the
+        Done before anything else reads the name (an `ask_host` model), so a bare name for the
         conversation's own model shares its cache and its effort is judged on
         the real provider. See `pcode.models.qualify_model`; `side_model`
         applies the same rule and its fallback to anything still bare.
@@ -4015,7 +4014,6 @@ class SessionController:
         target is unusable, which the viewer shows as is.
         """
         models, question = parse_models(question)
-        models = [self.qualified(target) for target in models]
         if len(models) > 1:
             raise ValueError("A follow-up asks one model; start a new /btw to ask several.")
         follows = self.asides.follows(thread)
@@ -4156,7 +4154,7 @@ class SessionController:
         self.view.aside_changed(follows)
 
     def aside_completions(self, argument: str):
-        """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.
+        """Complete the `$MODEL` word being typed in a prompt or `/btw` from the /model catalog.
 
         After a `+`, bare or ending a `$MODEL` word, the /effort levels complete.
         """

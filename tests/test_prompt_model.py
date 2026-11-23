@@ -157,7 +157,7 @@ def test_a_prompts_leading_dollar_completes_like_btw():
 
     def complete(argument):
         asked.append(argument)
-        yield Completion("$q:other", start_position=-len(argument))
+        yield Completion("$groq:other", start_position=-len(argument))
 
     registry = CommandRegistry()
     registry.register(Command("/btw", "", lambda argument: None, argument_completer=complete))
@@ -166,11 +166,11 @@ def test_a_prompts_leading_dollar_completes_like_btw():
     def texts(typed):
         return [c.text for c in completer.get_completions(Document(typed), CompleteEvent())]
 
-    assert texts("$oth") == ["$q:other"]
-    assert texts("+hi") == ["$q:other"]
-    assert texts("fix $oth") == ["$q:other"]
+    assert texts("$oth") == ["$groq:other"]
+    assert texts("+hi") == ["$groq:other"]
+    assert texts("fix $oth") == ["$groq:other"]
     # Only the word being typed completes.
-    assert texts("$q:other fix") == []
+    assert texts("$groq:other fix") == []
     assert texts("!echo $oth") == []
     assert asked == ["$oth", "+hi", "fix $oth"]
 
@@ -201,10 +201,10 @@ def test_a_prompt_naming_a_model_runs_that_turn_on_it(monkeypatch):
     output = MagicMock()
 
     async def run():
-        assert await app.run_live(output, "$q:other+high fix it")
+        assert await app.run_live(output, "$groq:other+high fix it")
         assert await app.run_live(output, "+low again")
         assert await app.run_live(output, "$HOME is unset")
-        assert not await app.run_live(output, "$q:other")
+        assert not await app.run_live(output, "$groq:other")
 
     asyncio.run(run())
     assert calls == [
@@ -242,17 +242,17 @@ def test_a_follow_up_naming_a_model_asks_it_and_labels_it(monkeypatch):
         await app.controller.start_aside("why?")
         root = app.asides.items[0]
         await settled()
-        app.controller.follow_up_aside(root.thread, "$q:other+low and you?")
+        app.controller.follow_up_aside(root.thread, "$groq:other+low and you?")
         follow = app.asides.items[-1]
         assert (follow.question, follow.model, follow.label, follow.effort) == (
             "and you?",
-            "q:other",
+            "groq:other",
             "other · low",
             "low",
         )
         await settled()
         with pytest.raises(ValueError, match="one model"):
-            app.controller.follow_up_aside(root.thread, "$q:a $q:b both?")
+            app.controller.follow_up_aside(root.thread, "$groq:a $groq:b both?")
 
     asyncio.run(run())
     question, options = calls[1]
@@ -263,7 +263,7 @@ def test_a_follow_up_naming_a_model_asks_it_and_labels_it(monkeypatch):
 
 def test_shell_style_dollar_words_stay_text():
     assert prompt_target("$PATH:/usr/bin is wrong") == (None, "$PATH:/usr/bin is wrong")
-    assert prompt_target("$google-gla:gemini-3 hi") == (SideTarget("google-gla:gemini-3"), "hi")
+    assert prompt_target("$google:gemini-3 hi") == (SideTarget("google:gemini-3"), "hi")
 
 
 def test_a_per_model_conversation_id_maps_back_to_its_session():
@@ -340,16 +340,16 @@ def test_a_follow_up_target_is_read_against_its_thread(monkeypatch):
 
     app = app_with(MagicMock())
     monkeypatch.setattr(app.controller, "check_effort", lambda target: None)
-    on_other = Aside("q", model="q:other", effort="high")
+    on_other = Aside("q", model="groq:other", effort="high")
     at_home = Aside("q")
     follow = app.controller.follow_up_target
     # A bare effort keeps the thread's model.
-    assert follow(on_other, SideTarget(effort="low")) == SideTarget("q:other", "low")
+    assert follow(on_other, SideTarget(effort="low")) == SideTarget("groq:other", "low")
     # The conversation's model by name is the conversation's own path.
     assert follow(on_other, SideTarget("test:local")) == SideTarget()
     assert follow(at_home, SideTarget(effort="low")) == SideTarget(effort="low")
     # Where the thread already is: no switch, so its cache is kept.
-    assert follow(on_other, SideTarget("q:other", "high")) is None
+    assert follow(on_other, SideTarget("groq:other", "high")) is None
     assert follow(at_home, SideTarget("test:local")) is None
 
 
@@ -357,7 +357,7 @@ def test_a_prompt_naming_a_model_never_steers():
     app = app_with(MagicMock())
 
     async def run():
-        app.controller.submit("$q:other look", "steering")
+        app.controller.submit("$groq:other look", "steering")
         app.controller.submit("+low look", "steering")
         app.controller.submit("$HOME look", "steering")
         return app.controller.prompts.take_steering()

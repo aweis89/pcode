@@ -295,8 +295,11 @@ sit in the line; the rest of it is the question.
 ❯ /btw second opinions on the plan? $claude:claude-opus-5-5 $openai-codex:gpt-6-astra
 ```
 
-Only the full id with its provider counts, so `$HOME`, `$PATH:/usr/bin`,
-`$host:8080` or a bare `$opus` in a question stay ordinary text. Typing `$`
+Only the full id under a provider pcode knows counts, so `$HOME`,
+`$PATH:/usr/bin`, `$image:latest` or a bare `$opus` in a question stay
+ordinary text; so does an id in backticks. A question about two models
+(`` /btw is `$openai:gpt-5` faster? ``) needs those backticks, or it asks
+them instead. Typing `$`
 anywhere in a `/btw` line completes model names from the same catalog as the
 `/model` picker, matching any part of the name (`$opus` finds
 `anthropic:claude-opus-…`), and picking one writes the full id; a `$` that

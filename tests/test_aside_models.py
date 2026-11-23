@@ -39,15 +39,24 @@ def targets(*models):
 
 def test_dollar_words_anywhere_select_models_and_the_rest_is_the_question():
     assert parse_models("why?") == ([], "why?")
-    assert parse_models("  $a:x   is  this right? ") == (targets("a:x"), "is  this right?")
-    assert parse_models("$a:x $b:y $a:x second opinions?") == (
-        targets("a:x", "b:y"),
+    assert parse_models("  $openai:x   is  this right? ") == (
+        targets("openai:x"),
+        "is  this right?",
+    )
+    assert parse_models("$openai:x $xai:y $openai:x second opinions?") == (
+        targets("openai:x", "xai:y"),
         "second opinions?",
     )
     # A target may sit anywhere; the question reads as typed without it.
-    assert parse_models("is this right? $a:x") == (targets("a:x"), "is this right?")
-    assert parse_models("is $a:x this $b:y right?") == (targets("a:x", "b:y"), "is this right?")
-    assert parse_models("first line $a:x\nsecond") == (targets("a:x"), "first line\nsecond")
+    assert parse_models("is this right? $openai:x") == (targets("openai:x"), "is this right?")
+    assert parse_models("is $openai:x this $xai:y right?") == (
+        targets("openai:x", "xai:y"),
+        "is this right?",
+    )
+    assert parse_models("first line $openai:x\nsecond") == (
+        targets("openai:x"),
+        "first line\nsecond",
+    )
     # Only an unmistakable model counts; anything else is part of the question.
     for text in (
         "costs $5?",
@@ -57,19 +66,46 @@ def test_dollar_words_anywhere_select_models_and_the_rest_is_the_question():
         "is $opus bare?",
         "$ why?",
         "$a: why?",
-        "is c$a:x glued?",
+        "is c$openai:x glued?",
     ):
         assert parse_models(text) == ([], text)
     with pytest.raises(ValueError, match="No question after the model"):
-        parse_models("$a:x")
+        parse_models("$openai:x")
     with pytest.raises(ValueError, match="No question after the model"):
-        parse_models("$a:x $b:y  ")
-    models = " ".join(f"$p:m{index}" for index in range(ASIDE_MODEL_LIMIT))
+        parse_models("$openai:x $xai:y  ")
+    models = " ".join(f"$groq:m{index}" for index in range(ASIDE_MODEL_LIMIT))
     assert len(parse_models(f"{models} q")[0]) == ASIDE_MODEL_LIMIT
     # Duplicates collapse before the cap is counted.
-    assert len(parse_models(f"{models} $p:m0 q")[0]) == ASIDE_MODEL_LIMIT
+    assert len(parse_models(f"{models} $groq:m0 q")[0]) == ASIDE_MODEL_LIMIT
     with pytest.raises(ValueError, match=f"At most {ASIDE_MODEL_LIMIT} models"):
-        parse_models(f"{models} $p:extra q")
+        parse_models(f"{models} $groq:extra q")
+
+
+@pytest.mark.parametrize(
+    ("text", "question"),
+    [
+        # Two targets ending a line keep the line break and every other word.
+        ("x $openai:x $xai:y\nz", "x\nz"),
+        ("x $openai:x   $xai:y\nzzz", "x\nzzz"),
+        # No spaces are left before a line break, nor a line holding only the target.
+        ("why $openai:x  \nnext", "why\nnext"),
+        ("q\n$openai:x\nr", "q\nr"),
+        ("    indented $openai:x\nmore", "indented\nmore"),
+        # Closing punctuation stays with the text before.
+        ("which is better $openai:x.", "which is better."),
+    ],
+)
+def test_a_removed_target_leaves_the_question_as_typed(text, question):
+    models, rest = parse_models(text)
+    assert models and rest == question
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["docker pull $image:latest?", "chown $user:staff f?", "scp f $host:path?", "$google-gla:x?"],
+)
+def test_a_provider_pcode_does_not_know_is_text(text):
+    assert parse_models(text) == ([], text)
 
 
 def test_plus_words_pick_an_effort_for_the_question():
@@ -79,9 +115,9 @@ def test_plus_words_pick_an_effort_for_the_question():
         [SideTarget("openai:gpt-5", "high"), SideTarget("anthropic:claude-opus-4-5", "low")],
         "q",
     )
-    assert parse_models("+xhigh $a:x+default q")[0] == [
+    assert parse_models("+xhigh $openai:x+default q")[0] == [
         SideTarget(effort="xhigh"),
-        SideTarget("a:x", "default"),
+        SideTarget("openai:x", "default"),
     ]
     # Model ids hold `:` and `/`; only a level after the last `+` is an effort.
     assert parse_models("$openrouter:meta/llama+3:8b+medium q")[0] == [
@@ -98,18 +134,18 @@ def test_plus_words_pick_an_effort_for_the_question():
         "does 1 + 1 == 2?",
     )
     # A repeated target collapses; one model at two efforts is two questions.
-    assert parse_models("+low +low $a:x+high $a:x+high $a:x $a:x+low q")[0] == [
+    assert parse_models("+low +low $openai:x+high $openai:x+high $openai:x $openai:x+low q")[0] == [
         SideTarget(effort="low"),
-        SideTarget("a:x", "high"),
-        SideTarget("a:x"),
-        SideTarget("a:x", "low"),
+        SideTarget("openai:x", "high"),
+        SideTarget("openai:x"),
+        SideTarget("openai:x", "low"),
     ]
     assert parse_models("+max q") == ([], "+max q")
     assert parse_models("+ q") == ([], "+ q")
     with pytest.raises(ValueError, match="No question after the model"):
         parse_models("+low")
     with pytest.raises(ValueError, match="No question after the model"):
-        parse_models("$a:x+high   ")
+        parse_models("$openai:x+high   ")
 
 
 def test_labels_drop_the_provider_unless_two_models_would_look_the_same():
@@ -200,7 +236,7 @@ def test_plus_completes_effort_levels_anywhere_in_btw(monkeypatch):
     assert complete("/btw +low ") == []
     assert complete("/btw is c+") == []
     assert model_fragment("$a+hi") is None
-    assert effort_fragment("$a:x/y+hi") == "hi"
+    assert effort_fragment("$openai:x/y+hi") == "hi"
     assert effort_fragment("why +") == ""
     assert effort_fragment("why c+") is None
 
@@ -408,11 +444,11 @@ def test_btw_refuses_an_effort_on_a_model_without_effort_control():
 
     with pytest.raises(ValueError, match="Effort control requires.*test:local is not one"):
         btw("+low why?")
-    with pytest.raises(ValueError, match="nowhere:model is not one"):
-        btw("$nowhere:model+high why?")
+    with pytest.raises(ValueError, match="xai:nowhere is not one"):
+        btw("$xai:nowhere+high why?")
     start.assert_not_awaited()
     # Without an effort, any model goes, as before.
-    btw("$nowhere:model why?")
+    btw("$xai:nowhere why?")
     btw("$openai:gpt-5+high why?")
     start.assert_awaited_with("why?", [SideTarget("openai:gpt-5", "high")])
 
@@ -488,17 +524,17 @@ def test_several_models_run_in_parallel_and_fail_independently(monkeypatch):
 
     async def run():
         await app.controller.start_aside(
-            "second opinions?", targets("p:own", "p:broken", "q:other")
+            "second opinions?", targets("p:own", "p:broken", "groq:other")
         )
         await asyncio.sleep(0)
         # One side question per model, all running at once.
         assert app.asides.running == 3
         # The conversation's own model takes the default, cache-sharing path.
-        assert runtime.calls == [None, "p:broken", "q:other"]
+        assert runtime.calls == [None, "p:broken", "groq:other"]
         assert [(a.model, a.label) for a in app.asides.items] == [
             ("p:own", "own"),
             ("p:broken", "broken"),
-            ("q:other", "other"),
+            ("groq:other", "other"),
         ]
         runtime.release.set()
         await asyncio.sleep(0.05)
@@ -506,11 +542,11 @@ def test_several_models_run_in_parallel_and_fail_independently(monkeypatch):
 
     asyncio.run(run())
     statuses = {aside.model: aside.status for aside in app.asides.items}
-    assert statuses == {"p:own": "answered", "p:broken": "failed", "q:other": "answered"}
-    assert app.asides.items[2].answer == "q:other says hi"
+    assert statuses == {"p:own": "answered", "p:broken": "failed", "groq:other": "answered"}
+    assert app.asides.items[2].answer == "groq:other says hi"
     assert failures == ["p:broken"]
     text = " ".join(output.getvalue().split())
-    assert "Asking beside the conversation on p:broken, q:other" in text
+    assert "Asking beside the conversation on p:broken, groq:other" in text
     assert "without the conversation's prompt cache" in text
 
 
@@ -556,10 +592,10 @@ def test_btw_command_parses_models_and_explains_its_syntax():
     )
     start = app.controller.start_aside = AsyncMock()
     app.read_asides = AsyncMock(return_value=None)
-    asyncio.run(app.controller.aside("$a:x $b:y $a:x is it right?"))
-    start.assert_awaited_once_with("is it right?", [SideTarget("a:x"), SideTarget("b:y")])
+    asyncio.run(app.controller.aside("$openai:x $xai:y $openai:x is it right?"))
+    start.assert_awaited_once_with("is it right?", [SideTarget("openai:x"), SideTarget("xai:y")])
     with pytest.raises(ValueError, match=r"Usage: /btw \[\$PROVIDER:MODEL\[\+EFFORT\]"):
-        asyncio.run(app.controller.aside("$a:x"))
+        asyncio.run(app.controller.aside("$openai:x"))
     # Bare /btw still opens the viewer.
     app.asides.items.append(Aside(question="earlier"))
     asyncio.run(app.controller.aside(""))
@@ -572,7 +608,7 @@ def test_the_model_labels_running_rows_and_the_viewer():
     from pcode.ui import Activity
 
     asides = Asides()
-    labeled = Aside(question="why?", model="q:other", label="other", activity="Reading x")
+    labeled = Aside(question="why?", model="groq:other", label="other", activity="Reading x")
     asides.items.extend([labeled, Aside(question="own?")])
     activity = Activity()
     activity.asides = asides.items
@@ -582,12 +618,12 @@ def test_the_model_labels_running_rows_and_the_viewer():
     assert row([labeled]).startswith("[other] why?")
     assert row([asides.items[1]]).startswith("own?")
     browser = AsideBrowser(asides, selected=labeled.id, output=None, input=None)
-    assert "on q:other" in browser.detail.text(80)
-    quick = Aside(question="fast?", model="q:other", label="other \u00b7 low", effort="low")
+    assert "on groq:other" in browser.detail.text(80)
+    quick = Aside(question="fast?", model="groq:other", label="other \u00b7 low", effort="low")
     asides.items.append(quick)
     assert row([quick]).startswith("[other \u00b7 low] fast?")
     browser = AsideBrowser(asides, selected=quick.id, output=None, input=None)
-    assert "on q:other at low effort" in browser.detail.text(80)
+    assert "on groq:other at low effort" in browser.detail.text(80)
 
 
 def test_an_unknown_bare_name_lists_the_sessions_provider_models():
