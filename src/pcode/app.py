@@ -322,7 +322,11 @@ class PreviewApp:
         # opens on the answer, not the editor, since it can land mid-keystroke.
         # Matched by generation rather than order: a queued command can be
         # dropped (Ctrl+C) or superseded without ever reaching `read_asides`.
+        # Counted too: a thread opened in the drawer shows no popup, so the
+        # generation stays put, and once its auto-opens are spent a `/btw`
+        # typed in that same generation is the reader's own.
         self._auto_open_generation: int | None = None
+        self._auto_opens_pending = 0
         self.registry = CommandRegistry()
         self._session_commands: set[str] = set()
         for command in (
@@ -678,7 +682,10 @@ class PreviewApp:
         # already using it instead of racing it.
         opening = self.auto_open_asides()
         if opening:
-            self._auto_open_generation = self._popup_generation
+            if self._auto_open_generation != self._popup_generation:
+                self._auto_open_generation = self._popup_generation
+                self._auto_opens_pending = 0
+            self._auto_opens_pending += 1
             self.controller.command("/btw", self._popup_generation)
         on = f"{aside.label}: " if aside.label else ""
         self.transcript.note(
@@ -2366,9 +2373,12 @@ class PreviewApp:
 
         latest = self.asides.latest()
         auto = (
-            self._command_popup_generation is not None
+            self._auto_opens_pending > 0
+            and self._command_popup_generation is not None
             and self._command_popup_generation == self._auto_open_generation
         )
+        if auto:
+            self._auto_opens_pending -= 1
         if self.btw_drawer():
             if latest is None:  # The command said so already.
                 return None
