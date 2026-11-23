@@ -17,6 +17,67 @@ from pcode.markdown import Markdown
 # has, in the same vocabulary as the prompt rail and tool markers.
 NOTE_MARK = "\u00b7"
 
+# A warning's left edge. Thinner than the `▌` rail on the user's own prompts,
+# so the two never read as the same thing even before the colour registers.
+# `glyphs.to_ascii` already maps it to `|`.
+WARNING_BAR = "\u258e"
+
+# The headline ends at the first sentence break or line break. Only punctuation
+# followed by space ends a sentence, which keeps `a.py` and `v1.2` whole, and
+# not before a lowercase word, which keeps `e.g. haiku` and `-m 'fix. it'` whole.
+_HEADLINE = re.compile(r"(.*?)(?:[ \t\r]*\n|(?<=[.!?])[ \t]+(?![a-z]))(.*)", re.DOTALL)
+# A closing period after a word is punctuation; `..`, `…` or a bare `.` path is
+# part of the message.
+_FULL_STOP = re.compile(r"(?<=[\w)\]'\"`])\.$")
+
+
+def split_headline(text: str) -> tuple[str, str]:
+    """Split a warning into its first sentence and the rest.
+
+    Warnings arrive as one string from dozens of call sites (and over the
+    session-host socket), and almost all of them already lead with what
+    happened and follow with why or what to do. Splitting here gives every
+    one of them a headline without a second argument threaded through.
+    """
+    match = _HEADLINE.fullmatch(text.strip())
+    if match is None or not match.group(1).strip():
+        headline, detail = text.strip(), ""
+    else:
+        headline, detail = match.group(1), match.group(2)
+    return _FULL_STOP.sub("", headline), detail
+
+
+@dataclass(frozen=True)
+class WarningNotice:
+    """A warning: a coloured bar on every row, headline first, details muted.
+
+    The bar holds a wrapped warning together as one block; the colour on the
+    headline alone says where to look, while the explanation recedes. No
+    "Warning" title row: the bar's colour already says it.
+    """
+
+    text: str
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        bar = console.get_style("pcode.warning", default="none")
+        muted = console.get_style("pcode.muted", default="none")
+        headline, detail = split_headline(self.text)
+        # Styled as spans, not as the Text's base style, which would also
+        # embolden the detail.
+        body = Text()
+        body.append(headline or "Warning", style=bar)
+        if detail:
+            body.append("\n")
+            body.append(detail, style=muted)
+        prefix = f"{WARNING_BAR} " if options.max_width > 2 else ""
+        lines = console.render_lines(
+            body, options.update(width=max(1, options.max_width - len(prefix))), pad=False
+        )
+        for line in lines:
+            yield Segment(prefix, bar)
+            yield from line
+            yield Segment.line()
+
 
 @dataclass(frozen=True)
 class Note:
@@ -52,7 +113,7 @@ class Note:
 @dataclass(frozen=True)
 class TranscriptNotice:
     text: str
-    kind: Literal["error", "warning", "cancelled"]
+    kind: Literal["error", "cancelled"]
     title: str
     max_lines: int | None = None
     code_theme: str = "monokai"

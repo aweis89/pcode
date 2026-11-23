@@ -4,10 +4,12 @@ from io import StringIO
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from pcode.app import PreviewApp
 from pcode.runtime import ToolStarted, ToolSummary
 from pcode.tool_display import result_detail
+from pcode.transcript_notice import split_headline
 from pcode.ui import Transcript
 
 
@@ -28,7 +30,7 @@ def test_notices_are_literal_compact_and_readable_without_color(theme, syntax):
     transcript.note("Ordinary notice")
     assert "\n".join(line.rstrip() for line in stream.getvalue().splitlines()) + "\n" == (
         "✗ Agent failed\n\n [red]**literal**[/red]\n Connection reset\n\n"
-        "! Warning\n  Context window nearly full\n"
+        "▎ Context window nearly full\n"
         "! Run cancelled\n· Ordinary notice\n"
     )
 
@@ -39,9 +41,51 @@ def test_warning_wraps_without_clipping():
     transcript.warning("A long warning with important final details")
     lines = stream.getvalue().splitlines()
     assert all(len(line) <= 24 for line in lines)
-    assert " ".join(line.strip() for line in lines[1:]) == (
+    assert all(line.startswith("▎ ") for line in lines)
+    assert " ".join(line[2:].strip() for line in lines) == (
         "A long warning with important final details"
     )
+
+
+def test_warning_headline_is_coloured_and_detail_muted():
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream, width=48, color_system="truecolor"))
+    transcript.warning("Side question failed. No response from the provider. Retry.")
+    lines = [Text.from_ansi(line) for line in stream.getvalue().splitlines()]
+    assert [line.plain.rstrip() for line in lines] == [
+        "▎ Side question failed",
+        "▎ No response from the provider. Retry.",
+    ]
+    yellow = 3
+    head, detail = ([line.get_style_at_offset(Console(), at) for at in (0, 2)] for line in lines)
+    # The bar runs down every row; only the headline shares its colour.
+    assert head[0].color.number == detail[0].color.number == yellow
+    assert head[1].bold and head[1].color.number == yellow
+    assert not detail[1].bold and detail[1].color.number != yellow
+
+
+@pytest.mark.parametrize(
+    ("text", "split"),
+    [
+        ("Context window nearly full", ("Context window nearly full", "")),
+        ("Failed. Retry later.", ("Failed", "Retry later.")),
+        ("Is it down? Check status.", ("Is it down?", "Check status.")),
+        ("Edit a.py in v1.2 failed.", ("Edit a.py in v1.2 failed", "")),
+        ("Waiting... Still nothing", ("Waiting...", "Still nothing")),
+        ("Blocked:\n  one\n  two", ("Blocked:", "  one\n  two")),
+        (
+            "Use a smaller model, e.g. haiku. Then retry.",
+            ("Use a smaller model, e.g. haiku", "Then retry."),
+        ),
+        ("Blocked: git commit -m 'fix. it'", ("Blocked: git commit -m 'fix. it'", "")),
+        ("Blocked write to .", ("Blocked write to .", "")),
+        ("Line one\r\nline two", ("Line one", "line two")),
+        ("First. \nSecond", ("First", "Second")),
+        ("", ("", "")),
+    ],
+)
+def test_split_headline(text, split):
+    assert split_headline(text) == split
 
 
 @pytest.mark.parametrize("command", ["pytest", "make build", "ruff check .", "mypy ."])

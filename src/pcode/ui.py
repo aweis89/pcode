@@ -124,7 +124,7 @@ from pcode.tool_panel import (
     task_panel_rows,
 )
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
-from pcode.transcript_notice import Note, TranscriptNotice
+from pcode.transcript_notice import Note, TranscriptNotice, WarningNotice
 from pcode.word_wrap import WordWrapProcessor
 from pcode.workers import Workers
 
@@ -5391,7 +5391,7 @@ class Transcript:
         )
 
     def warning(self, text: str) -> None:
-        self.print(TranscriptNotice(text, "warning", "Warning"))
+        self.print(WarningNotice(text))
 
     @recorded
     def cancelled(self) -> None:

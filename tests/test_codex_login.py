@@ -261,7 +261,7 @@ def test_a_second_login_is_refused_while_one_waits(monkeypatch):
         await asyncio.wait_for(asyncio.gather(turn, login, return_exceptions=True), 1)
 
     asyncio.run(scenario())
-    assert "A sign-in is already waiting in the browser." in buffer.getvalue()
+    assert "A sign-in is already waiting in the browser" in buffer.getvalue()
 
 
 def test_unknown_login_source_shows_usage():

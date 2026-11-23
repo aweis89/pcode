@@ -1471,7 +1471,7 @@ def test_a_command_that_ends_the_session_reads_as_done_not_as_a_crash(tmp_path, 
                     await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=30)
             text = output.getvalue()
             assert "✓ merged pcode-1234 into master" in text
-            for noise in ("Warning", "exited", "Run cancelled", "Stopped the session host"):
+            for noise in ("▎", "exited", "Run cancelled", "Stopped the session host"):
                 assert noise not in text, text
             # The terminal left without stopping the host a second time or tidying.
             assert app.session_over and not app.host_stopped
