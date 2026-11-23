@@ -247,7 +247,7 @@ def _terminal():
 
 
 def _query_background(
-    timeout: float = 0.15,
+    timeout: float | None = None,
     *,
     probe_width: bool = False,
     probe_cursor: bool = False,
@@ -327,6 +327,12 @@ def _query_background(
                 query_fd,
                 glide_query + drawer_query + kitty_query + b"\x1b]11;?\x1b\\" + probe + fence,
             )
+            if timeout is None:
+                # The fence ends the wait as soon as the terminal has answered,
+                # so a longer cap costs nothing there and rides out a slow
+                # launch. Without it, a terminal that ignores OSC 11 would
+                # make every launch wait the whole cap.
+                timeout = 0.5 if fence else 0.15
             deadline = time.monotonic() + timeout
             while detected is None or not measured or not fenced:
                 remaining = deadline - time.monotonic()

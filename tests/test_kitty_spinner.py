@@ -5,6 +5,7 @@ import os
 import pty
 import select
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -39,7 +40,15 @@ def test_worth_asking_gates_on_ghostty_or_kitty_truecolor_outside_multiplexer(en
     assert kitty_spinner.worth_asking(env) is asked
 
 
-def _probe(monkeypatch, *, env, reply: bytes, probe_kitty: bool = True, timeout: float = 0.2):
+def _probe(
+    monkeypatch,
+    *,
+    env,
+    reply: bytes,
+    probe_kitty: bool = True,
+    timeout: float | None = 0.2,
+    delay: float = 0,
+):
     import threading
 
     master, slave = pty.openpty()
@@ -60,6 +69,7 @@ def _probe(monkeypatch, *, env, reply: bytes, probe_kitty: bool = True, timeout:
                 break
             sent.extend(chunk)
             if b"\x1b]11;?" in sent:
+                time.sleep(delay)
                 # The device attributes reply answers the probe's fence.
                 os.write(master, reply + b"\x1b[?62;22c")
                 break
@@ -96,6 +106,19 @@ def test_startup_probe_hears_a_kitty_reply_after_the_background_one(monkeypatch)
         reply=b"\x1b]11;rgb:1111/1111/1111\x1b\\" + OK_REPLY,
     )
     assert sent.endswith(b"\x1b[c")
+    assert theme.kitty_graphics_supported() is True
+    assert pending == b""
+
+
+def test_startup_probe_rides_out_a_slow_terminal_when_fenced(monkeypatch):
+    # Slower than the unfenced 0.15s cap, inside the fenced one.
+    _, pending = _probe(
+        monkeypatch,
+        env={"TERM": "xterm-ghostty", "COLORTERM": "truecolor"},
+        reply=OK_REPLY + b"\x1b]11;rgb:1111/1111/1111\x1b\\",
+        timeout=None,
+        delay=0.3,
+    )
     assert theme.kitty_graphics_supported() is True
     assert pending == b""
 
