@@ -12,6 +12,7 @@ show and never carries it:
     ESC _ pcode;focus ESC \\                 (from the drawer) give the keyboard back
     ESC _ pcode;session;<id> ESC \\          this pane shows session <id> (empty: none);
                                             restored windows run `pcode -c <id>` there
+    ESC _ pcode;toast;<dy>;<ms>;<text> ESC \\ a brief confirmation over the pane (`toast`)
 
 The drawer's terminal runs `pcode.btw_tail` with the session host's own Python
 (`HostEntry.python`), which connects to the host as an observer
@@ -25,6 +26,7 @@ moves beside the conversation. Popups open over the drawer the same way, as a
 terminal of their own (`pcode.popup_surface`, probed with `pcode;popup?`).
 """
 
+import base64
 import os
 import re
 from collections.abc import Callable
@@ -39,6 +41,10 @@ POPUP_PROTOCOL = 1
 PICK_PROTOCOL = 2
 # This or later also draws the editor's completion menu (`native_completions`).
 COMPLETE_PROTOCOL = 3
+# This or later also shows the editor's brief confirmations natively (`toast`).
+TOAST_PROTOCOL = 5
+# Characters of a toast's text; the terminal cuts it again.
+TOAST_MAX = 160
 POPUP_QUERY = b"\x1b_pcode;popup?\x1b\\"
 # Any pcode reply, so a future shape is still kept out of typing.
 REPLY = re.compile(rb"\x1b_pcode;([^\x1b\x07]{0,32})\x1b\\")
@@ -65,6 +71,19 @@ def open_btw(host: str, thread: str) -> str:
     if not (_ID.fullmatch(host) and _THREAD.fullmatch(thread)):
         raise ValueError(f"Not a drawer host and thread: {host!r}, {thread!r}")
     return f"\x1b_pcode;btw;{host};{thread}\x1b\\"
+
+
+def toast(text: str, *, rows_above: int, seconds: float) -> str:
+    """Show `text` briefly over the pane: `pcode;toast;<dy>;<ms>;<base64 utf-8>`.
+
+    `dy` is how many rows above the cursor's row the editor's box starts; the
+    terminal centers the toast just above that row, and fades it after `ms`.
+    The text goes on one line, without controls, as base64 so nothing in it
+    can end the APC.
+    """
+    plain = " ".join("".join(c if c.isprintable() else " " for c in text).split())
+    encoded = base64.b64encode(plain[:TOAST_MAX].encode("utf-8", "replace")).decode("ascii")
+    return f"\x1b_pcode;toast;{max(0, rows_above)};{max(0, round(seconds * 1000))};{encoded}\x1b\\"
 
 
 _SESSION = re.compile(r"[0-9A-Za-z_-]{1,64}")
