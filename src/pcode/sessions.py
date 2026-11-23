@@ -975,6 +975,11 @@ class SavedSession(SessionJournal):
                     copy.close()
             finally:
                 origin.close()
+            # Saved workers, so the copy can follow up on them too. Each file is
+            # replaced whole when written, so a copy never sees one torn.
+            workers = source / "workers"
+            if workers.is_dir() and not workers.is_symlink():
+                shutil.copytree(workers, directory / "workers", ignore=shutil.ignore_patterns(".*"))
             stamp = now()
             info = info.model_copy(
                 update={

@@ -13,8 +13,10 @@ This adds what both sides need in between, for every delegating session:
 Workers are one level deep (a worker cannot delegate), so a worker's parent is
 always the top-level session. The `WorkerHub` belongs to the parent's
 `WorkspaceSubAgents`; `current_worker()` is the handle of the delegation the
-caller runs inside, set by `delegate_task` for the child's whole run. Memory
-only: a reload or restart starts with no workers.
+caller runs inside, set by `delegate_task` for the child's whole run. Once the
+hub is attached to a saved session, each finished worker is written to
+`<session>/workers/<id>.json` and read back on demand, so a follow-up or a
+report still works after a restart or resume.
 
 How a question reaches a parent that is blocked inside a foreground
 `delegate_task` is `BackgroundDelegation`'s job; see dev/manager-mode.md.
@@ -23,22 +25,47 @@ How a question reaches a parent that is blocked inside a foreground
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
+import re
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
 import anyio
 from pydantic_ai import CapabilityEvent, ModelRetry
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import ModelMessagesTypeAdapter, UserPromptPart
 from pydantic_ai.toolsets import FunctionToolset
 
 from pcode.steering import run_request
 
-# Finished workers kept for reports and follow-ups; running ones are never dropped.
+logger = logging.getLogger(__name__)
+
+# Finished workers kept in memory; running ones are never dropped, and a saved
+# session reloads a dropped one from disk when it is named again.
 HISTORY = 20
+# What a saved worker keeps besides its messages.
+SAVED_FIELDS = (
+    "id",
+    "call_id",
+    "agent",
+    "task",
+    "purpose",
+    "plan_step",
+    "workspace_mode",
+    "model",
+    "status",
+    "report",
+    "review",
+    "review_note",
+    "tokens",
+)
+WORKER_ID = re.compile(r"w(\d+)")
 # A report included in another brief is cut here; the worker's full output stays
 # in its delegate result.
 REPORT_LIMIT = 8000
@@ -237,6 +264,25 @@ class WorkerHub:
         self._count = 0
         self._claims = 0
         self._trimmed_tokens = 0
+        # `<session>/workers` once attached to a saved session; memory only before.
+        self._directory: Path | None = None
+
+    def attach(self, session_directory: Path | None) -> None:
+        """Save finished workers under this session, and resume them from it.
+
+        Called each turn, since `/new` and `/resume` change the session. A
+        switch forgets the old session's finished workers (they are saved
+        there) and numbers new workers after the ones this session saved.
+        """
+        directory = session_directory / "workers" if session_directory is not None else None
+        if directory == self._directory:
+            return
+        if self._directory is not None:
+            for handle in [h for h in self._handles.values() if not h.running]:
+                self._forget(handle)
+            self._count = max((_number(h.id) for h in self._handles.values()), default=0)
+        self._directory = directory
+        self._count = max(self._count, *(_number(i) for i in self._saved_ids()), 0)
 
     def handles(self) -> list[WorkerHandle]:
         return list(self._handles.values())
@@ -245,14 +291,68 @@ class WorkerHub:
         key = worker_id.strip()
         if key.isdigit():
             key = f"w{key}"
-        return self._handles.get(key)
+        return self._handles.get(key) or self._load(key)
 
     def require(self, worker_id: str) -> WorkerHandle:
         handle = self.get(worker_id)
         if handle is None:
-            known = ", ".join(self._handles) or "none yet"
+            ids = {*self._handles, *self._saved_ids()}
+            known = ", ".join(sorted(ids, key=_number)) or "none yet"
             raise ModelRetry(f"Unknown worker {worker_id!r}. Known workers: {known}.")
         return handle
+
+    def save(self, handle: WorkerHandle) -> None:
+        """Write a settled worker to the attached session; a failure only logs."""
+        if self._directory is None or handle.running:
+            return
+        data: dict[str, Any] = {name: getattr(handle, name) for name in SAVED_FIELDS}
+        # An isolated worker cannot be resumed, so only its report is worth keeping.
+        messages = handle.messages if handle.workspace_mode != "isolated" else []
+        path = self._directory / f"{handle.id}.json"
+        temporary = path.with_name(f".{path.name}.tmp")
+        try:
+            data["messages"] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+            self._directory.mkdir(mode=0o700, exist_ok=True)
+            fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                json.dump(data, file)
+            os.replace(temporary, path)
+        except Exception:
+            # Losing a resumable history must not fail the delegation that made it.
+            logger.warning("Could not save worker %s to %s", handle.id, path, exc_info=True)
+            temporary.unlink(missing_ok=True)
+
+    def _load(self, worker_id: str) -> WorkerHandle | None:
+        """A worker this session saved, back in memory; None if there is none."""
+        if self._directory is None or not WORKER_ID.fullmatch(worker_id):
+            return None
+        path = self._directory / f"{worker_id}.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            messages = ModelMessagesTypeAdapter.validate_python(data.get("messages") or [])
+            handle = WorkerHandle(**{name: data[name] for name in SAVED_FIELDS if name in data})
+        except FileNotFoundError:
+            return None
+        except Exception:
+            logger.warning("Could not load worker %s from %s", worker_id, path, exc_info=True)
+            return None
+        if handle.id != worker_id or handle.running:
+            return None
+        handle.messages = list(messages)
+        # Its earlier tokens were spent before this process; only new ones count.
+        self._trimmed_tokens -= handle.tokens
+        self._handles[handle.id] = handle
+        self._trim()
+        return handle
+
+    def _saved_ids(self) -> list[str]:
+        if self._directory is None:
+            return []
+        try:
+            names = [path.stem for path in self._directory.glob("w*.json")]
+        except OSError:
+            return []
+        return [name for name in names if WORKER_ID.fullmatch(name)]
 
     def for_call(self, call_id: str) -> WorkerHandle | None:
         worker_id = self._by_call.get(call_id)
@@ -334,11 +434,14 @@ class WorkerHub:
         for handle in finished[: max(0, len(self._handles) - HISTORY)]:
             # Forgotten workers still count against a token budget.
             self._trimmed_tokens += handle.tokens
-            if handle.worker_model is not None:
-                handle.worker_model.retire()
-                handle.worker_model = None
-            del self._handles[handle.id]
-            self._by_call = {c: w for c, w in self._by_call.items() if w != handle.id}
+            self._forget(handle)
+
+    def _forget(self, handle: WorkerHandle) -> None:
+        if handle.worker_model is not None:
+            handle.worker_model.retire()
+            handle.worker_model = None
+        del self._handles[handle.id]
+        self._by_call = {c: w for c, w in self._by_call.items() if w != handle.id}
 
     def has_undelivered(self) -> bool:
         return any(
@@ -374,6 +477,11 @@ def question_message(handle: WorkerHandle, question: Question) -> str:
         "If only the user can decide, ask them in visible text and relay their reply; "
         "the worker waits meanwhile."
     ).replace("\n\n", "\n")
+
+
+def _number(worker_id: str) -> int:
+    match = WORKER_ID.fullmatch(worker_id)
+    return int(match.group(1)) if match else 0
 
 
 def current_worker() -> WorkerHandle | None:

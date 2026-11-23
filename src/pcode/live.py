@@ -105,6 +105,7 @@ from pcode.stream_events import EventTranslator
 from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import label, target
 from pcode.turn import TurnContext
+from pcode.worker_channel import WorkerHub
 
 # Pydantic AI already recovered (it resent without the stale thinking) and
 # recorded the drop on the response, so the warning is noise even in the
@@ -348,6 +349,9 @@ class AgentRuntime:
             # aggregate into the parent's run usage, which nothing reads.
             shared.append(TokenAccounting(record=self.totals.add))
             capability.shared_capabilities = shared
+            # Finished workers are saved with the session, for follow-ups after a restart.
+            if isinstance(hub := getattr(capability, "hub", None), WorkerHub):
+                hub.attach(self.session.directory if self.session is not None else None)
 
     async def refresh_context(self) -> None:
         """Refresh optional metadata outside rendering and before model requests."""

@@ -249,6 +249,90 @@ def test_the_hub_numbers_workers_and_refuses_bad_continuations():
         hub.require("w9")
 
 
+def test_a_finished_worker_can_be_continued_after_a_restart(tmp_path):
+    from pcode.sessions import SavedSession
+
+    root = tmp_path / "sessions"
+    work = tmp_path / "work"
+    work.mkdir()
+
+    async def first_parent(messages, info):
+        if "REPORT ONE" in request_text(messages):
+            yield "Done"
+        else:
+            yield call("delegate_task", "first", agent_name="worker", task="Survey it")
+
+    async def second_parent(messages, info):
+        text = request_text(messages)
+        if "REPORT TWO" in text:
+            yield "Done"
+        else:
+            yield call(
+                "delegate_task",
+                "second",
+                agent_name="worker",
+                task="Follow up",
+                continue_worker="w1",
+            )
+
+    async def child(messages, info):
+        text = all_text(messages)
+        if "Follow up" in text:
+            # The follow-up joins the history saved before the restart.
+            assert "Survey it" in text and "REPORT ONE" in str(messages)
+            yield "REPORT TWO"
+        else:
+            yield "REPORT ONE"
+
+    saved = SavedSession.create("test:local", work, root)
+    identity = saved.info.id
+    rt = runtime(work, first_parent, child)
+    rt.session = saved
+    try:
+        run(rt)
+    finally:
+        saved.close()
+    assert (saved.directory / "workers" / "w1.json").stat().st_mode & 0o777 == 0o600
+    copy = SavedSession.fork(saved.directory)
+    copy.close()
+    assert (copy.directory / "workers" / "w1.json").is_file()
+
+    # A fresh agent and hub, as after a restart.
+    resumed = SavedSession.open(identity, root)
+    rt = runtime(work, second_parent, child)
+    rt.session = resumed
+    try:
+        run(rt, "Again")
+    finally:
+        resumed.close()
+    worker = json.loads((resumed.directory / "workers" / "w1.json").read_text())
+    assert worker["report"].endswith("REPORT TWO") and worker["status"] == "done"
+
+
+def test_an_attached_hub_numbers_after_saved_workers_and_forgets_on_switch(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    hub = WorkerHub()
+    hub.attach(tmp_path / "a")
+    first = hub.claim("c1", {"agent_name": "worker", "task": "A"})
+    first.status, first.messages = "done", []
+    hub.save(first)
+    running = hub.claim("c2", {"agent_name": "worker", "task": "B"})
+    assert running.id == "w2"
+
+    fresh = WorkerHub()
+    fresh.attach(tmp_path / "a")
+    assert fresh.claim("c3", {"agent_name": "worker"}).id == "w2"  # w2 never finished.
+    assert fresh.get("w1").task == "A" and fresh.total_tokens() == 0
+
+    hub.attach(tmp_path / "b")
+    assert hub.handles() == [running]
+    with pytest.raises(ModelRetry, match="Known workers: w2"):
+        hub.require("w1")
+    assert hub.claim("c4", {"agent_name": "worker"}).id == "w3"
+    assert hub.get("../a/workers/w1") is None
+
+
 def test_questions_are_delivered_once():
     from pcode.worker_channel import Question
 

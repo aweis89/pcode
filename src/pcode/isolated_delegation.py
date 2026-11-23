@@ -375,6 +375,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
                 ) and handle.worker_model is not None:
                     handle.worker_model.retire()
                     handle.worker_model = None
+                self.hub.save(handle)
                 with anyio.move_on_after(NOTIFY_SECONDS, shield=True):
                     await notify(handle, ctx, status=handle.status, tokens=handle.tokens)
         result = labelled(handle, result)

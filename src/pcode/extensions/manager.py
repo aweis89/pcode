@@ -283,6 +283,7 @@ def setup(pcode) -> None:
             raise ModelRetry(f"Worker {handle.id} is still running; review it once it finishes.")
         handle.review = verdict
         handle.review_note = note.strip()
+        hub.save(handle)
         await worker_channel.notify(handle, ctx, review=verdict)
         if verdict == "accepted":
             step = (
