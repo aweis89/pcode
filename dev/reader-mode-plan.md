@@ -1,8 +1,8 @@
 # Reader mode plan
 
-Status: all five phases built, not yet judged by eye. Fork (`ghostty-smooth`,
-branch `pcode-smooth`): `9c5ca8751`, `be9f810b9`, `cf836a3f0`, `06e21e48a`.
-pcode: `0432dc90`. Builds on the terminal-side glide in
+Status: all five phases built and reviewed, not yet judged by eye. Fork
+(`ghostty-smooth`, branch `pcode-smooth`): `9c5ca8751`, `be9f810b9`,
+`cf836a3f0`, `06e21e48a`, `243683afa`. pcode: `0432dc90`, `849fb2ed`. Builds on the terminal-side glide in
 [ghostty-app-plan.md](ghostty-app-plan.md) (protocol 9, `smooth_scroll.py`).
 
 ## Goal
@@ -76,6 +76,13 @@ Additions to the `ESC _ smooth;... ESC \` family, as built. The query reply is
   the reader table. A keystroke or leaving the bottom drops it. pcode sends it
   just before the turn mark of a prompt from `begin_turn`, when `reader_park`
   is on.
+- `smooth;park;off`: pcode sends it once the turn's rows are all written. The
+  terminal fires the park first if those rows made it due, else drops it, so
+  later output can't park at an old prompt.
+- The park tracks its own row (a tracked pin) and drops itself if that row is
+  evicted, cleared or unmarked. Trap: searching for the newest turn mark
+  instead pinned at an older turn after pcode's resize replay cleared the
+  screen.
 - No `follow` verb: nothing needed it.
 
 Actions bound in the table: the existing scroll actions (now glided), plus
@@ -129,7 +136,10 @@ which pcode binds to its response and snippet copy chooser.
   into `QueuedRow.mark` before anything reads the row. Not a Rich control
   segment: the render console writes to a `StringIO` without
   `force_terminal`, so Rich drops control text.
-- Marks need the startup probe, which only runs with `smooth_scroll auto`.
+- Marks need the startup probe, which runs with `smooth_scroll auto` or
+  `reader_park on` (the default). Sentinels are only rendered when the
+  terminal takes marks, and never inside thinking: its blank-row folding kept
+  a sentinel's padding row (trap: an extra row for every user).
 
 ### 4. Park: built
 
@@ -148,8 +158,6 @@ which pcode binds to its response and snippet copy chooser.
   and the default cruise speed (2 rows/s) are guesses; tune by eye.
 - **Park and pcode's conveyor.** Parking leaves the active area, where
   pcode's region glide stops drawing, so a batch mid-glide pops into place.
-- **Reader mode without the glide.** Marks and park depend on the probe that
-  `smooth_scroll auto` runs.
 - **Synchronized output.** The glide steps in the renderer's frame update,
   which is skipped during synchronized output. The step after one is capped at
   50 ms, so a long pcode frame pauses the glide rather than leaping it.
