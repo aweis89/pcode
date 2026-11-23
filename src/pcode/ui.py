@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import unicodedata
 from asyncio import Future
 from collections import Counter
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from dataclasses import asdict, dataclass, field, replace
 from functools import cache, cached_property, lru_cache, partial, wraps
 from io import StringIO
 from time import monotonic
+from time import time as wall_time
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, get_app_or_none
@@ -19,6 +21,7 @@ from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
+from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.layout import (
     ConditionalContainer,
@@ -37,7 +40,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Label
 from rich.cells import cell_len
 from rich.console import Console
-from rich.markdown import Markdown
+from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
 from rich.spinner import SPINNERS as RICH_SPINNERS
 from rich.spinner import Spinner
@@ -45,12 +48,13 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode import glyphs
+from pcode import glyphs, kitty_spinner, smooth_scroll
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
 from pcode.delta import Delta
 from pcode.delta import from_preferences as delta_from_preferences
+from pcode.drafts import Drafts
 from pcode.edit_transcript import (
     EditTranscript,
     LiveDeltaPreview,
@@ -64,6 +68,7 @@ from pcode.jobs import WATCHED_PREFIX
 from pcode.keyboard_protocol import keyboard_output
 from pcode.keymap import PromptKeymap
 from pcode.layout_speed import install_fast_layout_division
+from pcode.markdown import Markdown
 from pcode.popup_ui import shortcut_hint
 from pcode.preferences import (
     COMMAND_MODES,
@@ -77,13 +82,25 @@ from pcode.preferences import (
 )
 from pcode.prefix_keys import PrefixKeys, shortcut_label
 from pcode.prompt_keys import PromptCallbacks, prompt_key_bindings
-from pcode.runtime import CacheBust, CommandOutput, Event, Message, Thinking, ToolSummary
+from pcode.runtime import (
+    CacheBust,
+    CommandOutput,
+    EditCompleted,
+    Event,
+    Message,
+    Thinking,
+    ToolSummary,
+)
 from pcode.shell_mode import SHELL_PREFIX
 from pcode.syntax_colors import derive_colors
 from pcode.task_prompt import TaskPrompt
 from pcode.terminal_color import color_depth, true_color
 from pcode.terminal_text import safe_text
-from pcode.theme import detect_theme, terminal_background
+from pcode.theme import (
+    detect_theme,
+    glide_supported,
+    terminal_background,
+)
 from pcode.theme_gallery import SyntaxGallery
 from pcode.thinking_markdown import ThinkingMarkdown
 from pcode.tool_display import (
@@ -133,7 +150,7 @@ def _mix(color: str, toward: str, amount: float) -> str:
     )
 
 
-def shaded_styles(shade: str, top: str) -> dict[str, str]:
+def shaded_styles(shade: str, top: str, btw_hue: str = "") -> dict[str, str]:
     """`frame_style shaded`: the editor and task boxes as surfaces, not outlines.
 
     `shade` fills the box. Border glyphs keep their cells in the shade's own
@@ -144,10 +161,14 @@ def shaded_styles(shade: str, top: str) -> dict[str, str]:
     (status, task heading or session name), and while a turn runs the
     thought under it, so the turn's status and its reason read as one header
     without a drawn line.
+
+    While the editor replies to a `/btw` thread (`btw.reply`), the surface and
+    header take a warm tint toward `btw_hue` so the box visibly pairs with the
+    `/btw` drawer.
     """
     # Appended after the palette's `frame.border`: for equal classes the later
     # rule wins, so these override its muted color.
-    return {
+    styles = {
         "shaded": f"bg:{shade}",
         # nodim: the terminal palette mutes borders with dim, which would
         # leave a faint line in the surface's own color.
@@ -155,6 +176,14 @@ def shaded_styles(shade: str, top: str) -> dict[str, str]:
         "shaded.top": f"bg:{top}",
         "shaded.top frame.border": f"nodim fg:{top}",
     }
+    if btw_hue.startswith("#"):
+        btw_shade = _mix(shade, btw_hue, 0.16)
+        btw_top = _mix(top, btw_hue, 0.24)
+        styles["btw.reply shaded"] = f"bg:{btw_shade}"
+        styles["btw.reply shaded frame.border"] = f"nodim fg:{btw_shade}"
+        styles["btw.reply shaded.top"] = f"bg:{btw_top}"
+        styles["btw.reply shaded.top frame.border"] = f"nodim fg:{btw_top}"
+    return styles
 
 
 @cache
@@ -162,12 +191,13 @@ def frame_shade(background: str, theme: str) -> str:
     """A shade lifted off `background` toward the theme's contrast.
 
     Mixed from the terminal's actual background rather than fixed, so the box
-    reads as a gentle step up on any scheme. Light backgrounds need a smaller
-    step: the eye picks out darkening sooner than lightening.
+    reads as a clear step on any scheme. Dark backgrounds need a larger RGB
+    mix than light ones: near black, sRGB compression makes small linear steps
+    nearly invisible.
     """
     if theme == "light":
-        return _mix(background, "#000000", 0.045)
-    return _mix(background, "#ffffff", 0.06)
+        return _mix(background, "#000000", 0.055)
+    return _mix(background, "#ffffff", 0.125)
 
 
 @cache
@@ -175,16 +205,15 @@ def header_shade(background: str, theme: str) -> str:
     """The editor's header block: a step darker than the box, much the same
     step to the eye on either theme.
 
-    Dark, halfway back to the background, so the step scales with the box's
-    own lift: a fixed share of the shade all but vanished there (three of
-    255 levels on a typical dark scheme, one on black). Light, a small
-    share toward black, about as far as the dark step looks; the box's own
-    share overdid it, reading as a stripe rather than a header.
+    Dark, roughly halfway back to the background, so all three zones
+    (scrollback, header/thinking, tasks/editor) keep roughly even perceptual
+    separation from pure black through mid-dark schemes. Light, a step further
+    toward black than the box.
     """
     shade = frame_shade(background, theme)
     if theme == "light":
-        return _mix(shade, "#000000", 0.028)
-    return _mix(shade, background, 0.5)
+        return _mix(shade, "#000000", 0.045)
+    return _mix(shade, background, 0.48)
 
 
 @dataclass(frozen=True)
@@ -216,8 +245,8 @@ class Palette:
                 "pcode.thinking": f"dim {self.muted}",
                 "pcode.error": "bold red",
                 "pcode.warning": "bold yellow",
-                # A /btw thread's heading (`pcode.btw_view`), in the hue the
-                # editor's box takes while it replies to the thread.
+                # A /btw thread's heading in the drawer (`pcode.btw_tail`), in
+                # the hue the editor's box takes while it replies to the thread.
                 "pcode.btw": f"bold {self.agents[1]}",
                 "pcode.btw.badge": f"bold reverse {self.agents[1]}",
                 "markdown.code": f"{self.foreground} on {self.surface}",
@@ -351,11 +380,10 @@ class Palette:
                 # (`pcode.btw_view`): a hue of its own, the second
                 # sub-agent's, so it is plain at a glance where Enter goes.
                 "btw.reply frame.border": f"nodim {self.agents[1]}",
-                # The divider over the conversation's newest rows meanwhile:
-                # the thread's hue points up to it, and muted text below.
-                "btw.divider": f"nodim bold {self.agents[1]}",
-                "btw.key": f"nodim {self.agents[1]}",
-                "btw.conversation": self.muted,
+                "btw.badge": f"nodim bold reverse {self.agents[1]}",
+                "btw.heading": f"nodim bold {self.agents[1]}",
+                "btw.prompt": f"nodim bold {self.agents[1]}",
+                "btw.hint": self.muted,
                 # The editor box's session name is the session's own metadata,
                 # in the task heading's hue (unbolded) so it never reads as the
                 # reply above it, nor as the accent's busy status row. The last
@@ -384,6 +412,7 @@ class Palette:
                 "bottom-toolbar.sep": self.muted,
                 "bottom-toolbar.location": f"{self.accent} bold",
                 "bottom-toolbar.mode": self.task_heading,
+                "bottom-toolbar.btw": f"nodim bold {self.agents[1]}",
                 "bottom-toolbar.hint": self.muted,
                 "bottom-toolbar.model": self.accent,
                 "bottom-toolbar.context": self.muted,
@@ -418,7 +447,8 @@ class Palette:
                 "reference": f"{self.task_heading} underline",
                 "auto-suggestion": self.muted,
                 **(ICON_TASK_STYLES if task_style == "icons" else {}),
-                **(shaded_styles(*shades) if shades is not None else {}),
+                **(shaded_styles(*shades, self.agents[1]) if shades is not None else {}),
+                **kitty_spinner.STYLE_CLASSES,
             }
         )
 
@@ -501,7 +531,7 @@ TERMINAL_THEME = Theme(
     {
         "pcode.accent": "cyan",
         "pcode.brand": "bold cyan",
-        "pcode.muted": "default",
+        "pcode.muted": "dim default",
         "pcode.note": "italic dim default",
         "pcode.thinking": "dim default",
         "pcode.error": "bold red",
@@ -518,7 +548,7 @@ TERMINAL_THEME = Theme(
         "markdown.h5": "italic",
         "markdown.h6": "italic",
         "markdown.h7": "italic",
-        "markdown.hr": "default",
+        "markdown.hr": "dim default",
         "markdown.link": "underline blue",
         "markdown.link_url": "underline blue",
         "markdown.table.border": "cyan",
@@ -552,6 +582,9 @@ ASIDE_ROWS = 3
 # A wait on the session host shorter than this never gets a row: most answer
 # within a frame or two, and a row that flashes for them reads as a glitch.
 WAIT_GRACE_SECONDS = 0.25
+# Fast settle sweep along the editor's top border once startup finishes.
+STARTUP_SETTLE_SECONDS = 0.35
+STARTUP_FRAME_SECONDS = 0.04
 
 
 # The status row is redrawn several times a second while a turn runs, so a
@@ -562,6 +595,18 @@ PHASE_GAP_SECONDS = 1.0
 # rewrites itself that fast cannot be read. Once the hold is up the row jumps
 # to whatever is current, skipping anything that came and went meanwhile.
 STATUS_HOLD_SECONDS = 2.5
+# Least time a thought stays on the thinking rows once it stops changing. The
+# answer often starts streaming a moment after the thinking that led to it, and
+# clearing the rows right then made a block of up to ten rows flash and vanish.
+THOUGHT_HOLD_SECONDS = STATUS_HOLD_SECONDS
+# How long a command's output must stream before its live preview opens. Most
+# commands (grep, git status, ls) finish well inside this, and showing their
+# output the moment it arrived made a block of up to a dozen rows flash and
+# vanish when they settled. Their result is already in the tool row and
+# scrollback. A watched job skips the wait: the user asked to see it.
+COMMAND_PREVIEW_DELAY_SECONDS = 1.0
+# Streamed deltas redraw the live panel at most this often (`redraw_streamed`).
+STREAM_REDRAW_SECONDS = 1 / 20
 # Status text the row leads with verbatim; anything longer is detail.
 PHASE_WORDS = 3
 # Cells of detail worth more than the status row's tally and clock.
@@ -591,23 +636,36 @@ TOOL_GLYPHS = {
     **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "⌕"),
     **dict.fromkeys(("Edit file", "Write file"), "✎"),
     **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "⎘"),
-    "Wait for job": "⧖",
+}
+_TOOL_ICON_SLOTS = {
+    **dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "shell"),
+    **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "search"),
+    **dict.fromkeys(("Edit file", "Write file"), "edit"),
+    **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "read"),
 }
 
 
 def tool_glyphs_on(setting: str) -> bool:
     """Whether the `tool_glyphs` setting (`auto`, `on`, `off`) draws the symbols.
 
-    Almost no monospace font has `⌕`, `⎘` or `⧖`: the terminal draws
-    them from a fallback font, which on macOS and most desktops looks fine
-    and on the Linux console is a box, so `auto` leaves them off where
-    `TERM` says it is that console (tmux on it says otherwise). A terminal
-    cannot say which fonts it has, so anywhere else a missing symbol is the
-    user's to turn off.
+    Almost no monospace font has `⌕` or `⎘`: outside Nerd Font mode the
+    terminal draws them from a fallback font, which on macOS and most desktops
+    looks fine and on the Linux console is a box, so `auto` leaves them off
+    where `TERM` says it is that console (tmux on it says otherwise). A
+    terminal cannot say which fonts it has, so anywhere else a missing symbol
+    is the user's to turn off.
     """
     if setting == "auto":
         return os.environ.get("TERM") != "linux" and not glyphs.active()
     return setting == "on"
+
+
+def _tool_glyph(label: str, setting: str) -> str | None:
+    if not tool_glyphs_on(setting):
+        return PLAIN_TOOL_GLYPHS.get(label)
+    if slot := _TOOL_ICON_SLOTS.get(label):
+        return glyphs.icon(slot)
+    return None
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -638,7 +696,7 @@ def status_spinner(setting: str = "spinner") -> Spinner:
     `spinner` is the status row's (waits on a model), `tool_spinner` running
     tool calls'.
     """
-    name = load_preferences().get(setting, SETTINGS[setting].default)
+    name = kitty_spinner.rich_fallback(load_preferences().get(setting, SETTINGS[setting].default))
     frames = RICH_SPINNERS.get(name, {}).get("frames", "")
     if glyphs.active() and not "".join(frames).isascii():
         # Stand-ins would freeze it on one character; keep the two kinds of
@@ -685,11 +743,17 @@ class StatusLine:
     # The hue slot of the sub-agent the detail describes, if it describes one.
     hue: int | None = None
 
-    def fragments(self, spinner: str, width: int, *, rule: bool = False) -> list[tuple[str, str]]:
+    def fragments(
+        self, spinner: str | tuple[str, str], width: int, *, rule: bool = False
+    ) -> list[tuple[str, str]]:
         """The row, `width` cells wide when it has meta; `rule` draws the gap as border."""
         if width < 1:
             return []
-        head = [("class:activity.spinner", f"{spinner} ")]
+        head = (
+            [spinner, ("class:activity.spinner", " ")]
+            if isinstance(spinner, tuple)
+            else [("class:activity.spinner", f"{spinner} ")]
+        )
         if self.badge:
             head.append(("class:activity.badge", f"{self.badge} "))
         head.append(("class:activity.phase", self.phase))
@@ -729,6 +793,16 @@ class _HeldStatus:
     seen: float  # Last drawn.
     turn: tuple[str, str]  # The prompt it belongs to.
     call: ToolCall | None  # The running tool call it reports, if any.
+
+
+@dataclass
+class _HeldThought:
+    """The thought on the thinking rows, and what decides how long it may stay."""
+
+    text: str  # What the rows show (`latest_thought`).
+    since: float  # When this text first showed.
+    seen: float  # Last drawn.
+    turn: tuple[str, str]  # The prompt it belongs to.
 
 
 def _status_text(line: StatusLine) -> tuple:
@@ -820,16 +894,29 @@ def fit_fragments(fragments: list[tuple[str, str]], width: int) -> list[tuple[st
     cannot break the row. The ellipsis goes on the last fragment kept; a
     spinner or badge that cannot fit whole is cropped without one.
     """
-    fragments = [(style, plain(text, limit=None)) for style, text in fragments]
+    fragments = [
+        (style, text if style.startswith("class:kitty.spinner.") else plain(text, limit=None))
+        for style, text in fragments
+    ]
     if sum(cell_len(text) for _, text in fragments) <= width:
         return fragments
     fitted = []
     remaining = max(0, width)
     for style, text in fragments:
+        width_cells = cell_len(text)
+        # Kitty spinner placeholders are atomic multi-cell images: never crop
+        # them in half or append an ellipsis styled with the image-ID color.
+        if style.startswith("class:kitty.spinner."):
+            if width_cells <= remaining:
+                fitted.append((style, text))
+                remaining -= width_cells
+                if remaining > 0:
+                    continue
+            break
         # Strictly less: the fragment that overflows needs a cell for the ellipsis.
-        if cell_len(text) < remaining:
+        if width_cells < remaining:
             fitted.append((style, text))
-            remaining -= cell_len(text)
+            remaining -= width_cells
             continue
         part = Text(text)
         part.truncate(remaining, overflow="ellipsis" if remaining > 1 else "crop")
@@ -955,8 +1042,8 @@ class Activity:
     # The session's side-question records (`Asides.items`, shared, not copied):
     # the running ones get a spinner row below the prompt's.
     asides: list = field(default_factory=list)
-    # The /btw thread drawn in the conversation's place (`pcode.btw_view`),
-    # which the editor then sends to; None while the conversation is shown.
+    # The /btw thread open in the drawer (`pcode.btw_view`), which the editor
+    # then sends to; None while none is.
     # This terminal's own, never synced from the host.
     btw_thread: str | None = None
     # The thread last shown, which Ctrl+Q brings back from the conversation.
@@ -976,8 +1063,16 @@ class Activity:
     )
     # The status line on screen while a hold keeps it. Drawing state like `_phase`.
     _held: _HeldStatus | None = field(default=None, init=False, repr=False, compare=False)
+    # The thought on the thinking rows while a hold keeps it. Drawing state too.
+    _held_thought: _HeldThought | None = field(default=None, init=False, repr=False, compare=False)
     # The turn's latest call on the tool row, kept there once it finishes.
     _last_call: ToolCall | None = field(default=None, init=False, repr=False, compare=False)
+    # Startup animation state in the editor's top border: non-empty while
+    # connecting or initializing, then a brief settle sweep once ready.
+    startup_label: str = field(default="", init=False, repr=False, compare=False)
+    startup_started: float = field(default=0.0, init=False, repr=False, compare=False)
+    startup_done_at: float = field(default=0.0, init=False, repr=False, compare=False)
+    startup_ok: bool = field(default=True, init=False, repr=False, compare=False)
 
     @property
     def show_thinking(self) -> bool:
@@ -993,40 +1088,76 @@ class Activity:
         self.thought = (self.thought + text)[-THINKING_KEEP:]
 
     def forget_thought(self) -> None:
-        """Drop the thinking rows: the answer they led to is streaming now."""
+        """Drop the thought: the answer it led to is streaming now.
+
+        The rows may keep drawing it a moment longer (`shown_thought`).
+        """
         self.thought, self.thought_done = "", True
+
+    def shown_thought(self) -> str:
+        """The thought the thinking rows show, kept at least `THOUGHT_HOLD_SECONDS`.
+
+        A thought shows as it streams. Once forgotten (the answer started) it
+        stays until it has been on screen, unchanged, for the hold, so a block
+        that arrives right before its answer can be read instead of flashing.
+        The hold gives way at once to a new thought, a new turn, the end of
+        the turn, a hidden panel, and a gap in drawing.
+        """
+        if not (self.thinking_mode == "activity-panel" and self.status_shown and self.panel_shown):
+            self._held_thought = None
+            return ""
+        text, now = latest_thought(self.thought), monotonic()
+        turn = (self.prompt_kind, self.prompt)
+        held = self._held_thought
+        if text.strip():
+            if held is None or held.text != text or held.turn != turn:
+                self._held_thought = _HeldThought(text, now, now, turn)
+            else:
+                held.seen = now
+            return text
+        if (
+            held is None
+            or held.turn != turn
+            or now - held.seen > PHASE_GAP_SECONDS
+            or now - held.since >= THOUGHT_HOLD_SECONDS
+        ):
+            self._held_thought = None
+            return ""
+        held.seen = now
+        return held.text
 
     @property
     def thought_shown(self) -> bool:
         """Whether the thinking rows have a thought to show in the activity panel."""
-        return (
-            self.thinking_mode == "activity-panel"
-            and self.status_shown
-            and self.panel_shown
-            and bool(latest_thought(self.thought).strip())
-        )
+        return bool(self.shown_thought())
 
     def thought_fragments(
-        self, width: int, rows: int = THOUGHT_ROWS
+        self, width: int, rows: int = THOUGHT_ROWS, thought: str | None = None
     ) -> list[list[tuple[str, str]]]:
         """The thinking rows of the activity panel, in `activity-panel` mode.
 
         Held through the tool calls that follow a thought, which it usually
-        explains, and gone once the answer streams into scrollback: thinking
-        is the lead-up, not a caption on the result.
+        explains, and gone once the answer streams into scrollback (after
+        `THOUGHT_HOLD_SECONDS` on screen): thinking is the lead-up, not a
+        caption on the result.
 
         Every row opens with the quote mark, as a quoted passage's lines do,
         so a wrapped thought never reads as two things; the marker stays
         upright beside the italic text.
+
+        `thought` is `shown_thought()` as the caller already read it this
+        render, so the rows agree with the space it budgeted for them.
         """
-        if not self.thought_shown or width < 3:
+        if thought is None:
+            thought = self.shown_thought()
+        if not thought or width < 3:
             return []
-        lead = f"{THOUGHT_ICON} "
+        lead = f"{glyphs.icon('thought')} "
         return [
             # lstrip: a cut row in a very narrow pane can open on the space
             # its ellipsis was set after.
             [("class:activity.thinking.icon", lead), ("class:activity.thinking", row.lstrip())]
-            for row in head_rows(latest_thought(self.thought), width - cell_len(lead), rows)
+            for row in head_rows(thought, width - cell_len(lead), rows)
         ]
 
     def begin_wait(self, label: str) -> Wait:
@@ -1049,7 +1180,33 @@ class Activity:
         finally:
             self.end_wait(wait)
 
-    def wait_fragments(self, spinner: str, width: int):
+    def begin_startup(self, label: str) -> None:
+        """Show a startup animation in the editor's top border without adding rows."""
+        self.startup_label = label
+        if not self.startup_started:
+            self.startup_started = monotonic()
+        self.startup_done_at = 0.0
+        self.startup_ok = True
+        _invalidate()
+
+    def finish_startup(self, *, ok: bool = True) -> None:
+        """Transition the startup border into its brief settle sweep (or clear on error)."""
+        self.startup_label = ""
+        self.startup_ok = ok
+        self.startup_done_at = monotonic() if ok else 0.0
+        _invalidate()
+
+    @property
+    def startup_animating(self) -> bool:
+        if self.startup_label:
+            return True
+        if self.startup_done_at > 0:
+            if monotonic() - self.startup_done_at < STARTUP_SETTLE_SECONDS:
+                return True
+            self.startup_done_at = 0.0
+        return False
+
+    def wait_fragments(self, spinner: str | tuple[str, str], width: int):
         """The newest wait past its grace period, as a system row; empty otherwise.
 
         A running status row already says what the host is doing (a turn, or a
@@ -1063,6 +1220,11 @@ class Activity:
         if not shown or width < 1:
             return []
         wait = shown[-1]
+        if isinstance(spinner, tuple):
+            rest = Text(f" {SYSTEM_BADGE} {plain(wait.label, limit=None)}")
+            rest.append(f" \u00b7 {now - shown[0].started:.0f}s")
+            rest.truncate(max(0, width - cell_len(spinner[1])), overflow="ellipsis")
+            return [spinner, ("class:activity.system", rest.plain)]
         text = Text(f"{spinner} {SYSTEM_BADGE} {plain(wait.label, limit=None)}")
         text.append(f" \u00b7 {now - shown[0].started:.0f}s")
         text.truncate(width, overflow="ellipsis")
@@ -1072,7 +1234,7 @@ class Activity:
     def asides_running(self) -> bool:
         return any(aside.running for aside in self.asides)
 
-    def aside_rows(self, spinner: str, width: int, budget: int = ASIDE_ROWS):
+    def aside_rows(self, spinner: str | tuple[str, str], width: int, budget: int = ASIDE_ROWS):
         """One muted spinner row per running side question, folded to the budget."""
         running = [aside for aside in self.asides if aside.running]
         if budget <= 0 or not running or width < 1:
@@ -1080,15 +1242,26 @@ class Activity:
         shown = running if len(running) <= budget else running[: max(0, budget - 1)]
         rows = []
         for aside in shown:
-            parts = [f"{spinner} btw", plain(aside.question, limit=None)]
-            if aside.label:
-                parts.insert(1, aside.label)
-            if aside.activity:
-                parts.append(plain(aside.activity, limit=None))
-            parts.append(f"{aside.elapsed:.0f}s")
-            text = Text(" \u00b7 ".join(parts))
-            text.truncate(width, overflow="ellipsis")
-            rows.append(("class:activity.aside", text.plain))
+            if isinstance(spinner, tuple):
+                parts = ["btw", plain(aside.question, limit=None)]
+                if aside.label:
+                    parts.insert(1, aside.label)
+                if aside.activity:
+                    parts.append(plain(aside.activity, limit=None))
+                parts.append(f"{aside.elapsed:.0f}s")
+                rest = Text(" " + " \u00b7 ".join(parts))
+                rest.truncate(max(0, width - cell_len(spinner[1])), overflow="ellipsis")
+                rows.append([spinner, ("class:activity.aside", rest.plain)])
+            else:
+                parts = [f"{spinner} btw", plain(aside.question, limit=None)]
+                if aside.label:
+                    parts.insert(1, aside.label)
+                if aside.activity:
+                    parts.append(plain(aside.activity, limit=None))
+                parts.append(f"{aside.elapsed:.0f}s")
+                text = Text(" \u00b7 ".join(parts))
+                text.truncate(width, overflow="ellipsis")
+                rows.append(("class:activity.aside", text.plain))
         if len(shown) < len(running):
             rows.append(("class:activity.aside", f"\u2026 {len(running) - len(shown)} more (/btw)"))
         return rows
@@ -1142,6 +1315,9 @@ class Activity:
         """
         self._last_call = None
         self.tools.turn_calls.clear()
+        # Nor on its thought, held or not: the same prompt queued again keeps
+        # the turn key the hold compares.
+        self._held_thought = None
 
     def height_cap(self, rows: int) -> int | None:
         """The editor box's row limit, panel included, on a screen this tall."""
@@ -1226,7 +1402,7 @@ class Activity:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = spinner if self.status_shown else "○"
+        icon = spinner if self.status_shown else glyphs.icon("pending")
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
@@ -1390,7 +1566,12 @@ class Activity:
         ]
 
     def _tool_row(
-        self, call: ToolCall, line: StatusLine, width: int, spinner: str, repeats: int = 1
+        self,
+        call: ToolCall,
+        line: StatusLine,
+        width: int,
+        spinner: str | tuple[str, str],
+        repeats: int = 1,
     ) -> list[tuple[str, str]]:
         """One call's row: its state mark, then its verb's glyph (`◜ $ ls -la`).
 
@@ -1402,7 +1583,7 @@ class Activity:
         say it for this call.
         """
         label, detail = call_parts(call)
-        glyph = (TOOL_GLYPHS if tool_glyphs_on(self.tool_glyphs) else PLAIN_TOOL_GLYPHS).get(label)
+        glyph = _tool_glyph(label, self.tool_glyphs)
         if glyph:
             text = detail or label
         elif detail and call is line.call and line.phase == label:
@@ -1414,14 +1595,15 @@ class Activity:
             filter(None, (call.change and f" · {call.change}", repeats > 1 and f" ×{repeats}"))
         )
         if call.settled is None:
-            mark = ("class:activity.tool", spinner)
+            mark = spinner if isinstance(spinner, tuple) else ("class:activity.tool", spinner)
         elif call.failed:
-            mark = ("class:activity.tool.failed", "✗")
+            mark = ("class:activity.tool.failed", glyphs.icon("fail"))
         else:
-            mark = ("class:activity.tool.done", TOOL_DONE_MARK)
+            mark = ("class:activity.tool.done", glyphs.icon("tool_done"))
         # A wide spinner (`dots12`) would push running rows' text past
         # settled ones'; pad the settled mark's column to its width.
-        pad = "" if call.settled is None else " " * max(0, cell_len(spinner) - 1)
+        spinner_width = cell_len(spinner[1] if isinstance(spinner, tuple) else spinner)
+        pad = "" if call.settled is None else " " * max(0, spinner_width - 1)
         body = ("class:activity.tool", pad + " " + " ".join(filter(None, (glyph, text))))
         if not tail:
             return fit_fragments([mark, body], width)
@@ -1485,6 +1667,7 @@ class Activity:
             prefix = {
                 "steering": "Steering",
                 "interrupt": "Interrupting",
+                "provider_wake": "Continuing",
             }.get(mode, "Queued")
             system = system_command(text)
             if system is None:
@@ -1672,12 +1855,17 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
             # task keeps calling ``_on_resize`` on any size change. That erases
             # from the cursor down (over the popup) and requests a CPR the popup
             # then reads as input. Ignore resizes until the handoff repaints below.
+            # Restore whatever handler was installed (`install_resize_repaint`).
+            resize = vars(app).get("_on_resize")
             app._on_resize = lambda: None
             try:
                 with app.input.detach(), nullcontext() if atomic else app.input.cooked_mode():
                     yield handoff
             finally:
-                del app._on_resize
+                if resize is None:
+                    del app._on_resize
+                else:
+                    app._on_resize = resize
                 app.renderer.reset()
                 if handoff.top_row is not None and handoff.rows_written is not None:
                     rows = app.output.get_size().rows
@@ -1709,6 +1897,74 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     finally:
         if not done.done():
             done.set_result(None)
+
+
+def install_resize_repaint(app: Application) -> None:
+    """Repaint the editor once per resize, after the cursor report.
+
+    prompt_toolkit's ``_on_resize`` erases and repaints before the report it
+    has just requested arrives, the same race ``suspended_editor`` avoids for
+    scrollback writes: the paint knows nothing about the rows below the cursor,
+    so the editor lands directly under the transcript, part way up the pane,
+    until the report re-renders it at the bottom ~1/30 s later. Routing the
+    resize through an atomic handoff erases, waits for the report, and paints
+    once, with the cursor hidden for the round trip.
+
+    Rendering is held from the signal on, not just from the handoff's erase:
+    the handoff first collects any report a streaming flush left outstanding,
+    and a spinner paint in that wait would land at the new size with stale
+    free rows (the jump again) and overwrite ``_last_size``, which
+    ``ReflowAwareRenderer.erase`` needs at the old width. A handoff already in
+    flight repaints at the terminal's size when it exits, so the repaint just
+    waits for it and only runs its own if the size still differs.
+
+    prompt_toolkit also polls the size every half second, comparing against a
+    local copy SIGWINCH never updates, so one resize calls ``_on_resize`` again
+    up to 500 ms later, often just after the resize replay. A size the editor
+    was last painted at is ignored, and a resize storm (a border drag)
+    coalesces into the running repaint, which repeats until the size holds.
+
+    Must run before the app starts: SIGWINCH binds ``app._on_resize`` then.
+    """
+    task: asyncio.Task | None = None
+    held = False
+
+    def in_flight() -> Future[None] | None:
+        previous = app._running_in_terminal_f
+        return previous if previous is not None and not previous.done() else None
+
+    async def repaint() -> None:
+        nonlocal task, held
+        try:
+            while app._is_running:
+                if (previous := in_flight()) is not None:
+                    # It clears the hold and repaints on exit. Shielded: a
+                    # cancel here must not cancel the handoff's own future.
+                    await asyncio.shield(previous)
+                    held = False
+                    continue
+                if app.output.get_size() == app.renderer._last_size:
+                    break
+                with getattr(app.output, "hidden_cursor", nullcontext)():
+                    async with suspended_editor(app, atomic=True):
+                        held = False
+                if app.renderer._last_size is None:
+                    break  # Nothing painted (the app is exiting); don't spin.
+        finally:
+            task = None
+            if held:
+                held = app._running_in_terminal = False
+                app.invalidate()
+
+    def on_resize() -> None:
+        nonlocal task, held
+        if task is not None or app.output.get_size() == app.renderer._last_size:
+            return
+        if in_flight() is None:
+            held = app._running_in_terminal = True
+        task = app.create_background_task(repaint())
+
+    app._on_resize = on_resize
 
 
 class ReflowAwareRenderer(Renderer):
@@ -1815,15 +2071,56 @@ def install_reflow_renderer(app: Application) -> None:
     )
 
 
+def install_nowrap_editor(app: Application) -> None:
+    """Keep autowrap off while the editor is painted, so Ghostty never reflows it.
+
+    Ghostty reflows the screen before the app sees SIGWINCH. Narrowing it
+    splits each of the editor's full-width rows (frame borders, status line)
+    in two, and it shows that frame until the resize repaint lands a cursor
+    report later: the top of the editor jumps up and back. With autowrap
+    (DECAWM) off, Ghostty resizes without reflowing at all, cutting rows at
+    the new width instead. prompt_toolkit already paints with it off and
+    turns it back on after each paint; that is held off until the renderer
+    resets (every erase), so transcript written between an erase and the
+    next paint still wraps. Only with resize replay on: the replay restores
+    the transcript the cut hid.
+    """
+    renderer, output = app.renderer, app.output
+    reset, render = renderer.reset, renderer.render
+    enable = output.enable_autowrap
+    held = False
+
+    def hold_enable() -> None:
+        if not held:
+            enable()
+
+    def nowrap_render(app, layout, is_done: bool = False) -> None:
+        nonlocal held
+        held = not is_done
+        render(app, layout, is_done)
+
+    def wrapping_reset(*args, **kwargs) -> None:
+        nonlocal held
+        reset(*args, **kwargs)
+        if held:
+            held = False
+            enable()
+            output.flush()
+
+    output.enable_autowrap = hold_enable
+    renderer.render = nowrap_render
+    renderer.reset = wrapping_reset
+
+
 # Frames a paced backlog takes to drain, so a settled block rolls out row by
 # row when small and lands within about a second however big it is.
 PACED_DRAIN_FRAMES = 30
 # Typed prose advances every TYPED_STEP_FRAMES frames (every frame: 30 a
-# second). A step reveals TYPED_CHARS_PER_STEP characters (about 360 a second,
-# near a model's own pace, so a steady stream reads as one), sped up so a
-# backlog types out within TYPED_DRAIN_STEPS steps (about two seconds).
+# second). A step reveals TYPED_CHARS_PER_STEP characters (about 270 a second,
+# a little under a model's own pace, so each line reads as it lands), sped up
+# so a backlog types out within TYPED_DRAIN_STEPS steps (about two seconds).
 TYPED_STEP_FRAMES = 1
-TYPED_CHARS_PER_STEP = 12
+TYPED_CHARS_PER_STEP = 9
 TYPED_DRAIN_STEPS = 60
 
 # Rich writes only SGR styles and OSC 8 hyperlinks. prompt_toolkit's ANSI parser
@@ -1840,7 +2137,7 @@ def typed_prose(objects: tuple) -> bool:
     if not objects:
         return False
     for obj in objects:
-        if isinstance(obj, Markdown):
+        if isinstance(obj, RichMarkdown):
             tokens = obj.parsed
         elif isinstance(obj, ThinkingMarkdown):
             tokens = Markdown(obj.source).parsed
@@ -1876,6 +2173,60 @@ class QueuedRow:
     @property
     def lead(self) -> int:
         return len(self._plain) - len(self._plain.lstrip())
+
+
+@dataclass
+class Pacer:
+    """How fast queued rows come out, frame by frame; see ``advance``.
+
+    The rates are fixed when rows arrive rather than recomputed as they
+    leave, or the tail of a backlog would crawl. ``reset`` once it drains.
+    """
+
+    reveal_rate: int = 0
+    type_rate: int = 0
+    # Frames skipped since the last typing step; see TYPED_STEP_FRAMES.
+    skipped: int = 0
+
+    def reset(self) -> None:
+        self.reveal_rate = self.type_rate = self.skipped = 0
+
+    def advance(self, rows: list[QueuedRow], typed: int) -> tuple[int, int]:
+        """One paced frame: whole rows now due, and characters shown of the next.
+
+        ``typed`` is how much of ``rows[0]`` is already shown. Rows roll in one
+        at a time and prose types out a few characters a step; both speed up so
+        a backlog never falls far behind. Blank rows are free, so the gap
+        between paragraphs does not stall the reveal, and so is a typed row's
+        indentation.
+        """
+        self.reveal_rate = max(self.reveal_rate, -(-len(rows) // PACED_DRAIN_FRAMES))
+        if typed and rows[0].typed and self.skipped < TYPED_STEP_FRAMES - 1:
+            # Mid-row and between steps: nothing moves this frame.
+            self.skipped += 1
+            return 0, typed
+        self.skipped = 0
+        backlog = sum(row.visible for row in rows if row.typed) - typed
+        self.type_rate = max(
+            self.type_rate,
+            TYPED_CHARS_PER_STEP,
+            -(-backlog // TYPED_DRAIN_STEPS),
+        )
+        reveal, chars = self.reveal_rate, self.type_rate
+        due = 0
+        for row in rows:
+            if row.typed:
+                typed = max(typed, row.lead)
+                if row.visible - typed > chars:
+                    return due, typed + chars
+                chars -= row.visible - typed
+                typed = 0
+            elif row.visible:
+                if not reveal:
+                    break
+                reveal -= 1
+            due += 1
+        return due, 0
 
 
 def split_rows(text: str) -> list[str]:
@@ -1968,6 +2319,7 @@ class TerminalOutput:
         self.transient_pending: list[tuple[tuple[object, ...], str, bool]] = []
         self.changed = asyncio.Event()
         self.lock = asyncio.Lock()
+        self._stream_redraw: tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None = None
         self.commit_user = self.user
         self.commit_message = self.message
         self.commit_thinking = lambda text: self.print(
@@ -1975,22 +2327,10 @@ class TerminalOutput:
         )
         self._thinking_tail = ""
         self._thinking_streamed = False
+        # Whether the current thought streamed at all, across mid-thought commits.
+        self._thought_streamed = False
         self._regenerate = None
         self.resize_replay = None
-        # Another view drawn in the conversation's place, e.g. a /btw thread
-        # (`pcode.btw_view`): the replay that draws it. While set, the
-        # conversation's writes wait in ``pending`` (its log keeps them, so the
-        # replay that closes the view draws them), every rebuild redraws the
-        # view, and ``view_print`` writes below it.
-        self.view = None
-        self.view_pending: list[tuple[tuple, str, bool]] = []
-        # The conversation's notes that were queued as rows when a view took the
-        # screen: notes are not in its log, so they come back with it.
-        self._held_notes: list[tuple[tuple, str, bool]] = []
-        # `held_tail`'s rows for the held writes, kept until another arrives:
-        # ``_writes`` counts every conversation write.
-        self._tail_cache: tuple | None = None
-        self._writes = 0
         # Rendered rows not yet written. Pacing rolls a settled block out over
         # successive frames instead of landing it in one; off writes them all.
         self.rows: list[QueuedRow] = []
@@ -2001,18 +2341,42 @@ class TerminalOutput:
         # Characters of ``rows[0]`` already shown in the live area.
         self._typed = 0
         self._preview: tuple[tuple[str, int], StyleAndTextTuples] | None = None
-        # Frames skipped since the last typing step; see TYPED_STEP_FRAMES.
-        self._skipped = 0
-        # Rows and characters per step for the current backlog. Fixed when rows
-        # arrive rather than recomputed as they leave, or the tail would crawl.
-        self._reveal_rate = 0
-        self._type_rate = 0
+        self._pacer = Pacer()
         # Transient writes already rendered into ``rows`` but not yet written,
         # with the absolute index just past their last row. A replay drops the
         # queued rows, so these must join it, just as ``transient_pending`` does.
         self._queued_transient: list[tuple[tuple, int]] = []
         # Absolute index of ``rows[0]``: rows written or dropped so far.
         self._row_base = 0
+        # Experimental glide (`pcode.smooth_scroll`). The typing row is then
+        # always reserved, the glide region's last visible row, with a blank
+        # reserved row below it as the region's hidden bottom row. Settled
+        # rows go to the terminal in batches (`_native_batch`), which paces
+        # them itself. ``_declared`` is the region last sent and when (None:
+        # cleared).
+        self.gliding = False
+        # The batch just written, `(rows, rows scrolled, runs)`, for
+        # `_track_layout` to announce in the same frame; see `_native_runs`.
+        self._native_commit: tuple[int, int, list[tuple[int, int, bool]]] | None = None
+        # pcode's estimate of the terminal's batch glide still to run.
+        self._native_backlog = 0.0
+        self._native_rate = smooth_scroll.BATCH_MIN_RATE
+        self._native_at = 0.0
+        # The layout's drawn height and whether it was pinned (no filler rows),
+        # after the last render; and whether that render was a handoff's, whose
+        # scroll `flush` already sent.
+        self._last_layout: tuple[int, bool] | None = None
+        # Each drawn window's top and bottom row, counted up from the screen's
+        # bottom edge (its last row is 1), after the last render.
+        self._last_spans: dict[int, tuple[int, int]] = {}
+        # The live panel's rows as `_row_keys` reads them, after the last render.
+        self._last_keys: dict[int, str] = {}
+        self._handoff_render = False
+        self._declared: tuple[tuple[int, int], float] | None = None
+        # The live panel's rows moving (`_glide_moves`, `_glide_panel`): pcode's
+        # copy of that glide, and whether its region is declared.
+        self._panel_glide = smooth_scroll.Glide()
+        self._panel_declared = False
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -2020,47 +2384,12 @@ class TerminalOutput:
         self._regenerate = replay
         self.changed.set()
 
-    def open_view(self, replay) -> None:
-        """Draw ``replay``'s rows in the conversation's place, or redraw the view shown."""
-        self.view = replay
-        self.view_pending = []
-        self._tail_cache = None
-        self.regenerate(replay)
-
-    def view_print(self, entries: list[tuple[tuple, str, bool]]) -> None:
-        """Write below the open view; nothing while the conversation is shown."""
-        if self.view is not None and entries:
-            self.view_pending.extend(entries)
-            self.changed.set()
-
-    def close_view(self, replay) -> None:
-        """Give the screen back to the conversation, rebuilt by ``replay``."""
-        if self.view is None:
-            return
-        self.view = None
-        self.view_pending = []
-        self._tail_cache = None
-        self.regenerate(replay)
-
-    def _queue(self) -> list:
-        """The writes waiting for the screen: the open view's, else the conversation's."""
-        return self.view_pending if self.view is not None else self.pending
-
     def print(self, *objects, end="\n", transient=False) -> None:
         entry = (objects, end, False)
         self.pending.append(entry)
-        self._writes += 1
         if transient:
             self.transient_pending.append(entry)
         self.changed.set()
-        if self.view is not None and (invalidate := getattr(self.app, "invalidate", None)):
-            # Shown under the view (`held_tail`), even with no turn to redraw it.
-            invalidate()
-
-    @property
-    def view_drawn(self) -> bool:
-        """Whether a view is on screen: opened, and its rebuild already written."""
-        return self.view is not None and self._regenerate is None
 
     def begin_turn(self, prompt: str) -> None:
         # The live row shows the running tool, not the prompt, so the quote goes
@@ -2077,7 +2406,7 @@ class TerminalOutput:
         self.print()
 
     def end_turn(self) -> None:
-        self.finish_thinking()
+        self.finish_thinking(complete=True)
         self.finish()
 
     def _commit(self, source: str) -> None:
@@ -2093,18 +2422,26 @@ class TerminalOutput:
         if not text:
             return
         self._thinking_streamed = True
+        self._thought_streamed = True
         for part in text.splitlines(keepends=True):
             self._thinking_tail += part
             if part.endswith("\n"):
                 self._commit_blocks(thinking=True)
 
-    def finish_thinking(self, fallback: str = "") -> None:
-        if not self._thinking_streamed and fallback:
+    def finish_thinking(self, fallback: str = "", *, complete: bool = False) -> None:
+        """Commit the thought so far; `complete` means the thought itself has ended.
+
+        A scrollback write in the middle of a thought commits what streamed
+        before it, so the completion's `fallback` must not repeat the thought.
+        """
+        if not self._thought_streamed and fallback:
             self.thinking_delta(fallback)
         if self._thinking_streamed:
             self._commit_thinking(self._thinking_tail.rstrip("\n") + "\n\n")
         self._thinking_tail = ""
         self._thinking_streamed = False
+        if complete:
+            self._thought_streamed = False
 
     def delta(self, text: str) -> None:
         if not text:
@@ -2118,6 +2455,39 @@ class TerminalOutput:
             if part.endswith("\n"):
                 self._commit_blocks()
         self.changed.set()
+
+    def redraw_streamed(self) -> None:
+        """Redraw for a streamed delta, no sooner than `STREAM_REDRAW_SECONDS` after the last frame.
+
+        A fast stream sends a delta every few milliseconds, and each frame
+        re-renders the whole layout. Within the interval one redraw is
+        scheduled for its end, and skipped if anything else (the pacer, a
+        spinner, a keystroke) has drawn the delta by then.
+        """
+        app = self.app
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if not isinstance(app, Application) or loop is None or loop is not app.loop:
+            app.invalidate()
+            return
+        # One pending at a time, unless it was left on a loop that stopped.
+        if self._stream_redraw is not None and self._stream_redraw[0] is loop:
+            return
+        drawn = app._last_redraw_time
+        # Clamped: a wall clock stepping back must not hold redraws for long.
+        wait = min(drawn + STREAM_REDRAW_SECONDS - wall_time(), STREAM_REDRAW_SECONDS)
+        if wait <= 0:
+            app.invalidate()
+            return
+
+        def due() -> None:
+            self._stream_redraw = None
+            if app._last_redraw_time == drawn:
+                app.invalidate()
+
+        self._stream_redraw = (loop, loop.call_later(wait, due))
 
     def _commit_blocks(self, *, thinking: bool = False) -> None:
         source = self._thinking_tail if thinking else self.tail
@@ -2150,12 +2520,8 @@ class TerminalOutput:
         so its rows know whether they came from prose. A replay is written whole
         at once, so it skips both the prose check and transient tracking.
         """
-        if self.view is not None:
-            # The view's writes are never notes; the conversation's stay held.
-            transient = []
-        else:
-            transient = [] if replay else self.transient_pending
-            self.transient_pending = []
+        transient = [] if replay else self.transient_pending
+        self.transient_pending = []
         pieces = [
             (entry, piece, self.typed and not replay and typed_prose(entry[0]))
             for entry, piece in zip(pending, self._render(pending, width), strict=True)
@@ -2192,44 +2558,8 @@ class TerminalOutput:
             self.console.file = previous_file
         return pieces
 
-    def held_tail(self, width: int, count: int) -> list[str]:
-        """The conversation's newest rows while a view hides it, newest last.
-
-        What it wrote since the view opened, then the text still streaming
-        that has not settled into a block yet, as terminal text at ``width``.
-        """
-        if self.view is None:
-            return []
-
-        def shown(piece: str) -> list[str]:
-            return [row for row in split_rows(piece) if ESCAPES.sub("", row).strip()]
-
-        # Rendered again only as it changes: the unsettled tail on every
-        # streamed line, the held writes only when another one arrives.
-        streaming = []
-        if self.tail.strip():
-            streaming = shown(self._render([((Markdown(self.tail),), "\n", False)], width)[0])
-        if len(streaming) >= count:
-            return streaming[-count:]
-        key = (self._writes, width, id(self.rich_theme()))
-        if self._tail_cache is None or self._tail_cache[0] != key:
-            held: list[str] = []
-            # Only as far back as the rows wanted: a long turn holds many writes.
-            for objects, end, soft_wrap in reversed(self.pending):
-                if any(isinstance(obj, EditTranscript) for obj in objects):
-                    # A diff runs delta: never inside a frame. Its tool row says so.
-                    continue
-                held[:0] = shown(self._render([(objects, end, soft_wrap)], width)[0])
-                if len(held) >= count:
-                    break
-            self._tail_cache = (key, held[-count:])
-        return (self._tail_cache[1] + streaming)[-count:]
-
     def _take_pending(self) -> list:
-        if self.view is not None:
-            pending, self.view_pending = self.view_pending, []
-        else:
-            pending, self.pending = self.pending, []
+        pending, self.pending = self.pending, []
         return pending
 
     def _written(self, count: int) -> None:
@@ -2241,38 +2571,8 @@ class TerminalOutput:
         ]
 
     def _advance(self) -> tuple[int, int]:
-        """One paced frame: whole rows now due, and characters shown of the next.
-
-        Rows roll in one at a time and prose types out a few characters a step;
-        both speed up so a backlog never falls far behind. Blank rows are free,
-        so the gap between paragraphs does not stall the reveal, and so is a
-        typed row's indentation.
-        """
-        self._reveal_rate = max(self._reveal_rate, -(-len(self.rows) // PACED_DRAIN_FRAMES))
-        if self._typed and self.rows[0].typed and self._skipped < TYPED_STEP_FRAMES - 1:
-            # Mid-row and between steps: nothing moves this frame.
-            self._skipped += 1
-            return 0, self._typed
-        self._skipped = 0
-        backlog = sum(row.visible for row in self.rows if row.typed) - self._typed
-        self._type_rate = max(
-            self._type_rate, TYPED_CHARS_PER_STEP, -(-backlog // TYPED_DRAIN_STEPS)
-        )
-        rows, chars, typed = self._reveal_rate, self._type_rate, self._typed
-        due = 0
-        for row in self.rows:
-            if row.typed:
-                typed = max(typed, row.lead)
-                if row.visible - typed > chars:
-                    return due, typed + chars
-                chars -= row.visible - typed
-                typed = 0
-            elif row.visible:
-                if not rows:
-                    break
-                rows -= 1
-            due += 1
-        return due, 0
+        """One paced frame: whole rows now due, and characters shown of the next."""
+        return self._pacer.advance(self.rows, self._typed)
 
     def typing_fragments(self) -> StyleAndTextTuples:
         """The prose row being typed out, as far as it has got."""
@@ -2295,18 +2595,28 @@ class TerminalOutput:
         async with self.lock:
             paced = self.paced and not drain
             due = typed = 0
+            if self.gliding and (drain or self._regenerate is not None):
+                # A popup or a rebuilt screen must not be drawn gliding.
+                self._reset_native_state()
+                self._declare(None)
+            # The layout's drawn height before this write, to work out how far
+            # the write scrolls the screen (see `_scrolled`).
+            drawn = self._drawn_height() if self.gliding and self._regenerate is None else None
             if paced and self._regenerate is None:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
-                if self._queue():
+                if self.pending:
                     width = max(1, self.app.output.get_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.rows:
+                if self.gliding:
+                    # The terminal paces and reveals the batch itself.
+                    due = self._native_batch()
+                elif self.rows:
                     due, typed = self._advance()
                 if not due and typed != self._typed:
                     self._typed = typed
                     self.app.invalidate()
-            if self._regenerate is not None or due or not paced and (self._queue() or self.rows):
+            if self._regenerate is not None or due or not paced and (self.pending or self.rows):
                 # Renderer.reset() shows the cursor at the transcript position
                 # both when erasing and before repainting. Suppress those shows
                 # until the handoff has restored the editor and its cursor.
@@ -2315,26 +2625,17 @@ class TerminalOutput:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
                         width = max(1, self.app.output.get_size().columns)
+                        rebuilt = False
                         if self._regenerate is not None:
+                            rebuilt = True
+                            if self.gliding:
+                                self._reset_native_state()
+                                self._declare(None)
                             # Transient writes are not in the replay; keep those
                             # still queued as rows as well as those not rendered.
                             notes = [entry for entry, _ in self._queued_transient]
-                            if self.view is not None:
-                                # Any rebuild while a view is open redraws the
-                                # view; the conversation's writes keep waiting,
-                                # but its queued rows go, so their notes wait too.
-                                self._held_notes += notes
-                                pending = self.view()
-                                self.view_pending = []
-                            else:
-                                pending = (
-                                    self._regenerate()
-                                    + self._held_notes
-                                    + notes
-                                    + self.transient_pending
-                                )
-                                self._held_notes = []
-                                self.pending.clear()
+                            pending = self._regenerate() + notes + self.transient_pending
+                            self.pending.clear()
                             self._regenerate = None
                             # Replay covers the rows still queued; drop them.
                             self._written(len(self.rows))
@@ -2360,15 +2661,425 @@ class TerminalOutput:
                         counter.write("".join(row.text for row in chunk))
                         counter.flush()
                         handoff.rows_written = counter.rows
+                        scrolled = self._scrolled(drawn, counter.rows)
+                        # The exit repaint's growth is in ``scrolled`` already.
+                        self._handoff_render = True
+                        if (
+                            not rebuilt
+                            and self.gliding
+                            and paced
+                            and self._declared is not None
+                            and counter.rows > 0
+                        ):
+                            # Sent in `_track_layout` right after the editor
+                            # redraws and before SYNC_END so the terminal sees
+                            # the final committed rows when scanning reveal spans.
+                            self._native_commit = (counter.rows, scrolled, self._native_runs(chunk))
+                # Ensure a commit never leaks past this handoff if `_track_layout` skipped it.
+                self._native_commit = None
                 # The handoff already repainted the editor on exit.
             self.changed.clear()
             if self.rows:
                 # Keep the run loop ticking at its frame rate until drained.
                 self.changed.set()
             else:
-                self._reveal_rate = self._type_rate = self._typed = self._skipped = 0
+                self._typed = 0
+                self._pacer.reset()
+
+    def _drop_settled_regions(self, app) -> None:
+        """Clear the panel region once its glide has settled.
+
+        Left declared, a region outlives the rows it was for: the layout
+        moves on, and where it then covers the typing row or the transcript
+        region's hidden row it wins there (the innermost region does), so
+        those rows stop gliding with the transcript and the hidden row shows.
+        """
+        now = monotonic()
+        if self._panel_declared and not self._panel_glide.remaining(now):
+            self._end_panel()
+
+    def _end_panel(self) -> None:
+        """Drop the panel region: its glide settled, or the transcript scrolls."""
+        if self._panel_declared:
+            self._panel_declared = False
+            self._panel_glide = smooth_scroll.Glide()
+            self.app.output.write_raw(smooth_scroll.region_off(smooth_scroll.PANEL_ID))
+
+    def _glide_panel_region(self, app, top: int, bottom: int, distance: int) -> None:
+        """Declare the panel region over rows ``top`` to ``bottom`` and glide it ``distance``."""
+        columns = app.output.get_size().columns
+        app.output.write_raw(
+            smooth_scroll.visible_declaration(smooth_scroll.PANEL_ID, top, bottom, columns)
+            + smooth_scroll.advance(distance, smooth_scroll.PANEL_ID)
+        )
+        self._panel_glide.advance(distance, monotonic())
+        self._panel_declared = True
+
+    def _declare(self, bottom: int | None) -> None:
+        """Declare the glide region down to row ``bottom`` (0-based), or clear it.
+
+        Re-sent at least every second, since switching to the alternate
+        screen (a popup) clears it on the terminal's side.
+        """
+        columns = self.app.output.get_size().columns
+        key = None if bottom is None or bottom < 1 else (bottom, columns)
+        now = monotonic()
+        if key is None:
+            if self._declared is None:
+                return
+            self._declared = None
+            self._reset_native_state()
+            self._panel_declared = False
+            self._panel_glide = smooth_scroll.Glide()
+            self.app.output.write_raw(smooth_scroll.OFF)
+        else:
+            if self._declared is not None and self._declared[0] == key:
+                if now - self._declared[1] < 1.0:
+                    return
+            self._declared = (key, now)
+            self.app.output.write_raw(smooth_scroll.declaration(bottom, columns))
+        self.app.output.flush()
+
+    def release_screen(self) -> None:
+        """Clear the glide regions before a popup or program takes the screen.
+
+        A region hides its bottom row; whatever draws there next must show.
+        The next render declares it again.
+        """
+        if self.gliding and isinstance(self.app, Application):
+            self._declare(None)
+
+    def _editor_pinned(self, *, just_drawn: bool = False) -> bool:
+        """Whether the editor sits at the bottom, so written rows scroll the screen.
+
+        The layout's filler takes any rows left below scrollback; none are
+        left once the drawn height is no more than the layout needs.
+        ``just_drawn``, right after a render, reuses the height that render
+        measured (`_MeasuredSplit`) rather than measuring the layout again.
+        """
+        renderer = self.app.renderer
+        screen = renderer._last_screen
+        if screen is None or renderer._in_alternate_screen or not self.app._is_running:
+            return False
+        size = self.app.output.get_size()
+        root = self.app.layout.container
+        drawn = getattr(root, "drawn", None) if just_drawn else None
+        if drawn is not None and drawn[:2] == (size.columns, size.rows):
+            needed = drawn[2]
+        else:
+            needed = root.preferred_height(size.columns, size.rows).preferred
+        return screen.height <= needed
+
+    def _drawn_height(self) -> int | None:
+        """Rows the layout was last drawn over, from the bottom of the screen."""
+        renderer = self.app.renderer
+        screen = renderer._last_screen
+        if screen is None or renderer._in_alternate_screen or not self.app._is_running:
+            return None
+        return screen.height
+
+    def _scrolled(self, drawn: int | None, written: int) -> int:
+        """How far writing ``written`` rows scrolls the screen, by this frame's end.
+
+        The layout always reaches the bottom row, so scrollback ends where it
+        was drawn from. The rows and the layout's new height scroll whatever
+        does not fit. Not every row written scrolls: one written as the live
+        panel shrinks (a finished command's row leaving it) fills the space
+        the panel gave up, and gliding it would draw it below its place.
+        """
+        if drawn is None or not written:
+            return 0
+        size = self.app.output.get_size()
+        needed = self.app.layout.container.preferred_height(size.columns, size.rows).preferred
+        # Rows written, plus any the live panel grew by in the same frame.
+        scrolled = max(0, min(size.rows, written + min(needed, size.rows) - drawn))
+        return scrolled
+
+    def _before_render(self, app) -> None:
+        """Hold the terminal's frame for the repaint and what `_after_render` adds.
+
+        A region declaration, or a glide for a scroll the repaint caused, must
+        land in the same frame as the repaint, or the terminal draws the
+        moved rows unglided for a frame first.
+        """
+        app.output.write_raw(SYNC_START)
+
+    def _after_render(self, app) -> None:
+        """Keep the glide region's bottom on the reserved row, glide panel growth, end the frame.
+
+        The layout starts with the typing row (0-based row ``top - 1``) and
+        the reserved row under it, the region's hidden bottom row.
+        """
+        try:
+            self._track_layout(app)
+        finally:
+            app.output.write_raw(SYNC_END)
+            app.output.flush()
+
+    def _reset_native_state(self) -> None:
+        self._native_commit = None
+        self._native_backlog = 0.0
+
+    def _drain_native_backlog(self, now: float) -> float:
+        """pcode's estimate of the batch glide the terminal still has to run at ``now``."""
+        elapsed = max(0.0, now - self._native_at)
+        self._native_backlog = max(0.0, self._native_backlog - elapsed * self._native_rate)
+        self._native_at = now
+        return self._native_backlog
+
+    @staticmethod
+    def _native_runs(chunk: list[QueuedRow]) -> list[tuple[int, int, bool]]:
+        """Group committed rows into contiguous `(offset, count, is_prose)` runs.
+
+        Blank rows join the run they sit in, so the gap between paragraphs
+        does not split a sweep.
+        """
+        runs: list[tuple[int, int, bool]] = []
+        if not chunk:
+            return runs
+        first_vis = next((r for r in chunk if r.visible), None)
+        cur_prose = bool(first_vis.typed) if first_vis is not None else False
+        cur_start = 0
+        for idx, row in enumerate(chunk):
+            if row.visible and bool(row.typed) != cur_prose:
+                if idx > cur_start:
+                    runs.append((cur_start, idx - cur_start, cur_prose))
+                cur_prose = bool(row.typed)
+                cur_start = idx
+        if len(chunk) > cur_start:
+            runs.append((cur_start, len(chunk) - cur_start, cur_prose))
+        return runs
+
+    def _native_batch_cap(self) -> int:
+        """Most rows one handoff may write.
+
+        Pinned, every row scrolls into the batch glide, which reaches back
+        `MAX_BATCH_GLIDE` rows. Before the screen fills, rows land in place
+        instead, so no more than the transcript rows that can be seen.
+        """
+        if self._editor_pinned():
+            return smooth_scroll.MAX_BATCH_GLIDE
+        size_rows = max(1, self.app.output.get_size().rows)
+        if self._declared is not None:
+            vis_cap = max(1, self._declared[0][0] - 1)
+        else:
+            vis_cap = max(1, size_rows - 4)
+        return min(smooth_scroll.MAX_BATCH_GLIDE, vis_cap, size_rows)
+
+    def _native_batch(self) -> int:
+        """Queued rows to hand to the terminal now, mixed prose and code alike.
+
+        Waits while the terminal's glide is too far behind to take a useful
+        batch, rather than trickling a row or two at a time.
+        """
+        if not self.rows:
+            return 0
+        backlog = self._drain_native_backlog(monotonic())
+        cap = self._native_batch_cap()
+        room = min(cap, int(smooth_scroll.MAX_BATCH_GLIDE - backlog))
+        if room <= 0:
+            return 0
+        total = len(self.rows)
+        if total > room and room < min(16, max(1, cap // 2)):
+            return 0
+        return min(total, room)
+
+    def _emit_native_commit(self, app) -> None:
+        """Send the batch glide and reveals for the rows just committed.
+
+        The rows end on the transcript's last row (`end_row`). Scrolled rows
+        glide in on the terminal's conveyor; reveals may start above the
+        region (negative rows) as far back as the glide reaches. In `rows`
+        mode, scrolled rows get no reveal beyond a curtain over the rows that
+        filled the space above the editor.
+        """
+        commit, self._native_commit = self._native_commit, None
+        if commit is None or self._declared is None:
+            return
+        written, scrolled, runs = commit
+        end_row = self._declared[0][0] - 2
+        if end_row < 0:
+            return
+        reach = smooth_scroll.MAX_BATCH_GLIDE
+        base_row = end_row - written + 1
+        floor = 0
+        if scrolled > 0:
+            self._end_panel()
+            backlog = min(self._drain_native_backlog(monotonic()) + scrolled, float(reach))
+            self._native_backlog = backlog
+            self._native_rate = smooth_scroll.batch_rate(backlog)
+            flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
+            app.output.write_raw(smooth_scroll.advance(scrolled, flags=flags))
+            floor = -reach
+            if not self.typed:
+                # `rows` mode: the glide and fade are the reveal, except for
+                # rows that filled the space above the editor.
+                in_place = written - scrolled
+                runs = [(0, in_place, False)] if in_place > 0 else []
+        for offset, length, prose in runs:
+            start = base_row + offset
+            end = min(start + length, end_row + 1)
+            if end <= floor:
+                continue
+            start = max(floor, start)
+            count = min(end - start, reach)
+            if count > 0:
+                flags = smooth_scroll.REVEAL_SWEEP if prose else smooth_scroll.REVEAL_CURTAIN
+                app.output.write_raw(smooth_scroll.reveal(start, count, flags=flags))
+
+    def _track_layout(self, app) -> None:
+        top = layout_top_row(app)
+        screen = app.renderer._last_screen
+        pinned = self._editor_pinned(just_drawn=True)
+        if top is not None and screen is not None and pinned:
+            # Pinned, the layout fills the bottom ``screen.height`` rows. Not
+            # `layout_top_row`: after a write that scrolled, it rests on the
+            # handoff's guess, one row off until the cursor report lands, and
+            # a bottom flipping in and out under the typing row jolts it.
+            top = app.output.get_size().rows - screen.height + 1
+        if top is not None and not app._running_in_terminal:
+            self._drop_settled_regions(app)
+            self._declare(top)
+            self._emit_native_commit(app)
+        else:
+            self._native_commit = None
+        self._glide_growth(app, pinned)
+
+    def _glide_growth(self, app, pinned: bool) -> None:
+        """Glide the transcript up when the live panel grows while pinned.
+
+        A pinned layout has no filler rows to grow into, so a command or task
+        row appearing scrolls the transcript up, which the terminal would show
+        as a jump. Only growth from pinned to pinned counts: a layout with
+        filler rows (or a height that only reflects a corrected cursor report)
+        moves nothing on screen.
+        """
+        screen = app.renderer._last_screen
+        handoff, self._handoff_render = self._handoff_render, False
+        if screen is None or app.renderer._in_alternate_screen:
+            self._last_layout = None
+            self._last_spans = {}
+            self._last_keys = {}
+            return
+        last, self._last_layout = self._last_layout, (screen.height, pinned)
+        spans = {
+            id(window): (screen.height - pos.ypos, screen.height - pos.ypos - pos.height + 1)
+            for window, pos in screen.visible_windows_to_write_positions.items()
+            if pos.height > 0
+        }
+        last_spans, self._last_spans = self._last_spans, spans
+        keys = _row_keys(screen)
+        last_keys, self._last_keys = self._last_keys, keys
+        if handoff or last is None or self._declared is None:
+            return
+        grown = screen.height - last[0]
+        if not (pinned and last[1] and grown > 0):
+            # Nothing scrolled: rows may still have moved within the panel.
+            self._glide_moves(app, screen.height, keys, last_keys, grown=grown)
+            return
+        app.output.write_raw(smooth_scroll.advance(grown))
+        self._glide_panel(app, screen.height, grown, spans, last_spans)
+
+    def _glide_moves(
+        self,
+        app,
+        height: int,
+        keys,
+        last_keys,
+        shaded: set[int] | frozenset[int] | None = None,
+        grown: int = 0,
+    ) -> None:
+        """Glide live panel rows that moved up or down since the last render.
+
+        ``shaded`` defaults to the last screen's `_shaded_rows`, worked out only
+        once rows did move: it resolves a style per row, and this runs after
+        nearly every render.
+
+        A row leaving the panel drops the rows above it into its place, and
+        one arriving while the screen has room lifts them. Rows are matched by
+        text (`_row_keys`), counted up from the bottom, which the layout always
+        reaches. The rows that moved by the most common distance glide by it,
+        unless something between them changed or stayed: then it is not one
+        block moving, and the rows land at once as before.
+        """
+        move = _block_move(keys, last_keys)
+        if move is None:
+            if grown:
+                self._end_panel()
+            return
+        distance, low, high = move
+        if shaded is None:
+            shaded = _shaded_rows(app.renderer._last_screen, getattr(app, "_merged_style", None))
+        rows = app.output.get_size().rows
+        top, bottom = rows - high, rows - low  # 0-based screen rows, where they are now
+        floor = rows - height + 2
+        if distance > 0:
+            bottom += distance  # what lifted them: rows that rise in below
+            # Pull unkeyed shaded rows (blank top border, top gap) into an
+            # upward glide so the uncovered top edge opens above the box.
+            while (
+                top > floor
+                and (rows - top) in shaded
+                and (rows - (top - 1)) in shaded
+                and (rows - (top - 1)) not in keys
+            ):
+                top -= 1
+        else:
+            top += distance  # the rows they left, now empty
+        # Never over the typing and hidden rows: what starts there comes in
+        # from the region's top edge instead.
+        top = max(top, floor)
+        if bottom >= rows or bottom < top:
+            if grown:
+                self._end_panel()
+            return
+        # Ghostty fills the edge a glide uncovers (top when rising, bottom when
+        # dropping) with the terminal's default background. If that edge lies
+        # inside a shaded box, gliding paints a scrollback-colored stripe across
+        # the box and splits it in two; snap instead.
+        if (distance > 0 and (rows - top) in shaded and (rows - (top - 1)) in shaded) or (
+            distance < 0 and (rows - bottom) in shaded and (rows - (bottom + 1)) in shaded
+        ):
+            self._end_panel()
+            return
+        self._glide_panel_region(app, top, bottom, distance)
+
+    def _glide_panel(self, app, height: int, grown: int, spans, last_spans) -> None:
+        """Glide the live panel's rows above the ones just added, and those rows in.
+
+        Everything above the new rows moved up ``grown``; everything below
+        them (the status line, the editor) stayed. The new rows end at the
+        lowest window that is new or whose top rose by ``grown``. The panel
+        region runs from under the transcript region's hidden row to there.
+        """
+        risen = [
+            bottom
+            for window, (top, bottom) in spans.items()
+            if window not in last_spans or last_spans[window][0] + grown == top
+        ]
+        if not risen:
+            return
+        rows = app.output.get_size().rows
+        last_row = rows - min(risen)
+        first_row = rows - height + 2  # below the typing row and the hidden row
+        if last_row < first_row:
+            return
+        self._glide_panel_region(app, first_row, last_row, grown)
 
     async def run(self) -> None:
+        if not self.gliding or not isinstance(self.app, Application):
+            await self._run_frames()
+            return
+        self.app.before_render += self._before_render
+        self.app.after_render += self._after_render
+        try:
+            await self._run_frames()
+        finally:
+            self.app.before_render -= self._before_render
+            self.app.after_render -= self._after_render
+            self._declare(None)
+
+    async def _run_frames(self) -> None:
         size = self.app.output.get_size()
         resized_at = None
         while True:
@@ -2397,13 +3108,10 @@ class TerminalOutput:
             await self.flush()
 
 
-# Rows of the conversation's newest output shown under a /btw thread that has
-# the screen (`PromptLayout.conversation_rows`): enough to follow a turn.
-CONVERSATION_ROWS = 3
-
 PROMPT_PREFIX = "❯ "
 # Same width as PROMPT_PREFIX, so wrapping is unchanged when the draft flips.
 SHELL_PROMPT_PREFIX = "$ "
+BTW_PROMPT_PREFIX = "btw ❯ "
 CONTINUATION_PREFIX = "· "
 
 
@@ -2457,6 +3165,33 @@ def _per_render(method):
     return cached
 
 
+class _MeasuredSplit(HSplit):
+    """The layout root, remembering the height it was measured at for its last frame.
+
+    The renderer measures the root and then draws it. Code that runs right
+    after a render (`TerminalOutput._track_layout`, on every frame while
+    gliding) reads that measurement from `drawn` instead of walking the whole
+    layout again, uncached once the redraw is over.
+    """
+
+    _measured: tuple[int, int, int] | None = None
+    # (width, max height, preferred height) the last drawn frame was measured at.
+    drawn: tuple[int, int, int] | None = None
+
+    def begin_frame(self) -> None:
+        """Forget measurements taken between redraws; called before each one."""
+        self._measured = None
+
+    def preferred_height(self, width: int, max_available_height: int):
+        dimension = super().preferred_height(width, max_available_height)
+        self._measured = (width, max_available_height, dimension.preferred)
+        return dimension
+
+    def write_to_screen(self, *args, **kwargs) -> None:
+        self.drawn, self._measured = self._measured, None
+        super().write_to_screen(*args, **kwargs)
+
+
 def _preview_body(diff: bool, body: str, width: int, theme: str):
     # Only the most recent body is retained. Titles and height/tail allocation
     # stay outside this cache; width, kind and syntax theme affect rendering.
@@ -2468,6 +3203,96 @@ def _preview_body(diff: bool, body: str, width: int, theme: str):
             Console(width=width), width, overflow="fold", no_wrap=False
         )
     ]
+
+
+# A row's leading mark: one or two symbol characters before a space, such as
+# `√` (a math symbol, not stripped as `So`) or an ASCII spinner's frame.
+_LEADING_MARK = re.compile(r"^[^\w\s$]{1,2}\s+")
+
+
+def _row_keys(screen) -> dict[int, str]:
+    """The live layout's rows under the typing and hidden rows, by their text.
+
+    Keyed by row counted up from the bottom (the last row is 1), the edge the
+    layout always reaches. Symbols are left out, and so is a leading mark,
+    so a spinner's frame or a call's mark turning `√` does not make a row
+    look like a different one. Blank rows are left out.
+    """
+    keys = {}
+    for y in range(2, screen.height):
+        cells = screen.data_buffer.get(y)
+        if not cells:
+            continue
+        text = "".join(
+            cell.char
+            for _, cell in sorted(cells.items())
+            if unicodedata.category(cell.char[:1] or " ") not in ("So", "Co")
+        ).strip()
+        text = _LEADING_MARK.sub("", text)
+        if text:
+            keys[screen.height - y] = text
+    return keys
+
+
+def _shaded_rows(screen, style) -> set[int]:
+    """Live layout rows (counted up from the bottom) painted with a surface shade.
+
+    Matches `_row_keys`'s coordinate system (`screen.height - y`). Rows on the
+    terminal's default background (or `bottom-toolbar`, which sets `bg:default`)
+    are omitted.
+    """
+    if style is None:
+        return set()
+    shaded = set()
+    for y in range(2, screen.height):
+        cells = screen.data_buffer.get(y)
+        if not cells:
+            continue
+        cell = cells.get(0)
+        if cell is None or not cell.style:
+            continue
+        bg = style.get_attrs_for_style_str(cell.style).bgcolor
+        if bg and bg != "default":
+            shaded.add(screen.height - y)
+    return shaded
+
+
+def _block_move(keys: dict[int, str], last_keys: dict[int, str]) -> tuple[int, int, int] | None:
+    """Rows that moved together since `last_keys`: (distance up, lowest, highest).
+
+    Rows count up from the bottom; a negative distance moved them down. The
+    distance is the one most moved rows agree on, and every row between the
+    lowest and highest of them must have moved by it, so a block that only
+    partly moved, or a row in it that changed, does not glide. At most
+    `smooth_scroll.MAX_GLIDE` rows: the terminal jumps the rest anyway.
+    Only rows whose text is unique in both frames vote on the distance; a
+    repeated row (the same command twice) counts as moved if it fits it.
+    """
+    where: dict[str, list[int]] = {}
+    for row, key in last_keys.items():
+        where.setdefault(key, []).append(row)
+    counts = Counter(keys.values())
+    candidates = {
+        row: {row - old for old in where.get(key, ())}
+        for row, key in keys.items()
+        if last_keys.get(row) != key
+    }
+    votes = Counter(
+        d
+        for row, distances in candidates.items()
+        if counts[keys[row]] == 1 and len(where.get(keys[row], ())) == 1
+        for d in distances
+    )
+    if not votes:
+        return None
+    distance = votes.most_common(1)[0][0]
+    moved = [row for row, distances in candidates.items() if distance in distances]
+    low, high = min(moved), max(moved)
+    if abs(distance) > smooth_scroll.MAX_GLIDE or len(moved) != sum(
+        low <= row <= high for row in keys
+    ):
+        return None
+    return distance, low, high
 
 
 def _spinner_rows(fragments, height) -> VSplit:
@@ -2504,17 +3329,24 @@ class PromptLayout:
         transcript: "Transcript | None",
         shortcuts: PrefixKeys,
         session_title: Callable[[], str] = lambda: "",
+        kitty_spinners: kitty_spinner.KittySpinners | None = None,
     ):
         self.session = session
         self.activity = activity
         self.transcript = transcript
         self.shortcuts = shortcuts
         self.session_title = session_title
+        self.kitty_spinners = kitty_spinners
         self.editor = _fit_editor(session)
         self.render_cache = None
+        self.root: _MeasuredSplit | None = None  # set by `layout()`
         self.animation_task = None
         self.preview_body = lru_cache(maxsize=1)(_preview_body)
         self.live_delta = LiveDeltaPreview(lambda: self.session.app.invalidate())
+        # When each running command's output was first drawn for, by call id,
+        # and whether one is still waiting out COMMAND_PREVIEW_DELAY_SECONDS.
+        self.command_seen: dict[str, float] = {}
+        self.command_waiting = False
         # The status row and side questions (waits on a model) share one
         # spinner; running tool calls and the terminal's own waits (a command)
         # share another, so the two kinds of wait look different at a glance.
@@ -2531,24 +3363,23 @@ class PromptLayout:
         self.menu.content.dont_extend_height = Always()
         from pcode.btw_view import ThreadView
 
-        # A /btw thread in the conversation's place, while one is open.
-        self.btw = ThreadView(activity, transcript, self.key_name)
+        # The /btw thread in the drawer, while one is open.
+        self.btw = ThreadView(activity, transcript)
         # Whether the open menu made the layout taller than the measured rows.
         self.menu_overflowed = False
 
-    def key_name(self, key: str) -> str:
-        """Where the prompt's shortcut ``key`` sits now, after any /bind; or "unbound"."""
-        bindings = getattr(self.session, "command_bindings", None)
-        if bindings is not None:
-            return bindings.action_label(key)
-        shortcuts = self.shortcuts
-        return shortcuts.label(key) if shortcuts is not None else f"Ctrl+{key.upper()}"
-
     def size(self):
+        # Read once per redraw, as prompt_toolkit's renderer does: layout
+        # callbacks ask over a hundred times a frame, each a syscall.
+        cache = self.render_cache
+        if cache is not None and (size := cache.get("size")) is not None:
+            return size
         size = self.session.app.output.get_size()
         # Every layout read comes through here, so the activity panel's size rule
         # follows a resize or split before anything is measured against it.
         self.activity.fit_screen(size.columns, size.rows)
+        if cache is not None:
+            cache["size"] = size
         return size
 
     # Heights and rows, each computed at most once per redraw.
@@ -2563,19 +3394,39 @@ class PromptLayout:
             return live[3] + tasks + band
         size = self.size()
         gap = self.top_gap()
+        btw = self.btw_bar_height()
         available = max(
             1,
-            size.rows - 4 - gap - self.activity_height() - tasks - band - len(self.queue_rows()),
+            size.rows
+            - 4
+            - gap
+            - btw
+            - self.activity_height()
+            - tasks
+            - band
+            - len(self.queue_rows()),
         )
         cap = self.activity.height_cap(size.rows)
         if cap is not None:
-            available = min(available, max(1, cap - 2 - gap - band - self.tasks_height()))
+            available = min(available, max(1, cap - 2 - gap - btw - band - self.tasks_height()))
         text_height = self.editor.preferred_height(max(1, size.columns - 2), available).preferred
-        return min(text_height, available) + 2 + gap + tasks + band
+        return min(text_height, available) + 2 + gap + btw + tasks + band
 
     def refresh_interval(self) -> float:
         """Seconds until the next frame."""
-        return min(self.spinner.interval, self.tool_spinner.interval) / 1000
+        ks = self.kitty_spinners
+        status_iv = (
+            0.5 if ks is not None and ks.active_for("status") else self.spinner.interval / 1000
+        )
+        tool_iv = (
+            (0.25 if self.activity.tools.delegates else 0.5)
+            if ks is not None and ks.active_for("tool")
+            else self.tool_spinner.interval / 1000
+        )
+        interval = min(status_iv, tool_iv)
+        if self.startup_border_active():
+            return min(interval, STARTUP_FRAME_SECONDS)
+        return interval
 
     @_per_render
     def spinner_frame(self) -> str:
@@ -2586,6 +3437,36 @@ class PromptLayout:
     def tool_spinner_frame(self) -> str:
         """This redraw's frame for running tool calls and commands."""
         return self.tool_spinner.render(monotonic()).plain
+
+    def status_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("status"):
+            return self.kitty_spinners.fragment("status")
+        return self.spinner_frame()
+
+    def tool_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("tool"):
+            return self.kitty_spinners.fragment("tool")
+        return self.tool_spinner_frame()
+
+    def aside_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("aside"):
+            return self.kitty_spinners.fragment("aside")
+        return self.spinner_frame()
+
+    def wait_spinner_mark(self) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("accent"):
+            return self.kitty_spinners.fragment("accent")
+        return self.tool_spinner_frame()
+
+    def plan_spinner_icon(self) -> str:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("accent"):
+            return kitty_spinner.PLACEHOLDER
+        return self.tool_spinner_frame()
+
+    def startup_spinner_mark(self, elapsed: float) -> str | tuple[str, str]:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("startup"):
+            return self.kitty_spinners.fragment("startup")
+        return "◆" if int(elapsed * 4) % 2 == 0 else "◇"
 
     @_per_render
     def base_plan_rows(self, budget: int | None = None):
@@ -2603,11 +3484,12 @@ class PromptLayout:
                     - self.task_chrome()
                     - 3
                     - self.band_height()
+                    - self.btw_bar_height(attached=self.activity.attach_tasks)
                     - (0 if self.activity.attach_tasks else self.top_gap(attached=False)),
                 )
             )
         # The active step turns with the running commands' spinner.
-        return self.activity.plan_rows(budget, self.tool_spinner_frame())
+        return self.activity.plan_rows(budget, self.plan_spinner_icon())
 
     @_per_render
     def preview_layout(self):
@@ -2619,8 +3501,7 @@ class PromptLayout:
         circular dependency between frame_height and command_rows.
         """
         activity, transcript = self.activity, self.transcript
-        if transcript is None or transcript.view_shown:
-            # A /btw thread has the screen: the conversation's previews wait for it.
+        if transcript is None:
             return None
         edits = transcript.live_edit_previews and activity.edit_previews
         if not edits:
@@ -2634,6 +3515,7 @@ class PromptLayout:
             commands = {
                 key: event for key, event in commands.items() if key.startswith(WATCHED_PREFIX)
             }
+        commands = self.settled_commands(commands)
         if not edits and not commands:
             return None
         size = self.size()
@@ -2671,19 +3553,22 @@ class PromptLayout:
         chrome_rows = 1 if activity.attach_tasks else 2
         task_floor = 1 + chrome_rows if plans else 0
         gap = self.top_gap(attached=activity.attach_tasks and bool(plans))
-        editor_room = max(1, room - 2 - gap - 4 - task_floor)
+        btw = self.btw_bar_height(attached=activity.attach_tasks and bool(plans))
+        editor_room = max(1, room - 2 - gap - btw - 4 - task_floor)
         cap = activity.height_cap(size.rows)
         if cap is not None:
             tasks = len(plans) + chrome_rows if plans else 0
-            editor_room = min(editor_room, max(1, cap - 2 - gap - band - tasks))
+            editor_room = min(editor_room, max(1, cap - 2 - gap - btw - band - tasks))
         editor_rows = min(editor_room, self.editor.preferred_height(width, editor_room).preferred)
-        editor_height = editor_rows + 2 + gap
+        editor_height = editor_rows + 2 + gap + btw
         plan_budget = max(0, room - editor_height - 4 - chrome_rows)
         if len(plans) > plan_budget:
             plans = self.base_plan_rows(plan_budget)
             # Trimmed away entirely, attached tasks no longer stand in for the gap.
-            trimmed_gap = self.top_gap(attached=activity.attach_tasks and bool(plans))
-            editor_height += trimmed_gap - gap
+            trimmed_attached = activity.attach_tasks and bool(plans)
+            trimmed_gap = self.top_gap(attached=trimmed_attached)
+            trimmed_btw = self.btw_bar_height(attached=trimmed_attached)
+            editor_height += (trimmed_gap + trimmed_btw) - (gap + btw)
         plan_height = len(plans) + chrome_rows if plans else 0
         # Chrome: the two rule lines, plus the indented `$ command` a shell
         # preview repeats below its heading, exactly as scrollback does.
@@ -2708,6 +3593,28 @@ class PromptLayout:
             return plans, heading, rows[-budget:], editor_height
         block = [("class:plan", "$ " + command_preview(event.command)), *rows[-budget:]]
         return plans, heading, [(style, INDENT + text) for style, text in block], editor_height
+
+    def settled_commands(self, commands: dict[str, CommandOutput]) -> dict[str, CommandOutput]:
+        """The commands whose output has streamed for COMMAND_PREVIEW_DELAY_SECONDS.
+
+        Timed from the first redraw that saw the output, so a command that is
+        silent for a while and then prints and exits at once never flashes
+        either. Every running command is timed, shown or not, so toggling the
+        panel on mid-command shows a long one straight away.
+        """
+        now, seen = monotonic(), self.command_seen
+        running = self.activity.command_outputs
+        for key in [key for key in seen if key not in running]:
+            del seen[key]
+        for key in running:
+            seen.setdefault(key, now)
+        settled = {
+            key: event
+            for key, event in commands.items()
+            if key.startswith(WATCHED_PREFIX) or now - seen[key] >= COMMAND_PREVIEW_DELAY_SECONDS
+        }
+        self.command_waiting = len(settled) < len(commands)
+        return settled
 
     def plan_rows(self):
         live = self.preview_layout()
@@ -2759,8 +3666,17 @@ class PromptLayout:
             if budget is not None:
                 # Under a height cap the thought gives way to the editor.
                 rows = min(rows, budget)
-            return self.activity.thought_fragments(self.band_width(), rows)
-        return self.activity.thought_fragments(self.size().columns - 1, rows)
+            return self.activity.thought_fragments(self.band_width(), rows, self.shown_thought())
+        return self.activity.thought_fragments(self.size().columns - 1, rows, self.shown_thought())
+
+    @_per_render
+    def shown_thought(self) -> str:
+        """The thought on the thinking rows, read once per redraw.
+
+        Its hold can run out between two reads of the clock, and the tool rows
+        must not give up a row for a thought the band then leaves out.
+        """
+        return self.activity.shown_thought()
 
     @_per_render
     def status_line(self) -> StatusLine:
@@ -2783,9 +3699,9 @@ class PromptLayout:
         of the pane with the thought, which keeps one row of it when there is
         one to show.
         """
-        limit = self.size().rows // 4 - int(self.activity.thought_shown)
+        limit = self.size().rows // 4 - int(bool(self.shown_thought()))
         return self.activity.tool_rows(
-            self.status_line(), self.size().columns - 1, limit, self.tool_spinner_frame()
+            self.status_line(), self.size().columns - 1, limit, self.tool_spinner_mark()
         )
 
     def band_width(self) -> int:
@@ -2809,7 +3725,7 @@ class PromptLayout:
             return None
         # Running sub-agents get task rows with no plan at all.
         tasks = activity.tasks_shown and bool(activity.displayed_plan or activity.tools.delegates)
-        return cap - 4 - (1 + self.task_chrome() if tasks else 0)
+        return cap - 4 - int(self.btw_active()) - (1 + self.task_chrome() if tasks else 0)
 
     @_per_render
     def band_rows(self) -> list[list[tuple[str, str]]]:
@@ -2848,12 +3764,12 @@ class PromptLayout:
 
     @_per_render
     def aside_rows(self):
-        return self.activity.aside_rows(self.spinner_frame(), self.size().columns - 1)
+        return self.activity.aside_rows(self.aside_spinner_mark(), self.size().columns - 1)
 
     @_per_render
     def wait_rows(self):
         """The terminal's own wait (the host starting, a command running there)."""
-        return self.activity.wait_fragments(self.tool_spinner_frame(), self.size().columns - 1)
+        return self.activity.wait_fragments(self.wait_spinner_mark(), self.size().columns - 1)
 
     @_per_render
     def typing_row(self):
@@ -2876,7 +3792,10 @@ class PromptLayout:
         the layout calculation.
         """
         transcript = self.transcript
-        if transcript is None:
+        if transcript is None or self.gliding():
+            # Gliding, the reserved row below the typing row is the gap. One
+            # that came and went with each line would resize the layout
+            # under the glide region and jolt it.
             return False
         if not transcript.ends_blank:
             return True
@@ -2890,75 +3809,13 @@ class PromptLayout:
         )
         return shown and bool(self.typing_row())
 
-    @_per_render
-    def conversation_rows(self) -> list[StyleAndTextTuples]:
-        """While a /btw thread has the screen: a divider, then the conversation's newest rows.
-
-        The divider points up to the thread, which is scrollback now, and down
-        to what the conversation is writing meanwhile, so a running turn can be
-        followed without going back to it.
-        """
-        transcript = self.transcript
-        # Not before the thread is drawn, nor over the conversation it hides.
-        if transcript is None or not getattr(transcript.output, "view_drawn", False):
-            return []
-        from pcode.btw_view import current, position
-        from pcode.conversation_tree import excerpt
-
-        thread = current(self.activity)
-        if not thread:
-            # The thread is gone; the conversation is on its way back.
-            return []
-        columns = self.size().columns - 1
-        question = plain(excerpt(thread[0].question), max(10, columns // 4))
-        label = [
-            ("class:btw.divider", f" ↑ btw: {question} "),
-            ("class:frame.border", "·"),
-            ("class:btw.conversation", " ↓ conversation "),
-        ]
-
-        def cells(fragments) -> int:
-            return sum(get_cwidth(text) for _, text in fragments)
-
-        # The keys as /bind left them: one unbound is not offered.
-        back_key, next_key = self.key_name("q"), self.key_name("\\")
-        number, count = position(self.activity)
-        if back_key == "unbound":
-            full_back = back = [("class:btw.key", " Esc")]
-        else:
-            back = [("class:btw.key", f" {back_key}")]
-            full_back = [*back, ("class:btw.conversation", " or "), ("class:btw.key", "Esc")]
-        if count > 1 and next_key != "unbound":
-            more = [("class:btw.conversation", " back · "), ("class:btw.key", next_key)]
-            where = f"({number}/{count}) "
-            full = [*full_back, *more, ("class:btw.conversation", f" next thread {where}")]
-            short = [*back, *more, ("class:btw.conversation", f" next {where}")]
-        else:
-            full = [*full_back, ("class:btw.conversation", " back ")]
-            short = [*back, ("class:btw.conversation", " back ")]
-        # A narrow row says it more briefly, then drops the keys before the label.
-        keys = next(
-            (keys for keys in (full, short) if cells(label) + cells(keys) + 4 <= columns), []
-        )
-        fill = max(0, columns - 2 - cells(label) - cells(keys) - (1 if keys else 0))
-        divider = [("class:frame.border", "──"), *label, ("class:frame.border", "─" * fill)]
-        if keys:
-            divider += [*keys, ("class:frame.border", "─")]
-        tail = transcript.output.held_tail(max(1, columns - 2), CONVERSATION_ROWS)
-        # prompt_toolkit's ANSI reads no OSC: hyperlinks would show as text.
-        rows = [
-            [("", "  "), *ANSI(OSC.sub("", row.rstrip("\n"))).__pt_formatted_text__()]
-            for row in tail
-        ]
-        return [fit_fragments(divider, columns), *rows]
-
     def status_height(self) -> int:
         """Live rows above the editor box. The status rides the box's own border."""
         # Attached, the thought is the box's band instead.
         unboxed = not self.activity.attach_activity
         return (
-            len(self.conversation_rows())
-            + bool(self.typing_row())
+            # Gliding, the typing row and the reserved row are always there.
+            (2 if self.gliding() else bool(self.typing_row()))
             + (len(self.thought_rows()) if unboxed else 0)
             + len(self.tool_rows())
             + len(self.group_rows())
@@ -3068,7 +3925,7 @@ class PromptLayout:
                 meta.insert(0, activity.panel_title())
             line = replace(self.status_line(), tally=" · ".join(part for part in meta if part))
             lead = self.heading_lead()
-            status = line.fragments(self.spinner_frame(), columns - 3 - len(lead), rule=True)
+            status = line.fragments(self.status_spinner_mark(), columns - 3 - len(lead), rule=True)
             if not status:
                 return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
             used = len(lead) + sum(cell_len(text) for _, text in status)
@@ -3076,6 +3933,92 @@ class PromptLayout:
                 ("class:frame.border", lead),
                 *status,
                 ("class:frame.border", f" {'─' * max(0, columns - used - 2)}┐"),
+            ]
+
+        return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
+
+    def startup_border_active(self, attached: bool | None = None) -> bool:
+        """Whether the editor's top border is currently showing the startup animation."""
+        if not self.activity.startup_animating or self.activity.status_shown:
+            return False
+        if attached is None:
+            attached = self.plan_attached()
+        if attached:
+            return False
+        if self.activity.startup_label:
+            return True
+        return not self.frame_shaded() and not self.btw_active() and not self.idle_title()
+
+    def startup_border(self) -> Window:
+        """Animated top border while starting up, then a fast light sweep once ready."""
+
+        def _shimmer_rule(length: int, pos: int, pulse: int, style: str) -> list[tuple[str, str]]:
+            if length <= 0:
+                return []
+            start = max(0, pos)
+            end = min(length, pos + pulse)
+            parts: list[tuple[str, str]] = []
+            if start > 0:
+                parts.append(("class:frame.border", "─" * start))
+            if end > start:
+                parts.append((style, "─" * (end - start)))
+            if end < length:
+                parts.append(("class:frame.border", "─" * (length - end)))
+            return parts
+
+        def fragments():
+            columns = self.size().columns
+            if columns < 2:
+                return []
+            activity = self.activity
+            shaded = self.frame_shaded()
+            if activity.startup_label:
+                elapsed = max(0.0, monotonic() - activity.startup_started)
+                # Animated startup mark while booting, keeping the status
+                # spinner reserved for active model turns.
+                mark = self.startup_spinner_mark(elapsed)
+                mark_frags = (
+                    [mark, ("class:activity.spinner", " ")]
+                    if isinstance(mark, tuple)
+                    else [("class:activity.spinner", f"{mark} ")]
+                )
+                label = plain(activity.startup_label, limit=None)
+                lead = self.heading_lead()
+                if shaded:
+                    head = [
+                        ("", lead),
+                        *mark_frags,
+                        ("class:activity.phase", label),
+                    ]
+                    return fit_fragments(head, columns)
+                max_text = max(0, columns - len(lead) - 2)
+                head = fit_fragments([*mark_frags, ("class:activity.phase", label)], max_text)
+                if not head:
+                    return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
+                used_text = sum(cell_len(t) for _, t in head)
+                rule_len = max(0, columns - len(lead) - used_text - 2)
+                pulse = min(6, max(2, rule_len // 6))
+                span = rule_len + pulse
+                pos = int((elapsed * 48) % max(1, span)) - pulse
+                return [
+                    ("class:frame.border", lead),
+                    *head,
+                    ("class:frame.border", " "),
+                    *_shimmer_rule(rule_len, pos, pulse, "class:activity.spinner"),
+                    ("class:frame.border", "┐"),
+                ]
+            # Fast settle sweep once ready: identical border geometry, brief accent wave.
+            if shaded:
+                return [("", " " * columns)]
+            rule_len = max(0, columns - 2)
+            elapsed = max(0.0, monotonic() - activity.startup_done_at)
+            progress = min(1.0, elapsed / STARTUP_SETTLE_SECONDS)
+            pulse = max(4, rule_len // 4)
+            pos = int(progress * (rule_len + pulse)) - pulse
+            return [
+                ("class:frame.border", "┌"),
+                *_shimmer_rule(rule_len, pos, pulse, "class:plan.heading.done"),
+                ("class:frame.border", "┐"),
             ]
 
         return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
@@ -3213,24 +4156,9 @@ class PromptLayout:
         # Side questions outlive the turn. Their rows stay out here, so only
         # the main status rides the editor box with its tasks.
         asides = self.panel_rows(self.aside_rows)
-        # On top, right under the /btw thread it points up to.
-        conversation = ConditionalContainer(
-            Window(
-                FormattedTextControl(
-                    lambda: panel_fragments(self.conversation_rows(), self.size().columns - 1),
-                    show_cursor=False,
-                ),
-                height=lambda: len(self.conversation_rows()),
-                wrap_lines=False,
-                dont_extend_height=True,
-                style="class:btw.conversation",
-            ),
-            filter=Condition(lambda: bool(self.conversation_rows())),
-        )
         return HSplit(
             [
                 status_spacer,
-                conversation,
                 group,
                 notice,
                 thought,
@@ -3251,6 +4179,13 @@ class PromptLayout:
             filter=Condition(lambda: bool(self.activity.queued_prompts)),
         )
 
+    def glide_reserve(self) -> ConditionalContainer:
+        """Gliding, a blank row under the typing row: the region's hidden bottom row."""
+        return ConditionalContainer(
+            Window(height=1, dont_extend_height=True),
+            filter=Condition(self.gliding),
+        )
+
     def typing(self) -> ConditionalContainer:
         # Flush left like the scrollback row it becomes, and placed above the
         # layout's justifying filler so it sits directly beneath scrollback rather
@@ -3262,8 +4197,14 @@ class PromptLayout:
                 wrap_lines=False,
                 dont_extend_height=True,
             ),
-            filter=Condition(lambda: bool(self.typing_row())),
+            # Gliding, the row is always reserved, so the layout's height
+            # never changes under the region.
+            filter=Condition(lambda: bool(self.typing_row()) or self.gliding()),
         )
+
+    def gliding(self) -> bool:
+        output = self.transcript.output if self.transcript is not None else None
+        return output is not None and output.gliding
 
     def session_name(self) -> str:
         """The session's /rename name or model-given title, on one line; else empty.
@@ -3285,8 +4226,9 @@ class PromptLayout:
         label = []
         outcome = self.activity.turn_outcome
         name = self.session_name()
-        if mark := TURN_MARKS.get(outcome):
-            label.append((f"class:session.{outcome}", mark))
+        turn_slots = {"done": "ok", "cancelled": "turn_cancelled", "failed": "fail"}
+        if slot := turn_slots.get(outcome):
+            label.append((f"class:session.{outcome}", glyphs.icon(slot)))
         elif name and leads:
             label.append(("class:session.unknown", UNKNOWN_TURN_MARK))
         if name:
@@ -3307,9 +4249,76 @@ class PromptLayout:
         chrome = len(self.heading_lead()) + 3 if self.frame_shaded() else TITLE_CHROME + 1
         return fit_fragments(self.session_label(leads=True), self.size().columns - chrome)
 
+    def btw_active(self) -> bool:
+        """Whether the editor currently sends to an open `/btw` thread."""
+        from pcode.btw_view import current
+
+        return bool(current(self.activity))
+
+    def btw_bar_height(self, attached: bool | None = None) -> int:
+        """1 when an open `/btw` thread needs its own strip inside the editor box.
+
+        When idle, the `/btw` heading takes the top border (0 extra rows). While
+        the top border carries a running status, startup label, or attached
+        tasks, a 1-row strip above the prompt keeps the `/btw` target visible.
+        """
+        if not self.btw_active():
+            return 0
+        if self.activity.status_shown:
+            return 1
+        if attached is None:
+            attached = self.plan_attached()
+        if attached:
+            return 1
+        return int(self.startup_border_active(attached=attached))
+
+    def btw_label(self, width: int) -> list[tuple[str, str]]:
+        """The open `/btw` thread badge, question excerpt, model, and escape hint."""
+        from pcode.btw_view import current, position
+        from pcode.conversation_tree import excerpt
+        from pcode.tool_display import literal
+
+        thread = current(self.activity)
+        if not thread:
+            return []
+        first, newest = thread[0], thread[-1]
+        number, count = position(self.activity)
+        badge = f" btw {number}/{count} " if count > 1 else " btw "
+        tail: list[tuple[str, str]] = []
+        if newest.label:
+            tail.append(("class:btw.hint", f" · {plain(newest.label, limit=40)}"))
+        tail.append(("class:btw.hint", " · Esc back"))
+        tail_width = sum(cell_len(text) for _, text in tail)
+        q_budget = width - cell_len(badge) - tail_width - 1
+        raw_question = excerpt(literal(first.question))
+        question = (
+            plain(raw_question, limit=max(8, q_budget)) if raw_question and q_budget >= 8 else ""
+        )
+        parts: list[tuple[str, str]] = [("class:btw.badge", badge)]
+        if question:
+            parts.append(("class:btw.heading", f" {question}"))
+        parts.extend(tail)
+        return fit_fragments(parts, width)
+
+    def btw_heading(self) -> list[tuple[str, str]]:
+        """The idle editor box's top-border heading while replying to a `/btw` thread."""
+        chrome = len(self.heading_lead()) + 3 if self.frame_shaded() else TITLE_CHROME + 1
+        return self.btw_label(self.size().columns - chrome)
+
+    def btw_bar_fragments(self) -> list[tuple[str, str]]:
+        """The 1-row `/btw` target strip inside the editor box when the top border is busy."""
+        lead = " " * self.task_padding()
+        return [("", lead), *self.btw_label(self.size().columns - 2 - len(lead))]
+
     def top_row_filled(self) -> bool:
         """Whether the editor's top row carries text: a status, tasks, or a title."""
-        return self.activity.status_shown or self.plan_attached() or bool(self.idle_title())
+        return (
+            self.activity.status_shown
+            or bool(self.activity.startup_label)
+            or self.plan_attached()
+            or self.btw_active()
+            or bool(self.idle_title())
+        )
 
     def top_gap(self, attached: bool | None = None) -> int:
         """Shaded, a blank row (1) between a filled top row and the text, else 0.
@@ -3324,11 +4333,18 @@ class PromptLayout:
         """
         if attached is None:
             attached = self.plan_attached()
+        if self.btw_bar_height(attached=attached):
+            return 0
         return int(
             self.frame_shaded()
             and not attached
             and not self.band_rows()
-            and (self.activity.status_shown or bool(self.idle_title()))
+            and (
+                self.activity.status_shown
+                or bool(self.activity.startup_label)
+                or self.btw_active()
+                or bool(self.idle_title())
+            )
         )
 
     def frame_shaded(self) -> bool:
@@ -3368,6 +4384,20 @@ class PromptLayout:
                 VSplit([side(), Window(), side()], height=1),
                 filter=Condition(lambda: bool(self.top_gap())),
             ),
+            ConditionalContainer(
+                VSplit(
+                    [
+                        side(),
+                        Window(
+                            FormattedTextControl(self.btw_bar_fragments, show_cursor=False),
+                            height=1,
+                        ),
+                        side(),
+                    ],
+                    height=1,
+                ),
+                filter=Condition(lambda: bool(self.btw_bar_height())),
+            ),
             middle,
             bottom,
         ]
@@ -3375,14 +4405,16 @@ class PromptLayout:
         # heading. Attached tasks sit under it, and a divider separates them
         # from the text; frame_height counts both.
         status = Condition(lambda: self.activity.status_shown)
+        startup = Condition(self.startup_border_active)
         attached = Condition(self.plan_attached)
         shaded = Condition(self.frame_shaded)
-        from pcode.btw_view import current
+        btw = Condition(self.btw_active)
+        btw_top = btw & ~status & ~startup & ~attached
 
         # Showing a /btw thread, the box takes the thread's colour: Enter goes
         # to the thread, not the conversation.
         editor_frame.container.style = lambda: (
-            "class:frame class:shaded" + (" class:btw.reply" if current(self.activity) else "")
+            "class:frame class:shaded" + (" class:btw.reply" if self.btw_active() else "")
         )
         band = Condition(lambda: bool(self.band_rows()))
 
@@ -3406,15 +4438,20 @@ class PromptLayout:
                 HSplit(
                     [
                         ConditionalContainer(self.status_border(), filter=status),
+                        ConditionalContainer(self.startup_border(), filter=startup),
                         ConditionalContainer(self.plan_heading_border(), filter=attached & ~status),
                         ConditionalContainer(
+                            self.heading_border(self.btw_heading),
+                            filter=btw_top,
+                        ),
+                        ConditionalContainer(
                             top,
-                            filter=~attached & ~status & ~shaded,
+                            filter=~attached & ~status & ~startup & ~btw_top & ~shaded,
                         ),
                         # Shaded, the session's name lines up with the prompt chevron.
                         ConditionalContainer(
                             self.heading_border(self.idle_title),
-                            filter=~attached & ~status & shaded,
+                            filter=~attached & ~status & ~startup & ~btw_top & shaded,
                         ),
                         self.band_body(side),
                     ],
@@ -3449,16 +4486,14 @@ class PromptLayout:
             self.editor_frame(),
         ]
         if self.transcript is not None:
-            children[:0] = [self.typing(), Window()]
+            children[:0] = [self.typing(), self.glide_reserve(), Window()]
         if self.session.bottom_toolbar is not None:
             children.append(self.bottom_toolbar())
-        return Layout(
-            HSplit(
-                children,
-                align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
-            ),
-            focused_element=self.editor,
+        self.root = _MeasuredSplit(
+            children,
+            align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
         )
+        return Layout(self.root, focused_element=self.editor)
 
     # Redraw hooks: the per-render cache and the spinner's animation timer.
 
@@ -3467,12 +4502,15 @@ class PromptLayout:
         return (
             activity.busy
             or activity.status_shown
+            or self.startup_border_active()
             # Keep redrawing while a notice is live: nothing else will ask for
             # the frame that finally removes it.
             or activity.notice_shown
             or activity.asides_running
             or bool(activity.waits)
             or (activity.tasks_shown and activity.tools.animating)
+            # Nothing else may redraw when a waiting command preview is due.
+            or self.command_waiting
         )
 
     async def animate(self, app) -> None:
@@ -3485,8 +4523,23 @@ class PromptLayout:
 
     def before_render(self, app) -> None:
         self.render_cache = {}
+        if self.root is not None:
+            self.root.begin_frame()
         self.btw.sync()
         transcript, activity = self.transcript, self.activity
+        if (
+            self.kitty_spinners is not None
+            and self.kitty_spinners.enabled
+            and transcript is not None
+        ):
+            self.kitty_spinners.sync(
+                transcript.chrome_palette,
+                transcript.palette,
+                write_raw=app.output.write_raw,
+                flush=app.output.flush,
+                invalidate=app.invalidate,
+                schedule=app.create_background_task,
+            )
         if transcript is None or not (
             (transcript.live_edit_previews and activity.edit_previews)
             or (transcript.command_preview and activity.command_outputs)
@@ -3552,6 +4605,8 @@ def create_prompt(
     on_btw_close=None,
     key_prefix: str | None = None,
     session_title: Callable[[], str] = lambda: "",
+    drafts: Drafts | None = None,
+    kitty_spinners: kitty_spinner.KittySpinners | None = None,
     **kwargs,
 ) -> PromptSession:
     configure_newline_keys()
@@ -3573,14 +4628,47 @@ def create_prompt(
         on_btw_next=on_btw_next,
         on_btw_close=on_btw_close,
     )
+    # Unsent text survives a reset as a history entry and, given `drafts` with
+    # a directory, a session that ends: what earlier ones left starts the history.
+    drafts = drafts or Drafts()
+    kwargs.setdefault("history", InMemoryHistory(drafts.load()))
     keys, shortcuts = prompt_key_bindings(
-        activity, transcript, callbacks, key_prefix, lambda: session.default_buffer
+        activity, transcript, callbacks, key_prefix, lambda: session.default_buffer, drafts
     )
 
-    def thread_commands() -> tuple[tuple[str, str], ...]:
-        from pcode.btw_view import THREAD_COMMANDS, current
+    def btw_replying() -> bool:
+        from pcode.btw_view import current
 
-        return THREAD_COMMANDS if on_btw_close is not None and current(activity) else ()
+        return on_btw_close is not None and bool(current(activity))
+
+    def thread_commands() -> tuple[tuple[str, str], ...]:
+        from pcode.btw_view import THREAD_COMMANDS
+
+        return THREAD_COMMANDS if btw_replying() else ()
+
+    def prompt_message() -> list[tuple[str, str]]:
+        text = session.default_buffer.text
+        if text.lstrip().startswith(SHELL_PREFIX):
+            return [("class:prompt", SHELL_PROMPT_PREFIX)]
+        if btw_replying():
+            return [("class:btw.prompt", BTW_PROMPT_PREFIX)]
+        return [("class:prompt", PROMPT_PREFIX)]
+
+    def prompt_prefix_width() -> int:
+        text = session.default_buffer.text
+        if text.lstrip().startswith(SHELL_PREFIX):
+            return get_cwidth(SHELL_PROMPT_PREFIX)
+        if btw_replying():
+            return get_cwidth(BTW_PROMPT_PREFIX)
+        return get_cwidth(PROMPT_PREFIX)
+
+    def prompt_continuation(width: int, line: int, soft: bool) -> list[tuple[str, str]]:
+        if soft:
+            return [("class:prompt", " " * width)]
+        pad = max(0, width - get_cwidth(CONTINUATION_PREFIX))
+        is_shell = session.default_buffer.text.lstrip().startswith(SHELL_PREFIX)
+        style = "class:btw.prompt" if btw_replying() and not is_shell else "class:prompt"
+        return [(style, " " * pad + CONTINUATION_PREFIX)]
 
     kwargs.setdefault("color_depth", color_depth())
     output = kwargs.pop("output", None)
@@ -3588,13 +4676,10 @@ def create_prompt(
         output = CursorSafeOutput(output if output is not None else create_output())
     session = PromptSession(
         output=output,
-        message=lambda: [("class:prompt", prompt_prefix(session.default_buffer.text))],
-        prompt_continuation=lambda width, line, soft: [
-            ("class:prompt", "  " if soft else CONTINUATION_PREFIX)
-        ],
-        # Every prefix is the same width, so wrapped rows all get the same
-        # amount of text space.
-        input_processors=[WordWrapProcessor(prefix_width=get_cwidth(PROMPT_PREFIX))],
+        message=prompt_message,
+        prompt_continuation=prompt_continuation,
+        # Wrapped rows match the active prompt width (2 normally, 6 in `/btw` reply).
+        input_processors=[WordWrapProcessor(prefix_width=prompt_prefix_width)],
         multiline=True,
         erase_when_done=True,
         completer=merge_completers(
@@ -3609,6 +4694,8 @@ def create_prompt(
         **kwargs,
     )
     session.shortcuts = shortcuts
+    drafts.buffer = session.default_buffer
+    session.drafts = drafts
     session.command_bindings = (
         PromptKeymap(
             shortcuts,
@@ -3620,14 +4707,14 @@ def create_prompt(
         else None
     )
 
-    prompt_layout = PromptLayout(session, activity, transcript, shortcuts, session_title)
+    prompt_layout = PromptLayout(
+        session, activity, transcript, shortcuts, session_title, kitty_spinners=kitty_spinners
+    )
     if transcript is not None:
 
         def accept(buffer):
-            text = buffer.text
-            buffer.append_to_history()
             # True keeps the draft: something refused it with a reason shown.
-            return bool(on_submit(text))
+            return drafts.accept(buffer, on_submit)
 
         session.default_buffer.accept_handler = accept
     session.btw_view = prompt_layout.btw
@@ -3637,6 +4724,7 @@ def create_prompt(
         # The app runs for the whole session, redrawn by streaming output and
         # animation; cap that at the paced output's frame rate.
         session.app.min_redraw_interval = 1 / 30
+    install_resize_repaint(session.app)
     session.app.before_render += prompt_layout.before_render
     session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:
@@ -3644,13 +4732,19 @@ def create_prompt(
         session.app.ttimeoutlen = 0.1
     if transcript is None or not transcript.replays_on_resize:
         install_reflow_renderer(session.app)
+    elif smooth_scroll.worth_asking():
+        install_nowrap_editor(session.app)
 
     return session
 
 
 def tally(succeeded: int, failed: int) -> str:
     """`✓ 2 ✗ 1`, dropping a zero side, so each mark only ever counts its own outcome."""
-    return " ".join(f"{mark} {count}" for mark, count in (("✓", succeeded), ("✗", failed)) if count)
+    return " ".join(
+        f"{mark} {count}"
+        for mark, count in ((glyphs.icon("ok"), succeeded), (glyphs.icon("fail"), failed))
+        if count
+    )
 
 
 def tool_count(name: str, count: int, failed: int) -> str:
@@ -3673,10 +4767,13 @@ class Transcript:
         preferences: dict[str, str] | None = None,
         detected_theme: str | None = None,
         probe_width: bool = False,
+        probe_cursor: bool = False,
+        probe_glide: bool = False,
     ) -> None:
         # `probe_width`: also measure the terminal's ambiguous-width glyphs
         # (`pcode.theme`), for the editor's terminal only: its late replies
-        # need the editor's input to take them out.
+        # need the editor's input to take them out. `probe_glide`, the same
+        # for whether it glides (the ``smooth_scroll`` setting).
         preferences = load_preferences() if preferences is None else preferences
         self.error_scrollback_lines = int(preferences.get("error_scrollback_lines", "20"))
         self.tool_error_scrollback = preferences.get("tool_error_scrollback", "off") == "on"
@@ -3694,8 +4791,20 @@ class Transcript:
         self.activity = activity
         self.console = console
         self.theme = theme
+        # Experimental, and only for Ghostty Smooth, which the probe asks after.
+        self.smooth_scroll = preferences.get("smooth_scroll", SETTINGS["smooth_scroll"].default)
         self.detected_theme = (
-            detect_theme(probe_width=probe_width) if detected_theme is None else detected_theme
+            detect_theme(
+                probe_width=probe_width,
+                probe_cursor=probe_cursor,
+                probe_glide=probe_glide and self.smooth_scroll == "auto",
+                # Asked whatever `popup_view` says, so turning it on needs no restart.
+                probe_drawer=probe_glide,
+                probe_kitty=probe_glide
+                and preferences.get("smooth_spinner", SETTINGS["smooth_spinner"].default) == "auto",
+            )
+            if detected_theme is None
+            else detected_theme
         )
         self.syntax_themes = syntax_themes(preferences)
         self._delta = delta_from_preferences(preferences)
@@ -3729,11 +4838,6 @@ class Transcript:
     def output(self) -> TerminalOutput | None:
         return self._output
 
-    @property
-    def view_shown(self) -> bool:
-        """Whether another view, a /btw thread, has the screen (`TerminalOutput.view`)."""
-        return getattr(self._output, "view", None) is not None
-
     @output.setter
     def output(self, output: TerminalOutput | None) -> None:
         self._output = output
@@ -3748,6 +4852,7 @@ class Transcript:
                 and self.console.is_terminal
                 and isinstance(output.app, Application)
             )
+            output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
             if self.replays_on_resize:
                 output.resize_replay = self.replay
@@ -3762,7 +4867,7 @@ class Transcript:
         # Resolve theme-dependent renderables again on every replay.
         objects = tuple(
             Markdown(safe_text(obj.markup), code_theme=self.code_theme)
-            if isinstance(obj, (Markdown, RetainedMarkdown))
+            if isinstance(obj, (RichMarkdown, RetainedMarkdown))
             else replace(obj, code_theme=self.code_theme, delta=self.delta, dedent=self.diff_dedent)
             if isinstance(obj, EditTranscript)
             else replace(obj, code_theme=self.code_theme)
@@ -3920,9 +5025,17 @@ class Transcript:
         """Whether a not-yet-applied edit is previewed in the live panel."""
         return self.show_edits and self.live_edits
 
+    def writes_edit(self, event: EditCompleted) -> bool:
+        """Report whether this change's diff is written to scrollback.
+
+        A sub-agent's is not: its edit is a line beneath its delegate, like
+        its other calls, and `/diffs` has the diff.
+        """
+        return self.show_edits and not event.parent_call_id
+
     @recorded
     def edit(self, event) -> None:
-        if self.show_edits:
+        if self.writes_edit(event):
             self.print(EditTranscript(event))
 
     def replay(self) -> list:
@@ -4085,23 +5198,34 @@ class Transcript:
             else self.syntax_themes[self.resolved_theme]
         )
 
-    def welcome(self, model: str | None = None, workspace: str = "") -> None:
+    def welcome(self, model: str | None = None, workspace: str = "") -> int:
+        header = Text.assemble(
+            ("◆ ", "pcode.accent"),
+            ("pcode", "pcode.brand"),
+            (f"  /  {model or 'UI preview'}", "pcode.muted"),
+        )
+        notes = (
+            (
+                f"Coder · workspace: {workspace}",
+                "Live model · file edits and shell tools enabled · not a sandbox",
+            )
+            if model
+            else ("Local only · no model connected · no files or shell tools",)
+        ) + ("Type / for commands, /theme-preview for a sample response, /help for keys.",)
         self.print()
-        self.print(
-            Text.assemble(
-                ("pcode", "pcode.brand"),
-                (f"  /  {model or 'UI preview'}", "pcode.muted"),
+        self.print(header)
+        for text in notes:
+            self.retained_note(text)
+        self.print()
+        options = self.console.options.update(overflow="fold")
+        return (
+            2
+            + len(self.console.render_lines(header, options=options, pad=False))
+            + sum(
+                len(self.console.render_lines(Note(text), options=options, pad=False))
+                for text in notes
             )
         )
-        if model:
-            self.retained_note(f"Coder · workspace: {workspace}")
-            self.retained_note("Live model · file edits and shell tools enabled · not a sandbox")
-        else:
-            self.retained_note("Local only · no model connected · no files or shell tools")
-        self.retained_note(
-            "Type / for commands, /theme-preview for a sample response, /help for keys."
-        )
-        self.print()
 
     @recorded
     def syntax_gallery(self) -> None:
@@ -4149,10 +5273,6 @@ class Transcript:
         notice = Note(text)
         if self._replay_sink is not None:
             self._replay_sink.append(((notice,), "\n", False))
-        elif self.view_shown and self.activity is not None:
-            # A /btw thread has the screen: a note written now would only show
-            # once the conversation is back, so say it where it is seen.
-            self.flash(text)
         elif self.output is not None:
             # Preserve new notices across an already queued redraw, but never
             # replay notices that have previously reached the terminal.
@@ -4161,17 +5281,8 @@ class Transcript:
             with self.console.use_theme(self.rich_theme):
                 self.console.print(notice)
 
-    def _flash_behind_view(self, text: str) -> None:
-        """Flash a warning or error a /btw thread on screen would otherwise hide.
-
-        It still goes to the conversation, which shows it on return.
-        """
-        if self.view_shown and self._replay_sink is None and self.activity is not None:
-            self.flash(text.strip().splitlines()[0] if text.strip() else text)
-
     @recorded
     def error(self, text: str, *, title: str = "Error") -> None:
-        self._flash_behind_view(f"{title}: {text}")
         self.print(
             TranscriptNotice(text, "error", title, self.error_scrollback_lines, self.code_theme)
         )
@@ -4217,7 +5328,9 @@ class Transcript:
             return True
         if event.failed:
             return True
-        return event.name not in PLAN_TOOLS and not (event.name in EDIT_TOOLS and self.show_edits)
+        # A sub-agent's diff is never shown, so its edit keeps its line.
+        shown_as_diff = event.name in EDIT_TOOLS and self.show_edits and not event.parent_call_id
+        return event.name not in PLAN_TOOLS and not shown_as_diff
 
     @recorded
     def command_output(self, event: ToolSummary) -> bool:
@@ -4278,7 +5391,6 @@ class Transcript:
         )
 
     def warning(self, text: str) -> None:
-        self._flash_behind_view(f"Warning: {text}")
         self.print(WarningNotice(text))
 
     @recorded
@@ -4296,9 +5408,10 @@ class Transcript:
     def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
         """The compact rows a settled call leaves in scrollback."""
         if event.name not in COMMAND_TOOLS and not event.command:
+            mark = glyphs.icon("fail") if event.failed else glyphs.icon("ok")
             return [
                 Text.assemble(
-                    (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
+                    (f"{mark} {label(event.name)}  ", "pcode.thinking"),
                     (plain(event.detail, limit=None), "pcode.thinking"),
                     (
                         f"  {event.elapsed_seconds:.1f}s"

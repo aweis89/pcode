@@ -8,7 +8,8 @@ highlights them for) and for the small picker in `/tree`.
 """
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 
 from markdown_it import MarkdownIt
 from prompt_toolkit.application import Application
@@ -17,11 +18,12 @@ from prompt_toolkit.filters import Always
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
+from prompt_toolkit.widgets import Label
 from rich.console import Group
-from rich.markdown import BlockQuote, CodeBlock, Markdown
+from rich.markdown import BlockQuote, CodeBlock
 
-from pcode.frame import Dialog
+from pcode.frame import Dialog, ScrollingTextArea
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     bind_list_paging,
     marked,
@@ -41,12 +43,18 @@ class Answer:
 
     prompt: str
     text: str
+    # The turn's text blocks before `text`, whose quotes and code it also offers.
+    earlier: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        from pcode.session_ui import literal
+        from pcode.tool_display import literal
 
         object.__setattr__(self, "prompt", literal(self.prompt))
         object.__setattr__(self, "text", literal(self.text))
+        object.__setattr__(self, "earlier", tuple(literal(block) for block in self.earlier))
+
+    def snippets(self) -> "list[Snippet]":
+        return turn_snippets(self.text, self.earlier)
 
 
 def answers(tree) -> list[Answer]:
@@ -55,7 +63,7 @@ def answers(tree) -> list[Answer]:
     for identity in reversed(tree.path(tree.active)):
         node = tree.nodes[identity]
         if node.kind != "compaction" and node.response.strip():
-            answer = Answer(node.prompt, node.response)
+            answer = Answer(node.prompt, node.response, tuple(node.earlier))
             if answer.text.strip():
                 found.append(answer)
     return found
@@ -68,6 +76,8 @@ class Snippet:
     language: str = ""
     # Source lines [start, end) of a quote or code block, for `SnippetMarkdown`.
     lines: tuple[int, int] | None = field(default=None, compare=False)
+    # Which of the turn's text blocks `lines` is in (see `turn_snippets`).
+    block: int = field(default=0, compare=False)
 
     @property
     def label(self) -> str:
@@ -152,6 +162,26 @@ def snippets(markdown: str) -> list[Snippet]:
     return found
 
 
+def turn_snippets(response: str, earlier: Sequence[str] = ()) -> list[Snippet]:
+    """A turn's last text block, then the quotes and code in all its blocks, oldest first.
+
+    A turn that runs tools writes text between calls, and what the user wants
+    to paste can sit in any of it (a draft answered mid-turn, say). The whole
+    response stays the last block: that is the turn's answer. Each snippet's
+    `block` indexes ``[*earlier, response]``.
+    """
+    found = snippets(response)
+    if not found:
+        return []
+    parts = [
+        replace(snippet, block=index)
+        for index, block in enumerate(earlier)
+        for snippet in snippets(block)[1:]
+    ]
+    last = [replace(snippet, block=len(earlier)) for snippet in found[1:]]
+    return [replace(found[0], block=len(earlier)), *parts, *last]
+
+
 class _Marked:
     """A Markdown element tagged with its snippet's pane mark, when it has one."""
 
@@ -222,7 +252,7 @@ class SnippetPicker:
     def __init__(self, choices: list[Snippet], on_pick, on_cancel, *, shortcuts=None) -> None:
         self.choices = choices
         self.on_pick = on_pick
-        self.list = TextArea(
+        self.list = ScrollingTextArea(
             read_only=True,
             wrap_lines=False,
             scrollbar=True,

@@ -118,20 +118,22 @@ the modes:
 
 | Mode | Shows |
 | --- | --- |
-| `activity-panel` (default; formerly `status-line`) | The newest thought, faded and quoted with `❝` on every row, on up to `thinking_max_lines` (default 10) rows of its own in the [activity panel](commands.md#activity-panel), under the status row |
-| `scrollback` | The full thinking, streamed into scrollback in a dim style |
-| `off` | Nothing, and pcode asks the provider for nothing extra |
+| `activity-panel` (formerly `status-line`) | The newest thought, faded and quoted with `❝` on every row, on up to `thinking_max_lines` (default 10) rows of its own in the [activity panel](commands.md#activity-panel), under the status row |
+| `scrollback` (default) | The full thinking, streamed into scrollback in a dim style |
+| `off` | Nothing, and pcode asks the provider for nothing extra (on Gemini, an `/effort` level still returns summaries) |
 
 The thinking rows stay through the tool calls that follow a thought, so a
 running tool on the status row doesn't hide them, and the last thought usually
-explains the call under it. They go as soon as any reply text streams into
-scrollback, including a line written before a tool call. A long thought is cut at the end; a short terminal gets fewer rows (at most a quarter of its height).
+explains the call under it. They go once reply text streams into scrollback,
+including a line written before a tool call, but not before the thought has
+sat on screen unchanged for a couple of seconds, so thinking that leads
+straight into the answer can still be read instead of flashing past. A long thought is cut at the end; a short terminal gets fewer rows (at most a quarter of its height).
 Where a summary has section titles, as OpenAI's do, the rows show the newest
 title rather than the prose under it.
 
 Each mode asks the provider for the text that suits it:
 
-- **Opus 5.5, Sonnet 5.5, Fable 5 and Mythos 5.1 over `anthropic:`**: `activity-panel`
+- **Opus 5.5, Sonnet 5.5, Fable 5, Mythos 5.1 and Mythos 5.2 over `anthropic:`**: `activity-panel`
   asks for progress updates, the short notes these models write between tool
   calls for whoever is watching. The row stays empty while the model reasons
   and fills in as it moves between tools. `scrollback` asks for full summaries.
@@ -145,9 +147,15 @@ Each mode asks the provider for the text that suits it:
   either mode. An API organisation that isn't verified is refused summaries;
   switch to `off` if that happens.
 - **`openai-codex:`**: always detailed summaries.
+- **`google:` and `google-cloud:`**: summaries in either mode, at the model's
+  own thinking level. An `/effort` level asks for summaries too, so with one set
+  they still arrive under `off`; `/effort default` stops them.
+- **`antigravity:`**: streams whatever thought text `agy` exposes for the active
+  model; `/effort` sets the ACP session's thinking level (matched to the nearest
+  level the model offers).
 
 ```sh
-pcode config set show_thinking scrollback   # Default is activity-panel
+pcode config set show_thinking activity-panel   # Default is scrollback
 ```
 
 Switching into or out of `scrollback` saves the default and rebuilds the retained
@@ -308,7 +316,10 @@ Details:
   summary line.
 - While a foreground `shell` call runs (in `activity-panel` or `scrollback`
   mode), a live preview above the prompt shows
-  its combined stdout/stderr as complete lines arrive. It looks like the settled
+  its combined stdout/stderr as complete lines arrive. It opens only once output
+  has been streaming for a second, so a quick command like `grep` or
+  `git status` never flashes a block that vanishes a moment later; its result
+  is in the tool row and scrollback either way. It looks like the settled
   block, with `⟳` and a running elapsed time. It is capped at
   `command_preview_lines` wrapped rows (not counting the command and border
   lines) and uses whatever height is left after the editor, queued prompts, and
@@ -344,28 +355,38 @@ These settings also work through `/config` and apply on the next launch.
 
 The model's reply reaches scrollback one finished Markdown block at a time, so
 without pacing a whole paragraph would appear at once after a pause. By default
-(`typed`), finished prose (paragraphs, lists, headings, quotes, and thinking) is
-typed out a few characters per frame on a live row, and each row moves to
+(`rows`), finished blocks roll into scrollback a row per frame, sped up to
+finish a burst in about a second.
+
+With `typed`, finished prose (paragraphs, lists, headings, quotes, and thinking)
+is typed out a few characters per frame on a live row instead, moving to
 scrollback once complete. The text is already rendered, so nothing reflows while
 it types: line breaks and styling are final from the first character, and
-indentation appears at once. Code blocks, tables, rules, and tool output roll in
-a row per frame instead, since half a code line or table border reads badly.
+indentation appears at once. Code blocks, tables, rules, and tool output still
+roll in a row per frame, since half a code line or table border reads badly.
+Typing runs at about 270 characters a second (a little under a model's own
+pace), speeding up to finish a burst in about two seconds. Prose and whole-row
+blocks queue behind each other, so prose followed by a long code block can take
+about three seconds to land.
 
-Typing runs at about 360 characters a second, close to a model's own pace. When
-a burst arrives faster than that, typing speeds up to finish it in about two
-seconds. Rows rolled in whole go one per frame, sped up to finish in about a
-second. The two queue behind each other, so prose followed by a long code block
-can take about three seconds to land. Opening a popup or ending the session
-writes whatever is left at once, and a redraw or resize rebuild always lands
-whole. Pacing changes only how text appears, not what is written or retained.
+Opening a popup or ending the session writes whatever is left at once, and a
+redraw or resize rebuild always lands whole. Pacing changes only how text
+appears, not what is written or retained.
 
 ```sh
-pcode config set paced_scrollback rows  # Roll every block in by row
-pcode config set paced_scrollback off   # Write every block at once
+pcode config set paced_scrollback typed  # Type settled prose out character by character
+pcode config set paced_scrollback off    # Write every block at once
 ```
 
-The default is `typed`; changes apply on the next launch. An older saved `on`
+The default is `rows`; changes apply on the next launch. An older saved `on`
 falls back to the default.
+
+With `smooth_scroll auto` in Ghostty Smooth, pcode hands settled blocks to the
+terminal in batches instead of pacing rows itself. Ghostty glides them in with
+a soft bottom-edge dissolve. In `typed` mode it also reveals new rows: a 120 Hz
+soft-edged ink sweep across prose lines and a top-to-bottom curtain for code
+and tables (keeping hyperlinks, ligatures, and instant scrollback search
+intact).
 
 ## Regenerating the terminal transcript
 

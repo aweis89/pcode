@@ -120,7 +120,7 @@ def test_anthropic_model_without_a_key_stays_unresolved():
     assert resolve_model("anthropic:claude-opus-5") == "anthropic:claude-opus-5"
 
 
-@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"claude"}))
+@pytest.mark.parametrize("provider", sorted(PROVIDERS.keys() - {"claude", "antigravity"}))
 def test_every_listed_provider_is_installed(provider):
     # A picker entry that raises ImportError on switch is worse than none.
     infer_provider_class(provider)
@@ -137,7 +137,7 @@ def test_claude_code_config_activates_claude(monkeypatch, tmp_path):
     (tmp_path / "profile").mkdir()
     assert "claude" in active_providers(None)
     # Picker entries are Anthropic's own model IDs.
-    assert "claude:claude-opus-5" in model_catalog({"claude"})
+    assert "claude:claude-opus-5-5" in model_catalog({"claude"})
 
 
 def test_key_presence_enables_provider(monkeypatch):
@@ -168,10 +168,9 @@ def test_catalog_per_provider_and_typed_only_providers():
 def test_catalog_uses_installed_sdk_and_keeps_custom_current():
     models = model_catalog({"anthropic", "openai-codex"}, "anthropic:custom-id")
     assert "anthropic:custom-id" in models
-    assert "anthropic:claude-opus-5" in models
+    assert "anthropic:claude-opus-5-5" in models
     assert "openai-codex:gpt-5.6-luna" in models
     assert "openai-codex:gpt-6-astra" in models
-    assert "openai-codex:gpt-5-chat-latest" in models
     assert len(models) == len(set(models))
     assert all(name.startswith(("anthropic:", "openai-codex:")) for name in models)
     assert model_catalog(set()) == []
@@ -195,6 +194,57 @@ def test_numeric_version_sort_newest_first_with_alias_before_snapshots():
 
 
 def test_current_model_does_not_override_version_order():
-    current = "anthropic:claude-opus-4-5"
+    current = "anthropic:claude-opus-4-8"
     models = model_catalog({"anthropic"}, current)
-    assert models.index("anthropic:claude-opus-5") < models.index(current)
+    assert models.index("anthropic:claude-opus-5-5") < models.index(current)
+
+
+def test_google_cloud_uses_project_adc_when_gemini_api_key_is_also_set(monkeypatch):
+    from pydantic_ai.models import infer_model
+    from pydantic_ai.models.google import GoogleModel
+
+    from pcode.agent import resolve_model
+
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-gemini-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "synthetic-google-key")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-gcp-project")
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+
+    assert {"google", "google-cloud"} <= active_providers(None)
+
+    resolved = resolve_model("google-cloud:gemini-2.5-pro")
+    assert isinstance(resolved, GoogleModel)
+    assert resolved.system == "google-cloud"
+    assert resolved.model_name == "gemini-2.5-pro"
+    assert resolved.client.vertexai is True
+    assert resolved.client._api_client.api_key is None
+    assert resolved.client._api_client.project == "my-gcp-project"
+    assert resolved.client._api_client.location == "us-central1"
+
+    # `google:` still uses the API key in the same environment.
+    google_resolved = infer_model(resolve_model("google:gemini-2.5-pro"))
+    assert isinstance(google_resolved, GoogleModel)
+    assert google_resolved.system == "google"
+    assert google_resolved.client.vertexai is False
+    assert google_resolved.client._api_client.api_key == "synthetic-google-key"
+
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
+    resolved_global = resolve_model("google-cloud:gemini-2.5-pro")
+    assert isinstance(resolved_global, GoogleModel)
+    assert resolved_global.client._api_client.api_key is None
+    assert resolved_global.client._api_client.location == "global"
+
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "   ")
+    resolved_blank_location = resolve_model("google-cloud:gemini-2.5-pro")
+    assert isinstance(resolved_blank_location, GoogleModel)
+    assert resolved_blank_location.client._api_client.location == "us-central1"
+
+
+def test_google_cloud_without_project_stays_unresolved(monkeypatch):
+    from pcode.agent import resolve_model
+
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    assert resolve_model("google-cloud:gemini-2.5-pro") == "google-cloud:gemini-2.5-pro"
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "   ")
+    assert resolve_model("google-cloud:gemini-2.5-pro") == "google-cloud:gemini-2.5-pro"

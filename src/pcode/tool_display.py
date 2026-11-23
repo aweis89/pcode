@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
+from pcode import glyphs
 from pcode.code_mode import SANDBOXED_TOOLS
 from pcode.diagnostics import strip_controls
 
@@ -21,9 +22,11 @@ LABELS = {
     # Verb + object, so a group tally ("Read file ✓ 15 · Run shell ✓ 1") says
     # what each count acted on without the per-row path or command beside it.
     "run_code": "Run code",
+    "run_workflow": "Run workflow",
     "delegate_task": "Delegate task",
     "read_file": "Read file",
     "read_tool_result": "Read results",
+    "grep_tool_result": "Search results",
     "write_file": "Write file",
     "edit_file": "Edit file",
     "search_files": "Search code",
@@ -51,8 +54,23 @@ LABELS = {
 
 def plain(value: str, limit: int | None = 90) -> str:
     """Remove controls (including bidi/ANSI introducers) and bound terminal text."""
-    text = "".join(c if c.isprintable() else " " for c in value)
+    text = "".join(c if c.isprintable() or c in glyphs.NERD_ICON_CHARS else " " for c in value)
     return text if limit is None or len(text) <= limit else text[: limit - 1] + "…"
+
+
+def literal(text: str) -> str:
+    """Every line of a prompt or response, safe for the terminal.
+
+    Nothing is dropped: the pane scrolls, and a turn read here should say what
+    the turn said. Blank lines inside are structure, so only the surrounding
+    ones go, which would otherwise draw an empty quote rail.
+    """
+    lines = [plain(line, limit=None) for line in strip_controls(text).splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 def label(name: str) -> str:
@@ -129,7 +147,7 @@ def tool_summary_lines(
     elapsed = f" · {elapsed_seconds:.1f}s" if elapsed_seconds is not None else ""
     # The marker alone reports failure: a summary line keeps one style so a
     # failed call does not shout louder than the diagnostic that follows it.
-    marker = "✗" if failed else "✓"
+    marker = glyphs.icon("fail") if failed else glyphs.icon("ok")
     preview = " · " + command_preview(command) if command else ""
     lines = [Text(f"{marker} {label(name)}{detail}{elapsed}{preview}", style="pcode.thinking")]
     for line in lines:
@@ -246,10 +264,14 @@ def assignment(name: str, args: dict) -> tuple[str, str]:
 _SPILL_HANDLE = re.compile(r"[^/]+/(.+)\.\d+(?:\.content)?")
 # Harness clamps a read to this many lines (its private `_MAX_READ_LINES`).
 _MAX_STORED_READ_LINES = 1000
+# And a byte read to this many bytes (`_MAX_READ_CHARS`).
+_MAX_STORED_READ_BYTES = 50_000
+# Harness's tools that read a spilled result back by its handle.
+SPILL_READERS = frozenset({"read_tool_result", "grep_tool_result"})
 
 
 def spilled_call_id(args: dict) -> str:
-    """The id of the call whose output a `read_tool_result` call reads, or "" if unknown."""
+    """The id of the call whose output a `SPILL_READERS` call reads, or "" if unknown."""
     handle = args.get("handle")
     match = _SPILL_HANDLE.fullmatch(handle) if isinstance(handle, str) else None
     return match[1] if match else ""
@@ -260,22 +282,33 @@ def stored_source(args: dict, called: dict[str, str]) -> str:
     return called.get(spilled_call_id(args), "")
 
 
+def _stored_where(args: dict, source: str) -> str:
+    """Whose stored output a spill reader reads, and the pattern it looks for."""
+    where = f"{plain(source, 40)} output" if source else "stored output"
+    pattern = args.get("pattern")
+    if isinstance(pattern, str) and pattern:
+        where = f"{json.dumps(plain(argument(pattern), 40), ensure_ascii=False)} in {where}"
+    return where
+
+
 def stored_slice(args: dict, source: str = "") -> str:
     """What a `read_tool_result` call reads, in place of its opaque handle.
 
     The handle is a run id and a provider call id, which tell a reader nothing.
     The tool that produced the output and the window read from it do.
     """
-    where = f"{plain(source, 40)} output" if source else "stored output"
+    where = _stored_where(args, source)
     pattern = args.get("pattern")
     matching = isinstance(pattern, str) and bool(pattern)
-    if matching:
-        where = f"{json.dumps(plain(argument(pattern), 40), ensure_ascii=False)} in {where}"
     offset, limit = args.get("offset", 0), args.get("limit", 200)
     if not (isinstance(offset, int) and isinstance(limit, int)) or offset < 0 or limit < 1:
         return where
-    limit = min(limit, _MAX_STORED_READ_LINES)
-    unit = "matches" if matching else "lines"
+    if args.get("unit") == "bytes":
+        limit = min(limit, _MAX_STORED_READ_BYTES)
+        unit = "bytes"
+    else:
+        limit = min(limit, _MAX_STORED_READ_LINES)
+        unit = "matches" if matching else "lines"
     if args.get("from_end") is True:
         span = (
             f"last {limit} {unit}"
@@ -291,15 +324,28 @@ def session_recall(name: str, args: dict) -> str:
     """What a recall call looks for: the query searched, or the session being read."""
     if name == "search_sessions":
         # `query` is the single-query form older transcripts recorded.
-        queries = args.get("queries", [args.get("query")])
-        queries = [q for q in queries if isinstance(q, str)] if isinstance(queries, list) else []
-        if not queries:
+        raw_queries = args.get("queries")
+        if raw_queries is None and "query" in args:
+            raw_queries = [args.get("query")]
+        if raw_queries is not None and not isinstance(raw_queries, list):
             return "query unavailable"
-        parts = [
-            ", ".join(
-                json.dumps(plain(argument(query), 80), ensure_ascii=False) for query in queries
-            )
-        ]
+        queries = [q for q in (raw_queries or []) if isinstance(q, str) and q.strip()]
+        if raw_queries and not queries:
+            return "query unavailable"
+        if queries:
+            parts = [
+                ", ".join(
+                    json.dumps(plain(argument(query), 80), ensure_ascii=False) for query in queries
+                )
+            ]
+        else:
+            parts = ["recent"]
+        since = args.get("since")
+        if isinstance(since, str) and since.strip():
+            parts.append(f"since {plain(since.strip(), 25)}")
+        until = args.get("until")
+        if isinstance(until, str) and until.strip():
+            parts.append(f"until {plain(until.strip(), 25)}")
     else:
         session_id = args.get("session_id")
         if not isinstance(session_id, str):
@@ -353,8 +399,8 @@ def session_name(session_id: str) -> str:
 
 
 def target(name: str, args: dict, source: str = "") -> str:
-    """`source` names the tool whose stored output a `read_tool_result` call reads."""
-    if name == "run_code":
+    """`source` names the tool whose stored output a `SPILL_READERS` call reads."""
+    if name in {"run_code", "run_workflow"}:
         code = args.get("code")
         return code_preview(code) if isinstance(code, str) else "code unavailable"
     if name == "delegate_task":
@@ -373,6 +419,8 @@ def target(name: str, args: dict, source: str = "") -> str:
         return argument(job_id) if isinstance(job_id, str) else "job unavailable"
     if name == "read_tool_result":
         return stored_slice(args, source)
+    if name == "grep_tool_result":
+        return _stored_where(args, source)
     if name in {"search_sessions", "read_session"}:
         return session_recall(name, args)
     if name == "search_tools":
@@ -381,10 +429,22 @@ def target(name: str, args: dict, source: str = "") -> str:
             return "queries unavailable"
         return ", ".join(argument(item) for item in queries if isinstance(item, str))
     if name in {"get_page", "web_fetch", "web_search"}:
-        # `web_fetch` is Anthropic's native fetch; the local tools keep Exa's names.
+        # `web_fetch` is the native fetch; the local tools keep Exa's names.
         key = "query" if name == "web_search" else "url"
         value = args.get(key)
-        return argument(value) if isinstance(value, str) else f"{key} unavailable"
+        if isinstance(value, str):
+            return argument(value)
+        # Gemini's native tools run a batch: `queries` and `urls`.
+        values = args.get("queries" if name == "web_search" else "urls")
+        if not isinstance(values, list):
+            values = []
+        shown = [argument(value) for value in values if isinstance(value, str)]
+        if not shown:
+            return f"{key} unavailable"
+        if key == "url" and len(shown) > 1:
+            # Long redirect links would push the result off the row.
+            return f"{shown[0]} (+{len(shown) - 1} more)"
+        return ", ".join(shown)
     if name in {
         "read_file",
         "write_file",
@@ -484,6 +544,19 @@ def read_image(content: object) -> "BinaryContent | None":
     return next((i for i in content if isinstance(i, BinaryContent) and i.is_image), None)
 
 
+def tool_outcome(part) -> str:
+    """A tool result's outcome, with a retry as "retry" however Pydantic AI sent it.
+
+    A retry is a `RetryPromptPart`, or since Pydantic AI 2.66 usually a
+    `ToolReturnPart` whose `outcome` is "retried".
+    """
+    from pydantic_ai.messages import RetryPromptPart
+
+    if isinstance(part, RetryPromptPart) or part.outcome == "retried":
+        return "retry"
+    return part.outcome
+
+
 def result_detail(
     name: str, args: dict, content: object, outcome: str, source: str = ""
 ) -> tuple[str, bool]:
@@ -512,17 +585,27 @@ def result_detail(
     elif text.startswith("[Tool output too large (") and name != "shell":
         # Do not count the preview's lines/matches as if it were the full result.
         result = "Output stored · preview in context"
-    elif name == "read_tool_result":
-        # Harness heads every slice with `[handle '…': N matching line(s); showing M]`.
-        match = re.match(
-            r"\[handle .*?: ([\d,]+) matching line\(s\); showing (\d+)(, output capped)?\]", text
+    elif name in SPILL_READERS:
+        # Harness heads a slice or grep with `[handle '…': N matching line(s);
+        # showing M…]`, where a cap adds `, output capped at … chars; <notes>`,
+        # and a byte read with `[handle '…': bytes S-E of T (end exclusive)]`.
+        header = text.partition("\n")[0]
+        match = re.match(r"\[handle .*?: ([\d,]+) matching line\(s\); showing ([\d,]+)", header)
+        byte_range = re.match(
+            r"\[handle .*?: bytes (\d+)-(\d+) of (\d+) \(end exclusive\)\]", header
         )
         if match:
-            total, shown = int(match[1].replace(",", "")), int(match[2])
-            noun = "line" if total == 1 else "lines"
+            total, shown = (int(group.replace(",", "")) for group in match.groups())
+            if name == "grep_tool_result":
+                noun = "match" if total == 1 else "matches"
+            else:
+                noun = "line" if total == 1 else "lines"
             result = f"{total:,} {noun}" if shown == total else f"{shown:,} of {total:,} {noun}"
-            if match[3]:
+            if ", output capped" in header:
                 result += " · output capped"
+        elif byte_range:
+            start, end, total = (int(group) for group in byte_range.groups())
+            result = f"{end - start:,} of {total:,} bytes"
         elif text.startswith("[No stored tool result"):
             result, failed = "No stored result", True
         else:
@@ -657,9 +740,54 @@ def result_detail(
 CLAUDE_CODE_PROVIDER = "claude"
 
 
+def _hit_url(item: dict) -> str:
+    """A search hit's link: Anthropic's `url`, or Gemini's `uri`."""
+    return str(item.get("url") or item.get("uri") or "")
+
+
 def _url_hits(content: list) -> list[dict]:
     """Search hits proper: the CLI can record its summary on a hit with no URL."""
-    return [item for item in content if isinstance(item, dict) and item.get("url")]
+    return [item for item in content if isinstance(item, dict) and _hit_url(item)]
+
+
+def _gemini_sources(content: object) -> list | None:
+    """Gemini's search sources: a bare list, or the `sources` beside its suggestions widget."""
+    if isinstance(content, dict) and {"search_suggestions", "sources"} & content.keys():
+        sources = content.get("sources")
+        return sources if isinstance(sources, list) else []
+    return None
+
+
+def _gemini_pages(content: object) -> list[dict] | None:
+    """Gemini's URL context result: one `retrieved_url` entry per page it read."""
+    pages = content.get("url_metadata") if isinstance(content, dict) else content
+    if (
+        isinstance(pages, list)
+        and pages
+        and all(
+            isinstance(page, dict) and {"retrieved_url", "url_retrieval_status"} & page.keys()
+            for page in pages
+        )
+    ):
+        return pages
+    return None
+
+
+def _sources_text(content: list) -> str:
+    """A result count, then each hit's title and link."""
+    hits = _url_hits(content)
+    lines = [f"{len(hits)} result{'s' if len(hits) != 1 else ''}" if hits else "No results."]
+    for item in hits:
+        lines += ["", str(item.get("title") or "(untitled)"), _hit_url(item)]
+    return "\n".join(lines)
+
+
+def _page_failed(page: dict) -> bool:
+    # Some entries carry no status, or the enum's "unknown"; only an explicit
+    # non-success counts.
+    status = page.get("url_retrieval_status")
+    unknown = {None, "", "URL_RETRIEVAL_STATUS_SUCCESS", "URL_RETRIEVAL_STATUS_UNSPECIFIED"}
+    return status not in unknown
 
 
 def native_result_detail(
@@ -680,6 +808,17 @@ def native_result_detail(
             reason = str(content.get("message") or content.get("error_code") or "").strip()
             reason = reason.splitlines()[0][:200] if reason else ""
         return f"{where} → Failed" + (f" · {plain(reason)}" if reason else "") + via, True
+    if (pages := _gemini_pages(content)) is not None:
+        failed = sum(_page_failed(page) for page in pages)
+        read = len(pages) - failed
+        shown = f"{where} → {read} page{'s' if read != 1 else ''} read"
+        return shown + (f" · {failed} failed" if failed else ""), bool(failed) and not read
+    if (sources := _gemini_sources(content)) is not None:
+        if not sources:
+            # No web sources on this search (Gemini puts a response's sources on its
+            # last search), so a count here would wrongly say 0.
+            return where + via, False
+        content = sources
     if isinstance(content, list):
         count = len(_url_hits(content))
         return f"{where} → {count} result{'s' if count != 1 else ''}{via}", False
@@ -696,6 +835,25 @@ def native_result_projection(content: object, provider: str = "") -> object:
     is its page text, and a failure its message; anything else is left as is.
     """
     claude_code = provider == CLAUDE_CODE_PROVIDER
+    if (pages := _gemini_pages(content)) is not None:
+        lines = [f"{len(pages)} page{'s' if len(pages) != 1 else ''} (Gemini reads them itself)"]
+        for page in pages:
+            status = str(page.get("url_retrieval_status") or "")
+            status = status.removeprefix("URL_RETRIEVAL_STATUS_").replace("_", " ").lower()
+            lines += ["", str(page.get("retrieved_url") or "(no url)")]
+            if status and status != "success":
+                lines.append(f"Status: {status}")
+        return "\n".join(lines)
+    if (sources := _gemini_sources(content)) is not None:
+        # Google's suggestions widget is HTML for a browser, unreadable here.
+        shown = _sources_text(sources) if sources else "No sources listed."
+        return shown + "\n\n(Google's search suggestions widget omitted.)"
+    if (
+        isinstance(content, list)
+        and content
+        and all(isinstance(item, dict) and "uri" in item and "type" not in item for item in content)
+    ):
+        return _sources_text(content)
     if isinstance(content, dict):
         if str(content.get("type", "")).endswith("error"):
             return str(content.get("message") or content.get("error_code") or "Failed.")

@@ -6,14 +6,13 @@ import pytest
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
-from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.mouse_handlers import MouseHandlers
 from prompt_toolkit.layout.screen import Screen, WritePosition
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
-from pcode.popup_ui import RichPane, fuzzy_match
+from pcode.popup_ui import RichPane, SearchDebounce, fuzzy_match
 
 
 @pytest.mark.parametrize(
@@ -237,12 +236,13 @@ def _popups(tmp_path, options):
     from pcode.git_diff import Review
     from pcode.inspection import ToolArchive
     from pcode.inspector_ui import ToolInspector
-    from pcode.links_ui import links_dialog
+    from pcode.links_ui import link_items
+    from pcode.pick_ui import PickList
     from pcode.runtime import EditCompleted
     from pcode.session_ui import SessionBrowser, session_info_dialog
     from pcode.tree_ui import TreeBrowser
 
-    links = links_dialog([], **options)
+    links = PickList(link_items([]), title="Links", **options).app
     info = session_info_dialog([("Model", "test:local")], **options)
     edits = DiffBrowser(
         Review("t", [EditCompleted("1", "a.py", "edited", "+x", added=1)], "none"), **options
@@ -254,14 +254,9 @@ def _popups(tmp_path, options):
     asides = AsideBrowser(records, **options)
     sessions = SessionBrowser([], root=tmp_path, workspace=tmp_path, **options)
     tools = ToolInspector(ToolArchive(), **options)
-    # The links picker opens in its search line; the read-only window is the list.
-    links_list = next(
-        window
-        for window in links.layout.find_all_windows()
-        if isinstance(window.content, BufferControl) and window.content.buffer.read_only()
-    )
     return {
-        "links": (links, [links_list]),
+        # A pick list, which pages its selection (`test_pick_list_pages_its_selection`).
+        "links": (links, []),
         "session info": (info, [info.layout.current_window]),
         "edits": (edits.app, [edits.files.window, edits.diff.window]),
         "tree": (tree.app, [tree.list.window]),
@@ -389,14 +384,15 @@ def test_popup_mouse_capture_is_default(tmp_path, name):
         assert not app.mouse_support()
 
 
-def test_model_picker_pages_its_selection():
-    from pcode.model_ui import ModelPicker
+def test_pick_list_pages_its_selection():
+    from pcode.model_ui import model_items
+    from pcode.pick_ui import PickList
 
     models = [f"test:model-{i:02}" for i in range(40)]
 
     async def run():
         with create_pipe_input() as pipe:
-            picker = ModelPicker(models, {"test"}, input=pipe, output=DummyOutput())
+            picker = PickList(model_items(models), title="t", input=pipe, output=DummyOutput())
             task = asyncio.create_task(picker.run())
             try:
                 await asyncio.sleep(0.05)
@@ -418,7 +414,7 @@ def test_model_picker_pages_its_selection():
                 await press("\x1b[6~" * 20)
                 assert picker.selected == len(models) - 1
                 pipe.send_text("\r")
-                assert await asyncio.wait_for(task, 2) == models[-1]
+                assert (await asyncio.wait_for(task, 2)).id == models[-1]
             finally:
                 if not task.done():
                     picker.app.exit()
@@ -515,3 +511,45 @@ def test_a_selection_inside_the_cursor_row_still_shows():
     style = popup_style(Style.from_dict({"selected": "reverse", "cursor-line": "reverse"}))
     attrs = style.get_attrs_for_style_str("class:popup class:cursor-line class:selected")
     assert attrs.underline and attrs.reverse
+
+
+def test_search_debounce_waits_for_a_pause_once_filtering_is_slow():
+    import time
+
+    from prompt_toolkit.buffer import Buffer
+
+    runs = []
+    slow = False
+
+    def refresh():
+        runs.append(buffer.text)
+        if slow:
+            time.sleep(0.05)
+
+    buffer = Buffer()
+    # A wide instant/slow gap, so a loaded machine can't misjudge a run.
+    search = SearchDebounce(buffer, refresh, pause=0.05, instant=0.025)
+    # No event loop (setup, tests): every change filters at once.
+    buffer.text = "a"
+    assert runs == ["a"]
+
+    async def typing():
+        nonlocal slow
+        with patch("pcode.popup_ui.get_app"):
+            buffer.text = "ab"  # Fast so far: still instant.
+            assert runs[-1] == "ab"
+            slow = True
+            buffer.text = "abc"  # This run is slow, so later keys wait.
+            buffer.text = "abcd"
+            buffer.text = "abcde"
+            assert runs[-1] == "abc" and search.pending
+            await asyncio.sleep(0.1)
+            assert runs[-1] == "abcde" and not search.pending
+            # Enter flushes a pending filter before acting on it.
+            buffer.text = "abcdef"
+            assert search.pending
+            search.flush()
+            assert runs[-1] == "abcdef" and not search.pending
+        assert "abcd" not in runs  # Keys typed during the pause never filtered.
+
+    asyncio.run(typing())

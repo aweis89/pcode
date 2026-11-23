@@ -10,9 +10,10 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import CombinedCapability, LocalWorkspace
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai_harness import Coder
+from retry_parts import is_retry
 from rich.console import Console
 
 from pcode.agent import create_agent, create_coder
@@ -105,7 +106,7 @@ def test_stream_runs_real_coder_read_tool_and_retains_history(tmp_path):
 def test_coder_file_paths_are_unconfined_but_workspace_relative(tmp_path, outside_path):
     import json
 
-    from pydantic_ai_harness.filesystem import FileSystem
+    from pydantic_ai_harness.file_system import FileSystem
     from pydantic_ai_harness.repo_context import RepoContext
     from pydantic_ai_harness.shell import Shell
 
@@ -142,7 +143,7 @@ def test_coder_file_paths_are_unconfined_but_workspace_relative(tmp_path, outsid
         elif requests == 2:
             parts = [p for message in messages for p in message.parts]
             assert any("outside marker" in str(getattr(p, "content", "")) for p in parts)
-            assert not any(isinstance(p, RetryPromptPart) for p in parts)
+            assert not any(is_retry(p) for p in parts)
             yield {0: DeltaToolCall(name="read_file", json_args=json.dumps({"path": "inside.txt"}))}
         else:
             results = [
@@ -249,6 +250,34 @@ def test_stream_has_no_model_request_limit():
         assert Message("Finished beyond both the old and library-default caps.") in events
         assert requests == 56
         assert runtime.turns == 1
+
+    asyncio.run(run())
+
+
+def test_side_question_has_no_model_request_limit():
+    """The deadline bounds a side question; a request cap discarded its answer."""
+    requests = 0
+
+    async def model(messages, info):
+        nonlocal requests
+        requests += 1
+        if requests <= 55:
+            yield {0: DeltaToolCall(name="noop", json_args="{}")}
+        else:
+            yield "Answered after a long look."
+
+    agent = Agent(FunctionModel(stream_function=model))
+
+    @agent.tool_plain
+    def noop() -> str:
+        return "ok"
+
+    runtime = AgentRuntime(agent)
+
+    async def run():
+        reply = await runtime.aside("What happened?")
+        assert reply.answer == "Answered after a long look."
+        assert requests == 56
 
     asyncio.run(run())
 
@@ -434,3 +463,24 @@ def test_thinking_block_boundaries_reach_events():
             runtime.close()
 
     asyncio.run(run())
+
+
+def test_for_run_drops_interrupted_anthropic_thinking():
+    # An interrupted stream leaves Anthropic thinking unsigned; replayed as
+    # text it gets every later request refused as `reasoning_extraction`.
+    from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart
+
+    from pcode.live import _for_run
+
+    cut = ModelResponse(parts=[ThinkingPart("half", signature="")], provider_name="claude")
+    signed = ModelResponse(
+        parts=[ThinkingPart("whole", signature="sig"), TextPart("hi")], provider_name="anthropic"
+    )
+    other = ModelResponse(parts=[ThinkingPart("theirs")], provider_name="openai")
+
+    out = _for_run([cut, signed, other])
+
+    assert out[0].parts == []
+    assert out[1] is signed
+    assert out[2] is other
+    assert cut.parts  # the saved history is not mutated

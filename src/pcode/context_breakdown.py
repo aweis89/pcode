@@ -29,6 +29,7 @@ CHARS_PER_TOKEN = 4
 REPO_CONTEXT = "repo_context"
 SOURCE_LABELS = {
     REPO_CONTEXT: "Repository context",
+    "coding_guidance": "Coding guidance",
     "code_mode": "Code mode",
     "file_tools": "File tools",
     "mcp_servers": "MCP servers",
@@ -38,9 +39,9 @@ SOURCE_LABELS = {
     "ext.web_research": "Web research",
 }
 AGENT_LABEL = "Terminal instructions"
-# Coder's base prompt is a concrete `Capability`, which attributes its
-# instructions at construction and so cannot be named after the fact.
-ANONYMOUS_LABEL = "Harness base prompts"
+# Instructions from a capability with no `id` (an extension that never named
+# one), grouped since there is nothing to label them by.
+ANONYMOUS_LABEL = "Unnamed capabilities"
 
 CONTEXT_FILE = re.compile(r'<context-file path="(?P<path>[^"]*)">\n.*?\n</context-file>', re.DOTALL)
 ASSISTANT_CONFIG = re.compile(

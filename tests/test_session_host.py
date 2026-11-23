@@ -8,9 +8,11 @@ recording view or a whole `PreviewApp`. What a separate process adds
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -69,6 +71,7 @@ from pcode.runtime import (
     ThinkingDelta,
     ToolStarted,
     ToolSummary,
+    WorkerStatus,
 )
 from pcode.sessions import SavedSession, is_open
 from pcode.ui import Activity, create_prompt
@@ -87,6 +90,7 @@ SAMPLES = [
     PlanPreview(None),
     ChildPlan("c2", [{"content": "Child step", "status": "pending"}]),
     ChildText("c2", "child prose", thinking=True, start=True),
+    WorkerStatus("c2", "w1", question="Which path?", fallback="both", tokens=1200),
     CommandOutput("c3", "make test", "line 1\nline 2"),
     EditCompleted("c4", "a.py", "edit", "@@ -1 +1 @@\n-a\n+b", 1, 1),
     # Its own `kind` field once overwrote the event name on the wire.
@@ -710,6 +714,59 @@ def test_an_answer_read_in_one_terminal_is_read_in_every_terminal(tmp_path, host
     asyncio.run(run())
 
 
+def test_an_open_side_answer_viewer_does_not_hold_other_terminals_commands(tmp_path, host_dir):
+    """One terminal reading /btw answers must not stall another's commands behind it."""
+    from pcode.aside import Aside, Bridge
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            host.controller.asides.items.append(
+                Aside(question="why?", status="answered", answer="because")
+            )
+            reader, reader_view, _ = await attach(host)
+            other, other_view, _ = await attach(host)
+            close = asyncio.Event()
+            opened = []
+
+            async def still_reading():
+                opened.append(True)
+                await close.wait()
+                return Bridge("thread", "summary")
+
+            reader_view.read_asides = still_reading
+            reader.command("/btw", 7)
+            await until(lambda: opened)
+            # The viewer runs as the command it opened for, whose tag it keeps.
+            assert reader_view.calls[-1] == ("command_started", (7,), {})
+            await until(lambda: reader.activity.waits == [])
+            assert host.busy_with() == "a side-answer viewer is open"
+            other_opened = []
+
+            async def glance():
+                other_opened.append(True)
+
+            other_view.read_asides = glance
+            other.command("/btw")
+            await until(lambda: other_opened)
+            # What the viewer asks for once it closes is still kept.
+            kept = []
+
+            async def keep_thread(thread, action, instructions=""):
+                kept.append((thread, action))
+
+            host.controller.keep_thread = keep_thread
+            close.set()
+            await until(lambda: kept == [("thread", "summary")])
+            await until(lambda: not host.view.viewers)
+            for terminal in (reader, other):
+                terminal.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
 def test_a_terminal_stops_side_questions_and_sees_them_settle(tmp_path, host_dir):
     """The questions run in the host; the terminal's records must follow them to the end."""
 
@@ -825,6 +882,62 @@ def test_a_host_says_what_it_is_busy_with(tmp_path, host_dir):
                 assert host.busy_with() == ""
         finally:
             await stop_host(host)
+
+    asyncio.run(run())
+
+
+def _running(runtime, *jobs):
+    """The real registry reporting `jobs` as running, for what `busy_with` asks."""
+    return patch.object(runtime.jobs, "running", lambda: list(jobs))
+
+
+def _job(identity: str, *, adopted: bool):
+    from pcode.jobs import Job
+
+    return Job(identity, "serve", Path("/j"), 1, 0.0, background=True, adopted=adopted)
+
+
+def test_a_job_adopted_from_an_exited_pcode_does_not_keep_a_host_up(tmp_path, host_dir):
+    """It never wakes this session, and stopping leaves it running for the next pcode."""
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        runtime = host.controller.runtime
+        try:
+            with _running(runtime, _job("j7", adopted=True)):
+                assert host.busy_with() == ""
+            with _running(runtime, _job("j7", adopted=True), _job("j8", adopted=False)):
+                assert host.busy_with() == "a background command is running"
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_host_with_no_terminal_says_what_keeps_it_running(tmp_path, host_dir, capsys):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        runtime = host.controller.runtime
+        try:
+            terminal, _, _ = await attach(host)
+            with _running(runtime, _job("j8", adopted=False)):
+                watcher = asyncio.create_task(host.stop_when_idle(0, every=0.01, grace=0.05))
+                await asyncio.sleep(0.1)
+                assert list_hosts()[0].held == "", "an attached terminal is why it runs"
+                terminal.close()
+                await until(lambda: list_hosts()[0].attached == 0)
+                stamped = list_hosts()[0].updated
+                await until(lambda: list_hosts()[0].held == "a background command is running")
+                assert not host.stopped.is_set()
+                # Published without counting as activity, which /attach ages rows by.
+                assert list_hosts()[0].updated == stamped
+            await asyncio.wait_for(host.stopped.wait(), 5)
+            await watcher
+        finally:
+            await stop_host(host)
+        log = capsys.readouterr().err
+        assert "not stopping: a background command is running" in log
+        assert "nothing holds it now" in log
 
     asyncio.run(run())
 
@@ -1689,6 +1802,11 @@ def test_picker_puts_unseen_sessions_first_and_flags_old_code():
     stopped = HostEntry("stop0000", 1, "m", "/w/f", state="stopped", unseen=True, code="1")
     row = host_row(stopped, None, now=1, code="2")
     assert "✓ new" in row and row.endswith("· stopped")
+    # Running with no terminal and unable to stop itself: the row says why.
+    held = HostEntry("held0000", 1, "m", "/w/g", state="idle", code="2", held="a job")
+    assert host_row(held, None, now=1, code="2").endswith("· held: a job")
+    held.attached = 1
+    assert "held" not in host_row(held, None, now=1, code="2")
 
 
 def test_picker_nests_forks_under_their_original():
@@ -1729,7 +1847,9 @@ def test_switch_resumes_or_forgets_a_stopped_session(host_dir, monkeypatch, acti
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
+    from pcode import host_ui
     from pcode.host_protocol import remember_stopped
+    from pcode.pick_ui import Picked
 
     remember_stopped(
         HostEntry("stop0000", 1, "m", "/w", session_id="sess-1", title="done", unseen=True)
@@ -1738,30 +1858,28 @@ def test_switch_resumes_or_forgets_a_stopped_session(host_dir, monkeypatch, acti
     app = PreviewApp(model="function:script", console=Console(file=output, width=140))
     shown: list[dict] = []
 
-    class Dialog:
-        async def run_async(self):
-            return (action, "stop0000")
-
-    def dialog(entries, **kwargs):
-        shown.extend({"id": entry.id, "state": entry.state} for entry in entries)
-        return Dialog()
+    class Surface:
+        async def pick(self, items, **options):
+            shown.extend(item.id for item in items)
+            assert options["actions"] == (host_ui.NEW_SESSION, host_ui.STOP)
+            return Picked("stop0000", "x" if action == "stop" else None)
 
     @asynccontextmanager
-    async def popup(output, session):
-        yield None
+    async def popup(output, session, **options):
+        assert options["pick"]
+        yield Surface()
 
     opened: list = []
 
     async def open_saved(identity, active_id):
         opened.append(identity)
 
-    monkeypatch.setattr("pcode.host_ui.hosts_dialog", dialog)
     monkeypatch.setattr(app, "popup", popup)
     monkeypatch.setattr(app, "open_saved_session", open_saved)
     asyncio.run(
         app.switch_session(None, SimpleNamespace(app=SimpleNamespace(output=None, style=None)))
     )
-    assert shown == [{"id": "stop0000", "state": "stopped"}]
+    assert shown == ["stop0000"]
     assert opened == (["sess-1"] if action == "attach" else [])
     assert list_stopped() == []
 
@@ -1818,3 +1936,383 @@ def test_waiting_for_a_spawned_host_does_not_wait_out_its_zombie():
         started = time.monotonic()
         wait(process.pid, timeout=10)
         assert time.monotonic() - started < 5
+
+
+def test_restart_stops_a_host_keeping_its_worktree_and_names_the_successor(tmp_path, host_dir):
+    """`/restart all` from another terminal: attached terminals hear where the session went."""
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            terminal, _, _ = await attach(host)
+            closed = asyncio.Event()
+            terminal.on_closed = closed.set
+            # Nothing saved yet, so nothing for a successor to resume.
+            assert await request_host(host.entry, "restart") == {
+                "skipped": "it has no saved conversation to resume"
+            }
+            host.entry.session_id = "session-1"
+            host.controller.command_idle.clear()
+            assert await request_host(host.entry, "restart") == {"skipped": "a command is running"}
+            assert not host.stopped.is_set()
+            host.controller.command_idle.set()
+            # An attached terminal does not hold it back.
+            answer = await request_host(host.entry, "restart")
+            assert answer == {"id": host.successor} and len(host.successor) == 8
+            assert host.stopped.is_set() and host.keep_worktree and not host.idle_stopped
+            await host.close()
+            await asyncio.wait_for(closed.wait(), 5)
+            assert terminal.successor == host.successor
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_successor_starts_from_the_host_with_its_session_and_profile(monkeypatch):
+    from pcode import host as host_module
+
+    spawned = []
+    monkeypatch.setattr(
+        "pcode.remote.spawn_host",
+        lambda **kwargs: spawned.append(kwargs) or ("bbbb2222", None, "l"),
+    )
+    successor = {"identity": "bbbb2222", "model": "m", "resume": "session-1", "profile": None}
+    host_module.start_successor(successor)
+    assert spawned == [successor]
+
+
+def test_restart_entry_reports_a_successor_that_never_started(tmp_path, host_dir):
+    from pcode.remote import restart_entry
+
+    async def run():
+        for identity, log in (("aaaa1111", False), ("aaaa2222", True)):
+            host = await start_host(identity, tmp_path, Script())
+            host.entry.session_id = "session-1"
+            original = host.restart
+
+            def restart(original=original, log=log):
+                answer = original()
+                if log:  # Spawned, but its new code never got as far as its entry.
+                    (host_dir / f"{answer['id']}.log").touch()
+                return answer
+
+            host.restart = restart
+            try:
+                with patch("pcode.remote.wait_for_exit", return_value=True):
+                    match = "did not start" if log else "could not start its successor"
+                    with pytest.raises(HostError, match=match):
+                        await restart_entry(host.entry, timeout=0.2)
+            finally:
+                await stop_host(host)
+
+    asyncio.run(run())
+
+
+# A model that fails at startup leaves no runtime to release the session's lock.
+@pytest.mark.parametrize("model", ["test", "no-such-provider:model"])
+def test_a_real_host_restarts_into_a_successor_on_the_same_session(tmp_path, host_dir, model):
+    """End to end: the successor resumes the very session (no fork) with the old host's env."""
+    from pcode.remote import restart_entry, wait_for_exit_sync
+
+    workspace, sessions = tmp_path / "ws", tmp_path / "sessions"
+    workspace.mkdir()
+    saved = SavedSession.create("test", workspace, sessions)
+    session_id = saved.info.id
+    saved.close()
+    with patch.dict(os.environ, {"PCODE_RESTART_CHECK": "the-old-hosts"}):
+        identity, process, log = spawn_host(
+            model=model,
+            workspace=workspace,
+            resume=session_id,
+            session_dir=sessions,
+            no_worktree=True,
+        )
+    successor = None
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            entry = next((e for e in list_hosts() if e.id == identity), None)
+            if entry is not None:
+                successor, skipped = asyncio.run(restart_entry(entry))
+                if successor or skipped != "it is starting up":
+                    break
+            assert time.monotonic() < deadline, log.read_text()
+            time.sleep(0.2)
+        assert successor, skipped
+        process.wait(10)
+        deadline = time.monotonic() + 60
+        while not (new := next((e for e in list_hosts() if e.id == successor), None)) or (
+            new.state != "idle"
+        ):
+            assert time.monotonic() < deadline, (host_dir / f"{successor}.log").read_text()
+            time.sleep(0.2)
+        assert new.session_id == session_id and not new.forked_from
+        assert "restarted as" in log.read_text()
+        assert ("startup failed" in log.read_text()) == (model != "test")
+        # Spawned by the old host, so with its environment, not this caller's.
+        environment = subprocess.run(
+            ["ps", "eww", "-p", str(new.pid)], capture_output=True, text=True
+        ).stdout
+        if "PCODE_HOST_DIR" in environment:  # `ps` shows environments here.
+            assert "PCODE_RESTART_CHECK=the-old-hosts" in environment
+    finally:
+        # Read from the files, not `list_hosts`: one that hung half-started is there too.
+        for name in (identity, successor):
+            path = host_dir / f"{name}.json"
+            if name and path.exists():
+                pid = json.loads(path.read_text())["pid"]
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGTERM)
+                wait_for_exit_sync(pid)
+        if process.poll() is None:
+            process.kill()
+
+
+def test_a_host_older_than_restart_is_skipped_not_restarted_from_here(tmp_path, host_dir):
+    """Restarting it from the caller would hand it the caller's environment."""
+    from pcode.remote import restart_entry
+
+    old_calls = frozenset({"attach", "query", "send", "run", "stop", "stop_if_idle", "asides_read"})
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            with patch("pcode.host.HOST_CALLS", old_calls):
+                successor, skipped = await restart_entry(host.entry)
+            assert successor == "" and "/restart it in its own terminal" in skipped
+            assert not host.stopped.is_set()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_restart_hosts_restarts_stale_hosts_and_reports_each(host_dir, monkeypatch, capsys):
+    from pcode.app import main
+
+    for identity, code in (("old00001", "old"), ("busy0001", "old"), ("gone0001", "old")):
+        entry = HostEntry(id=identity, pid=os.getpid(), model="test", workspace="/", code=code)
+        entry.title = identity
+        write_entry(entry)
+    current = HostEntry(id="new00001", pid=os.getpid(), model="test", workspace="/")
+    current.code = "now"
+    write_entry(current)
+    monkeypatch.setattr("pcode.host_protocol.code_fingerprint", lambda: "now")
+    asked = []
+
+    async def restart_entry(entry, directory=None):
+        asked.append(entry.id)
+        if entry.id == "gone0001":
+            raise ConnectionRefusedError("refused")
+        return ("", "a turn or command is running") if entry.id == "busy0001" else ("cafe0001", "")
+
+    monkeypatch.setattr("pcode.remote.restart_entry", restart_entry)
+    monkeypatch.setattr(sys, "argv", ["pcode", "--restart-hosts", "stale"])
+    main()
+    assert sorted(asked) == ["busy0001", "gone0001", "old00001"]
+    output = capsys.readouterr()
+    assert "Restarted old00001 as cafe0001  old00001" in output.out
+    assert "Skipped busy0001  busy0001: a turn or command is running" in output.out
+    assert "Could not restart gone0001: refused" in output.err
+
+    asked.clear()
+    monkeypatch.setattr(sys, "argv", ["pcode", "--restart-hosts", "all"])
+    main()
+    assert "new00001" in asked
+
+
+def test_restart_all_restarts_other_stale_hosts_then_this_one(tmp_path, host_dir, monkeypatch):
+    async def run():
+        class Host:
+            remote = True
+            id, pid, session_id, lost = "mine0001", 4242, "session-1", False
+
+            def stop(self, *, keep_worktree=False):
+                pass
+
+        for identity in ("mine0001", "othr0001"):
+            write_entry(
+                HostEntry(id=identity, pid=os.getpid(), model="m", workspace="/", code="old")
+            )
+        write_entry(HostEntry(id="new00001", pid=os.getpid(), model="m", workspace="/", code="now"))
+        monkeypatch.setattr("pcode.host_protocol.code_fingerprint", lambda: "now")
+        restarted = []
+
+        async def restart_and_report(entry):
+            restarted.append(entry.id)
+            return f"Restarted {entry.id}", False
+
+        monkeypatch.setattr("pcode.remote.restart_and_report", restart_and_report)
+        output = StringIO()
+        app = PreviewApp(model="m", runtime=Host(), console=Console(file=output, width=200))
+        own = []
+
+        async def restart_host():
+            own.append(True)
+
+        app.restart_host = restart_host
+        app.restart("all")
+        assert app.restart_all_requested
+        await app.restart_stale_hosts()
+        # Current hosts are left alone; this terminal's own host goes last, the usual way.
+        assert restarted == ["othr0001"] and own == [True]
+        assert "Restarted othr0001" in output.getvalue()
+
+    asyncio.run(run())
+
+
+def test_a_terminal_whose_host_restarted_elsewhere_says_where_it_went():
+    class Host:
+        remote = True
+        id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+
+    output = StringIO()
+    app = PreviewApp(model="m", runtime=Host(), console=Console(file=output, width=200))
+    app.controller.successor = "bbbb2222"
+    app.host_closed()
+    assert "restarting on the current pcode as bbbb2222" in output.getvalue()
+    assert "/attach bbbb2222" in output.getvalue()
+
+
+def test_restart_lets_the_host_start_its_successor_and_attaches_to_it(monkeypatch, host_dir):
+    """`/restart` keeps the host's environment: this terminal only attaches to the successor."""
+    from pcode.remote import TOO_OLD_TO_RESTART
+
+    async def run():
+        class Host:
+            remote = True
+            id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+            stopped_with = None
+
+            def stop(self, *, keep_worktree=False):
+                self.stopped_with = keep_worktree
+
+        write_entry(HostEntry(id="aaaa1111", pid=os.getpid(), model="m", workspace="/"))
+        answers = iter(
+            [("bbbb2222", ""), ("", "a background command is running"), ("", TOO_OLD_TO_RESTART)]
+        )
+
+        async def restart_entry(entry):
+            assert app.restarting  # Its host going away is expected, not a warning.
+            return next(answers)
+
+        async def wait_for_host(identity, view, activity):
+            return f"controller {identity}", {"welcome": identity}
+
+        adopted, started = [], []
+
+        async def adopt_controller(controller, welcome, note):
+            adopted.append((controller, note))
+
+        async def start_host_session(prompt="", *, resume=None, note=None):
+            started.append(resume)
+
+        monkeypatch.setattr("pcode.remote.restart_entry", restart_entry)
+        monkeypatch.setattr("pcode.remote.wait_for_host", wait_for_host)
+        output = StringIO()
+        runtime = Host()
+        app = PreviewApp(model="m", runtime=runtime, console=Console(file=output, width=200))
+        app.adopt_controller = adopt_controller
+        app.start_host_session = start_host_session
+        await app.restart_host()
+        assert adopted == [("controller bbbb2222", "Restarted on the current pcode (bbbb2222)")]
+        assert runtime.stopped_with is None and not app.restarting
+        # Busy: it says why and stays as it is.
+        await app.restart_host()
+        assert "did not restart: a background command is running" in output.getvalue()
+        assert runtime.stopped_with is None and started == []
+        # Older than the call: stopped and resumed from here, as before.
+        with patch("pcode.remote.wait_for_exit"):
+            await app.restart_host()
+        assert runtime.stopped_with is True and started == ["session-1"]
+
+    asyncio.run(run())
+
+
+def test_a_drawer_watches_side_questions_read_only_and_never_holds_the_host(tmp_path, host_dir):
+    """`pcode.drawer`: an observer gets the side questions, may call nothing, is no terminal."""
+    import json
+
+    from pcode.aside import Aside
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        try:
+            aside = Aside(question="why?", status="answered", answer="because")
+            host.controller.asides.items.append(aside)
+            reader, writer = await asyncio.open_unix_connection(str(host.socket), limit=2**24)
+
+            async def message():
+                return json.loads(await asyncio.wait_for(reader.readline(), 5))
+
+            writer.write(b'{"type": "observe", "version": 2}\n')
+            assert (await message()) == {"type": "ready", "version": 2}
+            [state] = (await message())["args"][0]
+            assert state["answer"] == "because" and state["thread"] == aside.thread
+            await until(lambda: host.connections == 0)
+            assert host.idle() and not host.clients, "an open drawer is not a terminal"
+
+            aside.answer += " more"
+            host.emit_aside(aside)
+            changed = await message()
+            assert changed["method"] == "aside_changed"
+            assert changed["args"][0]["answer"] == "because more"
+
+            writer.write(
+                b'{"type": "request", "id": 1, "method": "submit", "args": ["ls", "shell"]}\n'
+            )
+            refused = await message()
+            assert refused["error"]["type"] == "PermissionError"
+
+            host.stop()
+            await host.close()
+            assert (await message())["method"] == "host_closed"
+            writer.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_the_drawer_viewer_draws_a_hosts_thread_in_its_own_terminal(tmp_path, host_dir):
+    """`python -m pcode.btw_tail`, as the terminal app runs it, on a pty."""
+    import pty
+    import select
+    import subprocess
+    import sys
+
+    from pcode.aside import Aside
+
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        master, slave = pty.openpty()
+        process = None
+        try:
+            aside = Aside(question="why is it blue?", status="answered")
+            aside.answer = "Rayleigh scattering."
+            host.controller.asides.items.append(aside)
+            process = subprocess.Popen(
+                [sys.executable, "-m", "pcode.btw_tail", "aaaa1111", aside.thread],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                env={**os.environ, "TERM": "xterm-256color"},
+            )
+            seen = b""
+            deadline = asyncio.get_running_loop().time() + 10
+            while b"Rayleigh" not in seen and asyncio.get_running_loop().time() < deadline:
+                ready = await asyncio.to_thread(select.select, [master], [], [], 0.2)
+                if ready[0]:
+                    seen += os.read(master, 4096)
+            assert b"why is it blue?" in seen and b"Rayleigh scattering." in seen, seen
+            assert host.idle() and not host.clients
+        finally:
+            if process is not None:
+                process.terminate()
+                process.wait(5)
+            os.close(master)
+            os.close(slave)
+            await stop_host(host)
+
+    asyncio.run(run())

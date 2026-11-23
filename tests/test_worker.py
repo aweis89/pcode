@@ -8,6 +8,7 @@ from pydantic_ai import ModelRetry
 from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
+from retry_parts import is_retry
 
 from pcode.agent import create_agent
 from pcode.ext import ExtensionAPI, ExtensionUI
@@ -72,10 +73,9 @@ def test_worker_inherits_tools_instructions_guards_and_reports_edits(tmp_path):
             return
         assert names == parent_names - {
             "delegate_task",
-            "integrate_task",
-            "discard_task",
-            "list_task_worktrees",
-        }
+            "task_worktree",
+            "manage_worker",
+        } | {"ask_parent"}
         assert {"write_file", "edit_file", "shell", "write_plan", "extension_tool"} <= names
         assert "EXTENSION_GUIDANCE" in info.instructions
         assert "REPOSITORY_GUIDANCE" in info.instructions
@@ -84,10 +84,10 @@ def test_worker_inherits_tools_instructions_guards_and_reports_edits(tmp_path):
         if child_requests == 3:
             assert "EXTENSION_RESULT" in results[-1].content
         elif child_requests == 4:
-            assert isinstance(results[-1], RetryPromptPart)
+            assert is_retry(results[-1])
             assert "EXTENSION_BLOCKED" in results[-1].content
         elif child_requests == 5:
-            assert isinstance(results[-1], RetryPromptPart)
+            assert is_retry(results[-1])
         if child_requests < len(calls):
             name, args = calls[child_requests]
             yield tool_call(name, args, f"child-{child_requests}")
@@ -129,7 +129,7 @@ def test_worker_inherits_native_and_local_web_policy(tmp_path, monkeypatch, mode
         native = [tool.kind for tool in info.model_request_parameters.native_tools]
         if "delegate_task" in names:
             parent_shape = (
-                names - {"delegate_task", "integrate_task", "discard_task", "list_task_worktrees"},
+                names - {"delegate_task", "task_worktree"},
                 native,
             )
             if not returns(messages):

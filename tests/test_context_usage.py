@@ -27,6 +27,22 @@ def test_last_request_includes_cache_without_double_counting():
         assert context_label("anthropic:example", [response(0)]) == " · 0/200k"
 
 
+def test_provider_context_used_overrides_cumulative_turn_input_tokens():
+    turn = ModelResponse(
+        parts=[],
+        usage=RequestUsage(input_tokens=761_000, output_tokens=5_000),
+        provider_details={"stop_reason": "end_turn", "context_used": 121_000},
+    )
+    malformed = ModelResponse(
+        parts=[],
+        usage=RequestUsage(input_tokens=15_000),
+        provider_details={"context_used": True},
+    )
+    with patch("pcode.context_usage.context_window", return_value=1_000_000):
+        assert context_label("antigravity:example", [turn]) == " · 121k/1m"
+        assert context_label("antigravity:example", [malformed]) == " · 15k/1m"
+
+
 def test_unknown_model_does_not_guess_capacity():
     assert context_window("unknown-provider:gpt-5") is None
     assert context_window("openai:nonexistent-model-for-test") is None

@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rich.console import Console, ConsoleOptions, RenderResult
-from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
+
+from pcode import glyphs
+from pcode.markdown import Markdown
 
 # What marks a line as pcode's own rather than the model's. A different shade
 # alone is not enough: a three-line `/mcp` listing between two replies reads as
@@ -23,7 +25,7 @@ WARNING_BAR = "\u258e"
 # The headline ends at the first sentence break or line break. Only punctuation
 # followed by space ends a sentence, which keeps `a.py` and `v1.2` whole, and
 # not before a lowercase word, which keeps `e.g. haiku` and `-m 'fix. it'` whole.
-_HEADLINE = re.compile(r"(.*?)(?:(?<=[.!?])[ \t]+(?![a-z])|[ \t\r]*\n)(.*)", re.DOTALL)
+_HEADLINE = re.compile(r"(.*?)(?:[ \t\r]*\n|(?<=[.!?])[ \t]+(?![a-z]))(.*)", re.DOTALL)
 # A closing period after a word is punctuation; `..`, `…` or a bare `.` path is
 # part of the message.
 _FULL_STOP = re.compile(r"(?<=[\w)\]'\"`])\.$")
@@ -124,7 +126,7 @@ class TranscriptNotice:
         return Markdown(f"{fence}text\n{text}\n{fence}", code_theme=self.code_theme)
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        symbol = "✗" if self.kind == "error" else "!"
+        symbol = glyphs.icon("fail") if self.kind == "error" else glyphs.icon("blocked")
         style = "pcode.error" if self.kind == "error" else "pcode.warning"
         yield Text(f"{symbol} {self.title}", style=style)
         if not self.text:

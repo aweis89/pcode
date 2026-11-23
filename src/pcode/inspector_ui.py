@@ -14,7 +14,6 @@ from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, VSplit
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.widgets import Label, TextArea
-from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -24,10 +23,12 @@ from pcode.clipboard import copy as copy_to_clipboard
 from pcode.delta import Delta
 from pcode.edit_transcript import EditTranscript, created_markdown
 from pcode.edits import patch_text
-from pcode.frame import Frame
+from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspection import InspectedCall, ToolArchive
+from pcode.markdown import Markdown
 from pcode.popup_ui import (
     RichPane,
+    SearchDebounce,
     bind_list_paging,
     list_pane_height,
     popup_container,
@@ -207,7 +208,7 @@ class ToolInspector:
         self.notice = ""
         self._refreshing = False
         self.query = TextArea(height=1, prompt="Search tools/commands: ", multiline=False)
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(
@@ -215,7 +216,7 @@ class ToolInspector:
             color_system=color_system,
             notify=lambda text: setattr(self, "notice", text),
         )
-        self.query.buffer.on_text_changed += lambda _: self.refresh()
+        self.searching = SearchDebounce(self.query.buffer, self.refresh)
         self.list.buffer.on_cursor_position_changed += lambda _: self.select()
         keys = KeyBindings()
         self.detail.bind_scrolling(keys)
@@ -227,11 +228,12 @@ class ToolInspector:
 
         keys.add("tab")(focus_next)
         keys.add("s-tab")(focus_previous)
-        steer_list_from_query(keys, self.query, self.list)
+        steer_list_from_query(keys, self.query, self.list, self.searching)
         bind_list_paging(keys, self.list, has_focus(self.list) | has_focus(self.query))
 
         @keys.add("enter", filter=has_focus(self.query))
         def search_done(event):
+            self.searching.flush()
             event.app.layout.focus(self.list)
 
         self.prefix_keys = shortcuts = PrefixKeys(key_prefix)

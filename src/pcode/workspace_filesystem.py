@@ -6,10 +6,9 @@ so the workspace stays the base without being a sandbox. See
 dev/dependencies.md before upgrading the filesystem integration.
 """
 
-from dataclasses import fields
 from pathlib import Path
 
-from pydantic_ai_harness.filesystem import FileSystem, FileSystemToolset
+from pydantic_ai_harness.file_system import FileSystem, FileSystemToolset
 
 
 def _any_depth(pattern: str) -> str:
@@ -26,14 +25,6 @@ class WorkspaceFileSystem(FileSystem):
         self.root_dir = "/"
         # Protected-file rules still apply, including to paths outside the workspace.
         self.read_only_patterns = [_any_depth(pattern) for pattern in self.read_only_patterns]
-
-    @classmethod
-    def from_filesystem(cls, filesystem: FileSystem) -> "WorkspaceFileSystem":
-        values = {f.name: getattr(filesystem, f.name) for f in fields(FileSystem) if f.init}
-        # Deprecated upstream aliases; passing them only re-triggers the warning.
-        values.pop("cwd", None)
-        values.pop("protected_patterns", None)
-        return cls(**values)
 
     def get_instructions(self):
         async def instructions(ctx) -> str:

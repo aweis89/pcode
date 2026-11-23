@@ -15,6 +15,7 @@ from rich.cells import cell_len
 from rich.spinner import SPINNERS as RICH_SPINNERS
 
 from pcode.delta import LAYOUTS as DIFF_LAYOUTS
+from pcode.kitty_spinner import SMOOTH_NAMES as SMOOTH_SPINNERS
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
@@ -40,9 +41,14 @@ def _steady_width(frames: list[str]) -> bool:
     )
 
 
-# Rich's named spinners that fit the status row: `pcode config set spinner NAME`.
+# Rich's named spinners that fit the status row, plus Kitty smooth spinner
+# styles (`helix`, `gyro`, `octa`, `swept`, `dual`, `orbit`, `wave`, `comet`):
+# `pcode config set spinner NAME`.
 SPINNERS = tuple(
-    sorted(name for name, spec in RICH_SPINNERS.items() if _steady_width(spec["frames"]))
+    sorted(
+        {name for name, spec in RICH_SPINNERS.items() if _steady_width(spec["frames"])}
+        | set(SMOOTH_SPINNERS)
+    )
 )
 
 EFFORTS = ("low", "medium", "high", "xhigh", "default")
@@ -56,6 +62,8 @@ COMMAND_MODES = ("off", "activity-panel", "scrollback")
 RENAMED_VALUES = {
     "show_thinking": {"status-line": "activity-panel"},
     "show_commands": {"on": "scrollback"},
+    "spinner": {"diamond": "octa"},
+    "tool_spinner": {"diamond": "octa"},
 }
 
 
@@ -67,6 +75,10 @@ def canonical(key: str, value):
 OPENAI_PROVIDERS = ("openai", "openai-chat", "openai-responses", "openai-codex")
 # Routes that reach a Claude model and so take Anthropic's own effort setting.
 ANTHROPIC_PROVIDERS = ("anthropic", "claude")
+# Gemini routes. Both levels and readable thinking go through Pydantic AI's
+# unified `thinking` setting, which fits a level to the ones each model accepts
+# (Gemini 4 Neon: low to xhigh; Gemini 2.5: a token budget).
+GOOGLE_PROVIDERS = ("google", "google-cloud")
 
 
 @dataclass(frozen=True)
@@ -349,10 +361,27 @@ SETTINGS = {
         whole_number=True,
         description="Concurrent worker cap; 0 is unlimited (reload to apply)",
     ),
+    # Read at each delegation by the bundled manager extension (/manager).
+    "manager_worker_model": Setting(
+        None,
+        description="Model /manager workers run on when the agent names none; "
+        "unset uses the session's model",
+    ),
+    "manager_token_budget": Setting(
+        "0",
+        whole_number=True,
+        description="Worker tokens /manager may spend before refusing new delegations; "
+        "0 is unlimited",
+    ),
     "subagent_models": Setting(
         "",
         name_list=True,
         description="Models delegate_task lists for sub-agents, comma-separated (/subagents)",
+    ),
+    "advisor_model": Setting(
+        None,
+        description="Model the session's model may consult for hard decisions, e.g. "
+        "anthropic:claude-fable-5-2; unset for none (/advisor)",
     ),
     # An untouched worktree is always removed; uncommitted changes are always kept.
     # Off by default: one process starts faster and leaves nothing behind.
@@ -507,9 +536,15 @@ SETTINGS = {
         description="Rebuild scrollback at the new width when the terminal resizes",
     ),
     "paced_scrollback": Setting(
-        "typed",
-        ("typed", "rows", "off"),
-        description="Type settled prose out, or roll blocks in by row, instead of landing at once",
+        "rows",
+        ("rows", "typed", "off"),
+        description="Roll settled blocks in by row, or type prose out, instead of landing at once",
+    ),
+    "smooth_scroll": Setting(
+        "off",
+        ("auto", "off"),
+        description="Experimental: glide new rows into view; auto uses it in terminals that "
+        "answer for it (a patched Ghostty) and needs paced_scrollback not off",
     ),
     "show_edits": Setting(
         "on",
@@ -623,14 +658,14 @@ SETTINGS = {
     "tool_glyphs": Setting(
         "auto",
         ("auto", "on", "off"),
-        description="Symbols on the tool row; off spells out verbs but shell's $ "
+        description="Symbols on the tool row; off spells out verbs except shell's $ "
         "(auto: off on the Linux console or with ASCII glyphs)",
     ),
     "glyphs": Setting(
         "auto",
-        ("auto", "unicode", "ascii"),
-        description="Draw marks, borders and spinners as Unicode or plain ASCII (auto: ASCII "
-        "on the Linux console, a non-UTF-8 locale, or a terminal drawing them two cells wide)",
+        ("auto", "nerd", "unicode", "ascii"),
+        description="Draw icons, marks, borders and spinners as Nerd Fonts, Unicode, or ASCII "
+        "(auto: Nerd Fonts in Ghostty, ASCII on Linux console/non-UTF-8/wide, else Unicode)",
     ),
     "color_depth": Setting(
         "auto",
@@ -659,16 +694,22 @@ SETTINGS = {
     "spinner": Setting(
         "dots",
         SPINNERS,
-        description="Animation on the status row while the model works (a Rich spinner name)",
+        description="Animation on the status row while the model works (Rich or smooth name)",
     ),
     # Distinct from `spinner` so a running command never reads as the model.
     "tool_spinner": Setting(
         "arc",
         SPINNERS,
-        description="Animation on a running tool call's row (a Rich spinner name)",
+        description="Animation on a running tool call's row (Rich or smooth name)",
+    ),
+    "smooth_spinner": Setting(
+        "auto",
+        ("auto", "off"),
+        description="Animate spinners via Kitty graphics in Ghostty and kitty "
+        "(auto: on when supported, else Rich spinners)",
     ),
     "show_thinking": Setting(
-        "activity-panel",
+        "scrollback",
         THINKING_MODES,
         description="Where the model's thinking shows: its own rows in the activity panel, "
         "streamed into scrollback, or nowhere",
@@ -753,13 +794,16 @@ SETTINGS = {
         ("on", "off"),
         description="Open the side-answer viewer as soon as a /btw answer is ready",
     ),
-    # Read each time the viewer opens, so `/config set` applies without a restart.
-    "btw_view": Setting(
-        "popup",
-        ("popup", "swap"),
+    # Read each time a popup opens, so `/config set` applies without a restart.
+    "popup_view": Setting(
+        "auto",
+        ("auto", "popup", "overlay"),
         description=(
-            "Show /btw threads in a full-screen popup, or swap them into the "
-            "conversation's place on screen, where the editor replies to them"
+            "Where popups and /btw threads open: auto (an overlay in Ghostty "
+            "Smooth, else full screen), popup (always full screen), or overlay "
+            "(experimental; same as auto, kept for older configs). The overlay is "
+            "laid over the conversation, which keeps streaming behind it; there "
+            "/btw threads open in a drawer the editor replies to (with a session host)"
         ),
     ),
     # Read when a job finishes, so `/config set` applies without a restart.
@@ -770,7 +814,7 @@ SETTINGS = {
     ),
     # Edits, plans, shell, and delegation stay native so their transcript display survives.
     "code_mode": Setting(
-        "off",
+        "on",
         ("on", "off"),
         description="Batch read-only tool calls through one sandboxed run_code snippet",
     ),
@@ -915,6 +959,15 @@ def load_preferences() -> dict[str, str]:
     return merged
 
 
+def overlay_popups() -> bool:
+    """Whether `popup_view` lets popups and /btw threads open as overlays.
+
+    `auto` and `overlay` alike: either way the overlay needs a terminal that
+    answered the startup probe (Ghostty Smooth), which the caller checks.
+    """
+    return load_preferences().get("popup_view", SETTINGS["popup_view"].default) != "popup"
+
+
 def subagent_models() -> list[str]:
     """The `subagent_models` setting as model names, in order, without repeats."""
     value = load_preferences().get("subagent_models", "")
@@ -1055,6 +1108,61 @@ def anthropic_profile(model: str | None, resolved=None) -> dict:
     return anthropic_model_profile((model or "").split(":", 1)[-1]) or {}
 
 
+# In-memory mirror of Antigravity's per-model `thought_levels` cache so
+# `effort_setting` never imports `pcode.antigravity` (or `pydantic_ai`) on startup
+# and footer rendering does not reread JSON on every frame. Stored as one
+# immutable `(stat_key, mapping)` pair so worker threads never see a torn cache.
+_antigravity_cache: tuple[tuple[Path, int, int, int], dict[str, tuple[str, ...]]] | None = None
+
+
+def _cached_antigravity_thought_levels(model_name: str) -> tuple[str, ...] | None:
+    global _antigravity_cache
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    path = state / "pcode" / "antigravity-models.json"
+    try:
+        info = path.stat()
+    except OSError:
+        _antigravity_cache = None
+        return None
+    key = (path, info.st_ino, info.st_mtime_ns, info.st_size)
+    cached = _antigravity_cache
+    if cached is not None and cached[0] == key:
+        return cached[1].get(model_name)
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        raw = {}
+    stored = raw.get("thought_levels") if isinstance(raw, dict) else None
+    mapping = (
+        {
+            name: tuple(v for v in levels if isinstance(v, str) and v)
+            for name, levels in stored.items()
+            if isinstance(name, str) and isinstance(levels, list)
+        }
+        if isinstance(stored, dict)
+        else {}
+    )
+    _antigravity_cache = (key, mapping)
+    return mapping.get(model_name)
+
+
+def _antigravity_thought_levels(model: str | None, resolved=None) -> tuple[str, ...] | None:
+    target = resolved
+    for _ in range(8):
+        if target is None:
+            break
+        levels = getattr(target, "thought_levels", None)
+        if levels is not None:
+            return tuple(levels)
+        target = getattr(target, "wrapped", None)
+    name = (model or "").split(":", 1)[-1].strip()
+    return _cached_antigravity_thought_levels(name) if name else None
+
+
 def effort_setting(model: str | None, resolved=None) -> str | None:
     """The settings key /effort writes for `model`, or None where it has none.
 
@@ -1069,17 +1177,28 @@ def effort_setting(model: str | None, resolved=None) -> str | None:
     if provider in ANTHROPIC_PROVIDERS:
         if anthropic_profile(model, resolved).get("anthropic_supports_effort"):
             return "anthropic_effort"
+    if provider in GOOGLE_PROVIDERS and google_profile(model, resolved).get("supports_thinking"):
+        return "thinking"
+    if provider == "antigravity" and _antigravity_thought_levels(model, resolved) != ():
+        return "antigravity_effort"
     return None
 
 
 def effort_unavailable(model: str | None) -> str:
     """Why /effort refuses `model`, naming the model where the provider is fine."""
-    if (model or "").split(":", 1)[0] in ANTHROPIC_PROVIDERS:
+    provider = (model or "").split(":", 1)[0]
+    if provider in ANTHROPIC_PROVIDERS:
         return (
             f"{model} has no effort control; Anthropic gates it to "
             "Opus 4.5+ and Sonnet 4.6+ models."
         )
-    base = "Effort control requires an OpenAI/Codex, Anthropic, or Claude model"
+    if provider in GOOGLE_PROVIDERS:
+        return f"{model} has no effort control; it does not think."
+    if provider == "antigravity":
+        return f"{model} has no effort control; Antigravity does not offer a thinking level for it."
+    base = (
+        "Effort control requires an OpenAI/Codex, Anthropic, Claude, Gemini, or Antigravity model"
+    )
     return f"{base}; {model} is not one." if model else f"{base}."
 
 
@@ -1096,13 +1215,28 @@ def current_effort(agent, model: str) -> str:
     settings = getattr(resolved, "settings", None) or {}
     settings = {**settings, **(getattr(agent, "model_settings", None) or {})}
     effort = settings.get(key, "default")
-    return "xhigh" if effort == "max" else effort
+    if effort == "max":
+        return "xhigh"
+    # Google's `thinking` is `True` when only readable thinking was asked for.
+    return effort if effort in EFFORTS else "default"
 
 
 def apply_effort(agent, model: str, effort: str | None) -> None:
     resolved = getattr(agent, "model", None)
     key = effort_setting(model, resolved)
-    if effort not in EFFORTS or key is None:
+    if effort not in EFFORTS:
+        return
+    if key is None:
+        # Clearing a saved effort on a newly-gated Antigravity model should drop
+        # any `antigravity_effort` left on the agent from before its first turn.
+        if (
+            effort == "default"
+            and (model or "").split(":", 1)[0] == "antigravity"
+            and "antigravity_effort" in (agent.model_settings or {})
+        ):
+            settings = dict(agent.model_settings or {})
+            settings.pop("antigravity_effort", None)
+            agent.model_settings = settings
         return
     settings = dict(agent.model_settings or {})
     if effort == "default":
@@ -1128,7 +1262,9 @@ ANTHROPIC_THINKS_BY_DEFAULT = re.compile(
 # someone watching the agent, and nothing else: a status line's own format.
 # `(?!\d)`: `fable-5` must not also match a future `fable-50`, which would get
 # the beta (and a 400) without supporting it.
-ANTHROPIC_PROGRESS_UPDATES = re.compile(r"claude-(?:opus-5-5|sonnet-5-5|fable-5|mythos-5-1)(?!\d)")
+ANTHROPIC_PROGRESS_UPDATES = re.compile(
+    r"claude-(?:opus-5-5|sonnet-5-5|fable-5|mythos-5-[12])(?!\d)"
+)
 UPDATES_BETA = "thinking-display-updates-2026-08-18"
 
 
@@ -1153,6 +1289,16 @@ def preference_count(key: str) -> int:
 def tool_rows_preference() -> int:
     """The most tool rows in the activity panel (`tool_max_lines`)."""
     return int(load_preferences().get("tool_max_lines", SETTINGS["tool_max_lines"].default))
+
+
+def google_profile(model: str, resolved=None) -> dict:
+    """The profile for a Gemini `model`, from `resolved` when it is a model object."""
+    profile = getattr(resolved, "profile", None)
+    if profile is not None:
+        return profile
+    from pydantic_ai.profiles.google import google_model_profile
+
+    return google_model_profile(model.split(":", 1)[-1]) or {}
 
 
 def openai_profile(model: str, resolved=None) -> dict:
@@ -1213,6 +1359,11 @@ def thinking_settings(model: str, resolved, mode: str) -> dict:
         # that is not verified gets a 400 for asking: `off` is the way out.
         if openai_profile(model, resolved).get("openai_supports_reasoning"):
             return {"openai_reasoning_summary": "auto"}
+    if provider in GOOGLE_PROVIDERS:
+        # `True` asks for thought summaries at the model's own level. Gemini
+        # bills its thinking either way; this only makes it readable.
+        if google_profile(model, resolved).get("supports_thinking"):
+            return {"thinking": True}
     return {}
 
 
@@ -1222,6 +1373,8 @@ THINKING_KEYS = {
     "anthropic": ("anthropic_thinking", "anthropic_betas"),
     "openai": ("openai_reasoning_summary",),
     "openai-responses": ("openai_reasoning_summary",),
+    # Shared with /effort: a level set there wins, and already returns summaries.
+    **dict.fromkeys(GOOGLE_PROVIDERS, ("thinking",)),
 }
 
 
@@ -1231,6 +1384,10 @@ def apply_thinking(agent, model: str, mode: str) -> None:
     if keys is None:
         return
     current = getattr(agent, "model_settings", None)
+    if isinstance((current or {}).get("thinking"), str):
+        # An effort level owns Google's `thinking`; Pydantic AI asks for
+        # summaries with any level, so the mode cannot turn them off.
+        return
     wanted = thinking_settings(model, getattr(agent, "model", None), mode)
     if not wanted and not any(key in (current or {}) for key in keys):
         return

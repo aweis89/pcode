@@ -174,6 +174,13 @@ def test_a_session_command_runs_in_the_host_and_returns_when_done(tmp_path, host
             printed = Printed()
             assert not await asyncio.wait_for(printed.send(host, "/model"), 10)
             assert "needs the interactive terminal" in printed.err.getvalue()
+            # Nor the side-answer viewer, which a terminal opens without holding the host.
+            from pcode.aside import Aside
+
+            host.controller.asides.items.append(Aside(question="why?", status="answered"))
+            printed = Printed()
+            assert not await asyncio.wait_for(printed.send(host, "/btw"), 10)
+            assert "needs the interactive terminal" in printed.err.getvalue()
             # One the host lacks comes back to the sender, which says so and fails.
             printed = Printed()
             assert not await asyncio.wait_for(printed.send(host, "/no-such-command"), 10)

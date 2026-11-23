@@ -30,13 +30,14 @@ from rich.console import Console
 from pcode.app import PreviewApp, main
 app = PreviewApp(model='test:local', console=Console(file=StringIO()))
 app.toolbar()
+PreviewApp(model='antigravity:gemini-4-neon', console=Console(file=StringIO())).toolbar()
 # Stop at the boundary where the CLI would start the interactive event loop.
 PreviewApp.run = lambda self: None
 sys.stdin.isatty = lambda: True
 sys.stdout.isatty = lambda: True
 sys.argv = ['pcode', '-m', 'test:local', '--no-host', '--no-worktree']
 main()
-for name in ('pcode.sessions', 'pcode.agent', 'pcode.live', 'pydantic_ai'):
+for name in ('pcode.sessions', 'pcode.agent', 'pcode.live', 'pcode.antigravity', 'pydantic_ai'):
     assert name not in sys.modules, name
 """,
         ],
@@ -173,3 +174,90 @@ def test_editor_accepts_input_while_backend_starts(outcome):
             assert metadata_cancelled.is_set()
 
     asyncio.run(run())
+
+
+def test_startup_border_animation_lifecycle():
+    from pcode.ui import STARTUP_SETTLE_SECONDS, Activity, PromptLayout
+
+    activity = Activity()
+    assert not activity.startup_animating
+    activity.begin_startup("Starting session")
+    assert activity.startup_animating
+    assert activity.startup_label == "Starting session"
+
+    # Success transitions into the brief settle sweep; failure clears at once.
+    activity.finish_startup(ok=True)
+    assert not activity.startup_label
+    assert activity.startup_animating
+    activity.startup_done_at -= STARTUP_SETTLE_SECONDS + 0.05
+    assert not activity.startup_animating
+
+    activity.begin_startup("Starting agent")
+    activity.finish_startup(ok=False)
+    assert not activity.startup_animating
+
+    # Startup border renders cleanly in bordered mode at normal and narrow widths.
+    app = PreviewApp(console=Console(file=StringIO()))
+    with create_pipe_input() as pipe:
+        session = create_prompt(
+            app.registry,
+            activity=activity,
+            transcript=app.transcript,
+            input=pipe,
+            output=DummyOutput(),
+        )
+        layout = PromptLayout(session, activity, app.transcript, session.shortcuts)
+        activity.begin_startup("Starting pcode")
+        border = layout.startup_border()
+        fragments = border.content.text()
+        rendered = "".join(text for _, text in fragments)
+        assert rendered.startswith("┌─ ")
+        assert "Starting pcode" in rendered
+        assert rendered.endswith("┐")
+        assert len(rendered) == 80
+
+        # Narrow width truncates cleanly without overflowing the pane width.
+        layout.size = lambda: type("Size", (), {"columns": 14, "rows": 24})()
+        narrow = "".join(text for _, text in border.content.text())
+        assert narrow.startswith("┌─ ") and narrow.endswith("┐")
+        assert len(narrow) == 14
+
+        # Settle sweep keeps identical border geometry, and skips shaded mode.
+        layout.size = lambda: type("Size", (), {"columns": 80, "rows": 24})()
+        activity.finish_startup(ok=True)
+        assert layout.startup_border_active()
+        settle = "".join(text for _, text in border.content.text())
+        assert settle.startswith("┌") and settle.endswith("┐")
+        assert set(settle[1:-1]) == {"─"}
+
+        activity.frame_style = "shaded"
+        app.transcript.frame_shade = lambda: "#222222"
+        assert not layout.startup_border_active()
+        activity.begin_startup("Starting pcode")
+        assert layout.startup_border_active()
+        shaded = "".join(text for _, text in border.content.text())
+        assert "Starting pcode" in shaded
+
+
+def test_theme_cursor_probe_records_initial_row():
+    from pcode import theme
+
+    buf = bytearray(b"\x1b[12;1R\x1b[12;2R")
+    assert theme._measure_width(buf)
+    assert theme.take_initial_cursor_row() == 12
+    assert theme.take_initial_cursor_row() is None
+
+    buf = bytearray(b"\x1b[5;1R")
+    assert theme._measure_cursor(buf)
+    assert theme.take_initial_cursor_row() == 5
+    assert theme.take_initial_cursor_row() is None
+
+
+def test_welcome_returns_rendered_row_count():
+    from pcode.ui import Transcript
+
+    transcript = Transcript(Console(file=StringIO(), width=100), detected_theme="dark")
+    rows = transcript.welcome("test:model", "/tmp/ws")
+    assert rows == 6
+    narrow = Transcript(Console(file=StringIO(), width=30), detected_theme="dark")
+    assert narrow.welcome("test:model", "/tmp/a/very/long/workspace/path") > 6

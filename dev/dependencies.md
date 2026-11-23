@@ -13,10 +13,10 @@ a snapshot, not a second set of pins: update them when dependencies change.
 | --- | --- | --- | --- |
 | prompt_toolkit (`prompt-toolkit`) | 3.0.53 | [Docs](https://python-prompt-toolkit.readthedocs.io/en/stable/) | [python-prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) |
 | Rich (`rich`) | 15.0.0 | [Docs](https://rich.readthedocs.io/en/stable/) | [rich](https://github.com/Textualize/rich) |
-| Pydantic AI (`pydantic-ai-slim`) | 2.56.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
-| Pydantic AI Harness (`pydantic-ai-harness`) | 0.56.0 (released with Pydantic AI 2.56.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
+| Pydantic AI (`pydantic-ai-slim`) | 2.70.0 | [Docs](https://ai.pydantic.dev/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `pydantic_ai_slim/`) |
+| Pydantic AI Harness (`pydantic-ai-harness`) | 0.70.0 (released with Pydantic AI 2.70.0) | [Docs](https://pydantic.dev/docs/ai/harness/) | [pydantic-ai](https://github.com/pydantic/pydantic-ai) (package: `src/pydantic_ai_harness/`) |
 | Playwright (`playwright`, via the Harness `playwright` extra; Chromium downloaded on first `/browser` use) | 1.64.0 | [Docs](https://playwright.dev/python/) | [playwright-python](https://github.com/microsoft/playwright-python) |
-| Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.167 (CLI 2.1.300) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
+| Claude Agent SDK (`claude-agent-sdk`, bundles the Claude Code CLI) | 0.2.180 (CLI 2.1.321) | [Docs](https://code.claude.com/docs/en/agent-sdk/python) | [claude-agent-sdk-python](https://github.com/anthropics/claude-agent-sdk-python) |
 
 From the repository root, this read-only command prints installed versions and
 package source locations without importing the agent runtime or loading credentials:
@@ -40,6 +40,51 @@ This requires an existing project environment. Typical source locations are
 `.venv/lib/pythonX.Y/site-packages/<module>/`; do not hard-code the Python minor
 version. Installed packages contain implementation and docstrings, but may omit
 upstream tests, examples, and documentation sources.
+
+### Upgrading Pydantic AI and Harness
+
+Harness pins `pydantic-ai-slim` to its own minor, and a provider SDK major can
+need a newer Pydantic AI, so one bump moves all three. Take every minor rather
+than skipping several: 0.56 to 0.66 was a 44k-line diff. Start with
+`tests/test_upstream_internals.py`, which lists every private upstream name pcode
+uses and fails by name on one that moved, and on an override whose upstream
+method is gone (which otherwise just stops being called). Behavior changes
+then show up in the rest of the suite; 0.66's were retries arriving as
+`ToolReturnPart(outcome="retried")`, summaries as `CompactionPart`,
+`keep_tokens` becoming a floor, and messages stored once per session.
+0.66 to 0.69 skipped two minors anyway, and its breaks were quieter: most
+renames kept deprecated aliases the suite passed through. Harness's warnings
+subclass `UserWarning`, so `-W error::DeprecationWarning` misses them; run with
+`-W error::pydantic_ai_harness.HarnessDeprecationWarning`, or grep the warnings
+summary for `HarnessDeprecationWarning`. The breaking ones: `filesystem` and
+`subagents` became `file_system` and `sub_agents`; Coder's guidance became the
+private `_CoderGuidance`, so pcode's replacement silently stopped matching and
+Coder's own "finish long-running work" prompt came back (that silent swap is why
+`coding_capabilities` now builds the list itself instead of adapting `Coder`); `RepoContext` started
+loading only the first instruction file per directory
+(`discover_every_instruction_file` keeps loading all of them); background
+results are framed in `<pyai:tool_result>`; and `KnownModelName` was curated
+down to current models, so catalog tests naming an old ID fail.
+0.70 moved late results to typed `CapabilityPart`s in the request (a
+background result is a `BackgroundToolResultPart`, framed `<tool_result>` by
+the framework at send time), so code or a test helper that collects request
+text from `UserPromptPart`/`ToolReturnPart` alone silently misses them.
+
+Because pcode no longer runs `Coder`, the suite cannot tell you when Coder got
+better: a release can't change pcode's prompt or tools behind your back, but
+nothing it adds to `Coder` arrives either. On every bump, diff
+`pydantic_ai_harness/coder/_capability.py` and `coder/_instructions.py` between
+the old and new release (`make harness-src` checks out the new one) and decide
+what to copy into `agent.coding_capabilities`: new or reordered capabilities,
+changed defaults (read budget, shell timeout, strict mode), changes to
+Coder's prompt (`CODER_INSTRUCTIONS` started as a copy of it), and fixes to
+`_ReportExhaustedRetries`, which pcode's `ReportExhaustedRetries` was adapted
+from.
+
+Session stores only migrate forward. Opening a session moves pcode's old
+`pcode_messages` rows into Harness's `snapshot_messages` tables
+(`sessions.adopt_legacy_messages`), and a pcode on Harness 0.56 cannot read
+those rows back, so a session opened by a newer pcode stays with it.
 
 ### Local Harness checkout
 
@@ -90,7 +135,9 @@ installed source. Do not build or install pcode from it.
   `src/pcode/live.py`, `src/pcode/repo_context.py`, and `src/pcode/sessions.py`.
   Start with [Harness Coder](https://ai.pydantic.dev/harness/coder/), then inspect
   the installed `pydantic_ai_harness` implementation for the capabilities used.
-  Verify Coder's actual tool composition, planning, and step-persistence APIs.
+  pcode does not instantiate `Coder`; `coding_capabilities` mirrors its
+  composition, so read Coder as the reference for what pcode copied, not as code
+  that runs.
 
 ### File access and worker shell
 
@@ -128,7 +175,7 @@ lives in `pcode.sandbox`, because `/reload` re-imports the extension.
 
 Forward `tools`, `content_hashes`, and `max_read_chars` when constructing the
 display toolset. Omitting them silently restores legacy tools and hash-bearing
-schemas, and removes Coder's read pagination budget. `max_retries` is dropped on
+schemas, and removes the read pagination budget (`MAX_READ_CHARS`, Coder's figure). `max_retries` is dropped on
 purpose, so the `tool_retries` preference governs file tools too. The `coder` extra supplies
 ripgrep, but an installed `pcode` entry point does not activate its environment's
 `bin` on PATH. `create_coder` appends that bin directory when `rg` is absent,
@@ -201,15 +248,15 @@ into the parent's event stream. The handler receives a **child** `RunContext`,
 not the parent tool identity; `DelegationReporting.wrap_tool_execute` binds the
 parent context with a `ContextVar`, reset in `finally`, so parallel children do
 not share attribution. Only child tool boundaries and phase labels are forwarded,
-never child text/thinking deltas. Inspect installed `subagents/_toolset.py` and
-`subagents/_events.py` before changing this integration.
+never child text/thinking deltas. Inspect installed `sub_agents/_toolset.py` and
+`sub_agents/_events.py` before changing this integration.
 
-`live.py` consumes `DelegationStartEvent`/`DelegationEndEvent` by `tool_call_id`.
+`live.py` consumes `DelegationStartedEvent`/`DelegationFinishedEvent` by `tool_call_id`.
 Use the structured delegation outcome: timeout/budget limits can return ordinary
 successful tool strings. A max-calls refusal emits no lifecycle events; cancellation
 and uncontained errors may omit the end event, so keep turn-end interruption cleanup.
 
-Do not add `DelegationEndEvent.usage` to session totals. `SubAgent.usage_limits`
+Do not add `DelegationFinishedEvent.usage` to session totals. `SubAgent.usage_limits`
 isolates a child's *request count* (so a long child cannot trip the parent's
 limit, and a delegate with a set cap gets a steering message rather than a
 raised limit), but its tokens
@@ -430,8 +477,9 @@ and `drain_summary_events` here; verify these on upgrades. Streaming the dedicat
 tool-free summary request is required for streaming-only subscription endpoints.
 Use the actual resolved model object to retain custom auth/proxy behavior.
 
-Installed Coder includes `ClearToolResults(max_fraction=0.7)`; pcode removes it to
-avoid discarding evidence before summarization. The installed summarizer defaults
+Harness's Coder includes `ClearToolResults(max_fraction=0.7)`; `coding_capabilities`
+leaves it out to avoid discarding evidence before summarization. Don't adopt it
+from a Coder diff on upgrade. The installed summarizer defaults
 to 500 characters per tool result, which pcode explicitly raises to 16,000. Its
 `keep_tokens` cutoff can retain an oversized final tool batch, so pcode detects that
 case and summarizes the whole settled history with `keep_messages=0` instead.
@@ -447,18 +495,19 @@ pairs, mid-tool-loop compaction, and stale usage anchors after rewriting history
 ### Tool output limits
 
 `tool_output_limits.py` composes the pinned Harness `ToolOutputLimits`, `Band`,
-`Spill`, `Truncate`, `LocalFileStore`, and `indented_json` APIs. Coder already
-includes a private `ToolOutputLimits` subclass with a 64k truncation band: replace
-it by type rather than append another limiter, or data can be lost before spilling.
+`Spill`, `Truncate`, `LocalFileOverflowStore`, and `indented_json` APIs. Keep it the
+only `ToolOutputLimits` in the list: Coder ships a private subclass with a 64k
+truncation band, and copying that in beside pcode's loses data before spilling.
 `SubAgents.shared_capabilities` receives a separate instance with the same settings
 and store. Keep retrieval registered even with no bands, since resumed histories
 can contain older handles. Spills are separate from the session journal and survive
 `--no-save`; tests must isolate `XDG_STATE_HOME` as well as config/cache directories.
 
-The pinned `read_tool_result` pages by lines, then caps the body at 50k characters.
-A single longer line cannot be recovered with `offset` or `from_end`; the coding
-adapter supplies the stable store path in instructions for shell-based character
-slicing. `indented_json` makes structured returns pageable but does not split long
+The pinned `read_tool_result` pages by lines, then caps the body at 50k characters;
+a single longer line is read with `unit='bytes'` (same cap), and `grep_tool_result`
+returns numbered matches with context. `tool_display.py` parses both tools' headers
+(`[handle …: N matching line(s); showing M…]`, `[handle …: bytes S-E of T …]`), so
+a header change upstream degrades their rows to "Read finished". `indented_json` makes structured returns pageable but does not split long
 string fields. Verify this behavior against the installed source on upgrades.
 
 `CodingToolOutputLimits` reduces only the persistent shell's body, leaving its
@@ -548,7 +597,7 @@ Traps found while building it:
   the name, says it sees.
 
 Prompt images (`pcode.prompt_images`) keep the prompt a string end to end: the
-queue, steering, `/resend`, the conversation tree, history recall and the host
+queue, steering, `/continue`, the conversation tree, history recall and the host
 protocol all carry text, and `AgentRuntime._stream` and `_consume_steering`
 turn a prompt into `[text, label, image, …]` as it is sent. Steering that
 reaches `RunContext.enqueue` (background delegation) is flattened, since
@@ -574,8 +623,9 @@ bracketed paste carries text only. Researched 2026-10-17, the options were:
 
 ### Reasoning effort
 
-`preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex and
-`anthropic_effort` for Anthropic and Claude Code.
+`preferences.apply_effort` uses `openai_reasoning_effort` for OpenAI/Codex,
+`anthropic_effort` for Anthropic and Claude Code, `thinking` for Gemini, and
+`antigravity_effort` for Antigravity.
 Verified Pydantic AI 2.50.0's `AnthropicModelSettings.anthropic_effort` and
 `AnthropicModel._build_output_config` send `output_config.effort` without changing
 thinking settings. `_build_output_config` consults `anthropic_supports_effort`
@@ -649,7 +699,7 @@ Explicit ignore/error filters still apply, and unrelated warnings are re-emitted
 Only the warning's first paragraph is shown, excluding its Python suppression
 example. Detection, per-model keys, TTL hint, and collapse latch stay upstream.
 
-The main Coder and `SubAgents.shared_capabilities` install the adapter. Child
+The main agent and `SubAgents.shared_capabilities` install the adapter. Child
 warnings are forwarded by `stream_child_activity` without forwarding child prose.
 `CacheBust` presentation events are journaled and replayed as literal warnings,
 not inserted into model history. Tests in `tests/test_cache_warnings.py` exercise
@@ -740,6 +790,17 @@ was verified live against the bundled CLI, and most of them are traps:
   odd-looking instruction delivered this way (Haiku ignored one as a possible
   injection). This path is for user input; pcode no longer injects plan reminders
   by default.
+- A resumed or forked transcript keeps the system prompt it was first recorded
+  with (a `prompt_snapshot` attachment) and ignores the one passed to the new
+  process. Only the tool list follows the options, so an `/advisor` or plan-mode
+  change left the model describing tools it did not have. `CLI_ENV` sets
+  `CLAUDE_CODE_HOST_PROMPT_SUPERSEDES_RECORD=1`, which re-renders from pcode's
+  prompt on the first turn when it differs (verified on CLI 2.1.321: the
+  request's system blocks carry the new prompt, and an unchanged fork still
+  reads its prompt from cache). "Unchanged" means byte-identical: anything
+  per-process in pcode's prompt would re-render, and miss the cache, on every
+  fork. The variable is undocumented; on an upgrade, check that a fork under a
+  changed prompt still sees it.
 - `--thinking-display summarized` works without `--thinking`. Without it, thinking
   blocks arrive empty, carrying only a signature.
 - `resume` + `fork_session` + `resume_session_at=<assistant uuid>` truncates the
@@ -772,6 +833,160 @@ was verified live against the bundled CLI, and most of them are traps:
 
 `tests/test_claude_sdk.py` drives the provider through a scripted client that
 calls pcode's real MCP server the way the CLI does.
+
+### Antigravity ACP provider (verified agy 1.5.13)
+
+`antigravity:` models (`src/pcode/antigravity.py`) drive `agy acp` as an ACP
+client. Unlike `claude:`, pcode does **not** serve its tools or run the loop:
+Google permits subscription use only from a front end talking to the
+unmodified server ([forum ruling](https://discuss.ai.google.dev/t/tos-clarification-is-t3-code-official-antigravity-acp-agent-permitted-under-the-antigravity-terms-of-service/192027)),
+and suspends accounts whose tokens or `agy -p` feed another agent loop. So do
+not "improve" this into a `claude:`-style adapter; see the ruling note below
+for what pcode sends and spawns via `agy acp`. Traps found while building it:
+
+- `agy` keeps its OAuth login over a `GEMINI_API_KEY` in its environment, but
+  falls back to the key when signed out, which would silently bill a work
+  project. pcode scrubs the Google key and Cloud variables from the child.
+- The run's cancellation is anyio's, level-triggered: once a turn is cancelled,
+  every later `await` in the same task is cancelled too, so the stream cannot
+  wait there for `session/cancel` to settle. A background task does it while
+  holding the model's lock.
+- `session/new` returns `configOptions` with separate `model` (base IDs such as
+  `gemini-4-neon`, `claude-opus-5-5`) and `thought_level` (`low`/`medium`/`high`/`xhigh`,
+  or absent for models without a thinking level); `session/set_config_option`
+  sets either and returns the updated `configOptions` for the active model.
+  `session/resume` returns no `configOptions`, so `model` is set again after a
+  resume and `thought_level` is checked before every prompt and sent when it
+  differs from the session's active level.
+- A rewind must not resume: the `agy` session still holds the dropped turns.
+  The stamp on the history's last response therefore has to be the session's
+  newest turn, which a file-locked ledger in pcode's state directory records
+  (it also catches a fork that moved the session on from another process).
+- A cancelled turn leaves the session one turn ahead of the history: pcode
+  keeps the request (with `live.CANCELLED_MARKER`) but not the partial reply,
+  and Pydantic AI merges the next prompt into that request. `user_prompt`
+  splits it at the last marker, and the session continues only while its
+  extra turns match the unanswered prompts the history kept.
+- `shutdown()` closes stdin and waits before cancelling readers. A reader
+  cancelled first used to SIGKILL `agy` mid-save.
+- `agy` capitalizes tool arguments (`Path`, `CommandLine`); pcode's tool rows
+  read lower-case names, so they are lower-cased on the way in.
+- Advertising `fs.writeTextFile` makes `agy` send whole-file client writes
+  instead of diffs (per T3 Code's integration), so pcode advertises no fs or
+  terminal capability.
+- `initialize` on `agy` 1.5.13 advertises
+  `agentCapabilities._meta.antigravity.systemPrompt.append: true`. When
+  present, main conversational `session/new` requests pass
+  `_meta.antigravity.systemPrompt.append` with pcode's concise terminal/extension
+  instructions, any discovered repository instruction files `agy` does not load
+  natively (ancestor files above the git root such as `~/AGENTS.md`, plus
+  `CLAUDE.md`, `CLAUDE.local.md`, and `AGENTS.local.md`), and delegation or
+  `/advisor` notes when active. Delegated workers and `/btw` side sessions with
+  `AutomaticRepoContext` forward only the non-native repository instruction
+  files, leaving plain side completions untouched.
+- `agy` keeps working after a turn ends: a background command or schedule may
+  stay `in_progress` across `session/prompt` settlement, and a native
+  `invoke_subagent` call reports `completed` immediately when spawned and then
+  wakes the parent later. `AntigravityStream` holds the turn open across
+  settlement when an outliving tool is still `in_progress` or when the final
+  non-daemon tool activity before settlement was a completed `invoke_subagent`
+  launch (paused until the subagent's wakeup arrives and its `usage_update` +
+  quiet debounce settle; cleared if another non-daemon tool runs afterwards so
+  a subagent that already reported during later work cannot hang the turn).
+  `agy` sends nothing when a subagent dies silently or reported before
+  settlement, so the wait gives up after `SUBAGENT_WAIT_LIMIT` (30 minutes).
+  The hold tracks one pending subagent, not a count: with two in flight, or a
+  held command finishing first, the first wake clears it, and the parent's
+  "still waiting" reply ends the turn; the later report then arrives as a
+  continuation. Ctrl+C during the wait quarantines wakes, so that subagent's
+  report is dropped rather than reopening a turn.
+  Delayed wakeups that still arrive after a turn has finalized are buffered by
+  `AntigravityModel._idle_update` when a `SessionController` is attached
+  (`wake_listener`) and open a provider continuation turn
+  (`provider_continuation=True`) that drains the buffer and streams live
+  updates without sending `session/prompt`, keeping bridged MCP tools,
+  steering, and Ctrl+C working. A user Ctrl+C sets `_wake_quarantined` until
+  the next prompt so trailing cancel frames cannot reopen a turn. Standalone
+  callers without a controller fall back to `listener` transcript notes. `agy`
+  writes a prompt's reply and immediate post-turn updates back to back, so the
+  reader queues the reply's future in line; a done-callback ran after both and
+  folded the report into the turn.
+- `agy` 1.5.13 never forwards a background sub-agent's
+  `session/request_permission` (t3code#39029); the sub-agent waits about a
+  minute and fails. Hence `--dangerously-skip-permissions`. Session modes do
+  not reach sub-agents.
+- Steering: a `session/prompt` sent while one runs makes `agy` end the running
+  prompt at once (`end_turn`) and carry on under the new one. The stream
+  follows the newest prompt and sums every prompt's usage. Only a streamed run
+  hands the model a `RunContext`, so `Agent.run` never steers.
+- The ACP server sends no `plan` updates (its message set has none; tasks live
+  in a `tasks.md` under `~/.gemini/antigravity-cli/brain/`), so pcode's plan
+  panel stays empty on Antigravity.
+- Client MCP servers (`src/pcode/antigravity_tools.py`): `agy` advertises no
+  `mcpCapabilities`, so only stdio servers in `session/new`/`session/resume`
+  `mcpServers` work, in the default mode as well as `--process-per-session`.
+  It preloads them with a deadline of about six seconds ("Failed to preload the
+  session's MCP servers: context deadline exceeded" in `acp-*.log`), and the
+  model then just reports no such tool. It opens with `server/discover`
+  (protocol 2026-07-28) before `initialize`: a FastMCP 4.1 server failed that
+  handshake where a server answering `-32601` worked. Tools appear to the model
+  as `mcp_<server>_<tool>`. Hence the stdlib-only `antigravity_relay.py`, run
+  with `python -I`, relaying to a Unix socket in the pcode process, where calls
+  run through the live turn's `tool_manager.handle_call`. `agy` 1.5.13 writes
+  MCP `initialize.result.instructions` to `~/.gemini/antigravity-cli/mcp/<server>/instructions.md`
+  and forwards MCP `{"type": "image", ...}` tool-call content blocks natively
+  to vision models. `_Session.tools_signature` drops and resumes the session
+  when dynamic tools or instructions change (such as `/advisor`) so `agy`
+  re-runs `initialize` and `tools/list`.
+- MCP per-tool-call timeout: measured on `agy` 1.5.13 at `3m0s` (`MCP tool call
+  to server "<name>" timed out after 3m0s: context deadline exceeded`), at which
+  point `agy` sends `notifications/cancelled` for that request ID. To avoid
+  killing long-running foreground workers, `BackgroundDelegation` automatically
+  detaches a foreground `delegate_task` on `runs_own_loop` models after
+  `MCP_DETACH_SECONDS` (150s) and delivers its result as a later prompt.
+- Live worker UI during `ModelRequestNode`: Pydantic AI's `AgentStream` only
+  drains `ctx._event_stream_buffer` between model-stream pulls, so while `agy`
+  waits on a bridged `delegate_task` call, worker events would sit buffered
+  until the turn ended. `ToolBridge._run` emits `BridgedToolStarted` /
+  `BridgedToolFinished` (`CustomEvent`), `BackgroundDelegation.wrap_run_event_stream`
+  interleaves `ctx._event_stream_buffer` live via its `waiters`, and
+  `EventTranslator` translates those events while skipping the duplicate native
+  `mcp_pcode_delegate_task` parts so workers appear live in the panel and
+  `/agents`.
+
+- What pcode may send (decided 2026-11): the forum ruling asks for single-user,
+  interactive use of the unmodified binary with its own sign-in, and bans token
+  proxying and wrapping `agy` in another agent's loop. It does not ban a client
+  prompting on the session's own events or spawning child `agy acp` sessions,
+  which T3 Code (the client it approves by name) does in both directions. So
+  job and worker notices, wake turns, background results, `/continue`, side
+  sessions (`/btw`, titles, summaries, advisor), and delegated `antigravity:`
+  workers (each in its own isolated `AntigravityModel(..., worker=True)`
+  session, never sharing the parent's locked session) are all supported. T3
+  runs the same `agy` CLI (managed install or a manual `agy` path), not the
+  registry's separate `agy_acp_server.par`.
+- `/compact` sent as a prompt runs agy's own compaction (no reply text; the
+  session keeps its memory). It is not counted in pcode's turn stamps. The
+  `usage_update` right after reports the compaction request itself, which in a
+  small session exceeds what it freed.
+- `session/new` returns `modes` (`default`, `accept-edits`, `auto`, `plan`).
+  `session/set_mode` to `plan` makes agy write its own
+  `implementation_plan.md` under `brain/` and wait; it leaves plan mode itself
+  once the user approves, so pcode sets the mode only when its own plan mode
+  changes.
+- A request's `BackgroundToolResultPart` (a detached or background worker's
+  result) and tool results left by another model are rendered as text in
+  `user_prompt`; agy made none of those calls.
+- `agy` 1.5.13 tail-truncates oversized `session/prompt` payloads (observed
+  around ~180 KB), which drops `</conversation>` and the user's prompt when a
+  replayed transcript runs past the limit (e.g. `/btw` or a model switch on a
+  long conversation). `replay_text` caps the replay in UTF-8 bytes
+  (`REPLAY_MAX_BYTES`, further shrunk against `PROMPT_BUDGET_BYTES` when the new
+  prompt itself is large), dropping the oldest entries first so the newest turns
+  and the prompt always arrive intact.
+
+`tests/test_antigravity.py` runs the model against `tests/fake_agy.py`, a
+scripted ACP server installed on `PATH` as `agy`.
 
 ### Codex thinking streaming
 
@@ -957,15 +1172,13 @@ Harness comes from PyPI, pinned to one minor in `pyproject.toml`. It pins
 AI 2.N.x), so upgrade the two together.
 
 Since Harness 0.52 every capability works through the run's workspace
-(`ctx.workspace`) rather than a directory argument: `Coder(path)`,
-`Shell.cwd`, `FileSystem.cwd` and `RepoContext.workspace_dir` are deprecated and
+(`ctx.workspace`) rather than a directory argument: `Shell.cwd`, `FileSystem.cwd` and `RepoContext.workspace_dir` are deprecated and
 ignored. `create_coder` attaches `LocalWorkspace(workspace)`, and a run without
 one fails at its start. `WorkspaceGuard` runs first so a deleted worktree is named
 before Harness reports a generic `WorkspaceUnavailableError`. Upstream
 `SubAgents` passes the parent's `ctx.workspace` to every delegate explicitly, so
 isolated delegation hands its child run a context with the task worktree's own
-workspace. Coder's own `SubAgents` is off (`sub_agents=False`); pcode's
-`WorkspaceSubAgents` provides `delegate_task`.
+workspace. pcode's `WorkspaceSubAgents` provides `delegate_task`.
 
 Pydantic AI records the run's workspace as `workspace_ref` on each response
 and refuses to continue history recorded in another directory. pcode moves
@@ -981,8 +1194,8 @@ workspace it was asked for.
 A `LocalWorkspace` passes commands only `PATH`, `HOME` and locale variables.
 pcode's commands don't go through it: `JobShell` runs them through `pcode.jobs`
 with the whole host environment (direnv tokens included) from its own
-`workdir`, minus `LLM_API_KEY_ENV_PATTERNS`, which Coder applied before it left
-the environment to the workspace.
+`workdir`, minus `LLM_API_KEY_ENV_PATTERNS` (`_job_shell` passes an explicit
+`env`, because `Shell` applies `denied_env_patterns` only to an explicit one).
 
 File tools are `WorkspaceFileSystem`: Harness's toolset with `root_dir='/'`, so
 paths are unconfined while relative ones resolve from the workspace and walked
@@ -1002,8 +1215,9 @@ and `_loader.discover_instruction_files`; `RepoContext._working_dir`,
 slash); nothing in pcode sets them, but a workspace-relative pattern would need
 a `**/` prefix.
 
-Coder selects `Shell(tools=['shell'], default_timeout=270)`. Pcode replaces that
-capability with `pcode.shell_tools.JobShell`, which keeps upstream's command
+`_job_shell` builds the `Shell` Coder would (`tools=['shell']`,
+`default_timeout=MAX_FOREGROUND_WAIT`, 270s) and copies it into
+`pcode.shell_tools.JobShell`, which keeps upstream's command
 policy, environment handling and output cap (it subclasses `Shell` and
 `ShellToolset`) but drops upstream's persistent `shell` tool from the registered
 set and supplies its own, plus `wait_for_job`, `job_output`, `stop_job` and
@@ -1012,17 +1226,16 @@ set and supplies its own, plus `wait_for_job`, `job_output`, `stop_job` and
 Upstream's `CommandStartedEvent`, `CommandOutputEvent` and `CommandFinishedEvent`
 are still the UI contract and are emitted unchanged, so `src/pcode/shell.py` and
 `live.py` keep working. Events carry `tool_call_id`; keep buffers local to a run
-and keyed by that identity. They do not add model calls. Planning and SubAgents
-are no longer in Coder and must be composed explicitly. `ClearToolResults` remains
-removed so pcode can summarize before discarding evidence.
+and keyed by that identity. They do not add model calls.
 
-Pcode also replaces Coder's instruction-only `Capability` with the local
-`CODER_INSTRUCTIONS` in `agent.py`, before copying capabilities to the worker.
-It is upstream's prompt minus the paragraph telling the model to finish
+The coding guidance is a plain `Capability` holding `CODER_INSTRUCTIONS` in
+`agent.py`, built with `id="coding_guidance"` (a `Capability` binds its
+instructions to its id in `__init__`, so setting `id` afterwards leaves /status
+unable to attribute it). It is upstream's Coder prompt minus the paragraph telling the model to finish
 long-running work before responding and to poll status, which kept it waiting
 on jobs instead of answering steering. Do not add job workflow rules back there;
-the shell tool descriptions cover the mechanics. Recheck the copy when bumping
-the Harness pin. `test_parent_and_worker_replace_finish_before_responding_guidance`
+the shell tool descriptions cover the mechanics. Recheck the copy against
+`coder/_instructions.py` when bumping the Harness pin. `test_parent_and_worker_replace_finish_before_responding_guidance`
 checks the resolved prompt for both agents.
 
 Why the replacement rather than the upstream tool: a command that outlives its

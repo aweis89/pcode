@@ -241,6 +241,10 @@ added directly. This is the full power of the system; the helpers above are
 shortcuts to it. The capability gets `id="ext.<name>"` if it has none, so
 `/status` can attribute its prompt cost.
 
+Set `pcode.bridge_to_acp = True` in `setup` (or `capability.bridge_to_acp = True`
+on an individual capability) to also offer the extension's tools and instructions
+to `antigravity:` sessions through pcode's ACP MCP bridge.
+
 ## Rules of thumb
 
 - Do import work inside functions when it is slow or optional; `setup` runs on

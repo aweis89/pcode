@@ -61,10 +61,13 @@ def setup(pcode):
 Extensions are plain [Pydantic AI](https://ai.pydantic.dev/) underneath, so
 anything a Pydantic AI capability can do, an extension can do.
 
-Several of pcode's own features ship as extensions: web search, the browser,
-session recall. `/extensions` lists every extension with what it added,
-`/extensions off NAME` turns one off (bundled ones included), and a file of the
-same name in your extensions directory replaces a bundled one.
+Several of pcode's own features ship as bundled extensions—enabled by default
+are `conductor`, `reflect`, `plan_mode`, `web_research`, `browser`, and
+`session_history`, while `sandbox`, `manager`, `workflows`, and `ponytail` are
+opt-in and turned on with `/extensions on NAME`. `/extensions` lists every extension with
+what it added, `/extensions off NAME` turns one off (bundled ones included),
+and a file of the same name in your extensions directory replaces a bundled
+one.
 
 Extensions run in-process with your permissions. A repository's
 `.pcode/extensions/` only loads once you've trusted that repository, since it's
@@ -88,12 +91,17 @@ workspace has, so it can also read one on its own. See
 
 pcode reads `AGENTS.md` and `CLAUDE.md` from the workspace, and from parent
 directories up to your home folder, so build commands, conventions and known
-traps reach every session without repeating them. See
+traps reach every session without repeating them. An untracked
+`AGENTS.local.md` (or `CLAUDE.local.md`) beside them holds personal notes you
+don't want to commit. When a session surfaces a recurring mistake or workflow
+fix, run [`/reflect`](../workspace.md#learning-from-a-session-reflect) to
+propose targeted updates to `AGENTS.md` or your skills. See
 [repository instructions](../workspace.md#repository-instructions-agentsmd-claudemd).
 
 ## Settings
 
 Everything else is a setting: themes and syntax styles, vi editing, a leader
-key for shortcuts, what goes into scrollback, send mode, and more. Set them
-globally with `pcode config set`, or per repository in a committed
-`.pcode/preferences.json`. See [configuration](../configuration.md).
+key for shortcuts, custom keybindings (`/bind`—see
+[keybindings](../keybindings.md)), what goes into scrollback, send mode, and
+more. Set them globally with `pcode config set`, or per repository in a
+committed `.pcode/preferences.json`. See [configuration](../configuration.md).

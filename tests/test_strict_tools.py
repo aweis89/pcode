@@ -30,7 +30,7 @@ def context(*, system="anthropic", supported=True):
 
 def edit_file_schema(workspace):
     """The real `edit_file` schema, so the transform is checked against upstream's."""
-    from pydantic_ai_harness.filesystem import FileSystem
+    from pydantic_ai_harness.file_system import FileSystem
 
     toolset = FileSystem(root_dir=workspace).get_toolset()
     return toolset.tools["edit_file"].function_schema.json_schema
@@ -195,3 +195,36 @@ def test_leaves_other_providers_unstrict(preferences, tmp_path):
     preferences(strict_tools="on")
 
     assert strict_tool_names(tmp_path) == set()
+
+
+@pytest.mark.parametrize(
+    "system,expected",
+    [
+        # Left to the provider: unset everywhere, so nothing drags a Gemini
+        # request out of `VALIDATED`.
+        ("openai", {None}),
+        ("openai-codex", {None}),
+        ("google", {None}),
+        ("google-cloud", {None}),
+        # Elsewhere unset could reach the wire as `strict: true`.
+        ("openrouter", {False}),
+        ("together", {False}),
+        ("anthropic", {False}),
+    ],
+)
+def test_coding_tools_leave_strict_mode_to_providers_known_to_decide(tmp_path, system, expected):
+    seen = {}
+
+    async def stream(messages, info):
+        seen.update({tool.name: tool.strict for tool in info.function_tools})
+        yield "ok"
+
+    model = FunctionModel(stream_function=stream, profile={"supports_json_schema_output": True})
+    model._system = system
+    Agent(model, capabilities=[create_coder(tmp_path, delegation=False)]).run_sync("hi")
+    # pcode's own opt-in, Anthropic only.
+    assert seen.pop("edit_file") is (True if system == "anthropic" else expected.copy().pop())
+    others = ("read_file", "write_file", "list_files", "grep", "shell")
+    assert {seen[name] for name in others} == expected
+    if None in expected:
+        assert False not in seen.values()

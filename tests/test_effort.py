@@ -34,6 +34,7 @@ def make_app(model="openai-codex:test", runtime=None):
         "openai-codex:test",
         "anthropic:claude-opus-4-5",
         "claude:claude-opus-4-5",
+        "antigravity:gemini-4-neon",
     ],
 )
 def test_command_validation_completion_and_defaults(model):
@@ -57,12 +58,74 @@ def test_command_validation_completion_and_defaults(model):
     assert [item.text for item in completions] == ["low", "medium", "high", "xhigh", "default"]
 
 
-@pytest.mark.parametrize("model", [None, "google:test"])
+@pytest.mark.parametrize("model", [None, "groq:llama-3.3-70b"])
 def test_unsupported_models_do_not_silently_change_settings(model):
     app, output = make_app(model)
     app.handle("/effort high")
     assert app.runtime.agent.model_settings == {"temperature": 0.5}
-    assert "requires an OpenAI/Codex, Anthropic, or Claude model" in output.getvalue()
+    assert "requires an OpenAI/Codex, Anthropic, Claude, Gemini, or Antigravity model" in " ".join(
+        output.getvalue().split()
+    )
+
+
+def test_gemini_models_that_do_not_think_are_refused():
+    app, output = make_app("google:gemma-3-27b-it")
+    app.handle("/effort high")
+    assert "thinking" not in app.runtime.agent.model_settings
+    assert "google:gemma-3-27b-it has no effort control" in output.getvalue()
+    assert app.current_effort() == "n/a"
+
+
+@pytest.mark.parametrize("model", ["google:gemini-4-neon", "google-cloud:gemini-4-neon"])
+def test_gemini_effort_and_readable_thinking_share_one_setting(model):
+    """A level wins; without one, the thinking mode decides whether summaries come back."""
+    app, _ = make_app(model)
+    settings = lambda: app.runtime.agent.model_settings  # noqa: E731
+    # The default mode (activity panel) asks for summaries at the model's own level.
+    assert settings() == {"temperature": 0.5, "thinking": True}
+    assert app.current_effort() == "default"
+    for level in ("low", "medium", "high", "xhigh"):
+        app.handle(f"/effort {level}")
+        assert settings() == {"temperature": 0.5, "thinking": level}
+        assert app.current_effort() == level
+    # Turning the display off cannot clear a level: Pydantic AI sends one with
+    # summaries, and the level is what was asked for.
+    app.controller.set_thinking("off")
+    assert settings()["thinking"] == "xhigh"
+    app.handle("/effort default")
+    assert settings() == {"temperature": 0.5}
+    app.controller.set_thinking("scrollback")
+    assert settings() == {"temperature": 0.5, "thinking": True}
+    app.handle("/effort low")
+    app.handle("/effort default")
+    # Back to the mode's own request, not dropped with the level.
+    assert settings() == {"temperature": 0.5, "thinking": True}
+    app.adjust_effort(1)
+    assert app.current_effort() == "high"
+
+
+def test_show_thinking_off_says_a_gemini_level_still_returns_summaries():
+    app, output = make_app("google:gemini-4-neon")
+    app.handle("/effort high")
+    app.handle("/show-thinking off")
+    assert "Effort high still returns thinking summaries" in output.getvalue()
+    app.handle("/effort default")
+    app.handle("/show-thinking off")
+    assert (
+        output.getvalue().rstrip().endswith("Asks for no readable thinking from the next request.")
+    )
+    # Not on OpenAI, whose effort leaves summaries to the mode.
+    app, output = make_app("openai:o4-mini")
+    app.handle("/effort high")
+    app.handle("/show-thinking off")
+    assert "still returns" not in output.getvalue()
+
+
+def test_gemini_side_calls_take_their_own_effort():
+    from pcode.agent import with_effort
+
+    assert with_effort("google:gemini-4-neon", None, None, "low") == {"thinking": "low"}
+    assert with_effort("google:gemini-4-neon", None, {"x": 1}, "default") == {"x": 1}
 
 
 @pytest.mark.parametrize(
@@ -158,13 +221,18 @@ def test_real_keybindings_preserve_draft_and_cursor(busy):
     [
         ("openai-codex:gpt-5", "openai_reasoning_effort"),
         ("anthropic:claude-opus-4-5", "anthropic_effort"),
+        ("google:gemini-4-neon", "thinking"),
+        ("antigravity:gemini-4-neon", "antigravity_effort"),
     ],
 )
 def test_effort_changes_apply_from_the_running_turns_next_request(name, key):
     requests = []
 
     async def model(messages, info):
-        requests.append(dict(info.model_settings))
+        # Pydantic AI moves the unified `thinking` level into the request parameters.
+        settings = dict(info.model_settings or {})
+        settings["thinking"] = info.model_request_parameters.thinking
+        requests.append(settings)
         if len(requests) == 1:
             app.adjust_effort(1)
             yield {0: DeltaToolCall(name="ping", json_args="{}")}
@@ -175,7 +243,8 @@ def test_effort_changes_apply_from_the_running_turns_next_request(name, key):
 
     agent = Agent(
         FunctionModel(
-            stream_function=model, profile=AnthropicModelProfile(anthropic_supports_effort=True)
+            stream_function=model,
+            profile=AnthropicModelProfile(anthropic_supports_effort=True, supports_thinking=True),
         )
     )
 

@@ -130,7 +130,8 @@ def test_native_anthropic_preserves_auth_base_url_and_input_limit(tmp_path):
         def handler(request):
             assert request.url.host == "deployment.example"
             assert request.url.path == "/prefix/v1/models/example"
-            assert request.headers["x-api-key"] == "synthetic-key"
+            # anthropic 2.x sends the key as a bearer token, no longer as `x-api-key`.
+            assert request.headers["authorization"] == "Bearer synthetic-key"
             return httpx2.Response(
                 200, json={"id": "example", "max_input_tokens": 90_000, "max_tokens": 8_000}
             )
@@ -520,6 +521,65 @@ def test_catalog_specific_provider_route_without_guessing(monkeypatch, tmp_path)
     assert service.window(model) is None
     model.provider.client.base_url = "https://other.example/v2"
     assert service.window(model) is None
+
+
+def test_unverifiable_endpoint_defaults_to_the_catalog(tmp_path):
+    """No listed URL, or a client that hides its own, is unknown rather than a proxy."""
+    from types import SimpleNamespace
+
+    from pydantic_ai.models.test import TestModel
+
+    data = {"google": {"models": {"example": {"limit": {"context": 1_048_576}}}}}
+    service = ContextCatalog(tmp_path / "cache.json")
+    service.public = parse_catalog(data, time.time())
+
+    class RoutedModel(TestModel):
+        @property
+        def provider(self):
+            return self._provider
+
+    model = RoutedModel(model_name="example")
+    # Gemini's genai client has no `base_url`, and models.dev lists no `api` for it.
+    model._provider = SimpleNamespace(name="google", client=object())
+    assert service.window(model) == 1_048_576
+    model._provider = SimpleNamespace(
+        name="google", client=SimpleNamespace(base_url="https://elsewhere.example")
+    )
+    assert service.window(model) == 1_048_576
+    # A Codex client hiding its URL still keys as Codex, never as OpenAI.
+    service.public = parse_catalog(
+        {"openai": {"models": {"example": {"limit": {"context": 400_000}}}}}, time.time()
+    )
+    model._provider = SimpleNamespace(name="openai-codex", client=object())
+    assert catalog_key(model) == "openai-codex:example"
+    assert service.window(model) is None
+
+
+def test_vertex_gemini_reads_the_catalogs_google_vertex_entry():
+    """models.dev files Vertex AI under `google-vertex`; pcode calls it `google-cloud`."""
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+
+    service = ContextCatalog()
+    service.public = parse_catalog(
+        {
+            "google-vertex": {
+                "models": {
+                    "gemini-4-neon": {
+                        "limit": {"context": 1_048_576},
+                        "modalities": {"input": ["text", "image"]},
+                    }
+                }
+            }
+        },
+        time.time(),
+    )
+    model = GoogleModel(
+        "gemini-4-neon", provider=GoogleCloudProvider(project="example", location="global")
+    )
+    for named in ("google-cloud:gemini-4-neon", model):
+        assert catalog_key(named) == "google-vertex:gemini-4-neon"
+        assert service.window(named) == 1_048_576
 
 
 def test_runtime_refreshes_the_current_model_before_streaming(monkeypatch):

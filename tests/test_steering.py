@@ -4,12 +4,14 @@ import asyncio
 import json
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from retry_parts import is_retry
 
 from pcode.agent import create_coder
 from pcode.live import AgentRuntime
 from pcode.runtime import Message
+from pcode.steering import STEERING_REMINDER, Steering
 
 STEER = "FYI, also mention the changelog."
 
@@ -45,9 +47,11 @@ def test_pending_steering_lets_the_whole_batch_run_then_arrives_once(tmp_path):
                 ToolReturnPart,
                 ToolReturnPart,
                 UserPromptPart,
+                UserPromptPart,
             ]
             assert all(part.content.startswith("Wrote ") for part in parts[:2])
-            assert parts[-1].content == STEER
+            # The reminder follows the delivery, so a question gets a visible answer.
+            assert [part.content for part in parts[2:]] == [STEER, STEERING_REMINDER]
             yield "Done, with the changelog noted"
 
         runtime = AgentRuntime(
@@ -61,7 +65,7 @@ def test_pending_steering_lets_the_whole_batch_run_then_arrives_once(tmp_path):
         assert (tmp_path / "two.txt").read_text() == "two.txt"
         assert not pending and requests == 2
         history = [part for message in runtime.history for part in message.parts]
-        assert not any(isinstance(part, RetryPromptPart) for part in history)
+        assert not any(is_retry(part) for part in history)
 
     asyncio.run(asyncio.wait_for(run(), timeout=10))
 
@@ -101,7 +105,17 @@ def test_steering_beside_a_limit_warning_reaches_history(tmp_path):
         async for _ in runtime.stream("Read it"):
             pass
         assert STEER in str(sent[1])
-        assert "[WarnNearLimits]" in str(sent[1])
+        assert "Configured run limits are approaching" in str(sent[1])
         assert STEER in str(runtime.history)
 
     asyncio.run(asyncio.wait_for(run(), timeout=10))
+
+
+def test_reminder_follows_a_delivery_and_never_comes_alone():
+    async def run():
+        pending = ["What changed?"]
+        steering = Steering(lambda: [pending.pop()] if pending else [], reminder=STEERING_REMINDER)
+        assert await steering.take() == ["What changed?", STEERING_REMINDER]
+        assert await steering.take() == []
+
+    asyncio.run(run())

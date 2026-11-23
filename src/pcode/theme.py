@@ -7,6 +7,10 @@ The same window measures how wide the terminal draws `─`: Unicode calls it
 ambiguous, and a terminal set to draw those two cells wide (a CJK locale,
 iTerm2's option) shifts every row pcode lays out with one. `pcode.glyphs`
 switches to ASCII when it does.
+
+It can also ask whether the terminal glides (`pcode.smooth_scroll`). That query
+goes first: a terminal answers in order, so once the background reply is in,
+no glide reply means none is coming.
 """
 
 import os
@@ -26,11 +30,24 @@ _CPR = re.compile(rb"\x1b\[(\d+);(\d+)R")
 # one write, so the glyph is gone before the terminal can show it; the
 # replies still measure it because a terminal answers in order.
 _WIDTH_PROBE = "\x1b[6n\x1b7─\x1b[6n\x1b8\x1b[K".encode()
+_CURSOR_PROBE = b"\x1b[6n"
 # The probe's position reports that had not arrived when it gave up waiting.
 # They are the first the editor will see, ahead of its own, so it drops them.
 _unanswered_cprs = 0
 # The probe's answer: True when `─` took two cells, None when unmeasured.
 _ambiguous_wide: bool | None = None
+# The cursor's 1-based row before the welcome banner printed, when a startup
+# CPR answered in time. Pre-seeding prompt_toolkit's renderer with it avoids
+# the first-frame jump when CPR arrives after the initial draw.
+_cursor_row: int | None = None
+# The smooth-scroll protocol version the terminal reported; None if it didn't.
+_glide_protocol: int | None = None
+# The drawer protocol the startup probe heard (`pcode.drawer`), or None.
+_drawer_protocol: int | None = None
+# The overlay popup protocol it heard (`pcode.popup_surface`), or None.
+_popup_protocol: int | None = None
+# Whether the startup probe heard an OK reply to the Kitty graphics query.
+_kitty_graphics: bool | None = None
 
 
 # The last background the terminal reported, as `#rrggbb` with the theme it
@@ -51,18 +68,107 @@ def ambiguous_wide() -> bool | None:
     return _ambiguous_wide
 
 
+def glide_supported() -> bool:
+    """Whether the startup probe found a terminal that speaks pcode's glide protocol."""
+    from pcode import smooth_scroll
+
+    return _glide_protocol == smooth_scroll.PROTOCOL
+
+
+def drawer_supported() -> bool:
+    """Whether the startup probe found a terminal that opens pcode's drawer."""
+    from pcode import drawer
+
+    return _drawer_protocol == drawer.PROTOCOL
+
+
+def popup_supported() -> bool:
+    """Whether the startup probe found a terminal that opens pcode's popups over itself."""
+    from pcode import drawer
+
+    return _popup_protocol is not None and _popup_protocol >= drawer.POPUP_PROTOCOL
+
+
+def native_pick_supported() -> bool:
+    """Whether that terminal also draws pick lists natively (`PopupSurface.pick`)."""
+    from pcode import drawer
+
+    return _popup_protocol is not None and _popup_protocol >= drawer.PICK_PROTOCOL
+
+
+def kitty_graphics_supported() -> bool:
+    """Whether the startup probe confirmed Kitty graphics support."""
+    return _kitty_graphics is True
+
+
+def _take_kitty_reply(response: bytearray) -> None:
+    global _kitty_graphics
+    from pcode import kitty_spinner
+
+    _kitty_graphics = None
+    match = kitty_spinner.REPLY.search(response)
+    if match is not None:
+        _kitty_graphics = match[1] == b"OK"
+        del response[match.start() : match.end()]
+
+
+def _take_drawer_reply(response: bytearray) -> None:
+    """Record and remove the drawer's and the popups' replies (`pcode;ok;N`, `pcode;popup;N`)."""
+    global _drawer_protocol, _popup_protocol
+    from pcode import drawer
+
+    _drawer_protocol = _popup_protocol = None
+    for match in reversed(list(drawer.REPLY.finditer(response))):
+        if version := drawer.VERSION.fullmatch(match[1]):
+            _drawer_protocol = int(version[1])
+        elif version := drawer.POPUP_VERSION.fullmatch(match[1]):
+            _popup_protocol = int(version[1])
+        del response[match.start() : match.end()]
+
+
+def _take_glide_reply(response: bytearray) -> None:
+    """Record and remove a smooth-scroll reply from `response`."""
+    global _glide_protocol
+    from pcode import smooth_scroll
+
+    match = smooth_scroll.REPLY.search(response)
+    if match is not None:
+        version = smooth_scroll.VERSION.fullmatch(match[1])
+        _glide_protocol = int(version[1]) if version else None
+        del response[match.start() : match.end()]
+
+
+def take_initial_cursor_row() -> int | None:
+    """Return and clear the 1-based cursor row measured during startup, if any."""
+    global _cursor_row
+    row, _cursor_row = _cursor_row, None
+    return row
+
+
 def _measure_width(response: bytearray) -> bool:
     """Take the probe's two position reports out of `response`; whether both were there."""
-    global _ambiguous_wide
+    global _ambiguous_wide, _cursor_row
     reports = list(_CPR.finditer(response))[:2]
     if len(reports) < 2:
         return False
     (row, before), (row_after, after) = ((int(match[1]), int(match[2])) for match in reports)
+    _cursor_row = row
     # A glyph that wrapped onto the next row measures nothing.
     if row == row_after and after - before in (1, 2):
         _ambiguous_wide = after - before == 2
     for match in reversed(reports):
         del response[match.start() : match.end()]
+    return True
+
+
+def _measure_cursor(response: bytearray) -> bool:
+    """Take one position report out of `response`; whether it was there."""
+    global _cursor_row
+    match = _CPR.search(response)
+    if match is None:
+        return False
+    _cursor_row = int(match[1])
+    del response[match.start() : match.end()]
     return True
 
 
@@ -101,8 +207,19 @@ def _terminal():
     return handle.fileno(), handle.fileno(), handle
 
 
-def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> str | None:
-    global _unanswered_cprs
+def _query_background(
+    timeout: float = 0.15,
+    *,
+    probe_width: bool = False,
+    probe_cursor: bool = False,
+    probe_glide: bool = False,
+    probe_drawer: bool = False,
+    probe_kitty: bool = False,
+) -> str | None:
+    global _unanswered_cprs, _cursor_row, _glide_protocol, _kitty_graphics
+    _cursor_row = None
+    if probe_kitty:
+        _kitty_graphics = None
     # Nothing will be colored, so there is no palette to match: stay quiet
     # rather than write an escape sequence into whatever stdout is.
     if os.environ.get("TERM") == "dumb" or not (sys.stdout.isatty() or sys.stderr.isatty()):
@@ -118,7 +235,31 @@ def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> st
     # Only the terminal pcode draws on is measured; the controlling terminal
     # fallback serves `--print`, which lays nothing out.
     probe_width = probe_width and handle is None
-    measured = not probe_width
+    probe_cursor = (probe_cursor and not probe_width) and handle is None
+    from pcode import smooth_scroll
+
+    glide_query = (
+        smooth_scroll.QUERY
+        if probe_glide and handle is None and smooth_scroll.worth_asking()
+        else b""
+    )
+    from pcode import drawer
+
+    # Asked of Ghostty only, as the glide is, for the same reasons.
+    drawer_query = (
+        drawer.QUERY + drawer.POPUP_QUERY
+        if probe_drawer and handle is None and smooth_scroll.worth_asking()
+        else b""
+    )
+    from pcode import kitty_spinner
+
+    kitty_query = (
+        kitty_spinner.QUERY
+        if probe_kitty and handle is None and kitty_spinner.worth_asking()
+        else b""
+    )
+    expected_cprs = 2 if probe_width else 1 if probe_cursor else 0
+    measured = expected_cprs == 0
     detected = None
     try:
         # Don't steal already queued input, or flush it on entering/leaving cbreak.
@@ -138,7 +279,11 @@ def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> st
             if handle is None:
                 # Keep the query behind any text already queued on stdout.
                 sys.stdout.flush()
-            os.write(query_fd, b"\x1b]11;?\x1b\\" + (_WIDTH_PROBE if probe_width else b""))
+            probe = _WIDTH_PROBE if probe_width else _CURSOR_PROBE if probe_cursor else b""
+            os.write(
+                query_fd,
+                glide_query + drawer_query + kitty_query + b"\x1b]11;?\x1b\\" + probe,
+            )
             deadline = time.monotonic() + timeout
             while detected is None or not measured:
                 remaining = deadline - time.monotonic()
@@ -153,9 +298,18 @@ def _query_background(timeout: float = 0.15, *, probe_width: bool = False) -> st
                     if detected is not None:
                         response[:] = _BACKGROUND.sub(b"", response)
                 if not measured and chunk == b"R":
-                    measured = _measure_width(response)
+                    measured = (
+                        _measure_width(response) if probe_width else _measure_cursor(response)
+                    )
+            if glide_query:
+                _glide_protocol = None
+                _take_glide_reply(response)
+            if drawer_query:
+                _take_drawer_reply(response)
+            if kitty_query:
+                _take_kitty_reply(response)
             if not measured:
-                _unanswered_cprs = 2 - len(_CPR.findall(response))
+                _unanswered_cprs = expected_cprs - len(_CPR.findall(response))
                 response[:] = _CPR.sub(b"", response)
         finally:
             termios.tcsetattr(fd, termios.TCSANOW, original)
@@ -192,12 +346,30 @@ def replay_pending_input(app, on_theme=None) -> None:
     _unanswered_cprs = 0
 
 
-def detect_theme(*, probe_width: bool = False) -> str:
+def detect_theme(
+    *,
+    probe_width: bool = False,
+    probe_cursor: bool = False,
+    probe_glide: bool = False,
+    probe_drawer: bool = False,
+    probe_kitty: bool = False,
+) -> str:
     """Use OSC 11, then COLORFGBG (when supplied by the terminal), then dark.
 
-    `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`).
+    `probe_width` also measures the ambiguous-width glyph (`ambiguous_wide`);
+    `probe_cursor` records the starting cursor row (`take_initial_cursor_row`);
+    `probe_glide` asks whether the terminal glides (`glide_supported`);
+    `probe_drawer` whether it opens pcode's drawer and popups (`drawer_supported`,
+    `popup_supported`);
+    `probe_kitty` whether it speaks Kitty graphics (`kitty_graphics_supported`).
     """
-    detected = _query_background(probe_width=probe_width)
+    detected = _query_background(
+        probe_width=probe_width,
+        probe_cursor=probe_cursor,
+        probe_glide=probe_glide,
+        probe_drawer=probe_drawer,
+        probe_kitty=probe_kitty,
+    )
     if detected is not None:
         return detected
     try:

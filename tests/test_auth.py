@@ -2,6 +2,7 @@
 
 import asyncio
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -23,6 +24,27 @@ def test_anthropic_can_start_without_key(tmp_path):
     asyncio.run(app._initialize_runtime())
     assert isinstance(app.runtime.agent.model, str)
     app.runtime.close()
+
+
+@pytest.mark.parametrize(
+    "name, fable_5_2",
+    [
+        ("claude-fable-5-2", True),
+        ("claude-mythos-5-2", True),
+        ("claude-fable-5-2-20261109", True),
+        ("claude-fable-5", False),
+    ],
+)
+def test_fable_5_2_profile_binds_thinking_and_refuses_forced_tools(name, fable_5_2):
+    # 5.2 rejects a forced tool choice with a 400, and without the binding flag
+    # an edited prefix fails the turn instead of being retried with `drop_block`.
+    # Pydantic AI's own profile covers this since 2.69; this guards a regression.
+    from pcode.auth import anthropic_model
+
+    profile = anthropic_model(f"anthropic:{name}", "synthetic-test-key").profile
+    assert profile["anthropic_binds_thinking_blocks"] is fable_5_2
+    assert profile["supports_forced_tool_choice"] is not fable_5_2
+    assert profile["anthropic_supports_adaptive_thinking"] is True
 
 
 def test_environment_key_used(monkeypatch, tmp_path):
@@ -48,7 +70,22 @@ def test_login_signs_in_to_claude_code():
     app.controller.login_requested = None
     app.handle("/login anthropic")
     assert app.controller.login_requested is None
-    assert "Usage: /login [claude|openai-codex]" in buffer.getvalue()
+    assert "Usage: /login [claude|openai-codex|antigravity]" in buffer.getvalue()
+
+
+def test_bare_login_defaults_to_current_provider():
+    for model, expected in (
+        ("openai-codex:gpt-5", "openai-codex"),
+        ("antigravity:gemini-4-neon", "antigravity"),
+        ("claude:claude-sonnet-5", "claude"),
+        ("anthropic:claude-sonnet-5", "claude"),
+    ):
+        runtime = SimpleNamespace(
+            agent=SimpleNamespace(model=None, model_settings=None), history=[]
+        )
+        app = PreviewApp(model=model, runtime=runtime, console=Console(file=StringIO()))
+        app.handle("/login")
+        assert app.controller.login_requested == expected
 
 
 def test_unknown_login_source_is_rejected():

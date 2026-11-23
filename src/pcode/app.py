@@ -3,13 +3,15 @@
 import argparse
 import asyncio
 import importlib.metadata
+import logging
 import os
 import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Callable
-from contextlib import ExitStack, aclosing, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, ExitStack, aclosing, asynccontextmanager, nullcontext
 from pathlib import Path
 
 from prompt_toolkit.application import get_app
@@ -41,10 +43,15 @@ from pcode.controller import (
     mcp_enable,
     runs_in_terminal,
 )
+from pcode.drafts import Drafts, default_dir
 from pcode.error_report import error_message
+from pcode.kitty_spinner import KittySpinners
+from pcode.library_log import install as install_library_log
 from pcode.preferences import (
     ANTHROPIC_THINKS_BY_DEFAULT,
     COMMAND_MODES,
+    GOOGLE_PROVIDERS,
+    OPENAI_PROVIDERS,
     SETTINGS,
     SYNTAX_THEMES,
     THINKING_KEYS,
@@ -55,6 +62,7 @@ from pcode.preferences import (
     effort_for,
     hints_preference,
     load_preferences,
+    overlay_popups,
     parse_height,
     preference_count,
     save_preferences,
@@ -73,8 +81,15 @@ from pcode.runtime import (
 from pcode.shell_mode import shell_command
 from pcode.startup_input import StartupInput
 from pcode.stream_display import PrintedReply, present_events, present_stream_event
-from pcode.terminal_notify import TabProgress, TabTitle
-from pcode.theme import THEMES, ambiguous_wide, replay_pending_input, terminal_background
+from pcode.terminal_notify import Reconcilable, Reconciler, TabProgress, TabTitle
+from pcode.theme import (
+    THEMES,
+    ambiguous_wide,
+    kitty_graphics_supported,
+    replay_pending_input,
+    take_initial_cursor_row,
+    terminal_background,
+)
 from pcode.tool_display import plain
 from pcode.ui import (
     WATCHED_PREFIX,
@@ -213,6 +228,9 @@ class PreviewApp:
         # `/new PROMPT`'s prompt (bare `/new` is the session's own).
         self.new_requested: str | None = None
         self.restart_requested = False
+        self.restart_all_requested = False
+        # `/restart` is moving this terminal to the host's successor.
+        self.restarting = False
         self.host_stopped = False
         # A command this terminal sent ended the host's session (`/worktree finish`).
         self.session_over = False
@@ -243,8 +261,9 @@ class PreviewApp:
         self._emulator: Callable[[str], None] | None = None
         # The tab's progress bar, while this terminal runs its prompt.
         self._progress: TabProgress | None = None
-        self._title: TabTitle | None = None
+        self._reconciler: Reconciler | None = None
         self._appearance: AppearanceWatch | None = None
+        self._kitty_spinners: KittySpinners | None = None
         # The in-process controller's loops, while this terminal runs them.
         self._loops: list = []
         agent = getattr(self.runtime, "agent", None)
@@ -258,10 +277,16 @@ class PreviewApp:
             theme or load_preferences().get("theme", SETTINGS["theme"].default),
             activity=self.activity,
             probe_width=console is None and glyph_setting == "auto",
+            probe_cursor=console is None and not os.environ.get("PROMPT_TOOLKIT_NO_CPR"),
+            probe_glide=console is None,
         )
         if console is None:
             # The editor's own terminal, which the startup probe has measured.
-            glyphs.apply(glyphs.wanted(glyph_setting, wide=ambiguous_wide()))
+            ascii_wanted = glyphs.wanted(glyph_setting, wide=ambiguous_wide())
+            glyphs.apply(ascii_wanted)
+            glyphs.apply_nerd(
+                glyphs.wanted_nerd(glyph_setting, ascii_on=ascii_wanted or glyphs.active())
+            )
         self.running = True
         self._popup_generation = 0
         self._command_popup_generation: int | None = None
@@ -282,7 +307,16 @@ class PreviewApp:
         # The viewer follows answers that settle while it is open, so auto-open
         # has nothing to do then.
         self.aside_view_open = False
-        # `/merge` and `/summarize` sent from a swapped-in /btw thread, while they run.
+        # `popup_view` as `drawer_host` last read it, and when.
+        self._drawer_pref = False
+        self._drawer_pref_at = float("-inf")
+        # Popups open one at a time, overlay or full screen; overlays
+        # (`pcode.popup_surface`) stop being tried once two failed to open.
+        self._popup_lock = asyncio.Lock()
+        self._overlay_failures = 0
+        # A native pick list failed once: the terminal and pcode disagree on it.
+        self._native_pick_off = False
+        # `/merge` and `/summarize` sent from a /btw thread in the drawer, while they run.
         self._btw_tasks: set[asyncio.Task] = set()
         # The popup generation an auto-open `/btw` was queued in. That viewer
         # opens on the answer, not the editor, since it can land mid-keystroke.
@@ -376,6 +410,7 @@ class PreviewApp:
             ),
             self.controller.registry.find("/model"),
             self.controller.registry.find("/effort"),
+            self.controller.registry.find("/advisor"),
             self.controller.registry.find("/mcp"),
             self.controller.registry.find("/login"),
             self.controller.registry.find("/logout"),
@@ -383,6 +418,7 @@ class PreviewApp:
             self.controller.registry.find("/subagents"),
             self.controller.registry.find("/reload"),
             self.controller.registry.find("/new"),
+            self.controller.registry.find("/delete"),
             Command(
                 "/resume",
                 "Browse and search saved sessions to resume",
@@ -409,8 +445,10 @@ class PreviewApp:
             ),
             Command(
                 "/restart",
-                "Restart this background session's host on the pcode installed now",
+                "Restart this background session's host on the pcode installed now; "
+                "all: every host on older code",
                 self.restart,
+                arguments=("all",),
                 group="Session",
             ),
             Command(
@@ -429,7 +467,7 @@ class PreviewApp:
             self.controller.registry.find("/compact"),
             self.controller.registry.find("/autocompact"),
             self.controller.registry.find("/jobs"),
-            self.controller.registry.find("/resend"),
+            self.controller.registry.find("/continue"),
             self.controller.registry.find("/worktree"),
             Command(
                 "/show-activity",
@@ -595,6 +633,7 @@ class PreviewApp:
         self.reviewed_checkpoint = None
         self.transcript.clear()
         self.transcript.print(Rule(title, style="pcode.muted"))
+        self.reconcile_terminal()
 
     def replay_conversation(self) -> None:
         # A host that loaded its conversation after this terminal attached
@@ -676,7 +715,7 @@ class PreviewApp:
 
     def turn_retry(self, text: str) -> None:
         # Separate abandoned partial text/thinking from the next attempt.
-        self.output.finish_thinking()
+        self.output.finish_thinking(complete=True)
         self.output.finish()
         if self._progress is not None:
             self._progress.turn_retry()
@@ -685,9 +724,19 @@ class PreviewApp:
         self.transcript.note(text)
         self.output.app.invalidate()
 
+    def reconcile_terminal(self) -> None:
+        """Bring the title and pane session in line now, not at the next slow tick.
+
+        Cheap: an item whose state has not changed writes nothing.
+        """
+        if self._reconciler is not None:
+            self._reconciler.tick()
+
     def turn_ended(self) -> None:
         if self._progress is not None:
             self._progress.turn_ended()
+        # A first turn names the session; /rename and /resume are turns too.
+        self.reconcile_terminal()
         self.activity.edit_previews.clear()
         # A watched job is not the turn's; its preview stays pinned.
         for key in [k for k in self.activity.command_outputs if not k.startswith(WATCHED_PREFIX)]:
@@ -733,29 +782,33 @@ class PreviewApp:
 
     async def choose_model(self, values, providers, current):
         """The model picker; returns the choice, or None when dismissed."""
-        from pcode.model_ui import ModelPicker
+        from pcode import model_ui
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session) as modal_input:
-                picker = ModelPicker(
-                    values,
-                    providers,
-                    current=current,
-                    input=modal_input,
-                    output=session.app.output,
+            async with self.popup(
+                output, session, layout="sheet", title=model_ui.TITLE, pick=True
+            ) as surface:
+                picked = await surface.pick(
+                    model_ui.model_items(values, current),
+                    title=model_ui.TITLE,
+                    header=model_ui.HEADER,
+                    empty=model_ui.EMPTY,
+                    custom=model_ui.custom_pattern(),
+                    # The chord that opens it closes it too.
+                    cancel_keys=("c-l",),
                     style=session.app.style,
                 )
-                return await picker.run()
         except _PopupSuperseded:
             return None
+        return picked.id if picked is not None else None
 
     async def browse_jobs(self) -> None:
         from pcode.jobs_ui import JobBrowser
 
         output, session = self.output, self.prompt_session
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, title="Jobs") as surface:
                 browser = JobBrowser(
                     self.runtime.jobs,
                     stop=lambda job: self.controller.stop_jobs([job.id]),
@@ -764,13 +817,34 @@ class PreviewApp:
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 await browser.run()
         except _PopupSuperseded:
             pass
+
+    async def read_secret(self, title: str, prompt: str, detail: str = "") -> str | None:
+        """Masked single-line secret popup; returns the value, or None when dismissed."""
+        from pcode.secret_ui import SecretPrompt
+
+        output, session = self.output, self.prompt_session
+        if output is None or session is None:
+            return None
+        try:
+            async with self.popup(output, session, overlay=False) as surface:
+                dialog = SecretPrompt(
+                    title,
+                    prompt,
+                    detail=detail,
+                    input=surface.input,
+                    output=surface.output,
+                    style=session.app.style,
+                )
+                return await dialog.run()
+        except _PopupSuperseded:
+            return None
 
     def prompt_bindings(self):
         bindings = getattr(self.prompt_session, "command_bindings", None)
@@ -809,11 +883,11 @@ class PreviewApp:
 
         self.config_requested = False
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, title="Settings") as surface:
                 browser = ConfigBrowser(
                     save=self.apply_config,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 await browser.run()
@@ -981,8 +1055,17 @@ class PreviewApp:
                 # Only scrollback turns thinking on, and only where it was off.
                 if wanted and not ANTHROPIC_THINKS_BY_DEFAULT.search(model):
                     lines.append("This model only thinks when asked: more latency and tokens.")
-            elif wanted:
+            elif wanted and provider in OPENAI_PROVIDERS:
                 lines.append("An unverified OpenAI organisation is refused summaries; use off.")
+            elif (
+                provider in GOOGLE_PROVIDERS
+                and not wanted
+                and (effort := self.current_effort()) not in ("default", "n/a")
+            ):
+                # A Gemini level owns the setting and always returns summaries.
+                lines[-1] = (
+                    f"Effort {effort} still returns thinking summaries; /effort default stops them."
+                )
         self.transcript.flash("\n".join(lines))
 
     @property
@@ -1042,18 +1125,145 @@ class PreviewApp:
         except OSError, ValueError:
             self.transcript.warning("Could not update defaults; this change applies only here.")
 
-    @asynccontextmanager
-    async def popup(self, output: TerminalOutput, session):
-        """Give a modal exclusive terminal ownership, superseding pending popups."""
-        if (
+    def _claim_popup(self) -> None:
+        """Count a popup as shown, so requests queued before it are superseded."""
+        # Include requests queued during preparation and terminal
+        # handoff, not just those waiting when this command began.
+        self._popup_generation += 1
+        if self._command_popup_generation is not None:
+            self._command_popup_generation = self._popup_generation
+
+    def popups_overlay(self) -> bool:
+        """Whether popups open in an overlay beside the conversation (unless `popup_view popup`).
+
+        Only in a terminal that answered the overlay probe, on this machine
+        (it finds pcode's socket by path), and until two in a row failed to open.
+        """
+        from pcode import theme
+
+        # Twice running: once may be a cold start (a fresh install compiling).
+        if self._overlay_failures >= 2 or not theme.popup_supported():
+            return False
+        if not self.transcript.console.is_terminal:
+            return False
+        if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+            return False
+        return overlay_popups()
+
+    def _superseded(self) -> bool:
+        return (
             self._command_popup_generation is not None
             and self._command_popup_generation != self._popup_generation
-        ):
+        )
+
+    @asynccontextmanager
+    async def popup(
+        self,
+        output: TerminalOutput,
+        session,
+        *,
+        layout: str = "wide",
+        overlay: bool = True,
+        title: str = "",
+        pick: bool = False,
+    ):
+        """Give a modal a terminal of its own, superseding pending popups.
+
+        Yields a `PopupSurface`: pass its `input` and `output` to the popup.
+        That is an overlay when `popups_overlay()` (`layout` is its shape, `sheet`
+        for short lists and prompts, `wide` for browsers), else pcode's own
+        terminal, given to the popup whole. `overlay=False` always takes the
+        full screen: a secret is typed where nothing else can take keys.
+        `title` heads an overlay's panel until a dialog sets its own.
+        `pick` asks for a surface only used to `pick`: the terminal's native
+        picker where it has one (it has no terminal), else as above.
+        One popup at a time, wherever it opens.
+        """
+        from pcode import popup_surface, theme
+
+        if self._superseded():
             raise _PopupSuperseded
+        async with self._popup_lock:
+            # Shown meanwhile, another popup may have superseded this one.
+            if self._superseded():
+                raise _PopupSuperseded
+            native = (
+                pick and overlay and theme.native_pick_supported() and not self._native_pick_off
+            )
+            if native and self.popups_overlay():
+                async with AsyncExitStack() as stack:
+                    try:
+                        surface = await stack.enter_async_context(
+                            popup_surface.pick_overlay(
+                                session.app.output, session.app.input, layout=layout
+                            )
+                        )
+                    except popup_surface.OverlayUnavailable:
+                        self._overlay_failed()
+                    else:
+                        self._overlay_failures = 0
+                        self._claim_popup()
+                        surface.full_screen = lambda: self._full_screen_popup(output, session)
+                        surface.native_failed = self._native_pick_failed
+                        yield surface
+                        return
+            elif overlay and self.popups_overlay():
+                async with AsyncExitStack() as stack:
+                    try:
+                        surface = await stack.enter_async_context(
+                            popup_surface.overlay(
+                                session.app.output,
+                                session.app.input,
+                                layout=layout,
+                                title=title,
+                            )
+                        )
+                    except popup_surface.OverlayUnavailable:
+                        self._overlay_failed()
+                    else:
+                        self._overlay_failures = 0
+                        self._claim_popup()
+                        yield surface
+                        return
+            async with self._full_screen_popup(output, session) as surface:
+                yield surface
+
+    def _native_pick_failed(self, reason: str) -> None:
+        """The terminal's native picker took the socket but showed no list (a version skew).
+
+        That pick takes the full screen; later ones open in a terminal overlay.
+        """
+        logging.getLogger(__name__).warning("Native pick list failed: %s", reason)
+        self._native_pick_off = True
+        self._overlay_failed()
+        self.transcript.warning(
+            f"The terminal could not show a native list ({reason}); "
+            "lists open in a terminal popup for the rest of this session."
+        )
+
+    def _overlay_failed(self) -> None:
+        """An overlay did not open; this one takes the full screen, and after two all do."""
+        self._overlay_failures += 1
+        if not self.popups_overlay():
+            self.transcript.warning(
+                "The terminal did not open the popup overlay; "
+                "popups take the full screen for the rest of this session."
+            )
+
+    @asynccontextmanager
+    async def _full_screen_popup(self, output: TerminalOutput, session):
+        """The popup takes pcode's terminal: the editor waits, the conversation is redrawn after."""
+        from pcode import drawer
+        from pcode.popup_surface import PopupSurface
+
         await output.flush(drain=True)
+        # The /btw drawer would cover the popup: out of the way until it is done.
+        thread_view = getattr(session, "btw_view", None)
+        hide = bool(getattr(thread_view, "drawer_open", False))
         try:
             async with output.lock:
                 async with suspended_editor(session.app):
+                    output.release_screen()
                     # A separate parser prevents the editor's escape-flush timer
                     # from stealing the modal's first Escape key.
                     stdin = getattr(session.app.input, "stdin", None)
@@ -1063,17 +1273,18 @@ class PreviewApp:
                         if stdin is not None
                         else session.app.input
                     )
+                    if hide:
+                        session.app.output.write_raw(drawer.HIDE)
                     try:
-                        # Include requests queued during preparation and terminal
-                        # handoff, not just those waiting when this command began.
-                        self._popup_generation += 1
-                        if self._command_popup_generation is not None:
-                            self._command_popup_generation = self._popup_generation
-                        yield modal_input
+                        self._claim_popup()
+                        yield PopupSurface(modal_input, session.app.output)
                     finally:
                         if modal_input is not session.app.input:
                             modal_input.close()
         finally:
+            if hide:
+                session.app.output.write_raw(drawer.SHOW)
+                session.app.output.flush()
             # Reuse resize's transcript replay, even when resize replay is off.
             # Flush only after releasing the writer lock and restoring the
             # normal screen, including dismissal, cancellation, and failures.
@@ -1116,7 +1327,7 @@ class PreviewApp:
         if tree is not None:
             selected = set(tree.path(tree.active))
             archive.calls = [call for call in archive.calls if call.run_id in selected]
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, title="Tools") as surface:
             inspector = ToolInspector(
                 archive,
                 failed=failed,
@@ -1126,8 +1337,8 @@ class PreviewApp:
                 delta=self.transcript.delta,
                 dedent=self.transcript.diff_dedent,
                 color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             await inspector.run()
@@ -1199,7 +1410,7 @@ class PreviewApp:
 
     async def choose_copy(self, output: TerminalOutput, session) -> None:
         from pcode.clipboard import copy as copy_to_clipboard
-        from pcode.copy_ui import answers, snippets
+        from pcode.copy_ui import answers
         from pcode.tree_ui import copy_dialog
 
         self.copy_requested = False
@@ -1207,23 +1418,23 @@ class PreviewApp:
         if thread := self.btw_thread():
             from pcode.aside_ui import thread_tree
 
-            # With a /btw thread on screen, /copy reads that thread.
+            # With a /btw thread open, /copy reads that thread.
             tree = thread_tree(thread)
         history = answers(tree) if tree is not None else []
         if not history:
             self.transcript.note("No response to copy yet.")
             return
-        choices = snippets(history[0].text)
+        choices = history[0].snippets()
         choice = choices[0]
         if len(history) > 1 or len(choices) > 1:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, title="Copy") as surface:
                 dialog = copy_dialog(
                     tree,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
                 )
                 choice = await dialog.run_async()
@@ -1238,15 +1449,15 @@ class PreviewApp:
             self.transcript.error(f"Could not copy {name}.")
 
     async def choose_link(self, output: TerminalOutput, session) -> None:
-        from pcode.links import conversation_links, open_link
-        from pcode.links_ui import links_dialog
+        from pcode import links_ui
+        from pcode.links import conversation_links, link_editor_command, open_link
 
         self.links_requested = False
         tree = getattr(self.runtime, "tree", None)
         if thread := self.btw_thread():
             from pcode.aside_ui import thread_links
 
-            # With a /btw thread on screen, /links reads that thread.
+            # With a /btw thread open, /links reads that thread.
             links = message_links = thread_links(thread)
         else:
             has_tree = tree is not None and tree.nodes
@@ -1259,16 +1470,35 @@ class PreviewApp:
                 else "No links in this conversation yet."
             )
             return
-        async with self.popup(output, session) as modal_input:
-            dialog = links_dialog(
-                links,
-                message_links=message_links,
-                input=modal_input,
-                output=session.app.output,
-                style=session.app.style,
-            )
-            url = await dialog.run_async()
+        url: str | None = None
+        command: list[str] | None = None
+        editor_error: str | None = None
+        # ExitStack keeps appearance queries paused until popup() restores raw mode.
+        with ExitStack() as stack:
+            async with self.popup(
+                output, session, layout="sheet", title=links_ui.TITLE, pick=True
+            ) as surface:
+                url = await links_ui.pick_link(surface, links, message_links, session.app.style)
+                if url is not None:
+                    try:
+                        command = link_editor_command(url)
+                    except RuntimeError as error:
+                        editor_error = str(error)
+                if command is not None and surface.full_screen is not None:
+                    # A native list has no terminal: $EDITOR takes pcode's own, as
+                    # on the full screen, while this popup still holds the lock.
+                    surface.leave_native()
+                    async with surface.full_screen():
+                        editor_error = await self._run_link_editor(command, stack)
+                elif command is not None:
+                    editor_error = await self._run_link_editor(command, stack)
         if url is None:
+            return
+        if editor_error is not None:
+            self.transcript.error(f"Could not open {url}: {editor_error}")
+            return
+        if command is not None:
+            self.transcript.note(f"Opened {url}")
             return
         try:
             open_link(url)
@@ -1276,6 +1506,18 @@ class PreviewApp:
             self.transcript.error(f"Could not open {url}: {error}")
             return
         self.transcript.note(f"Opened {url}")
+
+    async def _run_link_editor(self, command: list[str], stack: ExitStack) -> str | None:
+        """Open a link in $EDITOR in the popup's terminal; an error, or None."""
+        from pcode.popup_surface import terminal_fds
+
+        if self._appearance:
+            stack.enter_context(self._appearance.paused())
+        try:
+            await asyncio.to_thread(subprocess.run, command, check=False, **terminal_fds())
+        except OSError as error:
+            return f"Could not start {command[0]}: {error}"
+        return None
 
     def recorded_edits(self) -> list[EditCompleted]:
         """Prefer the saved journal on the active branch; fall back to this process."""
@@ -1319,13 +1561,14 @@ class PreviewApp:
         self.reviewed_checkpoint = checkpoint
 
     async def browse_diffs(self, output: TerminalOutput, session) -> None:
-        from pcode.edit_ui import DiffBrowser, notes_prompt, render_review
+        from pcode.edit_ui import DIFF_CHROME, DiffBrowser, notes_prompt, render_review
         from pcode.git_diff import GitDiffError
 
         self.diffs_requested = False
         delta, dedent = self.transcript.delta, self.transcript.diff_dedent
-        # The diff pane's width: the screen less its frame and scrollbar.
-        width = max(1, session.app.output.get_size().columns - 4)
+        # The diff pane's width: the screen less its frame and scrollbar. A
+        # popup on an overlay of another width lays it out again (`rewidth`).
+        width = max(1, session.app.output.get_size().columns - DIFF_CHROME)
 
         def load():
             review = self.load_review()
@@ -1342,7 +1585,7 @@ class PreviewApp:
                 " Each file tool's edits are in /tools edits."
             )
             return
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, title="Diffs") as surface:
             browser = DiffBrowser(
                 review,
                 reload=self.load_review,
@@ -1352,8 +1595,8 @@ class PreviewApp:
                 rendered=rendered,
                 width=width,
                 dedent=dedent,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
                 handoff=self._appearance.paused if self._appearance else nullcontext,
             )
@@ -1535,6 +1778,7 @@ class PreviewApp:
             or self.activity.queued_prompts
             or self.controller.working()
             or self.asides.running
+            or self.controller.summarizing
         ):
             return (
                 "This session runs in this terminal, so what it is doing can't move to a "
@@ -1594,8 +1838,11 @@ class PreviewApp:
             self._emulator(notification(f"pcode: {title} — {what}"))
 
     def restart(self, argument: str) -> None:
+        if argument == "all":
+            self.restart_all_requested = True
+            return
         if argument:
-            raise ValueError("Usage: /restart")
+            raise ValueError("Usage: /restart [all]")
         if not self.hosted:
             raise ValueError("/restart restarts a session host; quit and relaunch for new code.")
         if self.activity.busy or self.activity.queued_prompts:
@@ -1603,11 +1850,55 @@ class PreviewApp:
         self.restart_requested = True
 
     async def restart_host(self) -> None:
-        """Stop this host and resume its conversation in a new one, on the code now installed."""
-        from pcode.remote import wait_for_exit
+        """Restart this host on the code now installed and show the new one here.
+
+        The host starts its successor itself, which keeps its environment and
+        remote profile: this terminal may have attached from another project.
+        So is one older than that, or with nothing saved to resume (a fresh
+        host on the new code replaces it).
+        """
+        from pcode.host_protocol import NOTHING_TO_RESUME, list_hosts
+        from pcode.remote import (
+            TOO_OLD_TO_RESTART,
+            HostError,
+            restart_entry,
+            wait_for_exit,
+            wait_for_host,
+        )
+        from pcode.rpc import RemoteError
 
         self.restart_requested = False
         runtime = self.runtime
+        entry = next((e for e in await asyncio.to_thread(list_hosts) if e.id == runtime.id), None)
+        if entry is not None:
+            successor = skipped = ""
+            # Its going is expected: no "has exited" warning for it.
+            self.restarting = True
+            try:
+                with self.activity.waiting("Restarting the session host"):
+                    successor, skipped = await restart_entry(entry)
+                    if successor:
+                        controller, welcome = await wait_for_host(successor, self, self.activity)
+            except (OSError, HostError, RemoteError) as error:
+                message = f"The session host did not restart: {error}"
+                if successor:
+                    message += f" /attach {successor} shows its successor once it is up."
+                elif getattr(self.controller, "host_stopped", False) and runtime.session_id:
+                    message += f" pcode --continue {runtime.session_id} resumes it."
+                if getattr(self.controller, "host_stopped", False):
+                    self.activity.busy = False
+                self.transcript.error(message)
+                return
+            finally:
+                self.restarting = False
+            if successor:
+                await self.adopt_controller(
+                    controller, welcome, f"Restarted on the current pcode ({successor})"
+                )
+                return
+            if skipped not in (TOO_OLD_TO_RESTART, NOTHING_TO_RESUME):
+                self.transcript.warning(f"The session host did not restart: {skipped}.")
+                return
         # Kept: the new host resumes in the same worktree.
         runtime.stop(keep_worktree=True)
         with self.activity.waiting("Stopping the session host"):
@@ -1618,6 +1909,32 @@ class PreviewApp:
             )
         else:
             await self.start_host_session("")
+
+    async def restart_stale_hosts(self) -> None:
+        """`/restart all`: every host on older pcode restarts, this terminal's own last.
+
+        Each other host starts its own successor, so it keeps its environment
+        rather than taking this terminal's. Busy ones are skipped and say why.
+        """
+        from pcode.host_protocol import code_fingerprint, list_hosts
+        from pcode.remote import restart_and_report
+
+        self.restart_all_requested = False
+        own = self.runtime.id if self.hosted else None
+        code = await asyncio.to_thread(code_fingerprint)
+        stale = [entry for entry in await asyncio.to_thread(list_hosts) if entry.stale(code)]
+        others = [entry for entry in stale if entry.id != own]
+        for entry in others:
+            with self.activity.waiting(f"Restarting session {entry.id}"):
+                line, failed = await restart_and_report(entry)
+            (self.transcript.warning if failed else self.transcript.note)(line)
+        if own is not None and any(entry.id == own for entry in stale):
+            if self.activity.busy or self.activity.queued_prompts:
+                self.transcript.note("This session's host waits for its turn: /restart it after.")
+            else:
+                await self.restart_host()
+        elif not others:
+            self.transcript.note("Every session host already runs the pcode installed now.")
 
     async def move_to_host(self) -> None:
         """`/detach` in a session running here: carry it on in a new host, still shown here.
@@ -1641,7 +1958,7 @@ class PreviewApp:
         # jobs while it boots.
         # A title still being asked for would be written beside the host's own.
         await self.controller.stop_naming()
-        released = jobs.release() if jobs is not None else None
+        released = jobs.release(saved.info.id) if jobs is not None else None
         saved.close()
         wait = self.activity.begin_wait("Moving this session to a background host")
         process = None
@@ -1738,17 +2055,23 @@ class PreviewApp:
             return
         # Opened even with none listed: its new-session key starts an empty one.
         entries = await asyncio.to_thread(lambda: list_hosts() + list_stopped())
-        from pcode.host_ui import hosts_dialog
+        from pcode import host_ui
+        from pcode.host_protocol import code_fingerprint
 
-        async with self.popup(output, session) as modal_input:
-            dialog = hosts_dialog(
-                entries,
-                current=current,
-                input=modal_input,
-                output=session.app.output,
+        code = code_fingerprint()
+        async with self.popup(
+            output, session, layout="sheet", title=host_ui.TITLE, pick=True
+        ) as surface:
+            picked = await surface.pick(
+                host_ui.host_items(entries, current, code=code),
+                title=host_ui.TITLE,
+                header=host_ui.header(entries),
+                empty=host_ui.empty(entries),
+                match="substring",
+                actions=(host_ui.NEW_SESSION, host_ui.STOP),
                 style=session.app.style,
             )
-            choice = await dialog.run_async()
+        choice = host_ui.choice(picked)
         if choice is None:
             return
         action, identity = choice
@@ -1779,14 +2102,22 @@ class PreviewApp:
 
     def host_closed(self) -> None:
         """The host this terminal was showing went away (stopped elsewhere, or crashed)."""
-        if self.session_over:
-            return  # Expected: this terminal is already on its way out.
+        if self.session_over or self.restarting:
+            return  # Expected: this terminal is on its way out, or to the successor.
         runtime = self.runtime
-        session = runtime.session_id and f" pcode --continue {runtime.session_id} resumes it."
-        self.transcript.warning(
-            f"The session host {runtime.id} has exited. /attach picks another;{session}"
-        )
+        if successor := getattr(self.controller, "successor", None):
+            self.transcript.warning(
+                f"The session host {runtime.id} is restarting on the current pcode as "
+                f"{successor}: /attach {successor} shows it once it is up."
+            )
+        else:
+            session = runtime.session_id and f" pcode --continue {runtime.session_id} resumes it."
+            self.transcript.warning(
+                f"The session host {runtime.id} has exited. /attach picks another;{session}"
+            )
         self.activity.busy = False
+        if self.activity.startup_label:
+            self.activity.finish_startup(ok=False)
         self.redraw()
 
     async def stop_other_host(self, entry) -> None:
@@ -1920,7 +2251,13 @@ class PreviewApp:
         await self.adopt_controller(controller, welcome, f"{note} ({identity})" if note else what)
 
     async def adopt_controller(
-        self, controller, welcome: dict, note: str, *, handed_off: bool = False
+        self,
+        controller,
+        welcome: dict,
+        note: str,
+        *,
+        handed_off: bool = False,
+        preserve_welcome: bool = False,
     ) -> None:
         """Show the host behind `controller` in this terminal, leaving the current session.
 
@@ -1970,19 +2307,31 @@ class PreviewApp:
         self.activity.reset()
         if self._progress is not None:
             self._progress.switched()
+        self.reconcile_terminal()
         self.edits.clear()
         self.reviewed_checkpoint = None
         for name, value in welcome["activity"].items():
             controller.apply_field(name, value)
         self.commands_changed()
         journal = controller.runtime.session
-        if journal is not None:
-            end = welcome["settled_end"] if welcome["settled_end"] is not None else 0
+        end = welcome["settled_end"] if welcome["settled_end"] is not None else 0
+        if preserve_welcome and (journal is None or not journal.transcript_records(end)):
+            # Brand-new hosted session: keep the welcome banner in scrollback
+            # rather than clearing the screen to draw a single attach note.
+            if journal is not None:
+                self.activity.plan = journal.latest_plan()
+            self.activity.tools.clear()
+            self.transcript.retained_note(note)
+        elif journal is not None:
             self.replay(journal, note=note, end=end)
         else:
             with self.transcript.restore():
                 self.transcript.retained_note(note)
         await controller.start(welcome)
+        if controller.startup_pending:
+            self.activity.begin_startup("Starting agent")
+        elif self.activity.startup_label:
+            self.activity.finish_startup(ok=controller.startup_error is None)
         for text, mode in messages:
             controller.submit(text, mode)
         if self._submit_typed is not None:
@@ -1999,7 +2348,7 @@ class PreviewApp:
         """Whether a settled side answer should open the viewer by itself."""
         from pcode.btw_view import current
 
-        if self.aside_view_open or current(self.activity) or self._swap_hides_draft():
+        if self.aside_view_open or current(self.activity) or self._thread_takes_draft():
             return False
         default = SETTINGS["btw_auto_open"].default
         return load_preferences().get("btw_auto_open", default) == "on"
@@ -2007,10 +2356,11 @@ class PreviewApp:
     async def read_asides(self):
         """The side-answer viewer; returns a thread to bring into the conversation, if any.
 
-        With `btw_view swap` it draws the thread in the conversation's place
-        and returns at once: the view keeps a thread itself (`keep_thread`), so
-        no command waits on it. Asked for with several threads, it lets the
-        reader pick which; Ctrl+Q already goes straight back to the last one.
+        With a drawer (`btw_drawer`) it opens the thread there, for the main
+        editor to reply to, and returns at once: the view keeps a thread itself
+        (`keep_thread`), so no command waits on it. Asked for with several
+        threads, it lets the reader pick which; Ctrl+Q already goes straight
+        back to the last one.
         """
         from pcode.btw_view import current, open_thread
 
@@ -2019,12 +2369,12 @@ class PreviewApp:
             self._command_popup_generation is not None
             and self._command_popup_generation == self._auto_open_generation
         )
-        if self.btw_swaps():
+        if self.btw_drawer():
             if latest is None:  # The command said so already.
                 return None
             # Queued when the answer arrived: since then the reader may have
             # opened a thread and be mid-reply, which this must not take over.
-            if auto and (current(self.activity) or self._swap_hides_draft()):
+            if auto and (current(self.activity) or self._thread_takes_draft()):
                 return None
             thread = latest.thread
             if not auto and len(self.asides.threads()) > 1:
@@ -2050,16 +2400,17 @@ class PreviewApp:
         output, session = self.output, self.prompt_session
         self.aside_view_open = True
         try:
-            async with self.popup(output, session) as modal_input:
+            async with self.popup(output, session, title="Side questions") as surface:
                 browser = AsideBrowser(
                     self.asides,
                     stop=self.controller.cancel_asides,
                     rich_theme=self.transcript.rich_theme,
                     code_theme=self.transcript.code_theme,
                     color_system=self.transcript.console.color_system,
-                    input=modal_input,
-                    output=session.app.output,
+                    input=surface.input,
+                    output=surface.output,
                     style=session.app.style,
+                    handoff=self._appearance.paused if self._appearance else nullcontext,
                     **options,
                 )
                 return browser, await browser.run()
@@ -2068,37 +2419,60 @@ class PreviewApp:
         finally:
             self.aside_view_open = False
 
-    # --- The /btw thread in the conversation's place (`pcode.btw_view`) ---
+    # --- The /btw thread in the drawer, replied to from the editor (`pcode.btw_view`) ---
 
-    def btw_swaps(self) -> bool:
-        """Whether /btw threads are drawn in the conversation's place (`btw_view swap`).
+    def btw_drawer(self) -> bool:
+        """Whether /btw threads open in a drawer, where the main editor replies to them.
 
-        Only a terminal can be rebuilt; anywhere else the popup shows them.
+        Without one (`drawer_host`), the popup viewer shows them.
         """
-        view = load_preferences().get("btw_view", SETTINGS["btw_view"].default)
-        return view == "swap" and self.transcript.console.is_terminal
+        return self.transcript.console.is_terminal and self.drawer_host() is not None
 
-    def _swap_hides_draft(self) -> bool:
-        """Whether swapping a thread in now would hide a draft to the conversation.
+    def drawer_host(self) -> str | None:
+        """The session host a drawer beside the terminal reads threads from (`pcode.drawer`).
+
+        Only for a terminal that answered the drawer probe, while `popup_view`
+        is not `popup`, and
+        a session host whose socket that terminal can find; else None. Asked
+        every frame, so the setting is read again at most once a second.
+        """
+        from pcode import drawer, theme
+        from pcode.host_protocol import host_dir
+
+        if not theme.drawer_supported():
+            return None
+        now = time.monotonic()
+        if now - self._drawer_pref_at > 1.0:
+            self._drawer_pref_at = now
+            self._drawer_pref = overlay_popups()
+        runtime = getattr(self.controller, "runtime", None)
+        if not (self._drawer_pref and getattr(runtime, "remote", False)):
+            return None
+        if not drawer.reachable(host_dir()) or not drawer.valid_host(runtime.id):
+            return None
+        return runtime.id
+
+    def _thread_takes_draft(self) -> bool:
+        """Whether opening a thread now would take a draft meant for the conversation.
 
         An answer that opens by itself must not: Enter would then send the
         draft to the thread instead.
         """
         session = self.prompt_session
         draft = session.default_buffer.text.strip() if session is not None else ""
-        return bool(draft) and self.btw_swaps()
+        return bool(draft) and self.btw_drawer()
 
     def btw_key(self) -> None:
         """Ctrl+Q: toggle between the conversation and the thread last shown.
 
-        With `btw_view popup` it is a bare /btw: the viewer.
+        Without a drawer it is a bare /btw: the viewer.
         """
         from pcode.btw_view import current, open_thread, reopen_thread
 
         activity = self.activity
         if current(activity):
             self.close_btw()
-        elif not self.btw_swaps():
+        elif not self.btw_drawer():
             self._submit_typed("/btw")
         elif (thread := reopen_thread(activity)) is None:
             self.transcript.flash("No side questions yet. Ask one with /btw QUESTION.")
@@ -2122,7 +2496,7 @@ class PreviewApp:
             seen(identities)
 
     def btw_thread(self) -> list:
-        """The /btw thread on screen, which the editor, /copy and /links then go to."""
+        """The open /btw thread, which the editor, /copy and /links then go to."""
         from pcode.btw_view import current
 
         return current(self.activity)
@@ -2134,11 +2508,11 @@ class PreviewApp:
         self.redraw()
 
     def btw_submit(self, text: str) -> bool | None:
-        """Send `text` to the /btw thread on screen.
+        """Send `text` to the open /btw thread.
 
         None leaves it to the conversation: commands other than the thread's
-        own, and anything typed while the conversation is shown. Those bring
-        the conversation back first, where their output goes; /copy and
+        own, and anything typed while no thread is open. Those close the
+        thread first, as their output goes to the conversation; /copy and
         /links read the thread, and /btw asks beside it, so they stay.
         True keeps the draft, refused with the reason shown.
         """
@@ -2168,12 +2542,12 @@ class PreviewApp:
                 self.transcript.flash("No side question is running.")
             return False
         if name in ("/merge", "/summarize"):
+            action = "merge" if name == "/merge" else "summary"
             try:
-                self.controller.check_bridge(thread)
+                self.controller.check_bridge(thread, action)
             except ValueError as error:
                 self.transcript.flash(str(error))
                 return True
-            action = "merge" if name == "/merge" else "summary"
 
             async def keep() -> None:
                 try:
@@ -2205,18 +2579,25 @@ class PreviewApp:
         from pcode.worker_ui import WorkerBrowser
 
         self.worker_view_requested = False
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, title="Agents") as surface:
             browser = WorkerBrowser(
                 self.activity.workers,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
                 show_thinking=self.activity.show_thinking,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
-            await browser.run()
+            prefill = await browser.run()
+        if prefill:
+            # "Answer for w2: " and friends: the user finishes it, the parent
+            # relays it. A draft already typed is kept after it.
+            buffer = session.default_buffer
+            draft = buffer.text
+            buffer.text = f"{prefill}{draft}"
+            buffer.cursor_position = len(prefill)
 
     async def choose_tree(self, output: TerminalOutput, session) -> None:
         from pcode.tree_ui import tree_dialog
@@ -2230,15 +2611,15 @@ class PreviewApp:
         # a running turn owns the history it would be replaced with. Browse now,
         # fork when the turn ends — or ask the branch a side question with /btw.
         navigable = not (self.activity.busy or self.activity.queued)
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, title="Conversation tree") as surface:
             dialog = tree_dialog(
                 tree,
                 navigable=navigable,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             selection = await dialog.run_async()
@@ -2255,16 +2636,19 @@ class PreviewApp:
 
         def load():
             # Off the event loop: the first import of pcode.sessions pulls in the
-            # agent stack, and grouping by repository runs git per workspace.
+            # agent stack, and grouping by repository can still run git for an
+            # unusual checkout, so the browser gets every workspace's scope ready.
             from pcode.sessions import list_sessions
             from pcode.worktree import repo_scope
 
             records = list_sessions(self.session_dir)
+            spaces = {Path(info.workspace).resolve() for info in records}
+            scopes = {space: repo_scope(space) for space in spaces}
             scope = repo_scope(self.workspace)
-            return records, any(repo_scope(Path(info.workspace)) == scope for info in records)
+            return records, scopes, any(found == scope for found in scopes.values())
 
         with self.activity.waiting("Loading saved sessions"):
-            records, any_here = await asyncio.to_thread(load)
+            records, scopes, any_here = await asyncio.to_thread(load)
         from pcode.session_ui import SessionBrowser
         from pcode.sessions import session_root
 
@@ -2272,17 +2656,18 @@ class PreviewApp:
             self.transcript.note("No saved sessions for this workspace.")
             return
         active_id = self.active_session_id()
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, title="Sessions") as surface:
             browser = SessionBrowser(
                 records,
                 root=self.session_dir or session_root(),
                 workspace=self.workspace,
                 active_id=active_id,
+                scopes=scopes,
                 rich_theme=self.transcript.rich_theme,
                 code_theme=self.transcript.code_theme,
                 color_system=self.transcript.console.color_system,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             identity = await browser.run()
@@ -2327,11 +2712,11 @@ class PreviewApp:
             else:
                 host = status_rows(entry)
             rows = [*host, *rows]
-        async with self.popup(output, session) as modal_input:
+        async with self.popup(output, session, layout="sheet", title="Session") as surface:
             dialog = session_info_dialog(
                 rows,
-                input=modal_input,
-                output=session.app.output,
+                input=surface.input,
+                output=surface.output,
                 style=session.app.style,
             )
             await dialog.run_async()
@@ -2355,7 +2740,8 @@ class PreviewApp:
             for record in saved.transcript_records(end):
                 kind = record["kind"]
                 if kind in ("turn_started", "steering"):
-                    self.transcript.user(strip_controls(record["prompt"]))
+                    if record["prompt"]:
+                        self.transcript.user(strip_controls(record["prompt"]))
                 elif kind in ("Thinking", "thinking_partial"):
                     self.transcript.thinking(strip_controls(record["text"]).rstrip("\n") + "\n\n")
                 elif kind == "CacheBust":
@@ -2419,12 +2805,21 @@ class PreviewApp:
         width = get_app().output.get_size().columns
         location = plain(location_label(self.workspace, self.branch), limit=None)
         model = self.model if self.model else "preview"
-        if self.model:
-            model += f" ({self.current_effort()})"
+        if self.model and (effort := self.current_effort()) != "n/a":
+            model += f" ({effort})"
         # Read left to right and cut from the right: the path leads, then send
         # mode and live activity, then metadata, with the help hint last.
-        once = " (once)" if self.send_mode_once else ""
-        segments = [("mode", f"{self.next_send_mode}{once}")]
+        btw = self.btw_thread()
+        if btw:
+            newest = btw[-1]
+            if newest.model:
+                model = newest.label or newest.model
+            elif newest.effort:
+                model = f"{self.model} ({newest.effort})" if self.model else newest.effort
+            segments = [("btw", "btw reply")]
+        else:
+            once = " (once)" if self.send_mode_once else ""
+            segments = [("mode", f"{self.next_send_mode}{once}")]
         if self._startup_pending:
             segments.extend([("sep", " · "), ("activity", "starting")])
         # No "working" label: the status on the editor's top border already says so.
@@ -2513,12 +2908,12 @@ class PreviewApp:
         output: TerminalOutput,
         text: str,
         *,
-        resend: bool = False,
+        continuing: bool = False,
         wake: bool = False,
     ) -> bool:
         """Run one turn shown through `output`: the controller's turn, this terminal its view."""
         self.output = output
-        return await self.controller.run_turn(text, resend=resend, wake=wake)
+        return await self.controller.run_turn(text, continuing=continuing, wake=wake)
 
     async def run_command(self, text: str, *, idle: bool, tag) -> None:
         """Run a slash command the controller handed back to this terminal.
@@ -2557,6 +2952,8 @@ class PreviewApp:
                 await self.start_host_session(prompt)
             if self.restart_requested:
                 await self.restart_host()
+            if self.restart_all_requested:
+                await self.restart_stale_hosts()
             if self.handoff_requested:
                 await self.move_to_host()
             if self.session_info_requested:
@@ -2584,7 +2981,16 @@ class PreviewApp:
     async def run_async(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
-        self.transcript.welcome(self.model, str(self.workspace))
+        # A brand-new session shows the welcome banner; attaching to an existing
+        # host or resuming a saved conversation replays directly instead of
+        # flashing a welcome block only to wipe it a moment later.
+        fresh_launch = not self.resuming and (
+            self._host_launch is None or self._host_launch.process is not None
+        )
+        welcome_rows = (
+            self.transcript.welcome(self.model, str(self.workspace)) if fresh_launch else 0
+        )
+        initial_row = take_initial_cursor_row()
         # Typed before a session host is attached; sent to it once it is.
         early: list[tuple[str, str, object]] | None = [] if self._host_launch else None
 
@@ -2602,24 +3008,18 @@ class PreviewApp:
         async def initialize_host():
             nonlocal early
             launch, self._host_launch = self._host_launch, None
-            if launch.process is not None:
-                self.transcript.note(
-                    f"Starting session host {launch.id}; quitting stops it, /detach leaves "
-                    f"it running. Log: {launch.log}"
-                )
-            label = "Starting the session host" if launch.process else "Connecting to the host"
             try:
-                with self.activity.waiting(label):
-                    controller, welcome = await launch.connect(self, self.activity)
+                controller, welcome = await launch.connect(self, self.activity)
             except Exception as error:
                 self._startup_error = error
                 self._startup_pending = False
+                self.activity.finish_startup(ok=False)
                 self.transcript.error(error_message(error), title="Session host failed")
                 early = None
                 session.app.invalidate()
                 return
             note = f"Attached to session host {launch.id}"
-            await self.adopt_controller(controller, welcome, note)
+            await self.adopt_controller(controller, welcome, note, preserve_welcome=fresh_launch)
             waiting, early = early or [], None
             for kind, text, detail in waiting:
                 if kind == "command":
@@ -2657,6 +3057,8 @@ class PreviewApp:
                 controller.start_mcp_defaults()
             finally:
                 self._startup_pending = False
+                if self.activity.startup_label:
+                    self.activity.finish_startup(ok=self._startup_error is None)
                 controller.ready.set()
                 for command in controller.startup_commands:
                     controller.commands.put_nowait(command)
@@ -2775,6 +3177,11 @@ class PreviewApp:
                 self.controller.submit(text, mode)
 
         self._submit_typed = submit
+        drafts = Drafts(default_dir())
+        self._kitty_spinners = KittySpinners.from_preferences(
+            load_preferences(),
+            supported=self.transcript.console.is_terminal and kitty_graphics_supported(),
+        )
         session = create_prompt(
             self.registry,
             activity=self.activity,
@@ -2799,12 +3206,15 @@ class PreviewApp:
             bottom_toolbar=self.toolbar,
             # Whichever controller is on screen: /attach replaces it.
             session_title=lambda: self.controller.session_title(),
+            drafts=drafts,
+            kitty_spinners=self._kitty_spinners,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",
         )
-        # A thread on screen is read: a host's other terminals stop calling it ready.
+        # A thread shown in the drawer is read: a host's other terminals stop calling it ready.
         thread_view = getattr(session, "btw_view", None)
         if thread_view is not None:
             thread_view.on_read = self.asides_seen
+            thread_view.drawer_host = self.drawer_host
         output = TerminalOutput(
             self.transcript.console,
             session.app,
@@ -2832,7 +3242,16 @@ class PreviewApp:
                 "terminal_title", SETTINGS["terminal_title"].default
             )
             # Whichever controller is on screen: /attach replaces it.
-            self._title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
+            from pcode import drawer, theme
+
+            items: list[Reconcilable] = []
+            tab_title = TabTitle(lambda: self.controller.session_title(), terminal, title_mode)
+            if tab_title.enabled:
+                items.append(tab_title)
+            # Over ssh the session is the remote machine's: a restored local pane can't reopen it.
+            if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
+                items.append(drawer.PaneSession(self.active_session_id, terminal))
+            self._reconciler = Reconciler(items)
             self._appearance = AppearanceWatch(
                 terminal, active=lambda: self.transcript.theme == "auto"
             )
@@ -2863,20 +3282,41 @@ class PreviewApp:
         def start():
             restore_stdin()
             replay_pending_input(session.app, self.follow_appearance)
+            if initial_row is not None and session.app.output.responds_to_cpr:
+                total_rows = session.app.output.get_size().rows
+                if total_rows > 0:
+                    row = min(total_rows, initial_row + welcome_rows)
+                    session.app.renderer._min_available_height = max(0, total_rows - row + 1)
             if stalls is not None:
                 session.app.create_background_task(stalls.heartbeat())
             session.app.create_background_task(watch_branch())
             session.app.create_background_task(output.run())
             session.app.create_background_task(run_local_commands())
+            session.app.create_background_task(drafts.run())
             if self._progress is not None:
                 session.app.create_background_task(self._progress.run())
-            if self._title is not None:
-                session.app.create_background_task(self._title.run())
+            if self._reconciler is not None:
+                session.app.create_background_task(self._reconciler.run())
             if self._appearance is not None:
                 session.app.create_background_task(self._appearance.run())
             if early is not None:
+                label = (
+                    "Resuming session"
+                    if self.resuming
+                    else "Starting session"
+                    if self._host_launch and self._host_launch.process
+                    else "Connecting to session"
+                )
+                self.activity.begin_startup(label)
                 session.app.create_background_task(initialize_host())
             else:
+                if self._startup_pending:
+                    self.activity.begin_startup(
+                        "Resuming session" if self.resuming else "Starting pcode"
+                    )
+                elif fresh_launch and self.transcript.console.is_terminal:
+                    # Preview mode has no backend wait: run just the brief settle sweep.
+                    self.activity.finish_startup(ok=True)
                 self.run_controller(self.controller)
                 session.app.create_background_task(initialize())
             if self.initial_prompt:
@@ -2889,22 +3329,29 @@ class PreviewApp:
             # Before `leave_controller` closes the connection the stop goes out on.
             self.stop_host_on_exit()
         finally:
+            # Whatever is still unsent, without waiting for the next save.
+            drafts.save()
             if stalls is not None:
                 stalls.stop()
             if self._progress is not None:
                 self._progress.close()
                 self._progress = None
-            if self._title is not None:
-                self._title.close()
-                self._title = None
+            if self._reconciler is not None:
+                self._reconciler.close()
+                self._reconciler = None
             if self._appearance is not None:
                 self._appearance.close()
                 self._appearance = None
+            if self._kitty_spinners is not None:
+                self._kitty_spinners.close(session.app.output.write_raw, session.app.output.flush)
+                self._kitty_spinners = None
             await self.leave_controller(self.controller)
             if thread_view is not None:
-                # Leave the conversation in scrollback, never a side thread.
+                # Close any open thread, and with it the drawer.
                 self.close_btw()
                 thread_view.sync()
+                # The editor no longer renders, so a drawer's close goes out now.
+                output.app.output.flush()
             await output.flush(drain=True)
             self.transcript.output = None
         self.print_resume_hint()
@@ -3078,6 +3525,7 @@ def _profile_capture(args) -> tuple[Path, bool, bool] | None:
 
 
 def main() -> None:
+    install_library_log()
     parser = argparse.ArgumentParser(
         description="Streaming terminal with a Coder agent",
         epilog=f"Global defaults, without starting a session: pcode {CONFIG_USAGE}",
@@ -3204,6 +3652,12 @@ def main() -> None:
     # The flag's old name, kept working for scripts and habit.
     parser.add_argument(
         "--stop-hosts", dest="kill_hosts", choices=host_kinds, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--restart-hosts",
+        choices=("stale", "all"),
+        help="Restart session hosts running older pcode code (or all of them) on the pcode "
+        "installed now, keeping each conversation, and exit; busy ones are skipped",
     )
     parser.add_argument(
         "--email-listen",
@@ -3359,13 +3813,17 @@ def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
 
 
 async def _stopping_provider_processes(main):
-    """Run `main`, then stop the `claude:` CLI processes this event loop started."""
+    """Run `main`, then stop the `claude:` and `antigravity:` processes this loop started."""
+    from pcode import antigravity
     from pcode.claude_sdk import shutdown
 
     try:
         return await main
     finally:
-        await shutdown()
+        try:
+            await shutdown()
+        finally:
+            await antigravity.shutdown()
 
 
 def forked_note(saved) -> str:
@@ -3374,7 +3832,7 @@ def forked_note(saved) -> str:
     note += "." if saved.fork_requested else ", which is open in another process."
     active = saved.tree.nodes.get(saved.tree.active) if saved.tree.active else None
     if active is not None and active.status == "interrupted":
-        note += " Its running turn was copied up to its last safe step; /resend carries it on."
+        note += " Its running turn was copied up to its last safe step; /continue carries it on."
     return note + f" Both sessions work in {saved.info.workspace}."
 
 
@@ -3441,6 +3899,18 @@ def _kill_hosts(which: str, entries: list, code: str) -> None:
             print(f"Skipped {entry.id}  {entry.label()}: {busy}")
         else:
             print(f"Stopped {entry.id}  {entry.label()}")
+    if not chosen:
+        print("No stale session hosts." if which == "stale" else "No session hosts are running.")
+
+
+def _restart_hosts(which: str, entries: list, code: str) -> None:
+    """`--restart-hosts stale|all`, reporting each host as it restarts or why it did not."""
+    from pcode.remote import restart_and_report
+
+    chosen = [entry for entry in entries if which == "all" or entry.stale(code)]
+    for entry in chosen:
+        line, failed = asyncio.run(restart_and_report(entry))
+        print(line, file=sys.stderr if failed else sys.stdout)
     if not chosen:
         print("No stale session hosts." if which == "stale" else "No session hosts are running.")
 
@@ -3555,6 +4025,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
         model=model,
         workspace=workspace,
         session_dir=args.session_dir,
+        resume=bool(args.resume),
         initial_prompt=args.prompt,
         host=launch,
     )
@@ -3699,7 +4170,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         app.transcript.events(app.preview.demo(), show_tools=True)
         app.transcript.syntax_gallery()
         return
-    if args.hosts or args.kill_hosts:
+    if args.hosts or args.kill_hosts or args.restart_hosts:
         from pcode.host_protocol import code_fingerprint, list_hosts
         from pcode.host_ui import host_row, ordered
 
@@ -3707,6 +4178,9 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         entries = ordered(list_hosts())
         if args.kill_hosts:
             _kill_hosts(args.kill_hosts, entries, code)
+            return
+        if args.restart_hosts:
+            _restart_hosts(args.restart_hosts, entries, code)
             return
         if args.json:
             import json

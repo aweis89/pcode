@@ -53,15 +53,16 @@ class FakeAPI:
         return fn
 
 
-async def _remind(api, parts=None, agent="pcode"):
+async def _remind(api, parts=None, agent="pcode", system="anthropic"):
     request = ModelRequest(parts=parts or [UserPromptPart("hi")])
     ctx = SimpleNamespace(agent=SimpleNamespace(name=agent), messages=[request])
-    await api.hook(ctx, SimpleNamespace(messages=[request]))
+    model = SimpleNamespace(system=system)
+    await api.hook(ctx, SimpleNamespace(messages=[request], model=model))
     return request.parts[len(parts or [None]) :]
 
 
-def remind(api, parts=None, agent="pcode"):
-    return [p.content for p in asyncio.run(_remind(api, parts, agent))]
+def remind(api, parts=None, agent="pcode", system="anthropic"):
+    return [p.content for p in asyncio.run(_remind(api, parts, agent, system))]
 
 
 def test_plan_mode_reminds_until_the_model_exits(tmp_path):
@@ -77,6 +78,14 @@ def test_plan_mode_reminds_until_the_model_exits(tmp_path):
     assert remind(api, [ToolReturnPart("t", "ok", "id")]) == []
     assert remind(api, [UserPromptPart("hi"), UserPromptPart(note)]) == []
     assert remind(api, agent="worker") == []
+    # Antigravity has no pcode plan tools: its session goes to its own plan mode.
+    from pcode.antigravity import AntigravityModel
+
+    native = AntigravityModel("fake")
+    request = ModelRequest(parts=[UserPromptPart("hi")])
+    ctx = SimpleNamespace(agent=SimpleNamespace(name="pcode"), messages=[request])
+    asyncio.run(api.hook(ctx, SimpleNamespace(messages=[request], model=native)))
+    assert native.plan_mode and len(request.parts) == 1
     tool_def = SimpleNamespace(name="exit_plan_mode")
     worker = SimpleNamespace(agent=SimpleNamespace(name="worker"))
     with pytest.raises(ModelRetry):

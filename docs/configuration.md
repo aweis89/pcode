@@ -52,7 +52,7 @@ JSON, and `/config set theme light`, `/config get autocompact`,
 **Most config edits affect the next launch, not the running conversation.** To change
 an active setting and save its default immediately, use `/theme light|dark|auto`, `/effort`,
 `/model`, or `/autocompact` instead. The layout settings `attach_tasks`, `attach_activity`,
-`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `frame_style`, `tool_glyphs`, `tool_max_lines` and `tool_linger_seconds` apply immediately through `/config`. CLI overrides such as
+`tasks_max_height`, `tasks_min_rows`, `tasks_min_columns`, `task_style`, `frame_style`, `tool_glyphs`, `tool_max_lines`, `tool_linger_seconds`, `show_hints`, and `live_edits` apply immediately through `/config`. CLI overrides such as
 `--theme` and `--model` do not rewrite global defaults, and resumed sessions retain
 their own model.
 
@@ -127,7 +127,7 @@ pcode config project reset              # Drop the whole overlay
 
 A cloned repository must not be able to run code or pick credentials on your
 behalf, so `project_extensions`, `trusted_projects`, `extension_dirs`,
-`extensions_off`, and `extensions_on` are user-only: the project file cannot
+`extensions_off`, `extensions_on`, and all `email_*` keys are user-only: the project file cannot
 set them, and pcode says so at launch if it tries. `model` and `subagent_models`
 can be set, but only choose among the providers you are signed in to. When the
 repository sets `subagent_models`, `/subagents` shows that list, says it comes
@@ -165,11 +165,11 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | Key | Built-in default | Values |
 | --- | --- | --- |
 | `model` | `null` (offline preview) | A model name, normally `provider:model` |
-| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Claude Code); fallback for models `/effort` has not set |
+| `effort` | `default` | `low`, `medium`, `high`, `xhigh`, `default` (OpenAI/Codex, Anthropic, Claude Code, Gemini, Antigravity); fallback for models `/effort` has not set |
 | `model_providers` | empty | `,`-separated providers `/model` lists; empty shows every provider you're signed in to or have a key for |
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
-| `retry_attempts` | `3` | Whole number, automatic retries after a dropped connection or streamed overload; `0` disables. See [retries](sessions.md#retries-and-resend) |
+| `retry_attempts` | `3` | Whole number, automatic retries after a dropped connection or streamed overload; `0` disables. See [retries](sessions.md#retries-and-continue) |
 
 ### Editor and keys
 
@@ -183,7 +183,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `key_prefix` | `ctrl` | Direct Ctrl+letter shortcuts, such as Ctrl+L for models and Ctrl+Y to copy. No global action-menu leader by default. Set `ctrl+b`, `ctrl+p`, `ctrl+space`, `f2` or `"ctrl+x ctrl+p"` to use a leader before the action letter. Ctrl+/ browses contextual help. See [shortcut prefix](commands.md#shortcut-prefix) |
 | `popup_mouse` | `on` | `on`, `off` (popups capture clicks and the wheel, and a drag selects and copies a pane's text; `off` leaves selection to the terminal, Ctrl+Q flips it inside one popup (Ctrl+G in the `/btw` viewer), see [selecting text](commands.md#selecting-and-copying-text-in-popups)) |
 | `btw_auto_open` | `on` | `on`, `off` (open the viewer when a [side answer](side-questions.md) is ready) |
-| `btw_view` | `popup` | `popup`, `swap` (show side threads in a full-screen popup, or [swap them in](side-questions.md#swapping-a-thread-in) for the conversation, scrollback and all, where the main editor replies to them) |
+| `popup_view` | `auto` | `auto`, `popup`, `overlay` (`auto` opens popups in an overlay that Ghostty Smooth lays over the conversation, which keeps streaming behind it, and full screen in any other terminal; `popup` always opens them full screen; `overlay` is the older name for `auto`. In the overlay a popup sits in a rounded panel with its title as a header, so it draws no box of its own: panes are headed by a rule and scroll bars are a thin thumb. The `/model`, `/links` and `/attach` lists are drawn by Ghostty Smooth as native lists with a search field (actions are Cmd+key) where the build supports it. With an overlay and a session host, [side threads open in a drawer](side-questions.md#threads-in-a-drawer) that the main editor replies to) |
 
 ### Scrollback and display
 
@@ -192,9 +192,10 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `theme` | `auto` | `dark`, `light`, `auto` |
 | `syntax_dark` | `terminal` | `terminal` or a Pygments style, for the dark palette |
 | `syntax_light` | `terminal` | `terminal` or a Pygments style, for the light palette |
-| `spinner` | `dots` | The status row's animation while the model works. A Rich spinner name, e.g. `dots`, `line`, `point` (`python -m rich.spinner` previews them; `/config set spinner` lists the ones that fit; applies on next launch) |
+| `spinner` | `dots` | The status row's animation while the model works. A Rich spinner name (`dots`, `line`, `point`) or a smooth Kitty spinner style (`helix`, `gyro`, `octa`, `swept`, `dual`, `orbit`, `wave`, `comet`; falls back to Rich where unsupported). `/config set spinner` lists the ones that fit; applies on next launch |
 | `tool_spinner` | `arc` | The same, for a running tool call's row and the terminal's own waits, so they look different from the model's |
-| `show_thinking` | `activity-panel` | `off`, `activity-panel`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`. `status-line` is still read as `activity-panel`) |
+| `smooth_spinner` | `auto` | `auto`, `off` (in Ghostty and kitty, outside tmux, animate the default and smooth-named spinners via Kitty Graphics Protocol at ~35 fps instead of redrawing Unicode frames from Python; falls back to Rich spinners elsewhere; applies on next launch) |
+| `show_thinking` | `scrollback` | `off`, `activity-panel`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`. `status-line` is still read as `activity-panel`) |
 | `thinking_max_lines` | `10` | Max rows of thinking in the activity panel in `activity-panel` mode, or a share of the screen (`0.2`). A row count is also capped at a quarter of the pane, so a short pane gets fewer. Applies on next launch |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; Ctrl+Z or `/show-edits`) |
 | `live_edits` | `off` | `on`, `off` (preview an edit or `run_code` snippet at the bottom while the model writes it) |
@@ -216,15 +217,16 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `show_hints` | `on` | `on`, `off` (show one compact help indicator at the prompt instead of shortcut hints beside individual controls) |
 | `attach_tasks` | `on` | `on`, `off` (draw tasks inside the editor box; `/config` applies immediately) |
 | `attach_activity` | `on` | `on`, `off` (draw the thinking inside the editor box, under the status row; `off` lists it above the box with the tool calls, where it still shows and hides with the panel. `/config` applies immediately) |
-| `tool_glyphs` | `auto` | `on` leads each tool row in the activity panel with a symbol for the call (`$`, `⌕`, `✎`, `⎘`, `⧖`), `off` drops them and spells out the verb once the call settles (shell calls keep `$`), for fonts that draw those symbols badly. `auto` is on except on the Linux console or with ASCII `glyphs` (`/config` applies immediately) |
-| `glyphs` | `auto` | `unicode`, `ascii` (draw marks, borders and spinners as plain ASCII stand-ins of the same width, for fonts or terminals that draw the symbols badly). `auto` picks ASCII on the Linux console, under a locale naming a charset other than UTF-8, or in a terminal that draws box-drawing lines two cells wide (a CJK locale, iTerm2's ambiguous-width option); see [terminal setup](terminal.md#symbols-and-colors). Applies on next launch |
+| `tool_glyphs` | `auto` | `on` leads each tool row in the activity panel with a symbol for the call (`$`, `⌕`, `✎`, `⎘`, or their Nerd Font equivalents when `glyphs` uses Nerd Fonts), `off` drops them and spells out the verb once the call settles (shell calls keep `$`), for fonts that draw those symbols badly. `auto` is on except on the Linux console or with ASCII `glyphs` (`/config` applies immediately) |
+| `glyphs` | `auto` | `nerd`, `unicode`, `ascii` (draw icons, marks, borders and spinners as Nerd Fonts, standard Unicode, or plain ASCII stand-ins of the same width). `auto` uses Nerd Font icons in Ghostty (which embeds them), ASCII on the Linux console, under a non-UTF-8 locale, or in a terminal that draws box-drawing lines two cells wide, and Unicode everywhere else; see [terminal setup](terminal.md#symbols-and-colors). Applies on next launch |
 | `color_depth` | `auto` | `truecolor`, `256`. `auto` uses 24-bit color where the terminal says so (`COLORTERM`) or is one known to support it (iTerm2, Ghostty, kitty, WezTerm, VS Code and others, or tmux whose client has the `RGB` feature), and the terminal's own 256 colors otherwise. `NO_COLOR` and `PROMPT_TOOLKIT_COLOR_DEPTH` win over it. Applies on next launch |
 | `tool_max_lines` | `3` | Max tool calls listed in the activity panel, newest last; `1` shows only the call the status row is on. A short pane gets fewer, sharing a quarter of its height with the thinking rows (`/config` applies immediately) |
 | `tool_linger_seconds` | `10` | Seconds a finished tool call stays listed in the activity panel, so a long wait on the model doesn't keep showing stale calls; `0` keeps it until newer calls push it out (`/config` applies immediately) |
 | `task_style` | `status` | `status` (shade task text by status), `icons` (one text weight, coloured icons only; `/config` applies immediately) |
 | `frame_style` | `shaded` | `borders` (line boxes around the editor and tasks), `shaded` (no lines: the boxes are background shades lifted off the terminal's own background; falls back to borders on a terminal without 24-bit color (see `color_depth`), or under `/syntax terminal` when the terminal never reports its background; `/config` applies immediately). The box drawings elsewhere in these docs show `borders` |
 | `tasks_max_height` | unset | Rows (`20`) or a share of the screen (`0.5`) for the editor box (with the thinking, tool and task rows in it) together with any detached task box; unset keeps the task list to 10 rows or half the screen |
-| `paced_scrollback` | `typed` | `typed`, `rows`, `off` (type settled prose out, or roll blocks in a row per frame; see [the transcript](transcript.md#paced-scrollback)) |
+| `paced_scrollback` | `rows` | `rows`, `typed`, `off` (roll settled blocks in a row per frame, or type prose out; see [the transcript](transcript.md#paced-scrollback)) |
+| `smooth_scroll` | `off` | `auto`, `off` (experimental: new rows glide into view instead of jumping a row at a time; `auto` asks the terminal at launch and only works in a Ghostty Smooth build that speaks protocol 9, outside tmux, with `paced_scrollback` not `off`; typing before pcode is ready skips the check and leaves it off for that session; applies on next launch) |
 | `regenerate_on_resize` | `on` | `on`, `off` (rebuild scrollback at the new size after a resize; applies on next launch) |
 | `transcript_max_chars` | `2000000` | Positive integer, retained text budget shared by resume and redraw; applies on next launch |
 | `cache_notices` | `on` | `on`, `off` (footer note, saved with the session, when a request reuses less of the prompt cache; see [prompt cache notices](context.md#prompt-cache-notices)) |
@@ -239,12 +241,15 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | --- | --- | --- |
 | `web_search` | `auto` | `auto`, `local`, `off` (provider-native web search when available, pcode's own, or none; see [web search](tools.md#web-search)) |
 | `web_fetch` | `auto` | `auto`, `native`, `local` (provider-native page fetching where it returns the page text, so not on `claude:`; any provider-native fetch, including Claude Code's summaries; or always pcode's own `get_page`, which returns the page text verbatim) |
-| `code_mode` | `off` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
+| `code_mode` | `on` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `job_wake` | `on` | `on`, `off` (start a turn when a job the model backgrounded finishes while idle; see [shell jobs](tools.md#shell-jobs)) |
 | `tool_retries` | `3` | Whole number, corrections the model gets per turn when a tool call has invalid arguments |
 | `strict_tools` | `on` | `on`, `off` (constrain `edit_file` arguments with Anthropic strict tool use) |
 | `subagent_models` | empty | `,`-separated models `delegate_task` lists for running a sub-agent; others can still be named per delegation ([`/subagents`](tools.md#sub-agents-on-other-models)); empty runs every sub-agent on the session's model; `/reload` to apply |
+| `advisor_model` | unset | model the session's model can consult on hard decisions, such as `anthropic:claude-fable-5-2` ([`/advisor`](providers.md#advisor)); unset for none; applies at launch, `/advisor` changes it now |
 | `worker_concurrency` | `0` | `0` means unlimited; a positive integer caps concurrent built-in workers per session; `/reload` to apply |
+| `manager_worker_model` | unset | model that built-in workers run on in [manager mode](manager.md) when the agent doesn't pick one, such as a cheaper model for routine pieces; unset uses the session's model |
+| `manager_token_budget` | `0` | Whole number, worker tokens [manager mode](manager.md) may spend before it refuses new delegations; `0` is unlimited |
 | `tool_output_mode` | `spill` | `spill`, `truncate`, `off` |
 | `tool_output_threshold` | `10000` | Positive integer, characters that trigger reduction |
 | `tool_output_preview_chars` | `1000` | Positive integer, spill preview characters |

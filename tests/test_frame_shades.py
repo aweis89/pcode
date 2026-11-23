@@ -29,7 +29,7 @@ def test_a_background_report_is_kept_with_its_theme():
 
 
 def test_the_shade_steps_away_from_the_background():
-    assert frame_shade("#000000", "dark") == "#0f0f0f"
+    assert frame_shade("#000000", "dark") == "#202020"
     assert frame_shade("#ffffff", "light") < "#ffffff"
 
 

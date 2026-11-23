@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from copy import deepcopy
@@ -24,20 +25,24 @@ from pydantic_ai import (
     ToolReturn,
 )
 from pydantic_ai.capabilities import AbstractCapability, LocalWorkspace
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models.anthropic import AnthropicStaleThinkingBlockWarning
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai.workspaces import LocalWorkspaceBackend
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.file_system import FileSystem
 from pydantic_ai_harness.planning import InMemoryPlanStore, Planning
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, StepPersistence
-from pydantic_ai_harness.subagents import SubAgents
+from pydantic_ai_harness.sub_agents import SubAgents
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode import retries
@@ -67,7 +72,12 @@ from pcode.mcp import (
     find_cause,
 )
 from pcode.mcp_notice import enabled_servers
-from pcode.native_results import drop_unreadable_results, unreadable_native_results
+from pcode.native_results import (
+    drop_orphaned_native_parts,
+    drop_unreadable_results,
+    unreadable_native_results,
+)
+from pcode.openai_region import regional_host, track, use_regional_host
 from pcode.plan_preview import StreamingPlanPreview
 from pcode.planning import SizedPlanItem
 from pcode.preferences import SETTINGS, load_preferences, parse_token_count
@@ -85,15 +95,56 @@ from pcode.runtime import (
     PlanPreview,
     ToolStarted,
     ToolSummary,
+    WorkerStatus,
 )
-from pcode.sessions import SavedSession, SessionError
+from pcode.sessions import SavedSession, SessionError, SessionInfo
 from pcode.shell_mode import ShellRun, reduce_result, shell_exchange
 from pcode.shell_tools import JobShell
-from pcode.steering import Steering
+from pcode.steering import STEERING_REMINDER, Steering
 from pcode.stream_events import EventTranslator
 from pcode.token_accounting import TokenAccounting, TokenTotals
 from pcode.tool_display import label, target
 from pcode.turn import TurnContext
+
+# Pydantic AI already recovered (it resent without the stale thinking) and
+# recorded the drop on the response, so the warning is noise even in the
+# library log, and a wall of stderr where that log is not installed.
+warnings.filterwarnings("ignore", category=AnthropicStaleThinkingBlockWarning)
+
+
+_SIGNING_PROVIDERS = frozenset({"anthropic", "claude"})
+
+
+def _drop_interrupted_thinking(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """`messages` without unsigned thinking from providers that always sign it.
+
+    Anthropic only leaves a thinking block unsigned when its stream was cut
+    off. Pydantic AI replays such a block as `<assistant_thinking>` text in a
+    user turn, which Anthropic's classifier refuses as `reasoning_extraction`
+    on every later request, so one dropped connection bricked the session.
+    Other providers' thinking is legitimately unsigned and stays.
+    """
+    cleaned = []
+    for message in messages:
+        if isinstance(message, ModelResponse) and message.provider_name in _SIGNING_PROVIDERS:
+            parts = [
+                p for p in message.parts if not (isinstance(p, ThinkingPart) and not p.signature)
+            ]
+            if len(parts) != len(message.parts):
+                message = replace(message, parts=parts)
+        cleaned.append(message)
+    return cleaned
+
+
+def _for_run(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """`messages` ready to replay: interrupted thinking dropped, older `claude:` saves restamped."""
+    messages = _drop_interrupted_thinking(messages)
+    # Imported only when needed: the `claude:` package is otherwise unused.
+    if any(isinstance(m, ModelResponse) and m.provider_name == "claude" for m in messages):
+        from pcode.claude_sdk.model import restamp
+
+        restamp(messages)
+    return messages
 
 
 def _local_workspace(agent) -> Path | None:
@@ -193,6 +244,14 @@ class AgentRuntime:
         self.warning_notice = lambda text: None
         # A plain transcript note, such as the images a prompt brought along.
         self.notice = lambda text: None
+        # A note that survives redraws, for output a model sends between turns.
+        self.retained_notice = lambda text: None
+        # Copies session settings (the /advisor choice) into the manifest a turn saves.
+        self.record_settings: Callable[[SessionInfo], None] = lambda info: None
+        # A session title reported by a model that names its own sessions (`antigravity:`).
+        self.title_notice = lambda title: None
+        # Callback invoked when `antigravity:` emits unsolicited post-turn updates.
+        self._provider_wake_notice: Callable[[], None] | None = None
         # Prompts whose images were reported this turn; see `_with_images`.
         self._images_reported: set[str] = set()
         # Shell jobs outlive both the run and the conversation, so the registry
@@ -206,10 +265,57 @@ class AgentRuntime:
         self._clear()
         self.replace_agent(agent)
 
+    @property
+    def provider_wake_notice(self) -> Callable[[], None] | None:
+        return self._provider_wake_notice
+
+    @provider_wake_notice.setter
+    def provider_wake_notice(self, callback: Callable[[], None] | None) -> None:
+        from pcode.antigravity import unwrap
+
+        self._provider_wake_notice = callback
+        agent = getattr(self, "agent", None)
+        model = unwrap(agent.model) if agent is not None else None
+        if model is not None:
+            model.wake_listener = callback
+
+    def has_provider_wake(self) -> bool:
+        """Whether the current model has buffered unsolicited post-turn updates."""
+        from pcode.antigravity import unwrap
+
+        model = unwrap(self.agent.model)
+        return model is not None and model.has_pending_wake(self.history)
+
+    def clear_provider_wake(self, *, quarantine: bool = False) -> None:
+        """Drop any buffered unsolicited post-turn updates on the current model."""
+        from pcode.antigravity import unwrap
+
+        model = unwrap(self.agent.model)
+        if model is not None:
+            model.clear_wake(quarantine=quarantine)
+
     def replace_agent(self, agent: Agent) -> None:
         """Change the agent without resetting conversation-scoped state."""
+        from pcode.antigravity import unwrap
+
+        previous = getattr(self, "agent", None)
+        if previous is not None and previous.model is not agent.model:
+            # An `antigravity:` model's `agy` process would otherwise run until exit.
+            retire = getattr(previous.model, "retire", None)
+            if callable(retire):
+                retire()
+        if hasattr(agent.model, "listener"):
+            # What `antigravity:` says between turns, as a transcript note.
+            agent.model.listener = lambda text: self.retained_notice(text)
+        if hasattr(agent.model, "title_listener"):
+            # Titles `antigravity:` assigns its own session via `session_info_update`.
+            agent.model.title_listener = lambda title: self.title_notice(title)
+        ag_model = unwrap(agent.model)
+        if ag_model is not None:
+            # Unsolicited post-turn updates open a continuation turn when a controller is wired.
+            ag_model.wake_listener = self._provider_wake_notice
         self.agent = agent
-        # Coder's public root capability is flattened by Pydantic AI. A resolver
+        # The agent's capabilities are flattened by Pydantic AI. A resolver
         # keeps the store conversation-scoped, including after /new. It resolves
         # per request, so this is also where a second turn would be handed its
         # own store: `ctx` names the run the tools are being called for.
@@ -257,6 +363,9 @@ class AgentRuntime:
             except Exception:
                 # Optional discovery must not prevent reaching /login.
                 pass
+        # Agent() already resolved most names, so this catches a rebuilt
+        # agent (/model, resume) before its first request hits the wrong host.
+        track(self.agent.model)
         await refresh_context(self.agent.model)
 
     def startup_context(self) -> list[str]:
@@ -345,6 +454,9 @@ class AgentRuntime:
         info.cache_write_tokens = self.totals.cache_write
 
     def reset(self) -> None:
+        reset = getattr(self.agent.model, "reset", None)
+        if callable(reset):
+            reset()
         if self.session:
             self.session.close()
             self.session = None
@@ -386,6 +498,11 @@ class AgentRuntime:
             self.tree.active = target
         self.history = history
         self.plan_store = plan
+        from pcode.antigravity import unwrap
+
+        ag_model = unwrap(self.agent.model)
+        if ag_model is not None:
+            ag_model.sync_history(history)
         return draft
 
     def aside_context(self) -> list[ModelMessage]:
@@ -456,7 +573,7 @@ class AgentRuntime:
         `framing` turns `question` into the message sent, in place of the side
         question or follow-up framing; a thread's summary is asked that way.
         """
-        from pcode.aside import ASIDE_REQUEST_LIMIT, framed, framed_follow_up
+        from pcode.aside import framed, framed_follow_up
         from pcode.aside_guard import AsideGuard
 
         agent = self.agent
@@ -465,6 +582,24 @@ class AgentRuntime:
             agent = agent if after.agent is None else after.agent
             model = after.model
             settings = after.settings
+        target_model = model.model if model is not None else agent.model
+        created_side_model = None
+        if getattr(target_model, "system", None) == "antigravity":
+            from pcode.antigravity import AntigravityModel, unwrap
+
+            native = unwrap(target_model)
+            # Never share the main conversation's AntigravityModel: its lock is
+            # held mid-turn and its session would be polluted by the side chat.
+            if model is None:
+                created_side_model = AntigravityModel(target_model.model_name, side=True)
+                model = SideModel(
+                    f"antigravity:{target_model.model_name}",
+                    created_side_model,
+                    settings if settings is not None else agent.model_settings,
+                )
+            elif native is not None and not native._side:
+                created_side_model = AntigravityModel(target_model.model_name, side=True)
+                model = SideModel(model.name, created_side_model, model.settings)
         if after is not None:
             messages = list(after.messages)
         else:
@@ -492,24 +627,34 @@ class AgentRuntime:
         if inherit:
             # A follow-up belongs to its thread's session, not a fresh one.
             conversation_id = after.conversation_id
-        with override:
-            async with (
-                agent,
-                model.model if model is not None else nullcontext(),
-                worker_toolsets([self.mcp.live()]),
-                enabled_servers(self.mcp.servers, self.mcp.unavailable),
-                agent.run_stream_events(
-                    None if joined else pending.pop(),
-                    message_history=messages,
-                    workspace=self._run_workspace(agent),
-                    toolsets=[self.mcp.live()],
-                    conversation_id=conversation_id,
-                    capabilities=capabilities,
-                    usage_limits=UsageLimits(request_limit=ASIDE_REQUEST_LIMIT),
-                    **other,
-                ) as events,
-            ):
-                answer, messages = await self._aside_answer(events, report)
+        try:
+            with override:
+                async with (
+                    agent,
+                    model.model if model is not None else nullcontext(),
+                    worker_toolsets([self.mcp.live()]),
+                    enabled_servers(self.mcp.servers, self.mcp.unavailable),
+                    agent.run_stream_events(
+                        None if joined else pending.pop(),
+                        message_history=_for_run(messages),
+                        workspace=self._run_workspace(agent),
+                        toolsets=[self.mcp.live()],
+                        conversation_id=conversation_id,
+                        capabilities=capabilities,
+                        # Explicit: left out, the library's 50-request default applies.
+                        usage_limits=UsageLimits(request_limit=None),
+                        **other,
+                    ) as events,
+                ):
+                    answer, messages = await self._aside_answer(events, report)
+        except BaseException:
+            if created_side_model is not None:
+                created_side_model.retire()
+            elif not inherit and model is not None:
+                retire = getattr(model.model, "retire", None)
+                if callable(retire):
+                    retire()
+            raise
         return SideReply(
             answer=answer,
             messages=messages,
@@ -559,6 +704,17 @@ class AgentRuntime:
                 if event.part.content:
                     blocks.append(event.part.content)
                 partial = ""
+            elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolCallPart):
+                try:
+                    args = event.part.args_as_dict()
+                except ValueError, TypeError:
+                    args = {}
+                where = target(event.part.tool_name, args)
+                tools[event.part.tool_call_id] = event.part.tool_name
+                activity = label(event.part.tool_name) + (f" · {where}" if where else "")
+            elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolReturnPart):
+                tools.pop(event.part.tool_call_id, None)
+                activity = "Waiting for model…" if not tools else activity
             elif isinstance(event, FunctionToolCallEvent):
                 try:
                     args = event.part.args_as_dict()
@@ -697,70 +853,20 @@ class AgentRuntime:
         return extends
 
     async def summarize_aside(
-        self, reply: SideReply, request: str, instructions: str = "", *, report=None
+        self, reply: SideReply, instructions: str = "", *, report=None
     ) -> str:
-        """Add a summary of a side thread to the active branch; returns the summary.
+        """Ask a side thread to summarize itself; returns the summary, recording nothing.
 
-        The summary is asked in the thread, after `reply`, where the questions
-        and answers are and its cache is warm. The conversation records it as
-        one exchange: `request`, which names the questions, and the summary as
-        its answer, so the next turn reads it like any earlier reply.
+        Asked in the thread, after `reply`, where the questions and answers
+        are and its cache is warm. Like any side question it only reads the
+        conversation, so it can run beside a turn; the caller sends the
+        summary on as a message.
         """
-        from pcode.aside import framed_summary
+        from pcode.aside import framed_summary, retire_reply
 
-        if self.recovery_blocked:
-            raise SessionError(self.recovery_blocked)
-        if self.history and not isinstance(self.history[-1], ModelResponse):
-            # Two requests in a row is what providers reject as non-alternating.
-            raise SessionError(
-                "The conversation stopped mid-turn; send a message or /resend first."
-            )
         summary = await self.aside(instructions, report=report, after=reply, framing=framed_summary)
-        history = [
-            *self.history,
-            ModelRequest([UserPromptPart(request)]),
-            ModelResponse([TextPart(summary.answer)]),
-        ]
-        self._open_session()
-        await self._add_aside_nodes([(request, summary.answer, history)], self.tree.active)
-        self.history = history
+        retire_reply(summary, keep=reply)
         return summary.answer
-
-    async def _add_aside_nodes(self, steps: list[tuple[str, str, list]], parent: str | None):
-        """Record side-thread exchanges as completed nodes, each a child of the last.
-
-        They are ordinary turn records flagged `aside`, with the history to
-        continue from saved the way a turn saves its own, so checkout, resume,
-        replay and /tree treat them like any turn. The tree's active node ends
-        on the last one.
-        """
-        for prompt, answer, history in steps:
-            identity = str(uuid4())
-            started = {
-                "prompt": prompt,
-                "run_id": identity,
-                "parent_id": parent,
-                "continuation": False,
-                "aside": True,
-            }
-            if self.session:
-                self.session.append("turn_started", sync=True, **started)
-                self.session.event(Message(answer), run_id=identity)
-                await self.session.store.save_snapshot(
-                    ContinuableSnapshot(
-                        run_id=identity,
-                        step_index=0,
-                        messages=history,
-                        conversation_id=self.conversation_id,
-                    )
-                )
-                self.session.append("turn_completed", run_id=identity, sync=True)
-            else:
-                self.tree.consume({"kind": "turn_started", **started})
-                self.tree.consume({"kind": "Message", "run_id": identity, "markdown": answer})
-                self.tree.consume({"kind": "turn_completed", "run_id": identity})
-                self.tree.nodes[identity].history = deepcopy(history)
-            parent = identity
 
     def _open_session(self) -> SavedSession | None:
         """The session to record in, created on first use as a turn creates it."""
@@ -774,6 +880,17 @@ class AgentRuntime:
         """Persist a new branch-local context checkpoint before publishing it."""
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
+        from pcode.antigravity import unwrap
+
+        if (native := unwrap(self.agent.model)) is not None:
+            from pcode.compaction import CompactionResult
+
+            sizes = await native.compact(self.history, str(self._workspace_dir()), focus)
+            if sizes is None:
+                # With history, None means Antigravity never saw it, not that
+                # it is small: "within the budget" would be false.
+                return CompactionResult(self.history, 0, 0, False, unseen=bool(self.history))
+            return CompactionResult(self.history, sizes[0] or 0, sizes[1] or 0, False, native=True)
         usage = RunUsage()
         # Size the kept history and summary to the autocompact cap, as automatic
         # compaction does, or the result can land just under it and recompact.
@@ -816,6 +933,10 @@ class AgentRuntime:
     def close(self) -> None:
         if self.session:
             self.session.close()
+        # `/resume` closes this runtime rather than replacing its agent.
+        retire = getattr(self.agent.model, "retire", None)
+        if callable(retire):
+            retire()
         # Drops the logs of finished jobs only. A still-running job is the
         # whole point of the design and is left alone, still writing its log.
         self.jobs.shutdown()
@@ -871,7 +992,12 @@ class AgentRuntime:
         return content
 
     def resend_prompt(self) -> str:
-        """The original prompt is a display label, not another model message."""
+        """The request /continue asks for again, which labels the resent turn.
+
+        It is not sent again unless the history no longer holds it. After an
+        interrupt left tool effects unsettled, `stream` sends it inside a
+        briefing on those tools instead.
+        """
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         active = self.tree.nodes.get(self.tree.active)
@@ -879,18 +1005,38 @@ class AgentRuntime:
             # Regenerating it here would answer a side question, or a summary
             # of a thread this history does not hold, as a conversation turn.
             raise SessionError(
-                "The last exchange came from a side thread; send a message instead of /resend."
-            )
-        if active and active.resend_blocked:
-            raise SessionError(
-                "The interrupted turn may have changed files or run commands. "
-                "Inspect its tools and send an explicit next step instead of /resend."
+                "The last exchange came from a side thread; send a message instead of /continue."
             )
         for identity in reversed(self.tree.path(self.tree.active)):
             node = self.tree.nodes[identity]
-            if node.kind == "turn" and node.prompt:
-                return node.prompt
+            if node.kind == "turn" and (request := node.request or node.prompt):
+                return request
         raise SessionError("There is no earlier prompt to resend; send a message instead.")
+
+    def _interrupted_tools(self) -> list[dict] | None:
+        """The calls an interrupt left unsettled, or None when replaying is safe.
+
+        A briefing turn that did not complete may never have reached the model,
+        so it carries its interrupted parent's calls forward along with its own.
+        Including them when it did is only repetition; dropping them could
+        replay the request that started them.
+        """
+        tools: list[dict] = []
+        blocked = False
+        identity = self.tree.active
+        while identity is not None:
+            node = self.tree.nodes[identity]
+            if node.kind != "turn" or node.status == "completed":
+                break
+            if not (node.resend_blocked or node.request):
+                break
+            blocked = blocked or node.resend_blocked
+            tools[:0] = node.tools
+            if not node.request:
+                # The interrupted turn the briefings went back to.
+                break
+            identity = node.parent
+        return tools if blocked else None
 
     async def stream(
         self,
@@ -898,12 +1044,17 @@ class AgentRuntime:
         *,
         model: SideModel | None = None,
         settings: dict | None = None,
+        provider_continuation: bool = False,
     ) -> AsyncIterator[Event]:
         """Retry only failed provider requests, with one budget per submitted turn.
 
         `model` runs this turn alone on another model, and `settings` replaces
         the conversation's model settings for it; see `TurnModel`. Retries keep
         them, so a retried request goes where the failed one went.
+
+        `provider_continuation=True` drains unsolicited post-turn updates from
+        a provider that keeps working after a turn settles (such as `agy acp`)
+        without sending a new user prompt.
 
         A history the current credential cannot replay is the exception: the
         same request would be rejected every time, so it is repaired once and
@@ -918,10 +1069,24 @@ class AgentRuntime:
         if self.recovery_blocked:
             raise SessionError(self.recovery_blocked)
         send = prompt
-        if send is None:
+        request = ""
+        if provider_continuation:
+            from pcode.antigravity import PROVIDER_CONTINUATION_PROMPT
+
+            if not self.has_provider_wake():
+                return
+            send = PROVIDER_CONTINUATION_PROMPT
+        elif send is None:
+            from pcode.antigravity import CONTINUE, PROVIDER_CONTINUATION_PROMPT
+
             original = self.resend_prompt()
             node = self.tree.nodes[self.tree.active]
-            if not self.history:
+            if (tools := self._interrupted_tools()) is not None:
+                # The settled history may predate tools that already ran, and
+                # resuming it would have the model call them again. Tell it
+                # what started instead, as a new message.
+                send, request = interrupted_briefing(tools, original), original
+            elif not self.history:
                 send = original
             # A completed text response would short-circuit Agent.run(None).
             # Regenerate just that response, retaining all settled tool results.
@@ -932,9 +1097,24 @@ class AgentRuntime:
                     send = original
                 else:
                     self.history = self.history[:-1]
-        attempt = 0
+            # Never replay a synthetic provider-continuation request as a real
+            # user prompt (to Antigravity or after switching models): pop it and
+            # send a clean continuation instead.
+            if (
+                send is None
+                and self.history
+                and isinstance(self.history[-1], ModelRequest)
+                and len(self.history[-1].parts) == 1
+                and isinstance(self.history[-1].parts[0], UserPromptPart)
+                and self.history[-1].parts[0].content == PROVIDER_CONTINUATION_PROMPT
+            ):
+                self.history = self.history[:-1]
+                send = CONTINUE
+        attempt = self.retry_attempts if provider_continuation else 0
         repaired = False
+        orphans_checked = False
         undeferred = False
+        rehosted = False
         self._images_reported.clear()
         chosen = None
         if model is not None or settings is not None:
@@ -942,10 +1122,19 @@ class AgentRuntime:
         while True:
             try:
                 with profiled_activity("turn"):
-                    async with aclosing(self._turn(send, chosen)) as turn:
+                    async with aclosing(
+                        self._turn(
+                            send,
+                            chosen,
+                            request,
+                            provider_continuation=provider_continuation,
+                        )
+                    ) as turn:
                         async for event in turn:
                             yield event
             except Exception as error:
+                if provider_continuation:
+                    raise
                 # Deferred MCP schemas are this request's shape, not its history:
                 # a provider that rejects them rejects the next turn too, and the
                 # session is stuck until they are sent in full. Repairing before
@@ -967,6 +1156,22 @@ class AgentRuntime:
                             "every tool up front. Retrying…"
                         )
                         continue
+                # A data-residency project rejects the default host on every
+                # request, the first included, so this also runs before the
+                # checkpoint guard. See `openai_region`.
+                if (
+                    not rehosted
+                    and not self.recovery_blocked
+                    and (host := self._follow_region(error, chosen))
+                ):
+                    rehosted = True
+                    if self.context.checkpoint.messages is not None:
+                        send = None
+                    self.retry_notice(
+                        f"This OpenAI project only accepts requests at {host}, so pcode "
+                        "now sends them there. Retrying…"
+                    )
+                    continue
                 if self.recovery_blocked or self.context.checkpoint.messages is None:
                     raise
                 # Results the current login cannot decrypt fail identically on
@@ -983,6 +1188,24 @@ class AgentRuntime:
                             "sign-in, and retrying…"
                         )
                         continue
+                # A history compacted before the cut learned about native
+                # calls spanning responses still holds the orphans. Checking
+                # the history rather than the wording also covers a 400 that
+                # names an orphaned result instead of a caller.
+                if (
+                    not orphans_checked
+                    and isinstance(error, ModelHTTPError)
+                    and error.status_code == 400
+                ):
+                    orphans_checked = True
+                    if dropped := drop_orphaned_native_parts(self.context.history):
+                        send = None
+                        self.retry_notice(
+                            f"Dropped {dropped} server tool "
+                            f"{'block' if dropped == 1 else 'blocks'} whose originating "
+                            "call was compacted away, and retrying…"
+                        )
+                        continue
                 if attempt == self.retry_attempts or not transient(error):
                     raise
                 # _turn saved the exact failed request, including steering and
@@ -997,11 +1220,36 @@ class AgentRuntime:
             else:
                 return
 
+    def _follow_region(self, error: BaseException, chosen: TurnModel | None) -> str | None:
+        """The regional host this turn's OpenAI requests now go to, if the error named one."""
+        host = regional_host(error)
+        if host is None:
+            return None
+        if isinstance(self.agent.model, str):
+            from pydantic_ai.models import infer_model
+
+            # A model still held by name has no client yet to repoint.
+            try:
+                self.agent.model = infer_model(self.agent.model)
+            except Exception:
+                return None
+        turn = chosen.model.model if chosen and chosen.model else None
+        return host if use_regional_host(host, [self.agent.model, turn]) else None
+
     async def _turn(
-        self, send: str | None, chosen: TurnModel | None = None
+        self,
+        send: str | None,
+        chosen: TurnModel | None = None,
+        request: str = "",
+        *,
+        provider_continuation: bool = False,
     ) -> AsyncIterator[Event]:
-        """Run one attempt. A `None` prompt continues from history without adding to it."""
-        prompt = send or ""
+        """Run one attempt. A `None` prompt continues from history without adding to it.
+
+        `request` is the user's request when `send` is a briefing wrapping it.
+        """
+        prompt = "" if provider_continuation else (send or "")
+        is_continuation = send is None or provider_continuation
         # This turn's state, read and written through one object rather than
         # through the runtime. One turn runs at a time, so it is still the
         # active branch's context; a second turn would be given its own.
@@ -1020,17 +1268,20 @@ class AgentRuntime:
                 prompt=prompt,
                 run_id=run_id,
                 parent_id=self.tree.active,
-                continuation=send is None,
+                continuation=is_continuation,
+                request=request,
                 sync=True,
             )
             saved.info.status = "running"
+            self.record_settings(saved.info)
             saved.save_info()
         else:
             self.tree.consume(
                 {
                     "kind": "turn_started",
                     "prompt": prompt,
-                    "continuation": send is None,
+                    "continuation": is_continuation,
+                    "request": request,
                     "run_id": run_id,
                     "parent_id": self.tree.active,
                 }
@@ -1040,12 +1291,27 @@ class AgentRuntime:
         context.compaction_usage = RunUsage()
         tools_started = False
         try:
-            async with aclosing(self._stream(send, context, chosen)) as stream:
+            async with aclosing(
+                self._stream(
+                    send,
+                    context,
+                    chosen,
+                    provider_continuation=provider_continuation,
+                )
+            ) as stream:
                 async for event in stream:
                     if isinstance(event, ToolStarted):
                         tools_started = True
                     if isinstance(
-                        event, (PlanPreview, ChildPlan, ChildText, CommandOutput, EditPreview)
+                        event,
+                        (
+                            PlanPreview,
+                            ChildPlan,
+                            ChildText,
+                            WorkerStatus,
+                            CommandOutput,
+                            EditPreview,
+                        ),
                     ):
                         # Unexecuted arguments and a sub-agent's transient plan
                         # and prose must never enter replay/tree history.
@@ -1104,7 +1370,8 @@ class AgentRuntime:
                     if checkpoint.messages is not None:
                         # The failed request already carried any shell-mode
                         # exchange; recovering it below must not queue it twice.
-                        context.pending_shell = []
+                        if not provider_continuation:
+                            context.pending_shell = []
                         # Override any partial response saved during unwind. This
                         # also persists a bare first prompt, which Harness omits.
                         await saved.store.save_snapshot(
@@ -1123,7 +1390,8 @@ class AgentRuntime:
                     error, (asyncio.CancelledError, KeyboardInterrupt, GeneratorExit)
                 )
                 if context.checkpoint.messages is not None:
-                    context.pending_shell = []
+                    if not provider_continuation:
+                        context.pending_shell = []
                     context.history = context.checkpoint.messages
                 elif context.history is marked:
                     # Untouched since: nothing was sent. Failed auto-compaction
@@ -1219,7 +1487,9 @@ class AgentRuntime:
         # Plain text onward: the stamp is for the journal, not the model request.
         return [str(text) for text in messages]
 
-    def _run_capabilities(self, context: TurnContext, chosen: TurnModel) -> list:
+    def _run_capabilities(
+        self, context: TurnContext, chosen: TurnModel, *, provider_continuation: bool = False
+    ) -> list:
         """Per-run capabilities bind to this turn's context, not to the runtime:
         what they publish and rewrite belongs to this turn."""
         run_id = context.run_id
@@ -1231,13 +1501,24 @@ class AgentRuntime:
                     lambda: self.has_steering(),
                     # A message naming images brings them, as a prompt does.
                     prepare=lambda text: self._with_images(text, self.agent.model),
+                    reminder=STEERING_REMINDER,
                 ),
-                # Finished jobs reach the model here rather than by
-                # being polled for; see `pcode.job_notices`. Ahead of the
-                # checkpoint, so a saved request carries the notices it
-                # was really sent with, as steering and compaction do.
-                JobNotices(self.jobs),
-                AbandonedDelegations(context.abandoned_delegations),
+            ]
+            # Provider continuations send no prompt over ACP, so keep pcode's
+            # job and abandoned-delegation notices queued for the next real prompt.
+            + (
+                []
+                if provider_continuation
+                else [
+                    # Finished jobs reach the model here rather than by
+                    # being polled for; see `pcode.job_notices`. Ahead of the
+                    # checkpoint, so a saved request carries the notices it
+                    # was really sent with, as steering and compaction do.
+                    JobNotices(self.jobs),
+                    AbandonedDelegations(context.abandoned_delegations),
+                ]
+            )
+            + [
                 context.checkpoint,
                 TokenAccounting(record=self.totals.add),
                 ContextTracking(self, context),
@@ -1248,17 +1529,19 @@ class AgentRuntime:
             # decide what the conversation keeps from then on.
             # Installed whatever `auto_compact` says; it checks that per request.
             + ([AutoCompaction(self, context)] if chosen.model is None else [])
-            # A borrowed turn keeps its model and settings to the end. Pydantic
-            # AI refuses to resume a suspended response under a model selector,
-            # so a turn continuing one stays on its model too.
+            # A borrowed turn or provider continuation keeps its model to the end.
+            # Pydantic AI refuses to resume a suspended response under a model
+            # selector, so a turn continuing one stays on its model too.
             + (
                 []
-                if chosen.borrowed or ends_suspended(context.messages())
+                if provider_continuation or chosen.borrowed or ends_suspended(context.messages())
                 else [FollowAgent(lambda: self.agent, context)]
             )
         )
 
-    async def _translator(self, context: TurnContext, agent: Agent) -> EventTranslator:
+    async def _translator(
+        self, context: TurnContext, agent: Agent, *, provider_continuation: bool = False
+    ) -> EventTranslator:
         capabilities = agent.root_capability.capabilities
         plan_items = [item.model_dump(mode="json") for item in await context.plan_store.get_items()]
         plan_preview = (
@@ -1268,22 +1551,47 @@ class AgentRuntime:
         writable = any(isinstance(c, FileSystem) and not c.read_only for c in capabilities)
         edit_preview = StreamingEditPreview(self._workspace_dir()) if writable else None
         return EventTranslator(
-            self, context, plan_items, plan_preview=plan_preview, edit_preview=edit_preview
+            self,
+            context,
+            plan_items,
+            plan_preview=plan_preview,
+            edit_preview=edit_preview,
+            provider_continuation=provider_continuation,
         )
 
     async def _stream(
-        self, prompt: str | None, context: TurnContext, chosen: TurnModel | None = None
+        self,
+        prompt: str | None,
+        context: TurnContext,
+        chosen: TurnModel | None = None,
+        *,
+        provider_continuation: bool = False,
     ) -> AsyncIterator[Event]:
+        from pcode.antigravity import unwrap
+
         context.model = None
         await self.refresh_context()
         # One agent for the whole entry: a `/model` landing at one of these
         # awaits must not set up one agent and run another.
         agent = self.agent
         self._persist_child_runs(agent)
-        translator = await self._translator(context, agent)
+        translator = await self._translator(
+            context, agent, provider_continuation=provider_continuation
+        )
         chosen = chosen or TurnModel(None, None, self.conversation_id)
         context.model = chosen.model.model if chosen.model is not None else agent.model
-        content = await self._with_images(prompt, context.model)
+        ag_model = unwrap(context.model) if provider_continuation else None
+        if provider_continuation and (
+            ag_model is None or not ag_model.has_pending_wake(context.history)
+        ):
+            # Model switched or wake cleared during `refresh_context()`: exit cleanly
+            # rather than sending the synthetic placeholder to another provider.
+            return
+        content = (
+            prompt if provider_continuation else await self._with_images(prompt, context.model)
+        )
+        continuation_ctx = ag_model.continuation() if ag_model is not None else nullcontext()
+        history_for_run = context.history if provider_continuation else context.messages()
         # Unlike run_stream(), this completes the tool loop even when the model
         # sends explanatory text alongside its tool calls.
         # Enter the agent too: a run alone does not own a statically supplied
@@ -1294,24 +1602,27 @@ class AgentRuntime:
             chosen.model.model if chosen.model is not None else nullcontext(),
             worker_toolsets([self.mcp.live()]),
             enabled_servers(self.mcp.servers, self.mcp.unavailable),
-            agent.run_stream_events(
-                content,
-                message_history=context.messages(),
-                workspace=self._run_workspace(agent),
-                toolsets=[self.mcp.live()],
-                conversation_id=chosen.conversation_id,
-                run_id=context.run_id,
-                **({"model": chosen.model.model} if chosen.model is not None else {}),
-                capabilities=self._run_capabilities(context, chosen),
-                # Explicitly disable the cap; omitting this restores the library default.
-                usage_limits=UsageLimits(request_limit=None),
-            ) as events,
         ):
-            async for event in events:
-                # Closed here, not by GC, when the consumer stops mid-event.
-                async with aclosing(translator.translate(event)) as outputs:
-                    async for out in outputs:
-                        yield out
+            with continuation_ctx:
+                async with agent.run_stream_events(
+                    content,
+                    message_history=_for_run(history_for_run),
+                    workspace=self._run_workspace(agent),
+                    toolsets=[self.mcp.live()],
+                    conversation_id=chosen.conversation_id,
+                    run_id=context.run_id,
+                    **({"model": chosen.model.model} if chosen.model is not None else {}),
+                    capabilities=self._run_capabilities(
+                        context, chosen, provider_continuation=provider_continuation
+                    ),
+                    # Explicitly disable the cap; omitting this restores the library default.
+                    usage_limits=UsageLimits(request_limit=None),
+                ) as events:
+                    async for event in events:
+                        # Closed here, not by GC, when the consumer stops mid-event.
+                        async with aclosing(translator.translate(event)) as outputs:
+                            async for out in outputs:
+                                yield out
 
 
 def ends_suspended(history: list[ModelMessage]) -> bool:
@@ -1333,7 +1644,7 @@ def mark_unanswered(history: list[ModelMessage], node) -> list[ModelMessage]:
     reads the abandoned prompt and the new one as a single message ("is" then
     "ci is failing" arrives as "isci is failing"). The marker goes on the
     trailing request itself, so its `interrupted` state, which tells Pydantic
-    AI to close out dangling tool calls, is kept. `/resend` sends no new prompt,
+    AI to close out dangling tool calls, is kept. `/continue` sends no new prompt,
     so it still repeats the request exactly as it was.
     """
     if node is None or node.status == "completed" or not history:
@@ -1346,6 +1657,27 @@ def mark_unanswered(history: list[ModelMessage], node) -> list[ModelMessage]:
     if isinstance(tail, UserPromptPart) and tail.content in (CANCELLED_MARKER, UNANSWERED_MARKER):
         return history
     return [*history[:-1], replace(last, parts=[*last.parts, UserPromptPart(marker)])]
+
+
+def interrupted_briefing(tools: list[dict], request: str) -> str:
+    """What /continue sends after a turn stopped with tool effects its history lacks."""
+    lines = [
+        "Your previous turn was interrupted after it had started tools, so some of "
+        "their effects may already be in place even where no result came back:"
+    ]
+    for tool in tools:
+        outcome = tool["outcome"] or "no result, interrupted"
+        label = f": {tool['label']}" if tool["label"] else ""
+        lines.append(f"- {tool['name']}{label} ({outcome})")
+    if not tools:
+        lines.append("- (the calls were not recorded)")
+    lines += [
+        "",
+        "Check the current state before repeating any of them, then carry on with the request:",
+        "",
+        request,
+    ]
+    return "\n".join(lines)
 
 
 RETRY_CEILING = re.compile(r"^Tool '(?P<tool>[^']+)' exceeded max retries count of (?P<limit>\d+)")
@@ -1474,6 +1806,12 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
             "Check it with `/mcp list`, or turn it off with `/mcp disable NAME`. "
             "See the saved session diagnostics."
         )
+    if isinstance(error, UsageLimitExceeded):
+        # A budget the run was given, not the provider failing; the generic
+        # closing guess below sent people checking credentials. The library's message
+        # is fixed text plus the limit, followed by a docs pointer we drop.
+        reason = str(error).split(". ", 1)[0].rstrip(".")
+        return f"Stopped at a usage limit, not a provider error: {reason}."
     from pcode.claude_sdk import failure_hint
 
     if (hint := failure_hint(error)) is not None:

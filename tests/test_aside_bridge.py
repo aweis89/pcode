@@ -33,13 +33,25 @@ from pcode.aside import (
     framed,
     framed_follow_up,
     framed_summary,
-    summary_request,
+    summary_message,
 )
 from pcode.aside_ui import AsideBrowser
 from pcode.live import AgentRuntime
-from pcode.preferences import save_preferences
 from pcode.sessions import SavedSession, SessionError, first_prompt, session_turns
 from pcode.ui import create_prompt
+
+
+def sent(messages) -> list:
+    """Messages as a request carries them, for comparing a request with stored history.
+
+    Core keeps instruction bookkeeping parts in history and sends the
+    instructions themselves framed, so neither is compared.
+    """
+    bookkeeping = ("InstructionBaselinePart", "InstructionDeltaPart")
+    return [
+        (type(m).__name__, [p for p in m.parts if type(p).__name__ not in bookkeeping])
+        for m in messages
+    ]
 
 
 def prompts(messages) -> list[str]:
@@ -201,7 +213,7 @@ def test_a_thread_that_extends_the_conversation_becomes_its_continuation(tmp_pat
 
         # The next turn continues from the thread's last answer.
         await turn(runtime, "Next")
-        assert requests[-1][: len(reply.messages)] == reply.messages
+        assert sent(requests[-1][: len(reply.messages)]) == sent(reply.messages)
 
         # Each exchange is a checkpoint of its own.
         await runtime.navigate(first.id)
@@ -332,7 +344,7 @@ def test_a_side_question_recorded_mid_turn_leaves_the_turn_its_records(tmp_path)
         reopened.close()
 
 
-def test_a_summary_joins_the_active_branch_as_one_exchange(tmp_path):
+def test_a_summary_is_asked_in_the_thread_and_leaves_the_conversation_alone(tmp_path):
     requests = []
     runtime = runtime_for(tmp_path, requests)
 
@@ -340,34 +352,19 @@ def test_a_summary_joins_the_active_branch_as_one_exchange(tmp_path):
         await turn(runtime, "Main task")
         before, active = list(runtime.history), runtime.tree.active
         thread, reply = await ask_thread(runtime, "Why?")
-        request = summary_request(["Why?"], "keep decisions")
-        summary = await runtime.summarize_aside(reply, request, "keep decisions")
+        summary = await runtime.summarize_aside(reply, "keep decisions")
         assert summary == "Summary: the parser is LL(1)."
         # Asked in the thread, after its answer, where the cache is warm.
         asked = requests[-1]
-        assert asked[: len(reply.messages)] == reply.messages
+        assert sent(asked[: len(reply.messages)]) == sent(reply.messages)
         assert prompts(asked[-1:]) == [framed_summary("keep decisions")]
-        # Recorded on the conversation as one exchange after what it had.
-        assert runtime.history[: len(before)] == before
-        assert prompts(runtime.history[len(before) :]) == [request]
-        assert runtime.history[-1].parts[0].content == summary
-        node = runtime.tree.nodes[runtime.tree.active]
-        assert (node.kind, node.parent, node.prompt, node.response) == (
-            "aside",
-            active,
-            request,
-            summary,
-        )
-        await turn(runtime, "Next")
-        assert requests[-1][: len(runtime.history) - 2] == runtime.history[:-2]
-
-        # A history ending mid-turn would put two requests in a row.
-        runtime.history = [ModelRequest([UserPromptPart("interrupted")])]
-        with pytest.raises(SessionError, match="stopped mid-turn"):
-            await runtime.summarize_aside(reply, request)
+        # Nothing recorded: the caller sends it on as a message.
+        assert runtime.history == before
+        assert runtime.tree.active == active
 
     asyncio.run(run())
-    assert "Why?" in summary_request(["Why?"]) and "Focus" not in summary_request(["Why?"])
+    # The thread's model writes the message; it is sent as written.
+    assert summary_message("  The answer.\n") == "The answer."
 
 
 def settled_app(tmp_path, requests) -> PreviewApp:
@@ -399,6 +396,8 @@ def test_the_app_refuses_a_bridge_it_cannot_make_yet(tmp_path):
         app.activity.busy = True
         with pytest.raises(ValueError, match="waits for the running turn"):
             app.controller.check_bridge(root.thread)
+        # A summary goes as a message, so a running turn does not stop it.
+        assert app.controller.check_bridge(root.thread, "summary") is root
         app.activity.busy = False
         root.conversation = "another"
         with pytest.raises(ValueError, match="another conversation"):
@@ -474,12 +473,87 @@ def test_a_thread_read_back_from_the_tree_takes_follow_ups(tmp_path):
     asyncio.run(run())
 
 
+def test_a_summary_sent_mid_turn_steers_it(tmp_path):
+    app = settled_app(tmp_path, [])
+    sent_on = []
+
+    async def run():
+        await turn(app.runtime, "Main task")
+        await app.controller.start_aside("Why?")
+        await settle(app)
+        root = app.asides.items[0]
+        app.controller.submit = lambda text, mode, **_: sent_on.append((text, mode))
+        app.activity.busy = True
+        app.controller.start_summary(Bridge(root.thread, "summary", ""))
+        await asyncio.gather(*app.controller._summaries)
+
+    asyncio.run(run())
+    assert sent_on == [(summary_message("Summary: the parser is LL(1)."), "steering")]
+    assert app.asides.items[0].bridged == "summarized"
+    # Only the transcript says where the message came from.
+    assert "Sent the side thread's summary" in app.transcript.console.file.getvalue()
+
+
+def test_a_summary_that_is_stopped_or_has_lost_its_conversation_sends_nothing(tmp_path):
+    app = settled_app(tmp_path, [])
+    sent_on = []
+    gate = asyncio.Event()
+
+    async def held(reply, instructions="", **_):
+        await gate.wait()
+        return "Summary."
+
+    async def run():
+        await turn(app.runtime, "Main task")
+        await app.controller.start_aside("Why?")
+        await settle(app)
+        root = app.asides.items[0]
+        controller = app.controller
+        controller.submit = lambda text, mode, **_: sent_on.append(text)
+        app.runtime.summarize_aside = held
+
+        async def summarize():
+            controller.start_summary(Bridge(root.thread, "summary", ""))
+            await asyncio.sleep(0.01)
+            assert controller.summarizing
+            return list(controller._summaries)
+
+        # /stop in the thread, or Ctrl+C with nothing else running.
+        tasks = await summarize()
+        assert controller.cancel_asides() == 1
+        assert controller.cancel_asides() == 0  # Already stopping: not counted twice.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert not controller.summarizing
+
+        # Ctrl+C on a running turn stops it too: it would start a turn after the stop.
+        tasks = await summarize()
+        controller.live_task = asyncio.create_task(asyncio.sleep(10))
+        controller.cancel()
+        await asyncio.gather(*tasks, controller.live_task, return_exceptions=True)
+        controller.live_task = None
+        assert not controller.summarizing
+
+        # /new or /resume while it was written leaves it nowhere to go.
+        tasks = await summarize()
+        root.conversation = "another"
+        gate.set()
+        await asyncio.gather(*tasks)
+        assert root.bridged == ""
+
+    asyncio.run(run())
+    assert sent_on == []
+    printed = app.transcript.console.file.getvalue()
+    assert "Side thread summary stopped; nothing was sent." in printed
+    assert "Side thread summary not sent" in printed
+
+
 def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path):
-    """The whole path: the viewer returns a request, prompts wait, the summary lands."""
-    save_preferences(btw_view="popup")
+    """The whole path: the viewer returns a request, and the summary starts a turn."""
     requests = []
     app = settled_app(tmp_path, requests)
     runtime = app.runtime
+
+    message = summary_message("Summary: the parser is LL(1).")
 
     async def run():
         await turn(runtime, "Main task")
@@ -492,7 +566,7 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
                 self.check = options["check_bridge"]
 
             async def run(self):
-                self.check(thread)
+                self.check(thread, "summary")
                 return Bridge(thread, "summary", "keep decisions")
 
         with create_pipe_input() as pipe:
@@ -511,13 +585,16 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
             async def drive():
                 await wait_for(lambda: session is not None and session.app.is_running)
                 pipe.send_text("/btw\r")
-                printed = app.transcript.console.file
-                await wait_for(lambda: "summary added" in printed.getvalue())
+                # Idle, the summary starts a turn on its own: no "go ahead" needed.
+                await wait_for(
+                    lambda: (
+                        runtime.tree.nodes[runtime.tree.active].prompt == message
+                        and not app.activity.busy
+                    )
+                )
                 node = runtime.tree.nodes[runtime.tree.active]
-                assert node.kind == "aside"
-                assert node.response == "Summary: the parser is LL(1)."
+                assert node.response == f"Main answer to {message}"
                 assert app.asides.items[0].bridged == "summarized"
-                assert not app.activity.busy
                 pipe.send_text("/quit\r")
 
             with (
@@ -527,7 +604,8 @@ def test_btw_summarizes_a_thread_into_the_conversation_from_the_viewer(tmp_path)
                 await asyncio.wait_for(asyncio.gather(app.run_async(), drive()), timeout=15)
 
     asyncio.run(run())
-    assert prompts(requests[-1][-1:]) == [framed_summary("keep decisions")]
+    assert prompts(requests[-2][-1:]) == [framed_summary("keep decisions")]
+    assert prompts(requests[-1][-1:]) == [message]
 
 
 def answered(question: str, answer: str) -> Aside:
@@ -551,7 +629,7 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges(prefix):
         asides.items.append(root)
         refusal: list[str] = []
 
-        def check(thread):
+        def check(thread, action):
             if refusal:
                 raise ValueError(refusal[0])
 
@@ -629,7 +707,7 @@ def test_the_viewer_asks_for_optional_summary_instructions_and_merges(prefix):
         )
         assert result is None
 
-        refusal.append("Adding to the conversation waits for the running turn")
+        refusal.append("Merging into the conversation waits for the running turn")
         browser, result = await viewer(shortcut("t"), shortcut("s"), "\x1b")
         assert result is None
         assert browser.notice == refusal[0]

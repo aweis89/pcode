@@ -27,14 +27,16 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import AgentDepsT
 from pydantic_ai.toolsets import AbstractToolset
-from pydantic_ai_harness.shell import Shell
-from pydantic_ai_harness.shell._events import (
+from pydantic_ai_harness.shell import (
     CommandFinishedEvent,
     CommandOutputEvent,
     CommandStartedEvent,
+    Shell,
+    ShellToolset,
 )
+
+# Private: pcode's job tools turn errors into retries exactly as Harness's do.
 from pydantic_ai_harness.shell._policy import recoverable
-from pydantic_ai_harness.shell._toolset import ShellToolset
 
 from pcode.jobs import OUTPUT_TAIL_BYTES, Job, JobRegistry, format_duration, registry
 from pcode.steering import steering_pending
@@ -110,6 +112,11 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
         purpose: str = "",
     ) -> str:
         """Run a shell command and wait for its output and exit status.
+
+        Commands run under `/bin/sh -c`, not the user's login shell, so write
+        POSIX sh: no fish or zsh syntax, and no bash-only features such as
+        `<(...)` or `[[ ]]`. Wrap a command that needs bash in
+        `bash -c '...'`.
 
         If you have independent work to do while it runs, pass
         `background=True` and you get a job handle immediately instead.
@@ -309,7 +316,7 @@ class JobShellToolset(ShellToolset[AgentDepsT]):
                 status_path=str(job.status_path),
                 exit_code=job.exit_code,
                 truncated=truncated,
-                total_lines=None,
+                line_count=None,
             )
         )
 

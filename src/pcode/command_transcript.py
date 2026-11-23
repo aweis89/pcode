@@ -7,7 +7,8 @@ from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.text import Text
 
-from pcode.block import DONE, FAILED, INDENT, block_heading, block_rule
+from pcode import glyphs
+from pcode.block import INDENT, block_heading, block_rule
 from pcode.syntax import transparent_theme
 
 # Marks where a multi-line command (a heredoc, say) ends and its output begins.
@@ -29,7 +30,11 @@ class CommandTranscript:
         # The heading rides the opening line; the mirrored output carries the
         # detail behind a non-zero exit.
         yield block_rule(
-            block_heading(FAILED if self.failed else DONE, self.title, self.elapsed_seconds)
+            block_heading(
+                glyphs.icon("fail") if self.failed else glyphs.icon("ok"),
+                self.title,
+                self.elapsed_seconds,
+            )
         )
         indent = INDENT if options.max_width > len(INDENT) else ""
         body_options = options.update(width=max(1, options.max_width - len(indent)))

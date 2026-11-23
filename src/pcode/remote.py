@@ -22,9 +22,8 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
-from pcode.aside import Aside, Asides
+from pcode.aside import Aside, Asides, apply_state
 from pcode.commands import Command, CommandRegistry
 from pcode.controller import (
     MODEL_COMMANDS,
@@ -40,6 +39,7 @@ from pcode.host_protocol import (
     dumps,
     host_dir,
     list_hosts,
+    new_host_id,
     read_message,
     socket_path,
 )
@@ -183,7 +183,9 @@ class _Calls:
 
 # The host's argument completers a terminal can run itself: each reads only the
 # model catalog the host sends with its state, or the shared filesystem.
-COMPLETERS = frozenset({"aside_completions", "model_list_completions", "path_completions"})
+COMPLETERS = frozenset(
+    {"aside_completions", "model_list_completions", "advisor_completions", "path_completions"}
+)
 
 
 def _proxy(state: dict, controller: "RemoteController") -> Command:
@@ -218,6 +220,7 @@ class RemoteController:
 
     aside_completions = SessionController.aside_completions
     model_list_completions = SessionController.model_list_completions
+    advisor_completions = SessionController.advisor_completions
 
     def path_completions(self, argument: str):
         """An extension command's path argument, resolved against the host's workspace."""
@@ -254,6 +257,8 @@ class RemoteController:
         self.on_closed = lambda: None
         # The host said it was stopping, rather than just going away.
         self.host_stopped = False
+        # The host that carries the session on, when it stopped to restart.
+        self.successor: str | None = None
         # One per command sent and not yet answered by `after_command`, oldest
         # first: the host runs them in order and reports each exactly once.
         self._command_waits: list = []
@@ -358,9 +363,10 @@ class RemoteController:
             return None
         if name == "host_closed":
             self.host_stopped = True
+            self.successor = args[0] if args else None
             return None
         if name == "read_asides":
-            return self._read_asides()
+            return self._read_asides(*args)
         if name == "after_command" and self._command_waits:
             self.activity.end_wait(self._command_waits.pop(0))
         if self.runtime and (
@@ -387,9 +393,12 @@ class RemoteController:
         self.state = state
         self.model = state.get("model")
         self.workspace = Path(state.get("workspace") or self.workspace)
+        was_pending = self.startup_pending
         self.startup_pending = bool(state.get("startup_pending"))
         error = state.get("startup_error")
         self.startup_error = HostError(error) if error else None
+        if was_pending and not self.startup_pending:
+            self.activity.finish_startup(ok=self.startup_error is None)
         self.arguments = state.get("arguments") or {}
         self.skill_command_names = list(state.get("skills") or ())
         self.save_sessions = bool(state.get("saving"))
@@ -409,37 +418,26 @@ class RemoteController:
         if new:
             aside = Aside(question=state["question"], id=state["id"])
             self.asides.items.append(aside)
-        for name in (
-            "model",
-            "label",
-            "effort",
-            "status",
-            "answer",
-            "activity",
-            "error",
-            "started",
-            "finished",
-            "thread",
-            "conversation",
-            "base",
-            "bridged",
-        ):
-            if name in state:
-                setattr(aside, name, state[name])
-        # The reply lives in the host; a follow-up only needs to know there is one.
-        aside.reply = True if state.get("replied") else None
-        # Read here and not yet reported stays read.
-        aside.read = aside.read or bool(state.get("read"))
+        apply_state(aside, state)
         if new:
             # The host dropped its oldest settled threads the same way.
             self.asides._trim()
         return aside
 
-    async def _read_asides(self):
-        """The viewer; then the host learns what was read, so no terminal shows it as ready."""
+    async def _read_asides(self, *tag):
+        """The viewer; then the host learns what was read, so no terminal shows it as ready.
+
+        The host sends the `/btw` command's tag along and has finished that
+        command by now (see `HostView.read_asides`), so the viewer runs as
+        the command, which tells an auto-open and a superseded one apart.
+        """
+        if tag:
+            self.view.command_started(tag[0])
         try:
             return await self.view.read_asides()
         finally:
+            if tag:
+                self.view.command_finished()
             read = [aside.id for aside in self.asides.items if aside.read]
             if read and self.peer is not None:
                 self.peer.notify("asides_read", read)
@@ -500,10 +498,13 @@ class RemoteController:
     def model_suggestions(self) -> list[str]:
         return self.state.get("models") or []
 
-    def check_bridge(self, thread: str):
+    # A summary runs in the host, and a hosted session never hands off again.
+    summarizing = False
+
+    def check_bridge(self, thread: str, action: str = "merge"):
         """What the side-answer viewer checks before offering to merge; the host checks again."""
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("Adding to the conversation waits for the running turn")
+        if action == "merge" and (self.activity.busy or self.activity.queued):
+            raise ValueError("Merging into the conversation waits for the running turn")
         return self.asides.follows(thread)
 
     def follow_up_aside(self, thread: str, question: str) -> None:
@@ -555,6 +556,7 @@ def spawn_host(
     fork: bool = False,
     directory: Path | None = None,
     profile: RemoteProfile | None = None,
+    identity: str | None = None,
 ) -> tuple[str, subprocess.Popen, Path]:
     """Start a host from this process, so it inherits this terminal's environment.
 
@@ -563,7 +565,7 @@ def spawn_host(
     """
     directory = directory or host_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    identity = uuid4().hex[:8]
+    identity = identity or new_host_id()
     socket_path(identity, directory)  # Fail here, not in the child, on a too-long path.
     log = directory / f"{identity}.log"
     argv = [
@@ -706,29 +708,90 @@ async def stop_entry(entry: HostEntry, *, keep_worktree: bool = False) -> bool:
     return await wait_for_exit(entry.pid)
 
 
-async def stop_if_idle(entry: HostEntry) -> str:
-    """Stop a host as it would stop itself once idle, terminals or not.
+async def stop_if_idle(
+    entry: HostEntry, *, require_detached: bool = False, keep_worktree: bool = False
+) -> str:
+    """Stop a host as it would stop itself once idle; else return why not.
 
-    Returns "" once it has exited, else what it is busy with. The host checks
-    for itself: its entry only says whether a turn runs, not a command,
-    compaction, side question or background command.
+    When `require_detached` is True, attached human terminals also refuse the stop
+    atomically on the host. When `keep_worktree` is True, the session's worktree
+    is left untouched. Returns "" once it has exited, else what it is busy with.
     """
+    args = (require_detached, keep_worktree) if (require_detached or keep_worktree) else ()
     try:
-        reason = await request_host(entry, "stop_if_idle")
+        reason = await request_host(entry, "stop_if_idle", *args)
     except RemoteError as error:
-        if error.type_name != "PermissionError":
+        if args and error.type_name == "TypeError":
+            # Host supports an older stop_if_idle signature: check entry best-effort.
+            if require_detached and entry.attached > 0:
+                return f"{entry.attached} terminal(s) attached"
+            reason = await request_host(entry, "stop_if_idle")
+        elif error.type_name == "PermissionError":
+            # A host older than the call can only be judged by its entry, and is
+            # stopped leaving its worktree alone: nobody chose to finish it.
+            if require_detached and entry.attached > 0:
+                return f"{entry.attached} terminal(s) attached"
+            if entry.state != "idle":
+                return "a turn is running"
+            await notify_host(entry, "stop", True)
+            reason = ""
+        else:
             raise
-        # A host older than the call can only be judged by its entry, and is
-        # stopped leaving its worktree alone: nobody chose to finish it.
-        if entry.state != "idle":
-            return "a turn is running"
-        await notify_host(entry, "stop", True)
-        reason = ""
     if reason:
         return reason
     if not await wait_for_exit(entry.pid):
         raise HostError("it was told to stop but is still running after 30 s")
     return ""
+
+
+TOO_OLD_TO_RESTART = "it predates restarting from elsewhere; /restart it in its own terminal"
+
+
+async def restart_entry(
+    entry: HostEntry, directory: Path | None = None, *, timeout: float = 30.0
+) -> tuple[str, str]:
+    """Restart another host on the pcode installed now: (successor's ID, "") or ("", why not).
+
+    The host starts its successor itself, so the successor keeps that host's
+    environment, not this caller's (another project's credentials, say). A
+    host older than the call is skipped rather than restarted from here. Returns
+    once the successor has written its entry, so it can be attached to.
+    """
+    try:
+        answer = await request_host(entry, "restart")
+    except RemoteError as error:
+        if error.type_name != "PermissionError":
+            raise
+        return "", TOO_OLD_TO_RESTART
+    if skipped := answer.get("skipped"):
+        return "", skipped
+    if not await wait_for_exit(entry.pid, timeout):
+        raise HostError(f"it was told to restart but is still running after {timeout:g} s")
+    successor = answer["id"]
+    directory = directory or host_dir()
+    log = directory / f"{successor}.log"
+    # Spawning creates the log, before the old host exits.
+    if not log.exists():
+        raise HostError(f"it stopped but could not start its successor; see {entry.log}")
+    # Written first thing once its code has loaded: the new code imports cleanly.
+    deadline = time.monotonic() + timeout
+    while not socket_path(successor, directory).with_suffix(".json").exists():
+        if time.monotonic() > deadline:
+            raise HostError(f"its successor {successor} did not start; see {log}")
+        await asyncio.sleep(0.05)
+    return successor, ""
+
+
+async def restart_and_report(entry: HostEntry) -> tuple[str, bool]:
+    """`restart_entry` as one line to show, and whether it is an error."""
+    try:
+        successor, skipped = await restart_entry(entry)
+    except (OSError, ValueError, HostError, RemoteError) as error:
+        # Usually gone since it was listed (stopped itself, or crashed).
+        return f"Could not restart {entry.id}: {error}", True
+    if skipped:
+        return f"Skipped {entry.id}  {entry.label()}: {skipped}", False
+    return f"Restarted {entry.id} as {successor}  {entry.label()}", False
 
 
 @asynccontextmanager

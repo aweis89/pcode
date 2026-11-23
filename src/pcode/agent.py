@@ -18,16 +18,14 @@ from pydantic_ai.capabilities import (
     CombinedCapability,
     LocalWorkspace,
 )
+from pydantic_ai.exceptions import ModelRetry, ToolFailed, UnexpectedModelBehavior
 from pydantic_ai.models import Model
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.toolsets import CombinedToolset
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai_harness.coder import Coder
-from pydantic_ai_harness.compaction import ClearToolResults
-from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.repo_context import RepoContext
-from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
-from pydantic_ai_harness.subagents import ModelOption, SubAgent
+from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
+from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, MAX_FOREGROUND_WAIT, Shell
+from pydantic_ai_harness.sub_agents import ModelOption, SubAgent
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
 
 from pcode import remote_profile
@@ -50,12 +48,15 @@ from pcode.planning import IdentifiedPlanning
 from pcode.preferences import SETTINGS, load_preferences, subagent_models
 from pcode.repo_context import create_repo_context
 from pcode.shell_tools import JobShell
-from pcode.strict_tools import create_strict_tools
+from pcode.strict_tools import create_strict_tools, provider_strict_off
 from pcode.tool_output_limits import create_tool_output_limits
+from pcode.worker_channel import ChildChannel
 from pcode.workspace import WorkspaceGuard
 
 if TYPE_CHECKING:
     from pydantic_ai.models.openai_codex import OpenAICodexModel
+
+    from pcode.advisor import AdvisorChoice
 
 # Harness gives a child its own usage counter only when its `SubAgent` carries
 # `usage_limits`; without one the child shares the parent's counter and silently
@@ -66,7 +67,7 @@ if TYPE_CHECKING:
 # delegates too.
 SUBAGENT_USAGE_LIMITS = UsageLimits(request_limit=None)
 
-# Coder's default prompt without "finish long-running work before responding",
+# Harness Coder's default prompt without "finish long-running work before responding",
 # which kept the model waiting on jobs instead of answering steering. Job
 # mechanics are in the shell tool descriptions; don't add workflow rules here.
 CODER_INSTRUCTIONS = """\
@@ -86,7 +87,7 @@ Servers may remain running once readiness is verified; shut them down when no
 longer needed.
 """
 
-AGENT_INSTRUCTIONS = (
+PCODE_CLIENT_INSTRUCTIONS = (
     "Responses are displayed in a terminal with Markdown rendering "
     "and syntax highlighting. "
     "Use fenced code blocks with a language tag for multiline code or shell examples, "
@@ -97,13 +98,17 @@ AGENT_INSTRUCTIONS = (
     # /copy offers quotes as their own choice, since the rendered rail and wrap
     # make them hard to select by hand.
     "Put text meant for the user to paste elsewhere in a > blockquote. "
-    # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
-    "Prefer edit_file and write_file for file changes over shell tools. "
     # The model is the intended extension author, so it needs to know the
     # mechanism exists without the reference text sitting in every prompt.
     "pcode itself is extensible with small Python files (new slash commands, "
     "tools, guardrails on tool calls, extra instructions). When asked to change "
     f"how pcode behaves, first read {EXTENSION_GUIDE} and follow it."
+)
+
+AGENT_INSTRUCTIONS = (
+    PCODE_CLIENT_INSTRUCTIONS
+    # GPT-6 tends to edit through shell commands, bypassing captured edit diffs.
+    + " Prefer edit_file and write_file for file changes over shell tools."
 )
 
 
@@ -156,6 +161,27 @@ def tool_retries() -> dict[str, int]:
     return {"tools": int(configured)}
 
 
+class ReportExhaustedRetries(AbstractCapability):
+    """Hand a tool's last error back to the model once its retry budget is spent.
+
+    A tool that keeps raising `ModelRetry` (a stale `edit_file` match, a denied
+    path) otherwise ends the whole turn with `UnexpectedModelBehavior` and
+    discards its work. The model gets a failed tool result instead and can try
+    something else. Arguments that fail validation never reach the tool, so
+    their exhausted budget still ends the turn (`live.retry_ceiling` explains
+    it). Adapted from Harness's `Coder`.
+    """
+
+    async def on_tool_execute_error(self, ctx, *, call, tool_def, args, error):
+        cause = error.__cause__
+        if not isinstance(error, UnexpectedModelBehavior) or not isinstance(cause, ModelRetry):
+            raise error
+        raise ToolFailed(
+            f"{cause.message}\n\n`{call.tool_name}` has failed several times in a row. "
+            "Do not repeat the same call: check the current state and try a different approach."
+        ) from error
+
+
 def has_mcp_servers() -> bool:
     """Whether mcp.json configures any server, deciding once per agent.
 
@@ -173,52 +199,65 @@ def _init_fields(capability) -> dict:
     return {f.name: getattr(capability, f.name) for f in fields(capability) if f.init}
 
 
-def _adapt(capability, workspace: Path, output_limits):
-    """Map one of Coder's capabilities to pcode's replacement, or keep it.
+# The file tools, and how much of a file `read_file` returns at once (complete
+# lines, below the output limits). Both are the figures Harness's `Coder` uses.
+FILE_TOOLS = ("read_file", "write_file", "edit_file", "list_files", "grep")
+MAX_READ_CHARS = 50_000
 
-    Ids must be set at construction (`replace(..., id=...)` or the factory):
-    a `Capability` binds its instructions to its id in `__init__`, so a later
-    `capability.id = ...` is silently ignored by /status attribution. Do not
-    blanket-rename everything either: `replace()`-copied children compare
-    fields with their parent and a renamed parent breaks that match.
+
+def coding_capabilities(workspace: Path, output_limits) -> list:
+    """The coding agent proper: guidance, file and shell tools, repository context.
+
+    Built here rather than taken from Harness's `Coder`, which pcode used to
+    adapt piece by piece: it replaced most of it anyway, and a release that
+    retyped one piece (0.67's guidance) silently put Coder's own prompt back.
+    The order is Coder's, so instructions land where they always have. When
+    Harness ships something worth having in `Coder`, adopt it here.
+
+    Ids must be set at construction: a `Capability` binds its instructions to
+    its id in `__init__`, so a later `capability.id = ...` is silently ignored
+    by /status attribution.
     """
-    match capability:
-        # Coder's sole plain Capability holds its base instructions (and a
-        # project line pcode's file-tool instructions already cover). Exact type:
-        # every capability class below would also match `Capability()`.
-        case Capability() if type(capability) is Capability:
-            return Capability(instructions=CODER_INSTRUCTIONS)
-        case RepoContext():
-            return create_repo_context(workspace)
+    return [
+        Capability(instructions=CODER_INSTRUCTIONS, id="coding_guidance"),
         # Named so /status can attribute its prompt; ids never reach the model.
         # No per-toolset retry budget: the `tool_retries` preference governs.
-        case FileSystem():
-            return replace(
-                DisplayFileSystem.from_filesystem(capability), id="file_tools", max_retries=None
-            )
-        # Replace Coder's 64k truncation, so it cannot cut data before spilling.
-        case ToolOutputLimits():
-            return output_limits
-        case Shell():
-            return _job_shell(capability, workspace)
-        case _:
-            return capability
+        DisplayFileSystem(
+            content_hashes=False,
+            max_read_chars=MAX_READ_CHARS,
+            tools=FILE_TOOLS,
+            max_retries=None,
+            id="file_tools",
+        ),
+        _job_shell(workspace),
+        create_repo_context(workspace),
+        output_limits,
+        # Fix up malformed tool arguments before they fail validation.
+        RepairToolArguments(),
+        ReportExhaustedRetries(),
+        provider_strict_off({*FILE_TOOLS, "shell"}),
+    ]
 
 
-def _job_shell(shell: Shell, workspace: Path) -> JobShell:
-    """Coder's persistent shell with commands run as named jobs.
+def _job_shell(workspace: Path) -> JobShell:
+    """A persistent shell whose commands are named jobs the session can wait on,
+    report and stop. See `pcode.shell_tools`.
 
-    Same execution model, but commands become named jobs the session can wait
-    on, report and stop. See `pcode.shell_tools`. Copied field by field
+    Built as a `Shell` first for its defaults, then copied field by field
     (including `id`) because a capability binds its instructions to its id in
     `__init__`.
     """
+    shell = Shell(
+        denied_commands=[],
+        default_timeout=MAX_FOREGROUND_WAIT,
+        allow_interactive=True,
+        tools=["shell"],
+    )
     values = _init_fields(shell)
     # Commands inherit the whole host environment (see `JobShell`), so keep
-    # provider credentials out of it, as Coder did before it left the
-    # environment to the workspace. The env must be explicit: Harness applies
+    # provider credentials out of it. The env must be explicit: Harness applies
     # `denied_env_patterns` only to an explicit env, never to `None`.
-    values["env"] = dict(shell.env or os.environ)
+    values["env"] = dict(os.environ)
     values["denied_env_patterns"] = [*values["denied_env_patterns"], *LLM_API_KEY_ENV_PATTERNS]
     return JobShell(**values, workdir=workspace)
 
@@ -285,7 +324,7 @@ def _worker_capabilities(capabilities: Sequence) -> list:
     return [
         copy(capability)
         for capability in capabilities
-        if not isinstance(capability, (*shared_types, ClearToolResults, DelegationReporting))
+        if not isinstance(capability, (*shared_types, DelegationReporting))
     ]
 
 
@@ -342,6 +381,8 @@ def _delegation(
             replace(output_limits),
             # A remote host's turn budget counts its sub-agents' work too.
             *turn_limits(),
+            # ask_parent, parent messages and the report format, for every delegate.
+            ChildChannel(),
         ],
     )
 
@@ -349,22 +390,17 @@ def _delegation(
 def create_coder(
     workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
 ) -> CombinedCapability:
-    """Compose Harness's Coder with pcode's repository context and planning.
+    """Compose pcode's coding agent: tools, guidance, planning and delegation.
 
     `subagents` are extension-contributed Harness `SubAgent` entries, listed
     beside the worker under the one `delegate_task` tool.
     """
     workspace = workspace.resolve()
     _ensure_bundled_rg()
-    # Delegation is pcode's own `WorkspaceSubAgents`, added below. Caching is
-    # `ProviderCacheSettings`' per-provider choice: Coder's default `cache=True`
-    # would also reach OpenAI's explicit-breakpoint models.
-    coder = Coder(sub_agents=False, caching=False)
     output_limits = create_tool_output_limits()
-    # Keep Coder's tool selection, including its persistent shell (as a
-    # `JobShell`). File display and repository discovery remain local adapters;
-    # planning is now opt-in.
-    capabilities = [_adapt(c, workspace, output_limits) for c in coder.capabilities]
+    # Caching is `ProviderCacheSettings`' per-provider choice; delegation is
+    # pcode's own `WorkspaceSubAgents`, added below.
+    capabilities = coding_capabilities(workspace, output_limits)
     capabilities = [
         # Ahead of the other capabilities in the list, so a tool call in a
         # deleted workspace stops before anything tries to read or write in it.
@@ -403,8 +439,7 @@ def create_coder(
     )
     # Steering mid-delegation reaches the parent; the child keeps working.
     capabilities.append(BackgroundDelegation())
-    # Summarize evidence before discarding it; pcode owns compaction.
-    return CombinedCapability([c for c in capabilities if not isinstance(c, ClearToolResults)])
+    return CombinedCapability(capabilities)
 
 
 def _create_worker(
@@ -471,6 +506,26 @@ def codex_model(model: str) -> OpenAICodexModel:
     )
 
 
+def google_cloud_model(model: str) -> Model | str:
+    """Resolve `google-cloud:` with an explicit project so ADC beats `GEMINI_API_KEY`.
+
+    Without an explicit `project`, `GoogleCloudProvider()` falls back to
+    `GOOGLE_API_KEY`/`GEMINI_API_KEY` (Vertex AI Express Mode) whenever
+    `GOOGLE_APPLICATION_CREDENTIALS` is unset, ignoring `GOOGLE_CLOUD_PROJECT`.
+    """
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project:
+        return model
+    from pydantic_ai.models.google import GoogleModel
+    from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip() or "us-central1"
+    return GoogleModel(
+        model.removeprefix("google-cloud:"),
+        provider=GoogleCloudProvider(project=project, location=location),
+    )
+
+
 def resolve_model(model: str) -> Model | str:
     """The model object for a name, on pcode's own logins where it manages them.
 
@@ -484,6 +539,12 @@ def resolve_model(model: str) -> Model | str:
         from pcode.claude_sdk import claude_model
 
         return claude_model(model)
+    if model.startswith("google-cloud:"):
+        return google_cloud_model(model)
+    if model.startswith("antigravity:"):
+        from pcode.antigravity import antigravity_model
+
+        return antigravity_model(model)
     if not model.startswith("anthropic:"):
         return model
     from pcode.auth import anthropic_model
@@ -524,6 +585,21 @@ def side_model(name: str, effort: str = "") -> SideModel:
 
     from pcode.preferences import effort_for
 
+    if name.startswith("antigravity:"):
+        from pcode.antigravity import antigravity_model
+
+        try:
+            # Its own `agy` session, never the conversation's.
+            resolved = antigravity_model(name, side=True)
+        except ValueError as error:
+            raise ValueError(f"Cannot use {name}: {error}") from error
+        from pcode.openai_region import track
+
+        return SideModel(
+            name,
+            track(resolved),
+            with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
+        )
     try:
         resolved = resolve_model(name)
         if isinstance(resolved, str):
@@ -534,11 +610,23 @@ def side_model(name: str, effort: str = "") -> SideModel:
             resolved = infer_model(resolved)
     except (UserError, ValueError, ImportError) as error:
         raise ValueError(f"Cannot use {name}: {error}") from error
+    from pcode.openai_region import track
+
     return SideModel(
         name,
-        resolved,
+        track(resolved),
         with_effort(name, resolved, model_settings(name), effort or effort_for(name)),
     )
+
+
+def worker_model(name: str) -> SideModel:
+    """`side_model`, for a model that runs a worker.
+
+    An `antigravity:` worker gets a fresh isolated `agy` session per worker in
+    `WorkspaceSubAgentToolset._run_delegation` so concurrent workers never share
+    one process or deadlock the parent's session.
+    """
+    return side_model(name)
 
 
 def subagent_menu(names: Sequence[str]) -> tuple[dict[str, ModelOption], list[str]]:
@@ -552,7 +640,7 @@ def subagent_menu(names: Sequence[str]) -> tuple[dict[str, ModelOption], list[st
     problems: list[str] = []
     for name in names:
         try:
-            chosen = side_model(name)
+            chosen = worker_model(name)
         except ValueError as error:
             problems.append(str(error))
             continue
@@ -575,10 +663,22 @@ def with_effort(name: str, model, settings: dict | None, effort: str | None) -> 
 
 
 def create_agent(
-    model: str, workspace: Path, extensions: Sequence = (), subagents: Sequence = ()
+    model: str,
+    workspace: Path,
+    extensions: Sequence = (),
+    subagents: Sequence = (),
+    advisor: AdvisorChoice | None = None,
 ) -> Agent:
-    """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`."""
+    """Build the terminal's agent; `extensions` and `subagents` come from `pcode.ext`.
+
+    `advisor` is the session's /advisor choice, read at each turn.
+    """
     resolved = resolve_model(model)
+    extras = []
+    if advisor is not None:
+        from pcode.advisor import advisor_capability
+
+        extras.append(advisor_capability(advisor))
     # Allow the terminal to open so /login is reachable without credentials.
     defer_model_check = model.startswith("anthropic:") and isinstance(resolved, str)
     return Agent(
@@ -588,5 +688,5 @@ def create_agent(
         name="pcode",
         retries=tool_retries(),
         instructions=AGENT_INSTRUCTIONS,
-        capabilities=[create_coder(workspace, subagents, extensions), *extensions],
+        capabilities=[create_coder(workspace, subagents, extensions), *extensions, *extras],
     )

@@ -457,12 +457,11 @@ def test_tab_title_follows_the_name_and_restores_the_shells():
         os.close(writer)
 
 
-def test_tab_title_sends_nothing_when_off_or_not_a_terminal():
+def test_tab_title_is_disabled_when_off_or_not_a_terminal():
     reader, writer = os.pipe()
     try:
         for mode in ("off", "on"):  # A pipe is no terminal either.
-            asyncio.run(TabTitle(lambda: "Name", writer, mode).run())
-        assert read_all(reader) == ""
+            assert not TabTitle(lambda: "Name", writer, mode).enabled
     finally:
         os.close(reader)
         os.close(writer)

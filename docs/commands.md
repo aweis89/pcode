@@ -1,5 +1,18 @@
 # Commands and keys
 
+## Quick reference
+
+Commands are grouped the same way `/help` lists them. See [Keys and layout](#keys-and-layout), [Activity panel](#activity-panel), [Diff browser](#diff-browser), [Tool-call inspector](#tool-call-inspector), [Popup keys](#popup-keys), and [`!command`](#running-a-command-yourself-command) for interactive controls.
+
+| Group | Commands |
+| --- | --- |
+| **App** | `/help` (`/commands`), `/config`, `/bind`, `/unbind`, `/quit` (`/exit`) |
+| **Model** | `/model`, `/effort`, `/advisor`, `/login`, `/logout`, `/mcp`, `/extensions`, `/subagents`, `/reload` |
+| **Session** | `/new`, `/delete`, `/resume`, `/rename`, `/attach` (`/switch`), `/fork`, `/restart`, `/stop`, `/detach`, `/compact`, `/autocompact`, `/jobs`, `/continue` (`/retry`), `/worktree` |
+| **Inspect** | `/status`, `/usage`, `/tools`, `/diffs`, `/links`, `/copy`, `/paste-image`, `/tree`, `/btw` (`/side`), `/agents` |
+| **Display** | `/show-activity`, `/show-tasks`, `/autohide-tasks`, `/show-thinking`, `/show-edits`, `/show-commands`, `/group-tools`, `/theme`, `/syntax`, `/theme-preview`, `/redraw` |
+| **Extensions** | `/plan`, `/manager`, `/reflect`, `/browser`, `/allow-writes`, `/ponytail`, `/skill:NAME` |
+
 ## Slash commands
 
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
@@ -18,12 +31,19 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   [Keybindings](keybindings.md).
 - `/unbind KEY`: disable a prompt action key, including a default binding.
   Changes apply immediately and are saved for your user, not the project.
-- `/login [claude|openai-codex]`: sign in in a browser. `claude` (the default) runs
+- `/login [claude|openai-codex|antigravity]`: sign in in a browser (bare `/login`
+  defaults to the current model's provider, or `claude`). `claude` runs
   `claude auth login` for the login `claude:` models use ([details](providers.md#signing-in));
-  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required). `anthropic:` models use
+  `openai-codex` uses Pydantic AI's OAuth flow (no CLI required); `antigravity` runs
+  `agy acp --login`, opens the Google sign-in link, and opens a masked prompt to forward
+  the pasted authorization code or callback URL to `agy` (needs no active work or queued
+  messages). `anthropic:` models use
   `ANTHROPIC_API_KEY` and have no sign-in.
   `/logout [openai-codex]` removes pcode's stored Codex login, leaving CLI credentials
-  untouched. Both require an idle conversation.
+  untouched; it needs an idle conversation. `/login claude` and `/login openai-codex`
+  also work mid-turn, to switch accounts without stopping a long run: the turn carries on,
+  and its requests use the new login once you finish in the browser. Ctrl+C (or Ctrl+D)
+  stops the turn first, and the waiting sign-in only when nothing else is running.
 - `/model`: searchable model picker for configured providers. Keeps the conversation;
   chosen mid-run, the running turn's next request already uses it. To switch for one prompt only, start
   it with `$PROVIDER:MODEL` (optionally `+EFFORT`, as in `$openai:gpt-5+high fix this`)
@@ -33,9 +53,13 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   text. Another model starts without the conversation's prompt cache, and automatic
   compaction is skipped for its turn, since that model's window and summarizer would
   decide what the conversation keeps. Such a prompt never steers a running turn; it
-  queues as its own. `/resend` of it asks the conversation's model.
+  queues as its own. `/continue` of it asks the conversation's model.
 - `/effort [low|medium|high|xhigh|default]`: set reasoning effort; bare shows the current
   level ([details](providers.md#reasoning-effort)).
+- `/advisor [MODEL|off] [--save]`: a stronger model the session's model can consult on hard
+  decisions, such as Claude Fable 5.2 advising Opus 5.5. Bare opens the model picker, `off`
+  removes it, and `--save` makes the choice the `advisor_model` default
+  ([details](providers.md#advisor)).
 - `/mcp [list | enable NAME [--save] | enable-all | disable NAME [--save] | logout NAME]`:
   manage [MCP servers](mcp.md).
 - `/extensions [list | on NAME | off NAME]` and `/reload`: list or toggle extensions, and
@@ -52,12 +76,11 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   arguments and results, or the assistant's replies, most recent first. Duplicate
   URLs appear once, at their latest position; tool links show the tool name.
   The picker opens in its search line: typing filters URLs, labels, and sources
-  (case-insensitive) while `↑`/`↓` move the selection, and Tab moves to the list.
+  (case-insensitive, every word must match) while `↑`/`↓` move the selection.
   `Enter` opens the URL in the default browser (`open` on macOS, `xdg-open` on
   Linux, the shell association on Windows). `Esc` clears the search, or closes the
   picker when the search is empty. **Ctrl+T** shows/hides tool links (shown by
-  default; URLs also in prompts or replies stay) and **Ctrl+F** returns to the
-  search. Filters reset when you reopen it. Output dropped by truncation or stored
+  default; URLs also in prompts or replies stay). Filters reset when you reopen it. Output dropped by truncation or stored
   only in a spill file isn't searched. Handy when your terminal or tmux doesn't
   make links clickable.
 - `/copy`: copy a prompt, a response, or one quote or code block from the active
@@ -83,14 +106,17 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   and a breakdown of the prompt overhead re-sent with every request (see
   [Where the fixed prompt goes](context.md#where-the-fixed-prompt-goes)). Opens a popup in
   the interactive editor; prints inline otherwise.
-- `/usage`: plan limits and spend for the Claude Code and Codex logins, fetched when you
-  run it. No admin key is needed. For Claude, pcode runs Claude Code's own `/usage`
-  headless (`claude -p /usage`) and shows its session and weekly limits; the CLI answers
-  from its own login, so pcode never reads Claude Code's token. Codex shows the session
-  (5h) and weekly percentages with their resets, plus spend against a cap where the seat
-  has one, using pcode's `/login openai-codex` or the Codex CLI's `auth.json`, through
-  `PCODE_LLM_PROXY` when set. The Codex endpoint is undocumented and can change. Plain
-  API keys have no per-user usage endpoint and aren't covered.
+- `/usage [claude|openai-codex|antigravity|all]`: plan limits and spend, fetched when you
+  run it. With no argument, checks the current model's provider when it is one of those
+  three, or all of them otherwise. No admin key is needed. For Claude, pcode runs Claude
+  Code's own `/usage` headless (`claude -p /usage`) and shows its session and weekly
+  limits; the CLI answers from its own login, so pcode never reads Claude Code's token.
+  Codex shows the session (5h) and weekly percentages with their resets, plus spend
+  against a cap where the seat has one, using pcode's `/login openai-codex` or the Codex
+  CLI's `auth.json`, through `PCODE_LLM_PROXY` when set (undocumented endpoint, may
+  change). Antigravity runs `agy -p /usage --output-format json` and shows each model
+  group's 5h and weekly usage and reset times. Plain API keys have no per-user usage
+  endpoint and aren't covered.
 - `/worktree [status|merge|resolve|finish|remove|list|clean]`: manage this session's git
   worktree ([details](workspace.md#one-git-worktree-per-session)).
 - `/plan [--obsidian|--local] [request]`: discuss a change and keep a written plan
@@ -100,12 +126,26 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   `/plan status` shows its file; `/plan off` stops planning without deleting it.
   Approve in the conversation to start implementation. See
   [Planning in Obsidian](obsidian.md) for where vault plans go and feedback from Obsidian.
+- `/manager [on [request]|off|status]`: make the agent a coordinator that hands the
+  implementation to workers, checks each result, and keeps a decisions log, for large
+  tasks that split into loosely coupled pieces. Opt-in: `/extensions on manager` adds
+  it, after which the agent can also switch it on itself and tells you when it does. `/manager status` lists the workers, their reviews and
+  tokens, and the budget used. See [Manager mode](manager.md).
 - `/reflect [--project|--all] [focus]`: propose an instruction, skill or extension change
   from what went wrong in this session (or, with a flag, across this project's or every
   project's saved sessions), apply it if you approve, and log the lesson. See
   [Learning from a session](workspace.md#learning-from-a-session-reflect).
-- `/resend`: retry from the last checkpoint without a new message; shows the previous
-  prompt and spinner.
+- `/browser [launch|attach|off|status]`: give the model a real Chrome browser to drive
+  (`launch` opens pcode's own Chrome window; `attach` joins an existing Chrome, Chromium,
+  or Edge window with remote debugging). See [Browser](tools.md#browser-per-conversation).
+- `/allow-writes [--global] [PATH]`: allow file writes to a directory or file outside the
+  workspace for this session, or `--global` for every session; bare shows the current
+  policy. See [Tool permissions](tools.md#tool-permissions).
+- `/ponytail [lite|full|ultra|off|status]`: opt-in extension (`/extensions on ponytail`)
+  that dials how hard the model resists over-building. See
+  [Ponytail](workspace.md#ponytail-opt-in).
+- `/continue` (alias `/retry`): pick a failed or cancelled turn back up from its last
+  checkpoint without a new message. Finished tool calls are kept, not run again.
 - `/jobs [stop ID|stop all|watch ID|unwatch]`: bare `/jobs` opens a popup listing this
   session's shell jobs, running first, beside the selected job's command and live output.
   **Ctrl+W** pins or unpins its output tail in the command preview, **Ctrl+K** stops it,
@@ -120,6 +160,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   scrollback, keeps input history. With PROMPT, a new
   [background session](sessions.md#background-sessions) works on it instead and this
   terminal stays where it is, mid-turn or not.
+- `/delete`: delete the current saved session and start a new conversation; clears the
+  screen and retained scrollback, keeps input history.
 - `/resume`: browse and search saved conversations (prompts, responses, tool calls,
   name, or session ID); resume one in place.
 - `/rename [NAME | -]`: name this conversation so `/resume` lists and finds it by that
@@ -137,7 +179,8 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   (`/detach`, or by itself once idle after `/fork PROMPT`), both run at once and Ctrl+^
   flips between them ([parallel sessions](sessions.md#parallel-sessions)).
 - `/restart`: restart this background session's host on the pcode installed now, keeping
-  the conversation.
+  the conversation. `/restart all` restarts every host on older code
+  ([sessions](sessions.md#parallel-sessions)).
 - `/stop`: end this background session's host and quit. Quitting any other way (Ctrl+D,
   `/quit`) does the same.
 - `/detach`: quit but leave this background session's host running until it
@@ -148,20 +191,20 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   to edit it, or an assistant response to continue from there. Existing branches are kept.
   Browsable at any time; forking waits for the running turn.
 - `/btw QUESTION` (alias `/side`): [ask a side question](side-questions.md) against the context the model
-  is working with right now, without interrupting or queueing it. The answer is
-  [swapped in](side-questions.md#swapping-a-thread-in) for the conversation when ready
-  (`btw_auto_open`), and the main editor replies to it; bare `/btw` or **Ctrl+Q** swaps it in
-  at any time, and bare `/btw` lists the threads to pick one when there are several.
-  You can send a [follow-up](side-questions.md#following-up) to the thread, or
-  [keep it](side-questions.md#keeping-a-thread) in the conversation
-  (`btw_view popup` shows threads in a [full-screen viewer](side-questions.md#the-popup)
-  instead). `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
+  is working with right now, without interrupting or queueing it. Answers open in a
+  [viewer](side-questions.md#the-popup) by default (auto-opened when ready via
+  `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any time; in Ghostty Smooth, a hosted session [opens threads in a drawer](side-questions.md#threads-in-a-drawer)
+  instead. You can send a [follow-up](side-questions.md#following-up) to
+  the thread, or [keep it](side-questions.md#keeping-a-thread) in the conversation.
+  `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
   instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
   conversation's model, sets that question's reasoning effort from the `/effort` levels.
-- `/agents`: follow delegated agents live in a read-only popup: each agent's
-  assignment, plan, prose, and tool calls, which the transcript only summarizes. Works
-  while the turn runs. **Ctrl+T** shows or hides reasoning. Agents are kept in memory
+- `/agents`: follow delegated agents live in a popup: each agent's worker id, plan
+  step, state, tokens, assignment, plan, prose, and tool calls, which the transcript
+  only summarizes. Works while the turn runs. **Ctrl+T** shows or hides reasoning;
+  `a` answers a worker's question, `m` messages a worker, and `r` shows its report
+  (see [talking to workers](tools.md#talking-to-workers)). Agents are kept in memory
   only, so a resumed session starts with none.
 - `/skill:NAME [text]`: run a discovered skill; see
   [Skills as slash commands](workspace.md#skills-as-slash-commands).
@@ -196,9 +239,9 @@ arrow keys to choose. Enter accepts a selected completion; another Enter runs it
   [Regenerating the terminal transcript](transcript.md#regenerating-the-terminal-transcript).
 - `/quit` (alias `/exit`): exit. It cancels a running turn and waits for its cleanup first.
 
-Toggles such as `/show-thinking`, `/show-activity`, `/show-edits`, `/show-commands`,
-`/group-tools`, and `/autohide-tasks` are described with the features they control,
-on this page and in [the transcript](transcript.md).
+Toggles such as `/show-thinking`, `/show-activity`, `/show-tasks`, `/show-edits`,
+`/show-commands`, `/group-tools`, and `/autohide-tasks` are described with the features
+they control, on this page and in [the transcript](transcript.md).
 
 Popups (sessions, conversation tree, models, tools) use the terminal's default
 background and text with reverse-video selection, whatever `/theme` and `/syntax`
@@ -258,7 +301,7 @@ agent works bring their images the same way; side questions (`/btw`) send the
 path only. File names inside a fenced code block, such as pasted `ls` output,
 are not attached.
 
-The prompt itself stays text, so the path is what history, `/resend` and the
+The prompt itself stays text, so the path is what history, `/continue` and the
 session journal keep, and the file is read again each time the prompt is sent.
 Pasted images are kept for 30 days. Reading the clipboard over ssh would read the
 remote machine's, so `/paste-image` refuses there: copy the file across and name
@@ -281,6 +324,7 @@ it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Key | Action |
 | --- | --- |
 | Enter | Send using the active send mode, or accept a selected completion |
+| Ctrl+Enter | Interrupt the current turn and send the draft; send normally when idle |
 | Ctrl+/ | Browse contextual help |
 | Ctrl+S | Cycle steering → queue → interrupt for the next send only |
 | ↓ | Newline when on the last line with nothing to complete or recall (works in vi insert mode) |
@@ -293,11 +337,13 @@ it is open. Enter, the arrows, Ctrl+J, Ctrl+C, and Ctrl+D never change.
 | Ctrl+O | Show/hide the [activity panel](#activity-panel): thinking, tool calls, tasks and running commands (saves the default) |
 | Ctrl+T | Choose where thinking shows: `o` off, `a` activity panel, `b` scrollback (saves the default) |
 | Ctrl+Y | Copy the current draft to the system clipboard; with an empty editor, `/copy` chooses a response |
+| Ctrl+Q | Open or toggle [`/btw`](side-questions.md) side-question threads (`@side-threads`) |
+| Ctrl+\\ | Cycle to the next [`/btw`](side-questions.md#threads-in-a-drawer) thread in the drawer (`@next-side-thread`) |
 | Ctrl+G | Cycle where shell command output shows: off, live in the activity panel, also mirrored to scrollback (`/show-commands`, saves the default) |
 | Ctrl+V | Paste an image from the system clipboard (`/paste-image`): see [images in a prompt](#images-in-a-prompt) |
 | Ctrl+Z | Show/hide edit diffs in scrollback (`/show-edits`, saves the default) |
 | Ctrl+] | Group/ungroup runs of tool calls (`/group-tools`, saves the default) |
-| Ctrl+C | Discard input; cancels the running turn only when the prompt is empty |
+| Ctrl+C | Discard input (↑ brings it back); cancels the running turn only when the prompt is empty |
 | Ctrl+D | Exit on empty idle input (stopping a background session's host); cancel during generation |
 
 Terminal flow control is off while the prompt is active. There is no
@@ -336,7 +382,20 @@ word wider than the pane still has to split.
 The editor stays usable while the model works, including multiline input,
 history, slash completion, and `@` references. See
 [Sending while the agent is working](#sending-while-the-agent-is-working).
-Editor history is kept in memory only.
+
+Editor history is the prompts you sent in this session, plus anything you typed
+and did not send:
+
+- Ctrl+C keeps the text it discards as a history entry, so ↑ brings it back.
+- Editing a recalled prompt and then moving off it with ↑ or ↓ keeps the edit
+  as its own entry when you next send something or press Ctrl+C.
+- Unsent text is saved every 10 seconds, and when pcode exits, to
+  `~/.local/state/pcode/drafts/` (under `$XDG_STATE_HOME` if set). The next
+  session, in any directory, starts with the newest 50 of those in its
+  history; sending one, as it is or edited, deletes its file.
+
+Sent prompts are not carried over, and text you discard on purpose is saved
+like any other draft: delete its file if it held something sensitive.
 
 ## Activity panel
 
@@ -392,11 +451,12 @@ tool call works on gets its own row above the box, with the full width of the
 pane, so the status row stays short. While the call runs, its row spins in a
 muted shade with a round spinner, so it never reads as the status row's dotted
 one, which means the model is working. A glyph stands in for the call's verb:
-`$` runs a command, `⌕` searches, `✎` edits or writes a file, `⎘` reads one,
-and `⧖` waits on a job. A tool without one keeps its verb spelled out. Many
-fonts lack `⌕`, `⎘` and `⧖`, and the terminal borrows them from another font;
-if they look off in yours, `/config set tool_glyphs off` drops them and names
-the verb once the call settles. Shell calls keep `$`.
+`$` runs a command, `⌕` searches, `✎` edits or writes a file, and `⎘` reads
+one (or their Nerd Font equivalents when `glyphs` uses Nerd Fonts). A tool
+without one keeps its verb spelled out. Many fonts lack `⌕` and `⎘`, and the
+terminal borrows them from another font; if they look off in yours,
+`/config set tool_glyphs off` drops them and names the verb once the call
+settles. Shell calls keep `$`.
 
 Once a call finishes, its spinner turns into a light `√` (lighter than a
 finished task's `✔`, so the two never read alike) or `✗`, and the row stays
@@ -425,7 +485,7 @@ the row still says what the turn is doing. Each row holds what it says for a mom
 quick calls reads as progress rather than flicker. `◈` marks work pcode runs
 itself, such as compaction.
 The thought is the model's newest, kept until its answer starts streaming;
-that is the default `/show-thinking activity-panel` mode (see
+that is the `/show-thinking activity-panel` mode (see
 [thinking](transcript.md#thinking-activity-panel-or-scrollback)).
 
 ### Tasks
@@ -550,7 +610,9 @@ Ctrl+/ takes over Emacs's Ctrl+_ undo chord; Ctrl+X Ctrl+U still undoes.
 
 At the prompt the default keys are `s` send mode, `l` model, `n`/`p` more/less
 effort, `o` activity panel, `t` thinking, `g` command output, `^` previous
-session, and `y` copy the draft or choose a response. Custom bindings share the same
+session, `y` copy the draft or choose a response, `q` side-question threads,
+`\` next side-question thread, `v` paste an image, `z` edit diffs, and `]`
+group tool calls. Custom bindings share the same
 menu and prefix. Each popup lists its own in contextual help; see
 [Popup keys](#popup-keys).
 
@@ -622,22 +684,24 @@ even where no chord gets through.
 ## Newlines in tmux
 
 Inside tmux, Shift+Enter arriving as a plain Enter is almost always tmux, not
-the terminal. Two things have to be true, and `extended-keys on` alone gives you
-neither:
+the terminal. Two things have to be true:
 
 - tmux only asks the outer terminal for modified keys when its terminfo
   advertises `extkeys`; Ghostty's and kitty's do not, so declare it.
-- `extended-keys on` forwards those keys only to apps that opted into the
-  protocol themselves. pcode does not, so use `always`.
+- `extended-keys` must not be `off`. pcode opts into `modifyOtherKeys` while
+  editing inside tmux (and Kitty's keyboard protocol outside tmux), restoring
+  the previous mode afterward, so `extended-keys on` and `extended-keys always`
+  both work (`always` also forwards modified keys to apps that don't opt in).
 
 ```tmux
 set -as terminal-features ',xterm-ghostty:extkeys'
-set -g extended-keys always
+set -g extended-keys on
 set -g extended-keys-format csi-u
 ```
 
 Reload, then detach and reattach: tmux works out a client's features when it
-connects. Check with `cat -v`: Shift+Enter should print `^[[13;2u`. If Ctrl+J
+connects. To verify with `cat -v` (which does not opt in), temporarily set
+`extended-keys always`: Shift+Enter should print `^[[13;2u`. If Ctrl+J
 prints `^[[B` instead, a remapper (Karabiner, a Ghostty `keybind`) is turning it
 into ↓ before tmux sees it; ↓ still inserts a newline on the last line, so that
 is usually fine.
@@ -661,7 +725,9 @@ The working window is the same one compaction uses. pcode takes it from the
 serving provider when it can (Codex's models endpoint or Anthropic's Models
 API), otherwise from an exact provider/model match on
 [Models.dev](https://models.dev/). Codex never borrows ordinary OpenAI API
-limits, and custom proxies don't inherit direct-API limits. When separate input and
+limits, and a custom base URL doesn't inherit direct-API limits where the catalog
+names the provider's endpoint. Where it names none (Gemini, for one), the catalog
+entry for the provider and model is the default. When separate input and
 total-context limits are known, the smaller one is used. Public metadata is cached for 24 hours in
 `$XDG_CACHE_HOME/pcode/model-context-v1.json` (default `~/.cache/pcode/`).
 Unknown limits show `?`, so a first run offline can show `?`, and Codex needs a
@@ -701,15 +767,18 @@ Input sent while idle starts a normal turn in every mode.
 
 Slash commands run separately from the model, so help, inspection, theme,
 context, and effort commands work while it's busy. `/model` and `/effort` also work and
-apply from the running turn's next request. Bare `/new`, `/resume`, `/login`, and `/logout` need
-an idle conversation: cancel or wait, then retry.
+apply from the running turn's next request. So does an account switched with `/login`:
+Codex from the next request, `claude:` models within about 30 seconds. A turn sent to
+another model with `$provider:model` keeps the login it started with.
+Bare `/new`, `/delete`, `/resume`, and `/logout` need an idle conversation: cancel or wait, then retry.
 
 Cancelling:
 
 - Ctrl+D cancels the current turn and clears queued messages, keeping your
   unsent draft and cursor.
 - Ctrl+C discards the draft first, so cancelling with it takes a second press
-  when the prompt has text. It also clears queued messages.
+  when the prompt has text. It also clears queued messages. The discarded
+  draft stays in the editor history.
 - A failed turn clears queued messages too, rather than running more requests.
   Queued slash commands are kept.
 - The queue lives in memory until each message is sent.
@@ -768,14 +837,23 @@ these actions alongside the current popup's navigation and editing keys:
 | `/tools` | `f` search · `x` failures only · `e` edits only · `t` tool filter · `y` copy command · `o` copy output |
 | `/diffs` | `f` search the focused pane · `s` / `r` next / previous match · `v` next view · `n` note · `a` mark reviewed · `e` open in editor · `g` refresh |
 | `/resume` | `f` search · `r` prompts only · `g` all workspaces · `x` delete (twice) |
-| `/attach` | `f` search · `n` new session · `x` stop (twice) |
+| `/attach` | `n` new session · `x` stop (twice; Delete too, with the search empty) |
 | `/jobs` | `w` watch in the preview · `k` stop |
-| `/links` | `f` search · `t` show/hide tool links |
+| `/links` | `t` show/hide tool links |
 | `/tree` | `y` copy the selection, or pick a quote or code block from a response |
-| `/agents` | `t` thinking |
+| `/agents` | `t` thinking · `a` answer the worker's question · `m` message the worker · `r` show its report |
 
 With an explicitly configured `key_prefix ctrl+b`, press Ctrl+B then the letter
 instead: Ctrl+B `y` copies.
+
+In the model picker, Esc clears the filter first, as in the other lists with a
+search line, and Ctrl+L, the key that opened it, closes it straight away.
+
+Where Ghostty Smooth draws `/model`, `/links` and `/attach` as native lists
+(`popup_view overlay`), their shortcuts are Cmd and the letter instead (Cmd+N
+starts a new session from `/attach`), and Cmd+W closes the list. Cmd+X in
+`/attach` stops the selected session (twice) rather than cutting text from the
+search field.
 
 Selected rows and scrollbars follow the active theme and syntax colors, like
 completion menus; popup bodies keep the terminal's default background. With
@@ -823,6 +901,8 @@ press **Ctrl+Q** to hand the mouse to the terminal until you press it again
 scroll, in the same colors as scrollback, with notes you can send back to the
 agent. It needs a git repository; outside one it says so and points to
 `/tools edits`, which shows each file tool's edit with the call that made it.
+
+![The /diffs browser with an inline review note](assets/screenshots/diffs.svg)
 
 The net change it shows depends on the checkout:
 

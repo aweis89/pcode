@@ -27,7 +27,7 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
     modal_input.close.side_effect = lambda: events.append("close input")
     factory = Mock(return_value=modal_input)
     monkeypatch.setattr("pcode.app.StartupInput", factory)
-    session = SimpleNamespace(app=SimpleNamespace(input=editor_input))
+    session = SimpleNamespace(app=SimpleNamespace(input=editor_input, output=None))
 
     async def run():
         lock = asyncio.Lock()
@@ -52,11 +52,11 @@ def test_popup_restores_transcript_after_terminal_release(monkeypatch, outcome, 
 
         monkeypatch.setattr("pcode.app.suspended_editor", suspend)
         monkeypatch.setattr(app.transcript, "regenerate", regenerate)
-        output = SimpleNamespace(lock=lock, flush=flush)
+        output = SimpleNamespace(lock=lock, flush=flush, release_screen=lambda: None)
 
         async def popup():
             async with app.popup(output, session) as inp:
-                assert inp is (modal_input if separate_input else editor_input)
+                assert inp.input is (modal_input if separate_input else editor_input)
                 assert lock.locked()
                 events.append("dialog")
                 if outcome:
@@ -142,7 +142,7 @@ def test_opening_popup_discards_pending_popups_only(monkeypatch, tmp_path, first
         monkeypatch.setattr(app, "_initialize_runtime", initialize)
         monkeypatch.setattr(app.preview, "reply", reply)
         monkeypatch.setattr("pcode.models.active_providers", lambda _: {"anthropic"})
-        monkeypatch.setattr("pcode.model_ui.ModelPicker.run", picker)
+        monkeypatch.setattr("pcode.pick_ui.PickList.run", picker)
         monkeypatch.setattr(
             "pcode.session_ui.session_info_dialog",
             lambda *args, **kwargs: SimpleNamespace(run_async=dialog),

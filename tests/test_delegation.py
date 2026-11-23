@@ -6,10 +6,11 @@ from copy import deepcopy
 import pytest
 from pydantic_ai import Agent, FunctionToolset
 from pydantic_ai.exceptions import UnexpectedModelBehavior
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
+from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness.sub_agents import SubAgent, SubAgents
+from retry_parts import is_retry
 
 from pcode.agent import create_coder
 from pcode.claude_sdk import ClaudeConnectionError
@@ -88,7 +89,7 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
         parents = [e for e in events if isinstance(e, ToolSummary) and e.name == "delegate_task"]
         assert len(parents) == 2
         assert all(e.outcome == "ok" and not e.failed and "Completed" in e.detail for e in parents)
-        assert all(e.result == "PRIVATE CHILD ANSWER" for e in parents)
+        assert all(e.result.endswith("]\nPRIVATE CHILD ANSWER") for e in parents)
         assert {
             e.activity for e in events if isinstance(e, ToolStarted) and e.name == "delegate_task"
         } >= {"Waiting for model", "Responding", "Working"}
@@ -112,9 +113,7 @@ def worker_runtime(tmp_path, child):
 
     async def model(messages, info):
         if "delegate_task" in {t.name for t in info.function_tools}:
-            if returns(messages) or any(
-                isinstance(p, RetryPromptPart) for m in messages for p in m.parts
-            ):
+            if returns(messages) or any(is_retry(p) for m in messages for p in m.parts):
                 yield "Parent answer"
             else:
                 yield {0: delegate(0, "worker"), 1: delegate(1, "worker")}
@@ -158,7 +157,7 @@ def test_a_dropped_child_request_is_resent_without_rerunning_its_tools(tmp_path,
         events = [e async for e in worker_runtime(tmp_path, child).stream("Explore")]
         ended = delegations(events)
         assert ended["parent-0"].outcome == "ok"
-        assert ended["parent-0"].result == "Child answer"
+        assert ended["parent-0"].result == "[worker w1]\nChild answer"
         reads = [e for e in events if isinstance(e, ToolSummary) and e.name == "read_file"]
         assert len(reads) == 1
         assert "Reconnecting 1/3" in {

@@ -16,7 +16,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai_harness.subagents import SubAgents
+from pydantic_ai_harness.sub_agents import SubAgents
 
 from pcode.agent import create_coder
 from pcode.cache_settings import ANTHROPIC_CACHE_SETTINGS, ProviderCacheSettings
@@ -199,7 +199,7 @@ def test_child_tokens_are_counted_once(tmp_path):
     """A per-delegation budget isolates request counts, not tokens.
 
     Child tokens still arrive in the parent's `result.usage`, so adding
-    `DelegationEndEvent.usage` on top would double every delegated token.
+    `DelegationFinishedEvent.usage` on top would double every delegated token.
     """
     from pcode.live import AgentRuntime
 

@@ -613,6 +613,53 @@ def test_claude_code_web_results_are_labelled_and_readable():
     assert native_result_projection(failure) == "Fetch failed\nstatus 503"
 
 
+def test_gemini_native_search_and_fetch_are_readable():
+    # Shapes as Pydantic AI records Gemini's Google Search and URL context.
+    queries = {"queries": ["first query", "second query"]}
+    assert target("web_search", queries) == "first query, second query"
+    assert target("web_fetch", {"urls": ["https://a", "https://b"]}) == "https://a (+1 more)"
+    assert target("web_fetch", {"urls": ["https://a"]}) == "https://a"
+
+    sources = [{"domain": None, "title": "a.com", "uri": "https://redirect/a"}]
+    assert native_result_detail("web_search", queries, sources, "success") == (
+        "first query, second query → 1 result",
+        False,
+    )
+    assert native_result_projection(sources) == "1 result\n\na.com\nhttps://redirect/a"
+
+    widget = {"search_suggestions": "<style>.chip {}</style>"}
+    assert native_result_detail("web_search", queries, widget, "success") == (
+        "first query, second query",
+        False,
+    )
+    shown = native_result_projection({**widget, "sources": sources})
+    assert "<style>" not in shown and shown.startswith("1 result\n\na.com")
+    assert native_result_projection(widget).startswith("No sources listed.")
+    # Sources with no widget beside them still count.
+    assert native_result_detail("web_search", queries, {"sources": sources}, "success")[0] == (
+        "first query, second query → 1 result"
+    )
+    unknown = {"url_retrieval_status": "URL_RETRIEVAL_STATUS_UNSPECIFIED"}  # No url either.
+    assert native_result_detail("web_fetch", {}, [unknown], "success") == (
+        "url unavailable → 1 page read",
+        False,
+    )
+
+    ok = {"retrieved_url": "https://a", "url_retrieval_status": "URL_RETRIEVAL_STATUS_SUCCESS"}
+    unsure = {"retrieved_url": "https://b"}  # Gemini sometimes leaves the status out.
+    bad = {"retrieved_url": "https://c", "url_retrieval_status": "URL_RETRIEVAL_STATUS_ERROR"}
+    urls = {"urls": ["https://a", "https://b", "https://c"]}
+    for content in ({"url_metadata": [ok, unsure, bad]}, [ok, unsure, bad]):
+        assert native_result_detail("web_fetch", urls, content, "success") == (
+            "https://a (+2 more) → 2 pages read · 1 failed",
+            False,
+        )
+    assert native_result_detail("web_fetch", urls, [bad], "success")[1] is True
+    assert native_result_projection({"url_metadata": [ok, bad]}) == (
+        "2 pages (Gemini reads them itself)\n\nhttps://a\n\nhttps://c\nStatus: error"
+    )
+
+
 def test_tool_search_shows_its_queries():
     assert label("search_tools") == "Find tools"
     assert target("search_tools", {"queries": ["issues", "pull requests"]}) == (
@@ -628,7 +675,18 @@ def test_session_search_shows_its_query_scope_and_paging():
         target("search_sessions", {"query": "x", "scope": "all", "after": "cursor"})
         == '"x" · scope all · next page'
     )
-    assert target("search_sessions", {}) == "query unavailable"
+    assert target("search_sessions", {}) == "recent"
+    assert target("search_sessions", {"queries": []}) == "recent"
+    assert target("search_sessions", {"queries": [""]}) == "query unavailable"
+    assert target("search_sessions", {"queries": [123]}) == "query unavailable"
+    assert target("search_sessions", {"since": "2026-11-19"}) == "recent · since 2026-11-19"
+    assert target("search_sessions", {"until": " 2026-11-20 "}) == "recent · until 2026-11-20"
+    assert (
+        target(
+            "search_sessions", {"queries": ["a", "b"], "since": "2026-11-19", "until": "2026-11-20"}
+        )
+        == '"a", "b" · since 2026-11-19 · until 2026-11-20'
+    )
     assert target("search_sessions", {"queries": ["a", "b"]}) == '"a", "b"'
     assert target("search_sessions", {"queries": "a"}) == "query unavailable"
 
@@ -774,6 +832,13 @@ def test_spill_handles_resolve_to_the_call_that_spilled(handle, call_id):
             False,
         ),
         (
+            # Harness 0.71's cap names the limit and how to continue.
+            "[handle 'r/c.0': 9 matching line(s); showing 2, output capped at 50,000 chars;"
+            " line 3 continues at read_tool_result(unit='bytes', offset=9)]\nx",
+            "2 of 9 lines · output capped",
+            False,
+        ),
+        (
             "[No stored tool result for handle 'r/c.0'. Use the exact handle]",
             "No stored result",
             True,
@@ -784,4 +849,28 @@ def test_stored_result_read_summaries(content, expected, failed):
     assert result_detail("read_tool_result", {"handle": "r/c.0"}, content, "success", "grep") == (
         f"grep output · lines 1–200 → {expected}",
         failed,
+    )
+
+
+def test_a_byte_read_names_its_range():
+    args = {"handle": "r/c.0", "unit": "bytes", "offset": 100, "limit": 5000}
+    content = "[handle 'r/c.0': bytes 100-5100 of 120006 (end exclusive)]\nxyz"
+    assert result_detail("read_tool_result", args, content, "success", "shell") == (
+        "shell output · bytes 101–5100 → 5,000 of 120,006 bytes",
+        False,
+    )
+
+
+def test_a_byte_read_shows_the_window_harness_clamps_it_to():
+    args = {"handle": "r/c.0", "unit": "bytes", "limit": 200_000}
+    assert target("read_tool_result", args) == "stored output · bytes 1–50000"
+
+
+def test_a_stored_result_grep_names_its_pattern_and_matches():
+    args = {"handle": "r/c.0", "pattern": "FAIL", "max_matches": 20}
+    content = "[handle 'r/c.0': 42 matching line(s); showing 20]\n3:FAIL x"
+    assert target("grep_tool_result", args, "shell") == '"FAIL" in shell output'
+    assert result_detail("grep_tool_result", args, content, "success", "shell") == (
+        '"FAIL" in shell output → 20 of 42 matches',
+        False,
     )

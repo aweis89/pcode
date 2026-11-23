@@ -57,7 +57,7 @@ commit) runs selected tools in the background:
   it into another model turn.
 
 That covers detaching, delivery, run end and cancellation. The task id is the tool
-call id, and Harness emits `DelegationEndEvent` through the tool's `RunContext`,
+call id, and Harness emits `DelegationFinishedEvent` through the tool's `RunContext`,
 which stamps that same id, so the end of a background child lands on the right
 delegate row. `ctx.emit` writes into the run's event buffer, which is alive for as
 long as the task group is.
@@ -134,9 +134,9 @@ to the CLI, which is close enough. `JobShellToolset._wait_seconds` takes
 - `for_run` already copies the capability per run, so this state is per run.
 
 **UI.** `live.py` settles a delegate row on its `FunctionToolResultEvent`, and a
-result with no `DelegationEndEvent` currently reads as "Not started". A background
+result with no `DelegationFinishedEvent` currently reads as "Not started". A background
 result leaves the row running, with its child activity still arriving, and the
-later `DelegationEndEvent` for that call id settles it with the usual
+later `DelegationFinishedEvent` for that call id settles it with the usual
 `delegation_detail`. `Workers` does the same (it marks a worker settled on the
 delegate's `ToolSummary`). While a run waits at its end, the status line reads
 "Waiting for workers", not "Waiting for model". `Workers.end_turn()` needs no
@@ -183,7 +183,7 @@ Until then, pin the private behavior with tests so a Harness upgrade fails loudl
   fails. Harness's delegation already turns child failures into steering text or
   `ModelRetry` (which upstream keeps), so this should rarely bite; confirm with a
   crashing child.
-- **Resume.** A pcode crash or `/resend` mid-delegation loses the child, as today,
+- **Resume.** A pcode crash or `/continue` mid-delegation loses the child, as today,
   but the history now holds a "result will arrive automatically" message that never
   gets one. A resumed session may need a note saying background work from the
   previous run was lost.

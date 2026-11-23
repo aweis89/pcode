@@ -49,15 +49,16 @@ Use a subscription you already have, or any provider API key:
 
 ```sh
 pcode -m claude:claude-sonnet-5          # Claude subscription, via Claude Code's own login
+pcode -m antigravity:gemini-4-neon       # Antigravity subscription, via the `agy` CLI
 pcode -m openai-codex:gpt-5.6-luna       # ChatGPT subscription
 pcode -m anthropic:claude-sonnet-5       # with ANTHROPIC_API_KEY set; other providers work the same way
 ```
 
-If you're not signed in yet, run `/login claude` or `/login openai-codex`
-inside pcode; both sign in through the provider's own flow in your browser.
-Ctrl+L (or `/model`) opens a model picker at any time, and the model you pick
-is saved, so later a bare `pcode` is enough. See
-[providers and models](providers.md) for every provider.
+If you're not signed in yet, run `/login claude`, `/login antigravity`
+(requires the `agy` CLI), or `/login openai-codex` inside pcode; each signs in
+through the provider's own flow in your browser. Ctrl+L (or `/model`) opens a
+model picker at any time, and the model you pick is saved, so later a bare
+`pcode` is enough. See [providers and models](providers.md) for every provider.
 
 ## Your first session
 
@@ -77,7 +78,9 @@ running code the repository ships (its extensions and setup scripts); see
 
 !!! warning "The agent acts with your permissions"
     There is no approval prompt: the agent edits files and runs commands as
-    you. See [tool permissions](tools.md#tool-permissions).
+    you. Turn on the opt-in OS-level sandbox anytime with
+    `/extensions on sandbox` ([write policy and shell sandbox](tools.md#write-policy-and-shell-sandbox-opt-in)),
+    and see [tool permissions](tools.md#tool-permissions).
 
 A few things worth knowing on day one:
 
@@ -87,8 +90,15 @@ A few things worth knowing on day one:
   while it runs, then also kept in scrollback, then back to summaries. See
   [scrollback and transparency](guide/scrollback.md).
 - **`/tools`** shows every call the agent made, with its full output.
+- **`/diffs`** reviews the session's git diff and lets you leave inline notes
+  that go straight back into your prompt.
 - **`/btw QUESTION`** asks about the running turn without interrupting it.
+- **`pcode --theme-preview`** renders an offline sample transcript and style
+  gallery so you can pick a theme or check colors without calling a model.
 - **`/help`** lists every command.
+
+For Shift+Enter newlines, tmux configuration, and 24-bit color (which the
+default `frame_style shaded` relies on), see [terminal setup](terminal.md).
 
 Conversations save automatically once you send the first prompt.
 `pcode --continue` resumes the latest one in this directory, and `/resume`
@@ -140,14 +150,17 @@ echo 'eval "$(pcode --completions bash)"' >> ~/.bashrc
 With [uv](https://docs.astral.sh/uv/), from a checkout:
 
 ```sh
-uv run pcode -m openai-codex:gpt-5.6-luna      # this checkout only
-uv tool install --python 3.15 --editable '.[claude]'         # a bare `pcode` everywhere (or `make install`)
+make install                                           # lockfile-constrained editable install as `pcode` everywhere
+uv run pcode -m openai-codex:gpt-5.6-luna              # or run directly from this checkout
 ```
 
-The `claude` extra adds [`claude:` models](providers.md#claude-code-provider)
-and bundles the Claude Code CLI (over 200 MB installed). Leave it out with
-`uv tool install --python 3.15 --editable .` or `make install EXTRAS=` if you don't need
-them. Install `shfmt` yourself for formatted commands in `/tools`; without it,
-pcode uses a simpler built-in formatter. Likewise, install
+`make install` constrains dependencies to `uv.lock`, whereas a bare
+`uv tool install --python 3.15 --editable '.[claude]'` resolves dependencies
+afresh from PyPI. The `claude` extra adds
+[`claude:` models](providers.md#claude-code-provider) and bundles the Claude
+Code CLI (over 200 MB installed). Leave it out with `make install EXTRAS=` (or
+`uv tool install --python 3.15 --editable .`) if you don't need them. Install
+`shfmt` yourself for formatted commands in `/tools`; without it, pcode uses a
+simpler built-in formatter. Likewise, install
 [delta](https://dandavison.github.io/delta/) for
 [richer diffs](transcript.md#diffs-with-delta); without it, diffs use Rich.

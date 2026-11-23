@@ -1,4 +1,4 @@
-"""The /btw thread view: a thread drawn in the conversation's place, and where Enter sends."""
+"""The /btw thread view: a thread in the drawer, and where Enter sends."""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,28 +9,36 @@ import pytest
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
-from rich.text import Text
 
 from pcode.app import PreviewApp
 from pcode.aside import Aside, SideReply
 from pcode.btw_view import (
     ThreadView,
+    ThreadWriter,
     close,
     current,
-    entry,
     next_thread,
     open_thread,
     position,
     reopen_thread,
 )
-from pcode.preferences import save_preferences
 from pcode.ui import Activity, CursorSafeOutput, Handoff, TerminalOutput, Transcript
+
+HOST = "0123abcd"
+
+
+# Kept before the autouse stand-in replaces it, for the test of the real one.
+REAL_DRAWER_HOST = PreviewApp.drawer_host
 
 
 @pytest.fixture(autouse=True)
-def swap_view():
-    """These tests exercise the swap (`btw_view swap`)."""
-    save_preferences(btw_view="swap")
+def drawer(monkeypatch):
+    """A drawer to show threads in (`PreviewApp.drawer_host`): thread mode."""
+    monkeypatch.setattr(PreviewApp, "drawer_host", lambda self: HOST)
+
+
+def no_drawer(monkeypatch) -> None:
+    monkeypatch.setattr(PreviewApp, "drawer_host", lambda self: None)
 
 
 def answered(question: str, answer: str, thread: str = "") -> Aside:
@@ -61,7 +69,7 @@ def seeded_app(*, terminal: bool = True) -> tuple[PreviewApp, list[tuple[str, st
 class Screen:
     """A transcript writing to a terminal stand-in, read one flush at a time."""
 
-    def __init__(self, monkeypatch, *, paced: bool = False):
+    def __init__(self, monkeypatch):
         activity = Activity()
         console = Console(file=StringIO(), width=80, color_system=None, force_terminal=True)
         self.transcript = Transcript(console, activity=activity)
@@ -71,7 +79,6 @@ class Screen:
             console, SimpleNamespace(output=CursorSafeOutput(terminal), invalidate=lambda: None)
         )
         self.transcript.output = self.output
-        self.output.paced = paced
         self.activity = activity
         self._read = 0
 
@@ -94,295 +101,14 @@ class Screen:
         return new
 
 
-def test_a_view_holds_the_conversation_until_it_closes(monkeypatch):
-    screen = Screen(monkeypatch)
-    transcript, output = screen.transcript, screen.output
-    transcript.message("BEFORE")
-    assert "BEFORE" in screen.flush()
-    transcript.note("NOTE_QUEUED")
-    output.open_view(lambda: [entry(Text("THREAD"))])
-    shown = screen.flush()
-    assert "THREAD" in shown and "BEFORE" not in shown and "NOTE_QUEUED" not in shown
-    # A running turn keeps writing: nothing reaches the screen.
-    transcript.message("DURING")
-    assert screen.flush() == ""
-    output.view_print([entry(Text("MORE"))])
-    assert "MORE" in screen.flush()
-    # A resize (or theme, or menu) rebuild redraws the view, not the conversation.
-    output.regenerate(transcript.replay)
-    shown = screen.flush()
-    assert "THREAD" in shown and "BEFORE" not in shown and "DURING" not in shown
-    output.close_view(transcript.replay)
-    back = screen.flush()
-    assert "THREAD" not in back and "MORE" not in back
-    assert back.index("BEFORE") < back.index("DURING")
-    # The note never reached the screen, so it comes back with the conversation.
-    assert back.count("NOTE_QUEUED") == 1
-    output.view_print([entry(Text("LATE"))])  # Closed: nowhere to write it.
-    assert screen.flush() == ""
-
-
-def test_queued_rows_and_their_notes_come_back_once(monkeypatch):
-    screen = Screen(monkeypatch, paced=True)
-    transcript, output = screen.transcript, screen.output
-    transcript.message("\n\n".join(f"ROW_{n}" for n in range(30)))
-    transcript.note("NOTE_IN_ROWS")
-    asyncio.run(output.flush())  # A paced frame: most rows still queued.
-    assert output.rows
-    output.open_view(lambda: [entry(Text("THREAD"))])
-    assert "NOTE_IN_ROWS" not in screen.flush()
-    output.close_view(transcript.replay)
-    back = screen.flush()
-    assert "ROW_29" in back and back.count("NOTE_IN_ROWS") == 1
-
-
-def test_notes_while_a_thread_is_shown_flash_instead(monkeypatch):
-    screen = Screen(monkeypatch)
-    screen.output.open_view(lambda: [])
-    screen.flush()
-    screen.transcript.note("Copied reply.")
-    assert screen.activity.notice == "Copied reply."
-    # A warning flashes too, and is the conversation's once it is back.
-    screen.transcript.warning("A turn is running.\nMore detail.")
-    assert screen.activity.notice == "Warning: A turn is running."
-    screen.output.close_view(screen.transcript.replay)
-    back = screen.flush()
-    assert "Copied reply." not in back and "A turn is running" in back
-    # Redrawing the conversation never flashes its old warnings again.
-    screen.activity.notice = ""
-    screen.output.regenerate(screen.transcript.replay)
-    screen.flush()
-    assert screen.activity.notice == ""
-
-
-def test_the_conversations_newest_rows_stay_in_reach_under_the_view(monkeypatch):
-    from pcode.ui import ESCAPES
-
-    def plain(rows):
-        return [ESCAPES.sub("", row).strip() for row in rows]
-
-    screen = Screen(monkeypatch)
-    transcript, output = screen.transcript, screen.output
-    transcript.message("OLD")
-    screen.flush()
-    assert output.held_tail(80, 3) == []  # Nothing hidden, nothing to show.
-    output.open_view(lambda: [])
-    screen.flush()
-    for n in range(4):
-        transcript.message(f"HELD_{n}")
-    # Blank separators never take a row; the newest three do.
-    assert plain(output.held_tail(80, 3)) == ["HELD_1", "HELD_2", "HELD_3"]
-    # Text still streaming, not yet a block, is the newest of all.
-    output.delta("half a sente")
-    assert plain(output.held_tail(80, 3)) == ["HELD_2", "HELD_3", "half a sente"]
-    # A long line still streaming wraps, and its newest words are the ones shown.
-    output.delta(" ".join(f"word{n}" for n in range(60)))
-    newest = plain(output.held_tail(40, 3))
-    assert len(newest) == 3 and newest[-1].endswith("word59")
-    assert all(len(row) <= 40 for row in newest)
-    output.close_view(transcript.replay)
-    assert output.held_tail(80, 3) == []
-
-
-def test_reopening_shows_only_what_came_since(monkeypatch):
-    from pcode.ui import ESCAPES
-
-    screen = Screen(monkeypatch)
-    transcript, output = screen.transcript, screen.output
-    output.open_view(lambda: [])
-    screen.flush()
-    transcript.message("FIRST_VISIT")
-    assert "FIRST_VISIT" in ESCAPES.sub("", "".join(output.held_tail(80, 3)))
-    output.close_view(transcript.replay)
-    screen.flush()
-    output.open_view(lambda: [])
-    screen.flush()
-    # The same count of held writes as last time, but none of them.
-    transcript.message("SECOND_VISIT")
-    shown = ESCAPES.sub("", "".join(output.held_tail(80, 3)))
-    assert "SECOND_VISIT" in shown and "FIRST_VISIT" not in shown
-
-
-def test_the_divider_points_both_ways_and_names_the_keys(monkeypatch):
-    from prompt_toolkit.formatted_text.utils import fragment_list_to_text
-
-    from pcode.ui import PromptLayout
-
-    screen = Screen(monkeypatch)
-    aside = answered("why is the parser LL(1)?", "Because.")
-    screen.activity.asides = [aside]
-    layout = SimpleNamespace(
-        transcript=screen.transcript,
-        activity=screen.activity,
-        render_cache=None,
-        size=lambda: Size(rows=40, columns=100),
-    )
-    unbound = set()
-    layout.key_name = lambda key: "unbound" if key in unbound else f"Ctrl+{key.upper()}"
-    rows = PromptLayout.conversation_rows.__wrapped__
-    assert rows(layout) == []  # The conversation is on screen.
-    open_thread(screen.activity, aside.thread)
-    screen.output.open_view(lambda: [])
-    assert rows(layout) == []  # Not until the thread is drawn.
-    screen.flush()
-    screen.transcript.message("A link: [docs](https://example.com/docs)")
-    divider, *tail = (fragment_list_to_text(row) for row in rows(layout))
-    assert "↑ btw: why is the parser LL(1)?" in divider and "↓ conversation" in divider
-    # One thread: nowhere to go but back.
-    assert divider.endswith("Ctrl+Q or Esc back ─") and len(divider) == 99
-    older = answered("an older one?", "Yes.")
-    screen.activity.asides.insert(0, older)
-    divider = fragment_list_to_text(rows(layout)[0])
-    # Too narrow for the whole wording: said more briefly rather than dropped.
-    assert divider.endswith("Ctrl+Q back · Ctrl+\\ next (1/2) ─") and len(divider) == 99
-    layout.size = lambda: Size(rows=40, columns=140)
-    divider = fragment_list_to_text(rows(layout)[0])
-    assert divider.endswith("Ctrl+Q or Esc back · Ctrl+\\ next thread (1/2) ─")
-    # A key /unbind took away is not offered.
-    unbound.update({"q", "\\"})
-    divider = fragment_list_to_text(rows(layout)[0])
-    assert divider.endswith("─ Esc back ─") and "Ctrl+" not in divider
-    # A hyperlink's escape never reaches the screen as text.
-    assert [row.rstrip() for row in tail] == ["  A link: docs"]
-
-
-def test_opening_and_closing_before_a_frame_leaves_the_conversation(monkeypatch):
-    screen = Screen(monkeypatch)
-    transcript, output = screen.transcript, screen.output
-    transcript.message("KEPT")
-    transcript.note("NOTE")
-    output.open_view(lambda: [entry(Text("THREAD"))])
-    output.close_view(transcript.replay)
-    back = screen.flush()
-    assert "KEPT" in back and back.count("NOTE") == 1 and "THREAD" not in back
-
-
-def test_a_rebuild_asked_for_during_the_handoff_still_draws_the_view(monkeypatch):
-    screen = Screen(monkeypatch, paced=True)
-    transcript, output = screen.transcript, screen.output
-    transcript.message("CONVERSATION")
-    transcript.note("NOTE_Y")
-    requested = []
-
-    async def handoff(app, **kwargs):
-        # A resize settles while the handoff waits for its cursor report.
-        if not requested:
-            requested.append(True)
-            output.open_view(lambda: [entry(Text("THREAD"))])
-        yield Handoff(11)
-
-    monkeypatch.setattr("pcode.ui.suspended_editor", asynccontextmanager(handoff))
-    shown = screen.flush()
-    assert "THREAD" in shown
-    output.close_view(transcript.replay)
-    back = screen.flush()
-    assert "CONVERSATION" in back and back.count("NOTE_Y") + shown.count("NOTE_Y") == 1
-
-
-def test_the_thread_streams_in_block_by_block_and_closes_to_the_conversation(monkeypatch):
-    screen = Screen(monkeypatch)
-    transcript, activity = screen.transcript, screen.activity
-    transcript.message("CONVERSATION")
-    screen.flush()
-    aside = Aside(question="why?", activity="")
-    activity.asides = [aside]
-    view = ThreadView(activity, transcript)
-    seen = []
-    view.on_read = seen.append
-    open_thread(activity, aside.thread)
-    view.sync()
-    shown = screen.flush()
-    assert "why?" in shown and "Esc back to the conversation" in shown
-    assert "CONVERSATION" not in shown
-    # Half a paragraph waits; a finished one lands, as the conversation's do.
-    aside.answer = "First paragraph"
-    view.sync()
-    assert screen.flush() == ""
-    aside.answer = "First paragraph.\n\nSecond"
-    view.sync()
-    assert "First paragraph." in (written := screen.flush()) and "Second" not in written
-    # Half an indent is not yet a blank line: the code block keeps it.
-    aside.answer = "First paragraph.\n\nSecond paragraph.\n\n  "
-    view.sync()
-    assert "Second paragraph." in screen.flush()
-    aside.answer = "First paragraph.\n\nSecond paragraph.\n\n    INDENTED_CODE\n"
-    aside.settle("answered")
-    view.sync()
-    code = next(line for line in screen.flush().splitlines() if "INDENTED_CODE" in line)
-    assert code.startswith(" ")  # A code block, padded; a paragraph would start flush.
-    assert seen == [[aside.id]] and aside.read
-    view.sync()
-    assert screen.flush() == "" and seen == [[aside.id]]
-    # A follow-up comes in below.
-    follow = Aside(question="and then?", answer="Then this.", activity="", thread=aside.thread)
-    follow.settle("answered")
-    activity.asides.append(follow)
-    view.sync()
-    assert "and then?" in (written := screen.flush()) and "Then this." in written
-    # Text already written that changes is drawn again from the top.
-    follow.answer = "Something else."
-    view.sync()
-    redrawn = screen.flush()
-    assert "why?" in redrawn and "Something else." in redrawn and "Then this." not in redrawn
-    close(activity)
-    view.sync()
-    back = screen.flush()
-    assert "CONVERSATION" in back and "why?" not in back
-
-
-def test_the_screen_follows_the_thread_on_activity_whatever_left_it(monkeypatch):
-    screen = Screen(monkeypatch)
-    transcript, activity, output = screen.transcript, screen.activity, screen.output
-    transcript.message("CONVERSATION")
-    screen.flush()
-    aside = answered("why?", "Because.")
-    activity.asides = [aside]
-    view = ThreadView(activity, transcript)
-    # A view left open with no thread to show gives the screen back.
-    output.open_view(lambda: [entry(Text("STRAY"))])
-    screen.flush()
-    view.sync()
-    assert output.view is None and "CONVERSATION" in screen.flush()
-    # A thread shown on an output that has lost its view is drawn again.
-    open_thread(activity, aside.thread)
-    view.sync()
-    assert "Because." in screen.flush()
-    output.close_view(transcript.replay)
-    screen.flush()
-    view.sync()
-    assert output.view == view.replay and "Because." in screen.flush()
-
-
 def test_an_error_and_an_empty_answer_say_so():
-    activity = Activity()
-    console = Console(file=StringIO(), width=80, color_system=None, force_terminal=True)
-    view = ThreadView(activity, Transcript(console, activity=activity))
     failed = Aside(question="why?", activity="")
     failed.settle("failed", error="no network")
     empty = Aside(question="how?", activity="", thread=failed.thread)
     empty.settle("cancelled")
-    activity.asides = [failed, empty]
-    open_thread(activity, failed.thread)
-    text = " ".join(
-        str(getattr(obj, "plain", obj)) for objects, _, _ in view.replay() for obj in objects
-    )
+    entries, _ = ThreadWriter().entries([failed, empty], "monokai")
+    text = " ".join(str(getattr(obj, "plain", obj)) for objects, _, _ in entries for obj in objects)
     assert "failed: no network" in text and "(cancelled; no answer)" in text
-
-
-def test_the_heading_lists_ctrl_q_and_ctrl_backslash_once_there_are_two_threads():
-    activity = Activity()
-    console = Console(file=StringIO(), width=200, color_system=None, force_terminal=True)
-    view = ThreadView(activity, Transcript(console, activity=activity))
-    first, second = answered("first?", "One."), answered("second?", "Two.")
-
-    def keys() -> str:
-        return view.replay()[1][0][0].plain
-
-    activity.asides = [first]
-    open_thread(activity, first.thread)
-    assert "Ctrl+Q or Esc back to the conversation" in keys() and "Ctrl+\\" not in keys()
-    activity.asides = [first, second]
-    assert "Ctrl+Q or Esc back to the conversation · Ctrl+\\ next thread ·" in keys()
 
 
 def test_threads_cycle_newest_first_and_wrap():
@@ -420,12 +146,12 @@ def test_bare_btw_shows_a_lone_thread_at_once():
 def stub_popup(monkeypatch, app) -> None:
     class Popup:
         async def __aenter__(self):
-            return None
+            return SimpleNamespace(input=None, output=None)
 
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(app, "popup", lambda output, session: Popup())
+    monkeypatch.setattr(app, "popup", lambda output, session, **_: Popup())
     app.prompt_session = SimpleNamespace(
         app=SimpleNamespace(output=None, style=None),
         default_buffer=SimpleNamespace(text=""),
@@ -485,7 +211,7 @@ def test_an_answer_that_opens_by_itself_never_takes_a_thread_or_a_draft():
     assert not app.auto_open_asides()
     asyncio.run(app.read_asides())
     assert app.activity.btw_thread == first.thread
-    # Mid-sentence to the conversation, the swap would send it to the thread.
+    # Mid-sentence to the conversation, opening a thread would send it there.
     close(app.activity)
     app.prompt_session = SimpleNamespace(default_buffer=SimpleNamespace(text="half a messa"))
     assert not app.auto_open_asides()
@@ -522,7 +248,7 @@ def test_ctrl_q_toggles_and_ctrl_backslash_moves_between_threads():
     assert app.activity.btw_thread is None
 
 
-def test_the_editor_replies_to_the_thread_on_screen():
+def test_the_editor_replies_to_the_open_thread():
     app, asked = seeded_app()
     second = app.controller.asides.items[-1]
     # With the conversation shown, the editor is the conversation's.
@@ -538,7 +264,7 @@ def test_the_editor_replies_to_the_thread_on_screen():
     for command in ("/copy", "/links", "/btw why?"):
         assert app.btw_submit(command) is None
         assert app.activity.btw_thread == second.thread
-    # The conversation's own commands bring it back, where their output goes.
+    # The conversation's own commands close it, as their output goes there.
     assert app.btw_submit("/help") is None
     assert app.activity.btw_thread is None
     open_thread(app.activity, second.thread)
@@ -562,7 +288,7 @@ def test_merge_from_the_thread_keeps_it_and_goes_back():
         assert app.btw_submit("/merge") is True  # Refused mid-turn, draft kept.
         app.activity.busy = False
         # A preview has no tree to keep it in; pretend it does.
-        app.controller.check_bridge = lambda thread: second
+        app.controller.check_bridge = lambda thread, action="merge": second
         assert app.btw_submit("/summarize keep decisions") is False
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -613,7 +339,7 @@ def test_the_threads_own_commands_complete_only_while_it_is_shown():
         assert set(names("/")) == {"/stop", "/model"}
 
 
-def test_copy_reads_the_thread_on_screen(monkeypatch):
+def test_copy_reads_the_open_thread(monkeypatch):
     from pcode import clipboard
 
     app, _ = seeded_app()
@@ -639,8 +365,8 @@ def test_paths_are_questions_and_shell_commands_go_back_to_the_conversation():
     assert app.activity.btw_thread is None
 
 
-def test_the_shortcut_opens_the_viewer_when_the_popup_is_the_view():
-    save_preferences(btw_view="popup")
+def test_the_shortcut_opens_the_viewer_without_a_drawer(monkeypatch):
+    no_drawer(monkeypatch)
     app, _ = seeded_app()
     sent = []
     app._submit_typed = sent.append
@@ -650,9 +376,9 @@ def test_the_shortcut_opens_the_viewer_when_the_popup_is_the_view():
 
 
 @pytest.mark.parametrize("terminal", [True, False])
-def test_the_popup_shows_threads_when_chosen_and_off_a_terminal(monkeypatch, terminal):
+def test_the_popup_shows_threads_without_a_drawer_and_off_a_terminal(monkeypatch, terminal):
     if terminal:
-        save_preferences(btw_view="popup")
+        no_drawer(monkeypatch)
     app, _ = seeded_app(terminal=terminal)
     opened = []
 
@@ -667,12 +393,12 @@ def test_the_popup_shows_threads_when_chosen_and_off_a_terminal(monkeypatch, ter
 
     class Popup:
         async def __aenter__(self):
-            return None
+            return SimpleNamespace(input=None, output=None)
 
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(app, "popup", lambda output, session: Popup())
+    monkeypatch.setattr(app, "popup", lambda output, session, **_: Popup())
     app.prompt_session = type(
         "Session", (), {"app": type("App", (), {"output": None, "style": None})()}
     )()
@@ -685,3 +411,266 @@ def test_keep_thread_is_a_host_query():
     from pcode.controller import QUERIES
 
     assert "keep_thread" in QUERIES
+
+
+def test_a_drawer_shows_the_thread_beside_the_conversation(monkeypatch):
+    """An APC names the thread; the screen keeps the conversation."""
+    screen = Screen(monkeypatch)
+    transcript, activity = screen.transcript, screen.activity
+    transcript.message("CONVERSATION")
+    screen.flush()
+    writes: list[str] = []
+    screen.output.app.output.write_raw = writes.append
+    aside = answered("why?", "Because.")
+    aside.read = False
+    activity.asides = [aside]
+    view = ThreadView(activity, transcript)
+    view.drawer_host = lambda: "a1234567"
+    seen = []
+    view.on_read = seen.append
+    view.sync()
+    assert writes == [], "no thread, no drawer: nothing to say"
+    assert not view.drawer_open
+    open_thread(activity, aside.thread)
+    view.sync()
+    view.sync()
+    assert writes == [f"\x1b_pcode;btw;a1234567;{aside.thread}\x1b\\"]
+    assert view.drawer_open and "why?" not in screen.flush()
+    assert seen == [[aside.id]]
+    close(activity)
+    view.sync()
+    assert writes[-1] == "\x1b_pcode;close\x1b\\" and not view.drawer_open
+
+
+def test_a_thread_closes_when_the_drawer_goes(monkeypatch):
+    """No drawer any more (another session took it): the editor is the conversation's again."""
+    screen = Screen(monkeypatch)
+    transcript, activity = screen.transcript, screen.activity
+    writes: list[str] = []
+    screen.output.app.output.write_raw = writes.append
+    aside = answered("why?", "Because.")
+    activity.asides = [aside]
+    view = ThreadView(activity, transcript)
+    view.drawer_host = lambda: "a1234567"
+    open_thread(activity, aside.thread)
+    view.sync()
+    assert view.drawer_open
+    view.drawer_host = lambda: None
+    view.sync()
+    assert writes[-1] == "\x1b_pcode;close\x1b\\"
+    assert current(activity) == [] and not view.drawer_open
+    assert "Because." not in screen.flush(), "never drawn in the conversation's place"
+    # A thread opened with no drawer at all closes without a word to the terminal.
+    writes.clear()
+    open_thread(activity, aside.thread)
+    view.sync()
+    assert writes == [] and current(activity) == []
+    # Ctrl+Q brings back the thread it closed, once there is a drawer again.
+    assert reopen_thread(activity) == aside.thread
+
+
+def test_the_drawer_is_there_only_with_overlay_popups_and_a_host(monkeypatch):
+    """`drawer_host`: an answered probe, `popup_view` not `popup`, and a reachable host."""
+    from pcode import drawer, theme
+    from pcode.preferences import save_preferences
+
+    # The real `drawer_host`, not the autouse stand-in. Not `monkeypatch.undo()`:
+    # that would also undo conftest's isolation and save to the user's own preferences.
+    monkeypatch.setattr(PreviewApp, "drawer_host", REAL_DRAWER_HOST)
+    app, _ = seeded_app()
+    app.controller.runtime = SimpleNamespace(remote=True, id=HOST)
+    supported = True
+    monkeypatch.setattr(theme, "drawer_supported", lambda: supported)
+    monkeypatch.setattr(drawer, "reachable", lambda directory: True)
+    monkeypatch.setattr(drawer, "valid_host", lambda identity: True)
+    # The default, `auto`, opens the drawer wherever the terminal answered the probe.
+    assert app.drawer_host() == HOST and app.btw_drawer()
+    supported = False
+    assert app.drawer_host() is None
+    supported = True
+    for view, expected in (("overlay", HOST), ("popup", None)):
+        save_preferences(popup_view=view)
+        app._drawer_pref_at = float("-inf")  # The setting is read again at most once a second.
+        assert app.drawer_host() == expected
+    assert not app.btw_drawer()
+    # Ctrl+Q is then a bare /btw: the viewer.
+    sent = []
+    app._submit_typed = sent.append
+    app.btw_key()
+    assert sent == ["/btw"]
+
+
+def test_btw_reply_styles_light_up_in_shaded_and_bordered_modes():
+    from pcode.ui import PALETTES
+
+    palette = PALETTES["dark"]
+    bordered = palette.prompt_style(palette, "status", shades=None)
+    assert bordered.get_attrs_for_style_str("class:frame class:btw.reply class:frame.border").color
+    assert (
+        bordered.get_attrs_for_style_str("class:frame class:btw.reply class:frame.border").color
+        != bordered.get_attrs_for_style_str("class:frame class:frame.border").color
+    )
+
+    shaded = palette.prompt_style(palette, "status", shades=("#2b303b", "#20242c"))
+    normal_bg = shaded.get_attrs_for_style_str("class:frame class:shaded").bgcolor
+    btw_bg = shaded.get_attrs_for_style_str("class:frame class:shaded class:btw.reply").bgcolor
+    btw_border_fg = shaded.get_attrs_for_style_str(
+        "class:frame class:shaded class:btw.reply class:frame.border"
+    ).color
+    normal_top = shaded.get_attrs_for_style_str("class:frame class:shaded class:shaded.top").bgcolor
+    btw_top = shaded.get_attrs_for_style_str(
+        "class:frame class:shaded class:btw.reply class:shaded.top"
+    ).bgcolor
+    assert btw_bg != normal_bg
+    assert btw_border_fg == btw_bg
+    assert btw_top != normal_top
+
+
+def test_btw_prompt_prefix_and_word_wrap_width_follow_open_thread():
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+    from prompt_toolkit.input import create_pipe_input
+
+    from pcode.commands import CommandRegistry
+    from pcode.ui import create_prompt
+    from pcode.word_wrap import WordWrapProcessor
+
+    app, _ = seeded_app()
+    second = app.controller.asides.items[-1]
+
+    async def check() -> None:
+        with create_pipe_input() as pipe:
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                on_btw_close=lambda: None,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            wrap = next(p for p in session.input_processors if isinstance(p, WordWrapProcessor))
+            assert fragment_list_to_text(session.message()) == "❯ "
+            assert wrap.prefix_width == 2
+
+            open_thread(app.activity, second.thread)
+            assert fragment_list_to_text(session.message()) == "btw ❯ "
+            assert wrap.prefix_width == 6
+
+            # `!command` still goes to the shell and flips the prefix back to `$ `.
+            session.default_buffer.set_document(Document("!ls"), bypass_readonly=True)
+            assert fragment_list_to_text(session.message()) == "$ "
+            assert wrap.prefix_width == 2
+            assert session.prompt_continuation(2, 1, False) == [("class:prompt", "· ")]
+
+            session.default_buffer.set_document(Document("hello\nworld"), bypass_readonly=True)
+            assert session.prompt_continuation(6, 1, True) == [("class:prompt", "      ")]
+            assert session.prompt_continuation(6, 1, False) == [("class:btw.prompt", "    · ")]
+
+            session.default_buffer.set_document(Document(""), bypass_readonly=True)
+            close(app.activity)
+            assert fragment_list_to_text(session.message()) == "❯ "
+            assert wrap.prefix_width == 2
+
+    asyncio.run(check())
+
+
+def test_btw_header_and_busy_strip_render_and_size_correctly():
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+    from prompt_toolkit.input import create_pipe_input
+
+    from pcode.commands import CommandRegistry
+    from pcode.runtime import EditPreview
+    from pcode.ui import PromptLayout, create_prompt
+
+    app, _ = seeded_app()
+    second = app.controller.asides.items[-1]
+    second.model = "anthropic:claude-haiku"
+    second.label = "haiku"
+
+    async def check() -> None:
+        with create_pipe_input() as pipe:
+            output = DummyOutput()
+            output.get_size = lambda: Size(rows=40, columns=100)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                on_btw_close=lambda: None,
+                input=pipe,
+                output=output,
+            )
+            layout = PromptLayout(session, app.activity, app.transcript, session.shortcuts)
+
+            # Closed: no btw bar, normal height.
+            assert not layout.btw_active()
+            assert layout.btw_bar_height() == 0
+            idle_height = layout.frame_height()
+
+            # Open & idle: heading rides the top border (0 extra rows).
+            open_thread(app.activity, second.thread)
+            assert layout.btw_active()
+            assert layout.btw_bar_height() == 0
+            assert layout.frame_height() == idle_height
+            heading_text = fragment_list_to_text(layout.btw_heading())
+            assert "btw 1/2" in heading_text
+            assert "second?" in heading_text
+            assert "haiku" in heading_text
+            assert "Esc back" in heading_text
+
+            # Long questions truncate with ellipsis while preserving model and Esc back.
+            second.question = "why does this very long side question keep going and going forever?"
+            narrow_label = fragment_list_to_text(layout.btw_label(50))
+            assert "…" in narrow_label
+            assert "haiku" in narrow_label
+            assert "Esc back" in narrow_label
+
+            # `preview_layout()` with `startup_animating` and `btw_active` must not recurse.
+            app.activity.startup_label = "Starting"
+            assert app.activity.startup_animating
+            app.transcript.live_edits = True
+            app.activity.edit_previews["e1"] = EditPreview("e1", "a.py", "+line")
+            assert layout.preview_layout() is not None
+            app.activity.edit_previews.clear()
+            app.activity.startup_label = ""
+
+            # Open & busy: status takes the top border, so a 1-row btw strip appears inside the box.
+            app.activity.prompt_state = "running"
+            assert app.activity.status_shown
+            assert layout.btw_bar_height() == 1
+            assert layout.frame_height() == idle_height + 1
+            bar_text = fragment_list_to_text(layout.btw_bar_fragments())
+            assert "btw 1/2" in bar_text and "Esc back" in bar_text
+
+    asyncio.run(check())
+
+
+def test_btw_toolbar_shows_btw_reply_and_thread_model():
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+
+    app, _ = seeded_app()
+    app.model = "sonnet"
+    second = app.controller.asides.items[-1]
+    second.model = "anthropic:claude-haiku"
+    second.label = "haiku"
+    assert "steering" in fragment_list_to_text(app.toolbar())
+
+    open_thread(app.activity, second.thread)
+    fragments = app.toolbar()
+    text = fragment_list_to_text(fragments)
+    assert ("class:bottom-toolbar.btw", "btw reply") in fragments
+    assert "steering" not in text
+    assert "haiku" in text
+
+    # Effort-only `/btw +high` keeps the main model name alongside the effort.
+    second.model = ""
+    second.effort = "high"
+    second.label = "high"
+    assert "sonnet (high)" in fragment_list_to_text(app.toolbar())
+
+    # A follow-up that switched models updates the toolbar to the newest model.
+    follow = answered("more?", "Yes.", thread=second.thread)
+    follow.model = "openai:gpt-5"
+    follow.label = "gpt-5"
+    app.controller.asides.items.append(follow)
+    assert "gpt-5" in fragment_list_to_text(app.toolbar())
+
+    close(app.activity)
+    assert "steering" in fragment_list_to_text(app.toolbar())

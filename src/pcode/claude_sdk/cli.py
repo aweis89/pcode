@@ -36,6 +36,11 @@ CLI_ENV = {
     "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
     # A parked handler lasts as long as the tool runs, delegations included.
     "MCP_TOOL_TIMEOUT": str(7 * 24 * 3600 * 1000),
+    # A resumed or forked transcript otherwise keeps the system prompt it was
+    # first recorded with (its `prompt_snapshot`), ignoring the one pcode passes:
+    # an /advisor, plan mode or extension change would never reach the model.
+    # The CLI re-renders only when the prompt differs, so an unchanged fork stays warm.
+    "CLAUDE_CODE_HOST_PROMPT_SUPERSEDES_RECORD": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "DISABLE_AUTOUPDATER": "1",
 }

@@ -20,10 +20,10 @@ from uuid import uuid4
 from pcode.error_report import error_message
 from pcode.preferences import EFFORTS
 
-# One side question is a question, not a second conversation: it gets a small
-# request budget and a hard deadline so a confused run cannot spend a session's
-# worth of tokens in the background where nobody is watching it.
-ASIDE_REQUEST_LIMIT = 12
+# The deadline is a side question's only bound, so a confused run cannot spend a
+# session's worth of tokens in the background. A request cap was dropped, as the
+# worker's was: its activity shows in the popup, it can be cancelled, and a cap
+# discarded the whole answer of a run that was still making progress.
 ASIDE_TIMEOUT_SECONDS = 300
 # Side questions accumulate over a long session; keep the recent threads
 # readable rather than growing the viewer without bound.
@@ -47,7 +47,10 @@ ASIDE_FRAMING = (
     "over fresh investigation. Your answer appears in a popup beside the conversation "
     "and is not added to it, so do not address the main agent, continue its task, "
     "or promise work. Tools work normally, but the plan and delegation tools are "
-    "unavailable here."
+    "unavailable here. "
+    # A side agent once quoted the main agent's thinking as a reply the user
+    # had been given, and wrote a bug report on that premise.
+    "The user may not see thinking, so don't assume they did."
 )
 
 
@@ -70,11 +73,10 @@ def framed_follow_up(question: str) -> str:
 
 
 # Asked in the thread, where its questions and answers are, so the summary
-# reuses the thread's cache; `summary_request` is what the conversation records.
+# reuses the thread's cache. The reply is sent to the conversation verbatim.
 SUMMARY_FRAMING = (
-    "[Side thread summary] Summarize this side discussion for the main conversation, "
-    "which never saw it: what was asked, what was found, and anything that should change "
-    "the ongoing work. Be brief and concrete, with no preamble, and do not use tools."
+    "[Side thread summary] Summarize this thread for the main conversation; "
+    "your reply is sent there as my next message."
 )
 
 
@@ -83,28 +85,22 @@ def framed_summary(instructions: str) -> str:
     return SUMMARY_FRAMING + (f"\n\nFocus: {instructions}" if instructions else "")
 
 
-def summary_request(questions: list[str], instructions: str = "") -> str:
-    """The user message a thread's summary is recorded under in the conversation.
+def summary_message(summary: str) -> str:
+    """The user message that brings a thread's summary to the conversation's model.
 
-    The conversation never saw the thread, so this names its questions rather
-    than pointing at a discussion "above" that is not there.
+    The thread's model wrote it for the conversation (see `SUMMARY_FRAMING`),
+    so it is sent as written.
     """
-    lines = [
-        "[Side thread summary] Beside this conversation I asked side questions it did not see:"
-    ]
-    lines += [f"- {' '.join(question.split())}" for question in questions]
-    lines.append("Summarize what came of them for the rest of this conversation.")
-    if instructions:
-        lines.append(f"Focus: {instructions}")
-    return "\n".join(lines)
+    return summary.strip()
 
 
 @dataclass(frozen=True)
 class Bridge:
     """A request to bring a side thread into the conversation.
 
-    `merge` adds the thread to the conversation tree as it is; `summary` adds a
-    summary of it to the active branch, focused by `instructions` when given.
+    `merge` adds the thread to the conversation tree as it is; `summary` sends
+    the conversation's model a summary of it, focused by `instructions` when
+    given, the way a message typed at the prompt is sent.
     """
 
     thread: str
@@ -398,6 +394,19 @@ class Aside:
         return f"{self.status} {self.elapsed:.0f}s"
 
 
+def retire_reply(reply: SideReply | None, *, keep: SideReply | None = None) -> None:
+    """Stop a side model's background process (e.g. `agy acp`) when no longer needed."""
+    side = getattr(reply, "model", None)
+    model = getattr(side, "model", None)
+    retire = getattr(model, "retire", None)
+    if retire is None:
+        return
+    kept = getattr(getattr(keep, "model", None), "model", None)
+    if kept is model:
+        return
+    retire()
+
+
 class Asides:
     """Every side question this session asked, oldest first.
 
@@ -518,6 +527,9 @@ class Asides:
             if excess <= 0:
                 break
             if not any(aside.running for aside in asked):
+                for dropped in asked:
+                    retire_reply(dropped.reply)
+                    dropped.reply = None
                 # In place: the live panel shares this list.
                 self.items[:] = [aside for aside in self.items if aside.thread != asked[0].thread]
                 excess -= 1
@@ -535,6 +547,9 @@ class Asides:
         tasks = list(self._tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for aside in self.items:
+            retire_reply(aside.reply)
+            aside.reply = None
 
     def update(self, aside: Aside, *, answer: str, activity: str) -> None:
         aside.answer = answer
@@ -562,6 +577,7 @@ class Asides:
                 # would only hold another copy of the conversation.
                 for older in self.thread(aside.thread):
                     if older is not aside:
+                        retire_reply(older.reply, keep=reply)
                         older.reply = None
         finally:
             self._tasks.pop(aside.id, None)
@@ -573,3 +589,33 @@ class Asides:
             self.on_failure(aside, error)
         except Exception:
             pass
+
+
+# What a session host sends of a side question (`SessionHost.aside_state`) that
+# a terminal keeps as is.
+STATE_FIELDS = (
+    "model",
+    "label",
+    "effort",
+    "status",
+    "answer",
+    "activity",
+    "error",
+    "started",
+    "finished",
+    "thread",
+    "conversation",
+    "base",
+    "bridged",
+)
+
+
+def apply_state(aside: Aside, state: dict) -> None:
+    """Bring a terminal's copy of a side question up to the host's `state`."""
+    for name in STATE_FIELDS:
+        if name in state:
+            setattr(aside, name, state[name])
+    # The reply lives in the host; a follow-up only needs to know there is one.
+    aside.reply = True if state.get("replied") else None
+    # Read here and not yet reported stays read.
+    aside.read = aside.read or bool(state.get("read"))

@@ -19,9 +19,12 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     PartDeltaEvent,
+    PartEndEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -45,12 +48,16 @@ from pcode.tool_display import (
     command_error,
     execution_mode,
     invocation,
+    native_result_detail,
+    native_result_projection,
     result_detail,
     stated_purpose,
     stored_source,
     subject,
     target,
+    tool_outcome,
 )
+from pcode.worker_channel import current_worker, notify
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
 logger = logging.getLogger(__name__)
@@ -107,18 +114,38 @@ class ResumableAgent(WrapperAgent):
     already ran is run twice. A drop anywhere else still ends the child.
     """
 
+    def __init__(self, wrapped, *, model=None):
+        super().__init__(wrapped)
+        self.override_model = model
+
     async def run(self, user_prompt=None, *, message_history=None, capabilities=None, **kwargs):
+        if self.override_model is not None:
+            kwargs["model"] = self.override_model
         attempts = int(load_preferences().get("retry_attempts", SETTINGS["retry_attempts"].default))
         attempt = 0
+        handle = current_worker()
+        earlier = handle.tokens if handle is not None else 0
+        if message_history is None and handle is not None and handle.resume_from:
+            # `continue_worker`: the follow-up joins the worker's own history.
+            message_history = handle.resume_from
         while True:
             checkpoint = RequestCheckpoint()
             try:
-                return await self.wrapped.run(
+                result = await self.wrapped.run(
                     user_prompt,
                     message_history=message_history,
                     capabilities=[*(capabilities or ()), checkpoint],
                     **kwargs,
                 )
+                if handle is not None:
+                    handle.messages = result.all_messages()
+                    # Exact, from this run's own responses: the live count misses
+                    # the final response and cannot read a shared usage counter.
+                    added = handle.messages[len(handle.resume_from or ()) :]
+                    handle.tokens = earlier + sum(
+                        m.usage.total_tokens for m in added if isinstance(m, ModelResponse)
+                    )
+                return result
             except Exception as error:
                 if attempt >= attempts or checkpoint.messages is None or not transient(error):
                     raise
@@ -132,6 +159,10 @@ class ResumableAgent(WrapperAgent):
                     attempt,
                     attempts,
                 )
+                if handle is not None:
+                    handle.activity = f"Reconnecting {attempt}/{attempts}"
+                    handle.running_tools = []  # The resent request starts over.
+                    handle.mark_progress()
                 if (parent := _parent.get()) is not None:
                     await parent.emit(ChildActivity(activity=f"Reconnecting {attempt}/{attempts}"))
                 await asyncio.sleep(retries.RETRY_DELAY)
@@ -142,18 +173,33 @@ async def stream_child_activity(_ctx, events):
     parent = _parent.get()
     plan_items: list[dict] = []
     tools = {}
-    # The child's calls by id, so its `read_tool_result` rows name what spilled.
+    worker = current_worker()
+    # The child's usage can be the parent's counter; count only what it adds.
+    usage = getattr(_ctx, "usage", None)
+    if parent is not None and usage is parent.usage:
+        # Forwarded usage is the parent's counter: siblings and the parent
+        # would count too. The exact total arrives when the worker settles.
+        usage = None
+    baseline = usage.total_tokens if usage is not None else 0
+    # A resumed worker's count continues from its earlier runs.
+    earlier = reported = worker.tokens if worker is not None else 0
+    # The child's calls by id, so its spill-reading rows name what spilled.
     called: dict[str, str] = {}
     phase = ""
     async for event in events:
         if parent is None:
             continue
+        if worker is not None:
+            # Any child event, streamed text and thinking included, shows it is alive.
+            worker.mark_progress()
         if isinstance(event, FileChangeEvent):
+            parent_id = parent.tool_call_id or ""
             await parent.emit(
                 FileChangeEvent(
                     change=replace(
                         event.change,
-                        call_id=f"{parent.tool_call_id or ''}:{event.change.call_id}",
+                        call_id=f"{parent_id}:{event.change.call_id}",
+                        parent_call_id=parent_id,
                     )
                 )
             )
@@ -203,7 +249,7 @@ async def stream_child_activity(_ctx, events):
             name, args, started = tools.pop(
                 event.tool_call_id, (event.part.tool_name or "tool", {}, monotonic())
             )
-            outcome = "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
+            outcome = tool_outcome(event.part)
             detail, failed = result_detail(
                 name, args, event.part.content, outcome, stored_source(args, called)
             )
@@ -222,11 +268,60 @@ async def stream_child_activity(_ctx, events):
                 parent_call_id=parent_id,
             )
             activity = "Working" if tools else "Waiting for model"
+        elif isinstance(event, PartEndEvent) and isinstance(event.part, NativeToolCallPart):
+            part = event.part
+            try:
+                args = part.args_as_dict()
+            except TypeError, ValueError:
+                args = {}
+            tools[part.tool_call_id] = (part.tool_name, args, monotonic())
+            agent, task = assignment(part.tool_name, args)
+            child = ToolStarted(
+                part.tool_name,
+                target(part.tool_name, args),
+                f"{parent_id}:{part.tool_call_id}",
+                arguments=capture(args if args else part.args),
+                run_id=parent.run_id or "",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                parent_call_id=parent_id,
+                agent=agent,
+                task=task,
+            )
+            activity = "Working"
+        elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolReturnPart):
+            part = event.part
+            name, args, started = tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
+            provider = part.provider_name or ""
+            detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
+            child = ToolSummary(
+                name,
+                detail,
+                failed=failed,
+                call_id=f"{parent_id}:{part.tool_call_id}",
+                elapsed_seconds=max(0, monotonic() - started),
+                result=capture(native_result_projection(part.content, provider)),
+                run_id=parent.run_id or "",
+                outcome=part.outcome if not failed else "error",
+                parent_call_id=parent_id,
+            )
+            activity = "Working" if tools else "Waiting for model"
         elif isinstance(event, PartStartEvent):
             if isinstance(event.part, ThinkingPart):
                 activity = "Thinking"
             elif isinstance(event.part, TextPart):
                 activity = "Responding"
+            elif isinstance(event.part, NativeToolCallPart):
+                activity = "Working"
         if child is not None or activity != phase:
+            if worker is not None:
+                worker.activity = activity
+                worker.running_tools = [name for name, _args, _started in tools.values()]
+                if isinstance(child, ToolStarted):
+                    worker.tool_calls += 1
             await parent.emit(ChildActivity(activity=activity, child=child))
             phase = activity
+            if worker is not None and usage is not None:
+                tokens = earlier + max(0, usage.total_tokens - baseline)
+                if tokens != reported:
+                    reported = worker.tokens = tokens
+                    await notify(worker, parent, tokens=tokens)

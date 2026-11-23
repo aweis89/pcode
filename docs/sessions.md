@@ -3,6 +3,18 @@
 Live conversations save automatically when the first model prompt is submitted.
 Opening the app, using commands, or quitting without a prompt creates no session.
 
+### Session lifecycle quick reference
+
+| Action | Local session (default) | Hosted session (`--host` or after `/detach`) |
+| --- | --- | --- |
+| **Lifetime** | Runs in this terminal; ends when you quit or close it | Runs in a background host; outlives the terminal until [idle](#idle-hosts-stop) |
+| **`/detach`** | Moves the conversation, worktree, and jobs into a host (you stay on it) | Quits this terminal and leaves the host running for `pcode --attach` |
+| **`/attach`** | Opens the host picker; switching ends this session (refused mid-turn) | Opens the host picker; switches views while this host keeps running |
+| **`Ctrl+^` (`/attach -`)** | Returns to the previous session (carried on in a host) | Toggles between the last two sessions mid-turn without stopping either |
+| **`/fork PROMPT`** | Starts a copy in a new host and worktree; moves this session to a host once idle | Starts a copy in a new host and worktree; this terminal stays put |
+| **`/resume` / `--continue`** | Reopens a saved session in place (or a copy if open in another local terminal) | Reopens a saved session in a host, or attaches where it is already running |
+| **`pcode --attach ID -p`** | — | Sends one prompt or slash command to a running (or stopped) host and detaches |
+
 ## Background sessions
 
 A session starts inside its terminal: one process, quick to start, gone when
@@ -30,6 +42,7 @@ pcode --hosts                    # list running hosts (--json for scripts)
 pcode --attach                   # reattach to the newest host in this repository
 pcode --attach 3f9c              # ...or to one by host or session ID prefix
 pcode --kill-hosts idle          # stop hosts with nothing running (or: stale, all)
+pcode --restart-hosts stale      # restart hosts on older pcode code (or: all)
 ```
 
 `--kill-hosts idle` is for the hosts a forgotten terminal tab keeps alive: an
@@ -68,6 +81,15 @@ Inside a hosted session:
   conversation up again in the same worktree. A host keeps the code it started
   with, so this is how a long-running session gets a fix you just merged; the
   picker and `--hosts` mark hosts that are on older code.
+  The host starts its own replacement, so it keeps the environment it was
+  started with (credentials from that project's `.envrc`, say) rather than
+  taking this terminal's.
+- `/restart all` (or `pcode --restart-hosts stale`) does the same for every host on
+  older code, this one last. A host that is busy is
+  skipped and listed with the reason. Another terminal showing a host that
+  restarted says which host it became, for `/attach`. Hosts started by a pcode older than
+  this feature can't restart from elsewhere: `/restart` each of those once in
+  its own terminal.
 - Quitting (Ctrl+D, `/quit`, or `/stop`) ends this session's host, asking about
   the worktree the way a local exit does. `/detach` quits but leaves the host
   running for `pcode --attach`, as closing the terminal window does, until it
@@ -143,7 +165,7 @@ pcode --attach 3f9c -p /stop                                     # end the host
   reported an error or a warning, such as `/compact` refused while a turn runs.
   Anything else the host reports meanwhile counts too. A command that opens a
   picker (a bare `/model`) fails, since nobody is there to pick. Commands that
-  queue a turn of their own (a skill, `/resend`) exit without waiting for it. A
+  queue a turn of their own (a skill, `/continue`) exit without waiting for it. A
   command that ends the session (`/worktree finish`) succeeds; a host stopped
   under a command by anything else is a failure.
 - `/stop` ends the host, which tidies its own worktree the way `worktree_exit`
@@ -213,7 +235,7 @@ limited to about 100 bytes.
 ### What works in a hosted session
 
 Everything. The host runs the session's commands (`/model`, `/effort`, `/compact`,
-`/resend`, `/new`, `/tree`, `/btw`, `/mcp`, `/jobs`, `/worktree`, `/login`,
+`/continue`, `/new`, `/tree`, `/btw`, `/mcp`, `/jobs`, `/worktree`, `/login`,
 `/reload`, skills, and extension commands), and opens their pickers in the
 terminal that typed them. The terminal runs its own (`/attach`, `/resume`,
 `/status`, `/tools`, `/diffs`, `/links`, `/agents`, `/help`, `/config`, and the
@@ -276,7 +298,7 @@ updated member. Searching lists matches flat, best first.
   plan. Esc cancels.
 - Ctrl+X (or Delete in the session list), pressed twice, permanently deletes the
   selected session. The active session and one open in another process are
-  refused.
+  refused; use `/delete` to remove the active session.
 
 A session from another worktree of the same repository switches the workspace to
 that worktree: file tools, the shell, extensions, and skill commands move there,
@@ -324,7 +346,7 @@ running undisturbed.
 
 A turn still running in the original is copied the way a crash would leave it:
 the copy picks up from that turn's last settled step (or from the turn before,
-if it has not settled one yet). `/resend` carries the turn on from there, a new
+if it has not settled one yet). `/continue` carries the turn on from there, a new
 message starts from the same point, and `/tree` can go back to the last
 finished turn instead.
 
@@ -443,9 +465,34 @@ vectors are still sensitive. Old vectors stay after a session is deleted; delete
 the file with pcode stopped to clear the cache (also needed if a provider changes
 a model's vector size under the same name).
 
-To turn recall off, create `~/.config/pcode/extensions/session_history.py` with
-`def setup(pcode): pass`, then `/reload`. Recall uses the same session storage
-location as the rest of pcode.
+To turn recall off, run `/extensions off session_history`, then `/reload`.
+Recall uses the same session storage location as the rest of pcode.
+
+## Conductor: orchestrating other sessions
+
+The bundled `conductor` extension is enabled by default and lets one session
+inspect, side-query, drive, and stop other open or recently stopped `/attach`
+hosts. Tools that talk to a session (`ask_host` and `send_to_host`) also accept
+a saved session ID and automatically resume that historical session in its
+original workspace (inheriting the conductor's environment).
+
+| Tool | Who can call it | What it does |
+| --- | --- | --- |
+| `list_hosts` | Parent and workers | Lists open and recently stopped `/attach` hosts, filterable by `workspace` substring, `state` (`all`, `working`, `idle`, `stopped`), and `include_stopped`. |
+| `inspect_host` | Parent and workers | Reads a live host's in-memory state (plan, running jobs, side questions, activity, and busy reason) by host ID or session ID prefix. |
+| `ask_host` | Parent only | Runs a headless [`/btw`](side-questions.md) side question against another session's full context without mutating its main thread or waiting behind an active turn. Accepts an optional `model` override. Note that the target's side question still has access to its workspace tools, so ask for inspection or reporting only if you do not want workspace edits. |
+| `send_to_host` | Parent only | Queues a prompt as a real turn on another host (or auto-resumes a saved session). `wait=False` (the default) returns once queued so you can fan work out in parallel and then call `wait_for_hosts`; `wait=True` waits up to `timeout` seconds (1–1800, default 120) and returns the reply. |
+| `wait_for_hosts` | Parent only | Waits for one or more running hosts to finish their active and queued turns, with `mode="all"` (every host) or `mode="any"` (return as soon as one finishes), up to `timeout` seconds (1–1800, default 120). |
+| `stop_host` | Parent only | Stops another running host. With `force=False` (the default), refuses atomically on the host if it is busy or has an attached terminal; `force=True` stops it anyway. Never deletes the session's worktree. |
+
+Conductor tools cannot target the current session, and cannot auto-resume a
+session that is currently open in an unhosted local terminal or whose workspace
+no longer exists.
+
+To turn conductor off, run `/extensions off conductor`, then `/reload`. It is
+automatically disabled in unattended
+[email remote-control](email.md#the-remote-profile) hosts so a remote session
+cannot inspect or drive other local hosts.
 
 ## Where sessions are stored
 
@@ -511,7 +558,7 @@ the planner.
 Rewinding to an earlier step *within* a turn is not offered; `/tree` moves
 between turns.
 
-## Retries and `/resend`
+## Retries and `/continue`
 
 Dropped provider connections, transport timeouts, and recognized overload errors
 inside a provider response stream get three automatic retries by default (four
@@ -550,9 +597,11 @@ pcode config set tool_retries 0   # Fail on the first rejected tool call
 
 `strict_tools` (on by default) also sends `edit_file` with Anthropic's
 [strict tool use][strict] flag. It reduces those malformed arguments only
-slightly; the correction budget is what actually recovers them. OpenAI models
-use strict mode anyway, other providers ignore the flag, and schemas it cannot
-support are left alone.
+slightly; the correction budget is what actually recovers them. On OpenAI's
+and Google's own APIs the provider decides for every tool (OpenAI constrains
+the schemas it can; Gemini validates whole requests on models that support
+it); elsewhere pcode's file and shell tools go without strict mode, and schemas
+it cannot support are left alone.
 
 ```sh
 pcode config set strict_tools off   # Leave edit_file arguments unconstrained
@@ -560,9 +609,12 @@ pcode config set strict_tools off   # Leave edit_file arguments unconstrained
 
 [strict]: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 
-`/resend` retries manually while idle, without adding another message. The
-original prompt appears above the task bar with the running spinner. Completed
-tool results stay in context; if the last answer completed, only that answer is
-regenerated. An empty conversation cannot be resent. If cancellation left tool
-effects unsettled, `/resend` refuses to replay them; check `/tools` and send an
-explicit next step instead.
+`/continue` (or its alias `/retry`) retries manually while idle, without adding
+another message. The original prompt appears above the task bar with the running
+spinner as a label only; it is not sent again. Completed tool results stay in
+context and are not re-run; if the last answer completed, only that answer is
+regenerated. An empty conversation cannot be continued. If you interrupt a turn
+while its tools are running, their effects may already be in place, and replaying
+the request would run them again. `/continue` then sends a short note listing the
+tool calls that started and how far each got, and asks the model to check the
+current state before carrying on with your request.

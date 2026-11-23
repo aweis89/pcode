@@ -57,8 +57,8 @@ docs-serve: ## Preview the docs site with live reload at http://localhost:8000
 screenshots: ## Regenerate docs screenshots from scripted scenes (SCENES="tree jobs" for some, ARGS=--iterm for your iTerm2 colors)
 	uv run python scripts/screenshots/run.py $(ARGS) $(SCENES)
 
-screenshot-live: ## Play one scene in this terminal to screenshot it yourself (SCENE=review)
-	uv run python scripts/screenshots/run.py --live $(or $(SCENE),review)
+screenshot-live: ## Play one scene in this terminal to screenshot it yourself (SCENE=diffs)
+	uv run python scripts/screenshots/run.py --live $(or $(SCENE),diffs)
 
 icons: ## Browse terminal icon candidates (ARGS="--category thinking --single-cell")
 	uv run python scripts/icons.py $(ARGS)

@@ -39,7 +39,7 @@ def test_effort_persists_per_model_and_restores():
         "anthropic_effort": "low"
     }
     assert make_app().current_effort() == "high"
-    assert make_app("google:test").runtime.agent.model_settings is None
+    assert make_app("groq:test").runtime.agent.model_settings is None
     # A Claude model without effort control never gets the setting, saved or not.
     save_model_effort("anthropic:claude-haiku-4-5", "low")
     assert make_app("anthropic:claude-haiku-4-5").runtime.agent.model_settings is None

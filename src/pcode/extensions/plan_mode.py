@@ -260,6 +260,14 @@ def setup(pcode) -> None:
         # cached. A retried turn resends the same request, so skip one that
         # already carries the reminder or is mid-turn (holds tool results).
         current = active()
+        from pcode.antigravity import unwrap
+
+        native = unwrap(getattr(request_context, "model", None))
+        if native is not None and not is_side(ctx):
+            # Antigravity runs its own loop without pcode's plan tools: it has a
+            # plan mode of its own, which the model switches its session to.
+            native.plan_mode = current is not None
+            return request_context
         if current is None or is_side(ctx):
             return request_context
         request = run_request(ctx, request_context)

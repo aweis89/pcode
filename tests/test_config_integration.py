@@ -9,6 +9,7 @@ from rich.console import Console
 
 from pcode.app import PreviewApp
 from pcode.config_ui import ConfigBrowser
+from pcode.popup_surface import PopupSurface
 from pcode.preferences import read_preferences
 from pcode.ui import create_prompt
 
@@ -72,8 +73,8 @@ def test_config_browser_open_error_returns_to_prompt(monkeypatch, tmp_path):
     app = PreviewApp(workspace=tmp_path, console=Console(file=output))
 
     @asynccontextmanager
-    async def popup(*args):
-        yield None
+    async def popup(*args, **options):
+        yield PopupSurface(None, None)
 
     def broken_browser(**kwargs):
         raise ValueError("Invalid preferences JSON")

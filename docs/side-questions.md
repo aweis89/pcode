@@ -6,6 +6,8 @@ question runs as a separate request alongside the turn, against the same
 context. The turn is not interrupted or steered, and the question stays out of
 the conversation unless you choose to keep it.
 
+![A /btw side question running in parallel against the conversation's context](assets/screenshots/btw.svg)
+
 ```text
 ❯ refactor the parser and make the tests pass
   ◜ Running shell · uv run pytest
@@ -25,8 +27,9 @@ side question is reading the answer while the turn is still running. A bare
 
 ## The popup
 
-By default (`btw_view popup`), threads show in a full-screen viewer, which
-takes the terminal while it is open and has a follow-up editor of its own.
+Unless a [drawer](#threads-in-a-drawer) shows them, threads show in a viewer
+with a follow-up editor of its own. It takes the whole terminal while it is
+open, or in Ghostty Smooth opens over the conversation.
 **Ctrl+Q** opens it, as a bare `/btw` does:
 
 - **↑ / ↓:** move through the questions, or scroll the answer when it has focus.
@@ -67,75 +70,56 @@ follow-up editor alike. By default, hold Ctrl while pressing the letter; a
 configured [shortcut prefix](commands.md#shortcut-prefix) changes these keys.
 Ctrl+/ browses the current popup's help.
 
-## Swapping a thread in
+## Threads in a drawer
 
-With `pcode config set btw_view swap`, a thread shows in the conversation's place. The screen and your terminal's scrollback are rebuilt from the
-thread, headed ` btw ` and its first question in a colour of its own, and
-rebuilt from the conversation again when you go back, the way a resize
-redraws it. While it is shown the thread is ordinary terminal output: scroll
-it with the mouse wheel or your terminal's own keys, and select and copy it
-without any frame coming along.
+Experimental. In Ghostty Smooth with a [session host](sessions.md#background-sessions), a thread opens in a drawer
+beside the conversation instead of the popup. The drawer is a terminal of its
+own, so the thread keeps your terminal's font and colors, and you can scroll
+and select it there. The thread is headed ` btw ` and its first question in a
+colour of its own. The screen keeps the conversation, so a running turn goes
+on streaming beside it.
 
-A running turn carries on while you read. Its spinner stays on the editor's
-border, and what it writes lands in the conversation, in order, when you go
-back. Meanwhile a divider under the thread points up to it and down to the
-conversation, with the keys that go back or on to the next thread, and the conversation's
-newest three lines stream in beneath it, above the turn's own tool rows:
-
-```text
-because one token of lookahead decides every rule.
-── ↑ btw: why is the parser LL(1)? · ↓ conversation ── Ctrl+Q or Esc back · Ctrl+\ next thread (1/2) ─
-  Updated parser.py: the lookahead table now comes from the grammar, so a new
-  rule needs no edit here. Running the parser tests next to check the error
-  messages still name the right token.
-```
-
-Notices meant for the conversation flash above the editor instead, and so do
-its warnings and errors, which are in the conversation too when you go back.
-A `!command` or a command for the conversation, such as `/help`, takes you
-back first, so you see what it prints; Ctrl+Enter does too.
-
-The main editor talks to the thread, with everything it can do (history,
+The main editor talks to the open thread, with everything it can do (history,
 completion, vi mode, `@file`s):
 
 - **Enter** sends a [follow-up](#following-up) to the thread, never to the
   conversation, so typing during a turn neither steers nor queues it. The
   editor's border takes the thread's colour while this is so. A follow-up that
-  cannot be sent yet keeps your draft and says why. The answer streams in
-  below, a block at a time, as the conversation's do.
+  cannot be sent yet keeps your draft and says why. The answer streams into
+  the drawer a block at a time, as the conversation's do.
 - **`/merge`, `/summarize [focus]`, `/copy`, `/links`, `/stop`, `/close`** act
   on the thread ([commands](#commands)); every other command, and
-  `/btw QUESTION`, means what it always does. So do a `!command`, which runs in
-  the shell, and **Ctrl+Enter**, which interrupts the conversation's turn with
-  your message.
-- **Ctrl+Q** toggles: from a thread it goes straight back to the
-  conversation, however many threads there are, and from the conversation it
-  shows the thread you last looked at (the newest the first time). It works
-  the same in every editor mode.
+  `/btw QUESTION`, means what it always does. A `!command` or a command for
+  the conversation, such as `/help`, closes the thread first, and
+  **Ctrl+Enter** interrupts the conversation's turn with your message.
+- **Ctrl+Q** toggles: with a thread open it closes the drawer and the editor
+  goes back to the conversation, however many threads there are; from the
+  conversation it opens the thread you last looked at (the newest the first
+  time). It works the same in every editor mode.
 - **A bare `/btw`** lists the threads when there is more than one, with the
-  newest unread answer selected and a preview beside the list. Enter shows
-  the highlighted thread in the conversation's place; Escape leaves things as
-  they were. With a single thread it shows that one at once.
-- **Ctrl+\\** shows the next older thread, and from the oldest wraps to the
-  newest. The divider says which thread of how many is shown
-  (`Ctrl+\ next thread (1/3)`). With a
-  [shortcut prefix](commands.md#shortcut-prefix), these keys are the prefix and
-  `q` or `\`. If your vi leader is `\`, use Ctrl+\ itself, since a second `\`
-  only closes the leader menu.
+  newest unread answer selected and a preview beside the list. Enter opens
+  the highlighted thread in the drawer; Escape leaves things as they were.
+  With a single thread it opens that one at once.
+- **Ctrl+\\** opens the next older thread, and from the oldest wraps to the
+  newest. With a [shortcut prefix](commands.md#shortcut-prefix), these keys
+  are the prefix and `q` or `\`. If your vi leader is `\`, use Ctrl+\ itself,
+  since a second `\` only closes the leader menu.
 - **Escape** goes back to the conversation, keeping your draft. In vi mode,
   Escape first leaves insert mode as usual, and a second one goes back;
   Ctrl+Q needs no second press.
 
 An answer that opens by itself waits while you have a draft in the editor:
-swapping then would send your half-written message to the thread. Ctrl+Q,
-or picking it after a bare `/btw`, shows it when you are ready.
+opening it then would send your half-written message to the thread. Ctrl+Q,
+or picking it after a bare `/btw`, opens it when you are ready.
 
-The conversation is rebuilt from what pcode keeps of it, so a very long one
-comes back trimmed the way a resize trims it (`transcript_max_chars`).
+Without a drawer (another terminal, no session host, or `popup_view popup`),
+side threads use [the popup](#the-popup). If the drawer goes away while a
+thread is open, the thread closes and the editor goes back to the
+conversation.
 
 ## Commands
 
-The swapped-in thread and the popup's follow-up editor take these as
+The main editor with a [thread in the drawer](#threads-in-a-drawer) and the popup's follow-up editor take these as
 commands. In the popup a menu completes them as you type `/`, and the start of
 a single name (`/co`) is enough on its own:
 
@@ -143,10 +127,10 @@ a single name (`/co`) is enough on its own:
 | --- | --- |
 | `/copy` | Choose a question, answer, quote or code block from this thread to copy, as Ctrl+Y |
 | `/links` | Open a link from the thread, as Ctrl+O |
-| `/summarize [focus]` | Summarize into the conversation, keeping what *focus* says, as Ctrl+S |
+| `/summarize [focus]` | Send the model a summary of the thread, keeping what *focus* says, as Ctrl+S |
 | `/merge` | Merge into the conversation, as Ctrl+T |
 | `/stop` | Stop running side questions, as Ctrl+K |
-| `/close` | Go back to the conversation, as Escape (swapped-in thread only) |
+| `/close` | Go back to the conversation, as Escape (drawer thread only) |
 
 A follow-up that starts with a path of more than one part, such as
 `/etc/hosts`, is still sent as a question; one like `/tmp` reads as a command
@@ -170,7 +154,7 @@ never throws away the side question as well.
 
 ## Following up
 
-With a [thread swapped in](#swapping-a-thread-in), the main editor sends
+With a [thread in the drawer](#threads-in-a-drawer), the main editor sends
 follow-ups to it. The popup has an editor under the answer for asking a
 follow-up, so a side question can become a short back-and-forth without
 leaving it. Press
@@ -215,24 +199,31 @@ threads, dropping the oldest settled thread whole; the session keeps them all
 ## Keeping a thread
 
 A thread that turned up something worth keeping can be brought into the
-conversation from the viewer, in two ways. Both close the viewer, and both wait
-for the running turn the way forking in `/tree` does: the conversation's history
-cannot change under a turn that is about to write it back. Pressing either key
-mid-turn says so in the header and does nothing else.
+conversation from the viewer, in two ways. Both close the viewer.
 
-**Ctrl+S: Summarize into the conversation.** The editor asks for optional
+**Ctrl+S: Send the model a summary.** The editor asks for optional
 instructions ("keep only the decisions", "what should change in the plan?");
 press **Enter** with nothing typed to summarize as is, or **Escape** to cancel
 and get your follow-up draft back. The summary is asked *in the thread*, on its
-model and after its last answer, so it reuses the thread's cache. It is then
-added to the conversation's current branch as one exchange: a message naming the
-thread's questions (and your instructions), answered by the summary. The next
-turn reads it like any earlier reply, and the rest of the history is untouched,
-so the conversation's cache still covers everything before it. While the summary
-runs, the footer shows it like `/compact`, prompts you send wait behind it, and
-Ctrl+C cancels it with the conversation unchanged.
+model and after its last answer, so it reuses the thread's cache. When it is
+ready it is sent to the conversation's model as a message from you, word for
+word as the thread's model wrote it, exactly as if you had typed it:
 
-**Ctrl+T: Merge into the conversation.** The thread is already a branch of the
+- **A turn is running:** the summary steers it, joining at the model's next
+  request, so the work in progress can change course.
+- **Nothing is running:** the summary starts a turn, and the model acts on it
+  straight away; there is no need to follow it with "go ahead".
+
+Summarizing never waits for a turn and never holds your prompts back: it runs
+beside the conversation like a side question, with a row above the prompt while
+it is written. Ctrl+C on a running turn stops it too, so it cannot start a new
+turn right after you stopped one; `/stop` in the thread stops it on its own.
+Either way nothing is sent.
+
+**Ctrl+T: Merge into the conversation.** Merging waits for the running turn,
+the way forking in `/tree` does: the conversation's history cannot change under
+a turn that is about to write it back, so pressing it mid-turn says so in the
+header and does nothing else. The thread is already a branch of the
 [conversation tree](conversation-tree.md), forked from the point where it was
 asked (see [saved with the session](#saved-with-the-session)). Merging moves the
 conversation onto it when that loses nothing. What happens depends on what
@@ -247,11 +238,11 @@ happened since:
   would drop whatever the conversation did after the question was asked.
 
 Merged history is the thread's exactly, framing included, so the model can
-tell those exchanges were side questions. `/resend` refuses on a merged
-question or a summary, since resending would answer it again as a real turn;
+tell those exchanges were side questions. `/continue` refuses on a merged
+question, since resending would answer it again as a real turn;
 send a message instead. A thread asked before `/new` or `/resume` belongs to
 that other conversation and cannot be kept here. The viewer's list marks a kept
-thread `merged` or `summarized`; summarizing it again adds another summary.
+thread `merged` or `summarized`; summarizing it again sends another summary.
 
 ## What a side question can and cannot do
 
@@ -264,9 +255,9 @@ question costs little more than the question.
 Tools work as they do in a turn. The model can read files, search the web, use
 MCP tools, and run shell commands or edit files if the question calls for it,
 with the usual permission checks. The exceptions are the tools that change the
-conversation itself: the plan (`write_plan`, `add_task`, `update_task_status`
-and the rest; `read_plan` is fine) and delegation (`delegate_task`,
-`integrate_task`, `discard_task`). A call to one is refused, and the model
+conversation itself: the plan (`write_plan`, `add_task`, `update_task_statuses`
+and the rest; `read_plan` is fine) and delegation (`delegate_task`, and anything
+but listing in `task_worktree` and `manage_worker`). A call to one is refused, and the model
 carries on answering. If the answer implies work, send it as a normal message.
 
 Nothing about a side question joins the conversation:
@@ -354,8 +345,9 @@ The same model at two efforts is two side questions; labels show the effort
 stay apart. The effort is only read from the leading words, and only from the
 last `+` in a model word when a real level follows, so model ids that contain
 `+` still work. An unknown level fails the command, and so does an effort on a
-model `/effort` cannot set (it supports OpenAI/Codex models and the Anthropic
-and Claude Code models whose profile has effort control). Typing `+` in the
+model `/effort` cannot set (it supports OpenAI/Codex models, the Anthropic
+and Claude Code models whose profile has effort control, Gemini models that
+think, and Antigravity models that offer a thinking level). Typing `+` in the
 leading words completes the levels.
 
 ## Which context it sees
@@ -364,8 +356,9 @@ A side question sees what the running turn is working with right now, not the
 state before the turn started, up to the last completed step. A tool call that
 has not returned yet is left out, and so is the text streaming beside it.
 
-Side questions are bounded: 12 model requests and 300 seconds each. They are not
-retried, and they do not survive exiting pcode.
+Side questions are bounded by time: 300 seconds each, with no cap on model
+requests, so one that needs to dig can finish. They are not retried, and they do
+not survive exiting pcode.
 
 When one fails or times out, the viewer shows the error and the traceback is
 appended to the session's `errors.log`, the same file failed turns write to,

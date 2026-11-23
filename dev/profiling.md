@@ -207,6 +207,38 @@ workload, and tracing modes the same. This is a component benchmark, **not** a
 measurement of real terminal repainting, CPR, provider latency, tool execution,
 session persistence, or a long-lived conversation's memory.
 
+## Native vs Python pacing in a real terminal
+
+`dev/pacing_bench.py` opens one Ghostty Smooth window (macOS), taking focus once,
+and streams a scripted reply through the real interactive app in it, a fresh pcode
+process per run with the terminal reset in between. It crosses `smooth_scroll auto`
+(native protocol 9 pacing) and `off` (the Python pacer) with kitty and text
+spinners, in ABBA order. The `typical` profile thinks for 10 s first, measured
+separately, then streams at about 40 tokens/s; `fast` is one burst. It prints
+editor renders and redraw requests by source, handoffs, pcode and Ghostty CPU,
+event-loop lag, and, for native runs, Ghostty's draw-to-draw frame gaps pooled
+from the fork's `GHOSTTY_SMOOTH_FRAME_LOG`:
+
+```sh
+uv run --no-sync python dev/pacing_bench.py                    # typical, 4 setups x 5: ~20 min
+uv run --no-sync python dev/pacing_bench.py --profile fast --spinners kitty
+uv run --no-sync python dev/pacing_bench.py --src .worktrees/base  # run another checkout
+```
+
+For a before/after of a pcode change, add a worktree at the old commit and pass
+it as `--src`. The children import pcode from the live tree otherwise, so editing
+`src/` while a benchmark runs mixes old and new code into one table.
+
+Traps it guards against. A run that glided when it shouldn't, or didn't when it
+should, measured the wrong pacer: usually the terminal answered no protocol or an
+older one (`probe`). The script prints what it has and stops rather than mixing
+setups. CPU varies about ±20% run to run, so a two-run difference meant nothing in
+practice: keep five runs or more. Ghostty stops drawing hidden windows, so frame
+gaps need the benchmark window on screen (park it in a corner, not behind others), and they are timed when Ghostty draws
+(render-thread pacing, not compositor presentation). A window started with
+`--config-default-files=false` never answered the smooth probe in time, so the
+benchmark uses your Ghostty config.
+
 ## Replay previous real sessions without rerunning tools
 
 After `make install`, use the standalone benchmark command:

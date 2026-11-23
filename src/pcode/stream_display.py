@@ -1,8 +1,8 @@
 """Presentation-only event routing, shared by live streaming and offline benchmarks."""
 
 from rich.console import Console
-from rich.markdown import Markdown
 
+from pcode.markdown import Markdown
 from pcode.runtime import (
     CacheBust,
     ChildPlan,
@@ -19,6 +19,7 @@ from pcode.runtime import (
     ThinkingDelta,
     ToolStarted,
     ToolSummary,
+    WorkerStatus,
 )
 from pcode.terminal_notify import TabProgress, terminal_fd
 from pcode.terminal_text import safe_text
@@ -60,7 +61,15 @@ class PrintedReply:
     """
 
     # Live-panel state, with no live panel to show it.
-    SKIPPED = (ThinkingDelta, RunStatus, PlanPreview, PlanUpdated, ChildPlan, ChildText)
+    SKIPPED = (
+        ThinkingDelta,
+        RunStatus,
+        PlanPreview,
+        PlanUpdated,
+        ChildPlan,
+        ChildText,
+        WorkerStatus,
+    )
 
     def __init__(self, stdout, *, transcript, present) -> None:
         self.stdout = stdout
@@ -133,8 +142,10 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         output.finish()
         output.thinking_delta(event.text)
         activity.think(event.text)
+        output.redraw_streamed()  # The thinking rows follow at a capped frame rate.
+        return
     elif isinstance(event, Thinking):
-        output.finish_thinking(event.text)
+        output.finish_thinking(event.text, complete=True)
         if activity.thought_done and event.text:
             # A block that arrived whole, with no deltas before it.
             activity.think(event.text)
@@ -142,11 +153,15 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
         # next block, or the answer, replaces it.
         activity.thought_done = True
     elif isinstance(event, TextDelta):
-        output.finish_thinking()
+        output.finish_thinking(complete=True)
         output.delta(event.text)
         activity.status = "Responding…"
         if event.text.strip():  # An empty part start says nothing yet.
             activity.forget_thought()
+        # The pacer redraws as it types the text out; a delta itself changes
+        # little on screen, so its redraws are capped.
+        output.redraw_streamed()
+        return
     elif isinstance(event, CacheBust):
         # A footer note, not a scrollback line: the session journal keeps the
         # full notice (and its cause) for anyone diagnosing it later.
@@ -154,8 +169,10 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
 
         activity.cache_note = footer_label(event.text)
     elif isinstance(event, EditCompleted):
-        output.finish_thinking()
-        output.finish()
+        # As for a settled call below: only a diff that is written interrupts.
+        if transcript.writes_edit(event):
+            output.finish_thinking()
+            output.finish()
         present((event,))
     elif isinstance(event, (CommandOutput, EditPreview)):
         present((event,))
@@ -168,15 +185,20 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     elif isinstance(event, ChildPlan):
         activity.tools.record_plan(event.call_id, event.items)
         activity.workers.record(event)
-    elif isinstance(event, ChildText):
-        # A worker's own prose feeds `/agents`; the transcript never shows it.
+    elif isinstance(event, ChildText | WorkerStatus):
+        # A worker's own prose and status feed `/agents`; the transcript never shows them.
         activity.workers.record(event)
         return
     elif isinstance(event, (ToolStarted, ToolSummary)):
-        output.finish_thinking()
-        # Settled calls land in scrollback, so prose must be committed first.
-        # Suppressed calls, such as successful planning, do not interrupt it.
-        if transcript.writes_tool_result(event):
+        # Settled calls land in scrollback, so thinking and prose must be
+        # committed first. Nothing else interrupts them: not a suppressed call,
+        # such as successful planning, and not a background worker's own calls,
+        # which arrive in the middle of a word the model is still streaming,
+        # and not a background worker's own completion row, which lands
+        # whenever it finishes; like a job's exit notice, it is written above
+        # the unfinished paragraph instead.
+        if transcript.writes_tool_result(event) and event.execution != "background":
+            output.finish_thinking()
             output.finish()
         present((event,))
     elif isinstance(event, Message):

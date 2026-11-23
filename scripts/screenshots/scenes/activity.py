@@ -3,7 +3,7 @@
 from scene import Call, Think, launch
 
 MODEL = "claude:claude-opus-5-5"
-SIZE = (100, 30)
+SIZE = (100, 35)
 
 STEPS_TEXT = [
     ("read", "Find where the discount is applied", "Finding where the discount is applied"),

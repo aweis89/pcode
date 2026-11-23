@@ -136,7 +136,7 @@ for the fingerprint comparison and dumps.
 ## Delegated runs
 
 A sub-agent inherits the parent's *model object* but is run with
-`model_settings=None` (`subagents/_toolset.py`), and cache settings live on the
+`model_settings=None` (`sub_agents/_toolset.py`), and cache settings live on the
 agent, not the model. A delegated Anthropic run therefore asked for no caching
 at all. `ProviderCacheSettings` in [`cache_settings.py`](../src/pcode/cache_settings.py)
 applies them per request instead, for the parent's sub-agents and across a
@@ -156,7 +156,7 @@ Three things about delegation are easy to get backwards, and each has a test:
   and a sub-agent's history is not the conversation to resume.
 - **A per-delegation `usage_limits` isolates request counts, not tokens.** Child
   tokens still reach the parent's `result.usage`, so adding
-  `DelegationEndEvent.usage` to session totals double-counts every delegated
+  `DelegationFinishedEvent.usage` to session totals double-counts every delegated
   token. The budget exists so an unattended child is stopped with a steering
   message instead of aborting the turn -- without it, a child hitting a shared
   limit raises through the parent. `SubAgent(usage_limits=None)` is not "no
@@ -175,7 +175,7 @@ or the run continues with nothing where the model's reply should be.
 
 The same capability is installed on `SubAgents.shared_capabilities`, so a
 delegated request is counted where it happens. Nothing may add
-`AgentRunResult.usage` or `DelegationEndEvent.usage` on top of it. Two sources
+`AgentRunResult.usage` or `DelegationFinishedEvent.usage` on top of it. Two sources
 still need explicit handling because they are separate agent runs that never
 reach the hook: manual `/compact` and the auto-compaction summarizer.
 

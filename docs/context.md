@@ -11,7 +11,7 @@ Prompt overhead           ~7.4k tokens · 3% of 200k · estimated
   Instructions            ~4.3k
     ~/AGENTS.md           ~2.8k · instructions
     AGENTS.md             ~675 · instructions
-    Harness base prompts  ~228
+    Coding guidance       ~228
     Planning tool         ~162
     Assistant config      ~105 · paths only · 1 skill
     File tools            ~102
@@ -190,8 +190,9 @@ pcode config unset tool_output_mode              # Restore default spill mode
   `truncate` mode and to the fallback when a spill cannot be saved.
 
 The model reads spilled output back with `read_tool_result`, by line range or
-matching text, up to 1,000 lines or 50,000 characters per call. For a single
-line longer than that, it is told how to read a character range with the shell.
+matching text, up to 1,000 lines or 50,000 characters per call, or by byte
+range for a single line too long for that (minified JSON). `grep_tool_result`
+finds the lines that contain some text, with line numbers and context.
 Readback keeps working in `off` and `truncate` modes, so handles in a resumed
 session still work.
 

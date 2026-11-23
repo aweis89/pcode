@@ -1,6 +1,7 @@
 """Thinking is a saved, visibility-filtered part of normal scrollback."""
 
 import asyncio
+from contextlib import contextmanager
 from io import StringIO
 
 import pytest
@@ -234,7 +235,7 @@ def test_streamed_thinking_renders_split_markdown_and_buffers_code_and_lists():
         assert "hello" in buffer.getvalue()
         writer.thinking_delta("- one\n\n- two\n")
         assert "one" not in buffer.getvalue()
-        writer.finish_thinking("ignored streamed fallback")
+        writer.finish_thinking("ignored streamed fallback", complete=True)
         assert "one" in buffer.getvalue()
         assert "two" in buffer.getvalue()
         assert "ignored streamed fallback" not in buffer.getvalue()
@@ -348,3 +349,270 @@ def test_head_rows_keeps_the_first_rows_and_marks_the_cut():
     # A wide character cannot be split: it is dropped whole to make room.
     wide = head_rows("漢" * 10, 6, 1)
     assert cell_len(wide[0]) <= 6 and wide[0].endswith("…")
+
+
+def test_a_background_workers_calls_do_not_split_a_streaming_thought():
+    from pcode.runtime import Thinking, ThinkingDelta, ToolStarted, ToolSummary
+    from pcode.stream_display import present_events, present_stream_event
+
+    activity = Activity(thinking_mode="scrollback")
+    transcript = Transcript(Console(file=StringIO(), width=60), activity=activity)
+    with create_pipe_input() as pipe:
+        app = PreviewApp()
+        prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
+        writer = TerminalOutput(transcript.console, prompt.app)
+        writer.commit_thinking = transcript.thinking
+
+        def feed(event):
+            present_stream_event(
+                event,
+                output=writer,
+                transcript=transcript,
+                activity=activity,
+                present=lambda events: present_events(
+                    events, activity=activity, transcript=transcript, edits=[]
+                ),
+            )
+
+        delegate = ToolStarted("delegate_task", "worker · review", "d1", agent="worker")
+        feed(delegate)
+        feed(ThinkingDelta("I"))
+        # The worker reports while the parent is still mid-word.
+        feed(ToolStarted("delegate_task", "worker · review", "d1", activity="shell"))
+        feed(ToolStarted("shell", "git show", "d1:c1", parent_call_id="d1"))
+        feed(ToolSummary("shell", "git show", call_id="d1:c1", parent_call_id="d1"))
+        feed(ThinkingDelta("'m checking"))
+        feed(Thinking("I'm checking"))
+        assert rendered(transcript) == "I'm checking\n\n"
+        # A call that settles into scrollback still commits the thought above it.
+        feed(ThinkingDelta("Next"))
+        feed(ToolSummary("read_file", "a.py", call_id="t1"))
+        assert rendered(transcript).startswith("I'm checking\n\nNext\n\n")
+
+
+def test_replay_does_not_split_a_thought_at_a_sub_agent_call():
+    from types import SimpleNamespace
+
+    from pcode.sessions import SavedSession
+
+    child = {"kind": "ToolSummary", "name": "shell", "parent_call_id": "d1"}
+    records = [
+        {"kind": "ThinkingDelta", "text": "I"},
+        child,
+        {"kind": "ThinkingDelta", "text": "'m checking"},
+        {"kind": "Thinking", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]
+    saved = SimpleNamespace(active_records=lambda end=None: iter(records))
+    assert list(SavedSession.transcript_records(saved)) == [
+        child,
+        {"kind": "thinking_partial", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]
+
+
+def test_a_scrollback_write_mid_thought_does_not_repeat_the_thought():
+    from pcode.runtime import Thinking, ThinkingDelta, ToolSummary
+    from pcode.stream_display import present_events, present_stream_event
+
+    activity = Activity(thinking_mode="scrollback")
+    transcript = Transcript(Console(file=StringIO(), width=60), activity=activity)
+    with create_pipe_input() as pipe:
+        app = PreviewApp()
+        prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
+        writer = TerminalOutput(transcript.console, prompt.app)
+        writer.commit_thinking = transcript.thinking
+
+        def feed(event):
+            present_stream_event(
+                event,
+                output=writer,
+                transcript=transcript,
+                activity=activity,
+                present=lambda events: present_events(
+                    events, activity=activity, transcript=transcript, edits=[]
+                ),
+            )
+
+        feed(ThinkingDelta("Checking"))
+        # A background job's result lands before the thought's completion.
+        feed(ToolSummary("shell", "make test", call_id="t1"))
+        feed(Thinking("Checking"))
+        assert rendered(transcript).count("Checking") == 1
+        # The next thought, arriving whole, is still written.
+        feed(Thinking("Whole"))
+        assert "Whole" in rendered(transcript)
+
+
+def test_a_turn_ended_mid_thought_lets_the_next_whole_thought_through():
+    transcript = Transcript(
+        Console(file=StringIO(), width=60), activity=Activity(thinking_mode="scrollback")
+    )
+    with create_pipe_input() as pipe:
+        app = PreviewApp()
+        prompt = create_prompt(app.registry, input=pipe, output=DummyOutput())
+        writer = TerminalOutput(transcript.console, prompt.app)
+        writer.commit_thinking = transcript.thinking
+        writer.thinking_delta("Cancelled")
+        writer.end_turn()
+        writer.finish_thinking("Whole", complete=True)
+        assert "Whole" in rendered(transcript)
+
+
+@contextmanager
+def _live_router(transcript, activity, edits):
+    """Feed events through the real live router, committing prose to `transcript`."""
+    with create_pipe_input() as pipe:
+        yield from _router_over(pipe, transcript, activity, edits)
+
+
+def _router_over(pipe, transcript, activity, edits):
+    from pcode.stream_display import present_events, present_stream_event
+
+    prompt = create_prompt(PreviewApp().registry, input=pipe, output=DummyOutput())
+    writer = TerminalOutput(transcript.console, prompt.app)
+    writer.commit_message = transcript.message
+    writer.commit_thinking = transcript.thinking
+
+    def feed(event):
+        present_stream_event(
+            event,
+            output=writer,
+            transcript=transcript,
+            activity=activity,
+            present=lambda events: present_events(
+                events, activity=activity, transcript=transcript, edits=edits
+            ),
+        )
+
+    yield feed, writer
+
+
+@pytest.mark.parametrize("show_edits", [False, True])
+def test_a_background_workers_edit_does_not_split_a_streaming_reply(show_edits):
+    from pcode.runtime import (
+        EditCompleted,
+        Message,
+        TextDelta,
+        Thinking,
+        ThinkingDelta,
+        ToolStarted,
+        ToolSummary,
+    )
+
+    activity = Activity(thinking_mode="scrollback")
+    transcript = Transcript(Console(file=StringIO(), width=60), activity=activity)
+    transcript.show_edits = show_edits
+    transcript.group_tools = False
+    edits = []
+    with _live_router(transcript, activity, edits) as (feed, _):
+        change = EditCompleted(
+            "d1:c1", "t.py", "created", "@@ -0,0 +1 @@\n+x\n", 1, parent_call_id="d1"
+        )
+        feed(ToolStarted("delegate_task", "worker · tests", "d1", agent="worker"))
+        feed(ToolStarted("write_file", "t.py", "d1:c1", parent_call_id="d1"))
+        feed(ThinkingDelta("I"))
+        feed(change)
+        feed(ThinkingDelta("'m checking"))
+        feed(Thinking("I'm checking"))
+        feed(TextDelta("That's a bigger"))
+        # The worker's write lands while the parent is mid-sentence.
+        feed(change)
+        feed(ToolSummary("write_file", "t.py", call_id="d1:c1", parent_call_id="d1"))
+        feed(TextDelta(" second step."))
+        feed(Message("That's a bigger second step."))
+        assert rendered(transcript) == "I'm checking\n\nThat's a bigger second step.\n\n"
+        assert edits == [change, change]  # /diffs still has it
+        feed(ToolSummary("delegate_task", "worker · tests", call_id="d1"))
+        tail = rendered(transcript).split("second step.\n\n")[1]
+        assert "t.py" in tail and "+x" not in tail  # a line under the delegate, no diff
+        # The parent's own edit still commits the prose above its diff.
+        feed(TextDelta("Mine"))
+        feed(EditCompleted("t2", "u.py", "created", "@@ -0,0 +1 @@\n+y\n", 1))
+        assert ("Mine\n" in rendered(transcript)) is show_edits
+
+
+def test_a_background_workers_completion_does_not_split_a_streaming_reply():
+    from pcode.runtime import Message, TextDelta, ToolStarted, ToolSummary
+
+    activity = Activity()
+    transcript = Transcript(Console(file=StringIO(), width=60), activity=activity)
+    committed = []
+    with _live_router(transcript, activity, []) as (feed, writer):
+        writer.commit_message = lambda text: (committed.append(text), transcript.message(text))
+        feed(ToolStarted("delegate_task", "worker · tests", "d1", agent="worker"))
+        feed(TextDelta("That's a bigger"))
+        # The worker finishes while the parent is mid-sentence.
+        feed(ToolSummary("delegate_task", "worker · tests", call_id="d1", execution="background"))
+        feed(TextDelta(" second step."))
+        feed(Message("That's a bigger second step."))
+        assert committed == ["That's a bigger second step."]
+        # The completion row is still written, above the paragraph it interrupted.
+        out = rendered(transcript)
+        assert out.index("worker") < out.index("That's a bigger second step.")
+
+
+def test_a_delivered_background_delegate_reads_as_a_background_completion():
+    from time import monotonic
+
+    from pcode.background_delegation import DelegationDelivered
+    from pcode.stream_events import EventTranslator
+
+    # Only the state delivery reads; building a whole run is beside the point.
+    translator = EventTranslator.__new__(EventTranslator)
+    translator.run_id = "r1"
+    translator.tools = {}
+    translator.settled_detached = set()
+    translator.delegates = {}
+    translator.delegation_ends = {}
+    translator.detached = {"d1": ("delegate_task", {"purpose": "tests"}, monotonic())}
+    (summary,) = translator.on_delegation_delivered(
+        DelegationDelivered(tool_call_id="d1", content="done")
+    )
+    assert summary.call_id == "d1" and summary.execution == "background"
+
+
+def test_replay_does_not_split_a_thought_at_a_sub_agent_edit():
+    from types import SimpleNamespace
+
+    from pcode.sessions import SavedSession
+
+    child = {"kind": "EditCompleted", "call_id": "d1:c1", "parent_call_id": "d1"}
+    records = [
+        {"kind": "ThinkingDelta", "text": "I"},
+        child,
+        {"kind": "ThinkingDelta", "text": "'m checking"},
+        {"kind": "Thinking", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]
+    saved = SimpleNamespace(active_records=lambda end=None: iter(records))
+    assert list(SavedSession.transcript_records(saved)) == [
+        child,
+        {"kind": "thinking_partial", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]
+
+
+def test_replay_does_not_split_a_thought_at_a_background_completion():
+    from types import SimpleNamespace
+
+    from pcode.sessions import SavedSession
+
+    delegate = {"kind": "ToolSummary", "name": "delegate_task", "execution": "background"}
+    job = {"kind": "JobFinished", "name": "shell", "execution": "background"}
+    records = [
+        {"kind": "ThinkingDelta", "text": "I"},
+        delegate,
+        {"kind": "ThinkingDelta", "text": "'m "},
+        job,
+        {"kind": "ThinkingDelta", "text": "checking"},
+        {"kind": "Thinking", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]
+    saved = SimpleNamespace(active_records=lambda end=None: iter(records))
+    assert list(SavedSession.transcript_records(saved)) == [
+        delegate,
+        job,
+        {"kind": "thinking_partial", "text": "I'm checking"},
+        {"kind": "Message", "markdown": "Answer"},
+    ]

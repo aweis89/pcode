@@ -34,7 +34,17 @@ class TurnNode:
     status: str = "interrupted"
     continuation: bool = False
     resend_blocked: bool = False
+    # What /continue asks for again. Empty when it is `prompt` itself; a
+    # resumed interrupted turn's prompt is a briefing that wraps this request.
+    request: str = ""
+    # The turn's own tool calls in start order (not a sub-agent's): name, a
+    # one-line label, and outcome ("" until the call reports one). They brief
+    # /continue after an interrupt the model's history no longer records.
+    tools: list[dict] = field(default_factory=list)
+    # The turn's last text block. One that runs tools writes a block between
+    # calls, and `earlier` keeps the ones before it, oldest first, for /copy.
     response: str = ""
+    earlier: list[str] = field(default_factory=list)
     plan: list[dict] = field(default_factory=list)
     # "turn", "compaction", or "aside": a /btw side question or a side
     # thread's summary, recorded like a turn that ran no tools.
@@ -51,6 +61,28 @@ class TurnNode:
     def __post_init__(self) -> None:
         self.add_links(self.prompt, "user")
         self.add_links(self.response, "assistant")
+
+    def track_tool(self, record: dict) -> None:
+        call_id = record.get("call_id", "")
+        if record["kind"] == "ToolStarted":
+            label = record.get("command") or record.get("detail") or ""
+            entry = {
+                "call_id": call_id,
+                "name": record.get("name") or "tool",
+                "label": excerpt(label),
+                "outcome": "",
+            }
+            if call_id:
+                for tool in reversed(self.tools):
+                    if tool["call_id"] == call_id and not tool["outcome"]:
+                        tool.update(entry)
+                        return
+            self.tools.append(entry)
+            return
+        for tool in reversed(self.tools):
+            if call_id and tool["call_id"] == call_id:
+                tool["outcome"] = "failed" if record.get("failed") else "completed"
+                return
 
     def add_links(self, text: str, source: str, *, tool: bool = False) -> None:
         # Keep URL recency in event order, including assistant text before tools.
@@ -89,6 +121,7 @@ class ConversationTree:
                 parent,
                 record["prompt"],
                 continuation=record.get("continuation", False),
+                request=record.get("request", ""),
                 plan=deepcopy(self.nodes[parent].plan) if parent else [],
                 kind="aside" if record.get("aside") else "turn",
                 side=dict(side) if isinstance(side, dict) else {},
@@ -122,8 +155,14 @@ class ConversationTree:
         # `SessionJournal.active_records`).
         elif (node := self.nodes.get(record.get("run_id") or self.recording)) is not None:
             if kind == "Message":
-                node.response = record["markdown"]
-                node.add_links(node.response, "assistant")
+                markdown = record["markdown"]
+                # A blank block would hide the turn's text; a retried request
+                # can rewrite the block it had already finished.
+                if markdown.strip() and markdown != node.response:
+                    if node.response:
+                        node.earlier.append(node.response)
+                    node.response = markdown
+                    node.add_links(node.response, "assistant")
             elif kind in {"ToolStarted", "ToolSummary"}:
                 # Keep only URLs, not another copy of potentially large payloads.
                 # The same journal events rebuild these on session resume.
@@ -132,6 +171,8 @@ class ConversationTree:
                     text = record.get(key)
                     if isinstance(text, str):
                         node.add_links(text, source, tool=True)
+                if not record.get("parent_call_id"):
+                    node.track_tool(record)
             elif kind == "PlanUpdated":
                 node.plan = deepcopy(record["items"])
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled"}:
@@ -174,7 +215,7 @@ class ConversationTree:
             if len(prefix) > 24:
                 prefix = "… " + prefix[-22:]
             connector = ("└─ " if last else "├─ ") if fork else ""
-            if node.kind != "compaction":
+            if node.kind != "compaction" and (node.prompt or not node.continuation):
                 who = "btw: " if node.kind == "aside" else "user: "
                 rows.append(((node.id, True), prefix + connector + who + excerpt(node.prompt)))
             continuation = prefix + (("   " if last else "│  ") if fork else "")

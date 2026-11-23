@@ -1,13 +1,25 @@
 import asyncio
 from io import StringIO
 
+import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from pcode.conversation_tree import ConversationTree
-from pcode.links import Link, conversation_links, extract_links, open_link
-from pcode.links_ui import link_rows, links_dialog
+from pcode.links import (
+    Link,
+    conversation_links,
+    extract_links,
+    file_target,
+    is_text_file,
+    link_editor_command,
+    open_link,
+)
+from pcode.links_ui import link_items, link_rows, pick_link
+from pcode.markdown import Markdown
+from pcode.pick_ui import visible
+from pcode.popup_surface import PopupSurface
 
 
 def test_extract_markdown_labels_bare_urls_and_trailing_punctuation():
@@ -102,82 +114,70 @@ def test_link_rows_show_source_and_label():
     ]
 
 
-def test_links_dialog_defaults_to_newest_and_cancels():
-    links = [Link("https://old.test"), Link("https://new.test")]
+def pick(links, keys, *, messages=None, then=""):
+    """Run `/links` on a terminal surface, typing `keys` (and `then` after a pause)."""
+    if messages is None:
+        messages = [link for link in links if link.source in ("", "user", "assistant")]
 
     async def run():
         with create_pipe_input() as pipe:
-            cases = (("\r", "https://new.test"), ("\x1b[B\r", "https://old.test"), ("\x1b", None))
-            for keys, expected in cases:
-                dialog = links_dialog(links, input=pipe, output=DummyOutput())
-                task = asyncio.create_task(dialog.run_async())
-                await asyncio.sleep(0.05)
-                pipe.send_text(keys)
-                assert await asyncio.wait_for(task, 2) == expected
+            surface = PopupSurface(pipe, DummyOutput())
+            task = asyncio.create_task(pick_link(surface, links, messages))
+            await asyncio.sleep(0.05)
+            pipe.send_text(keys)
+            if then:
+                await asyncio.sleep(0.6)
+                pipe.send_text(then)
+            return await asyncio.wait_for(task, 2)
 
-    asyncio.run(run())
+    return asyncio.run(run())
 
 
-def test_links_dialog_search_and_tool_filter():
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [("\r", "https://new.test"), ("\x1b[B\r", "https://old.test"), ("\x1b", None)],
+)
+def test_links_defaults_to_newest_and_cancels(keys, expected):
+    assert pick([Link("https://old.test"), Link("https://new.test")], keys) == expected
+
+
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        # The picker opens in the search line; Ctrl+T toggles tools from there.
+        ("\x14\r", "https://old.test/path"),
+        ("\x14\x14\r", "https://old.test/path"),  # Retain selection after toggling.
+        ("REFERENCE\r", "https://old.test/path"),
+        ("old.test/path\r", "https://old.test/path"),
+        ("SHELL\r", "https://new.test"),
+        ("t\r", "https://new.test"),  # Typed `t` searches; it does not hide tools.
+        ("missing\r\x03", None),  # Empty matches cannot open a stale URL.
+    ],
+)
+def test_links_search_and_tool_filter(keys, expected):
     links = [
         Link("https://old.test/path", "Reference Manual", "assistant"),
         Link("https://new.test", "", "shell"),
     ]
-
-    async def run():
-        # The picker opens in the search line; Ctrl+T toggles tools from there.
-        cases = (
-            ("\x14\r", "https://old.test/path"),
-            ("\x14\x14\r", "https://old.test/path"),  # Retain selection after toggling.
-            ("REFERENCE\r", "https://old.test/path"),
-            ("old.test/path\r", "https://old.test/path"),
-            ("SHELL\r", "https://new.test"),
-            ("t\r", "https://new.test"),  # Typed `t` searches; it does not hide tools.
-            ("missing\r\x03", None),  # Empty matches cannot open a stale URL.
-            ("\t\x06missing\r\x03", None),  # Ctrl+F in the list returns to the search.
-            ("missing\x1b", "https://new.test"),  # Esc clears the search first.
-        )
-        for keys, expected in cases:
-            with create_pipe_input() as pipe:
-                dialog = links_dialog(links, input=pipe, output=DummyOutput())
-                task = asyncio.create_task(dialog.run_async())
-                await asyncio.sleep(0.05)
-                pipe.send_text(keys)
-                if keys.endswith("\x1b"):
-                    await asyncio.sleep(0.6)
-                    pipe.send_text("\r")
-                assert await asyncio.wait_for(task, 2) == expected
-
-    asyncio.run(run())
+    assert pick(links, keys) == expected
 
 
-def test_links_dialog_tab_moves_from_the_search_line_to_the_list():
+def test_links_escape_clears_the_search_first():
     links = [Link("https://old.test"), Link("https://new.test")]
-
-    async def run():
-        with create_pipe_input() as pipe:
-            dialog = links_dialog(links, input=pipe, output=DummyOutput())
-            task = asyncio.create_task(dialog.run_async())
-            await asyncio.sleep(0.05)
-            # In the list, `j` is not typed into the search, so Enter still opens.
-            pipe.send_text("\tj\r")
-            assert await asyncio.wait_for(task, 2) == "https://new.test"
-
-    asyncio.run(run())
+    assert pick(links, "missing\x1b", then="\r") == "https://new.test"
 
 
-def test_links_dialog_can_recover_when_tools_are_only_links():
-    async def run():
-        with create_pipe_input() as pipe:
-            dialog = links_dialog(
-                [Link("https://tool.test", "", "shell")], input=pipe, output=DummyOutput()
-            )
-            task = asyncio.create_task(dialog.run_async())
-            await asyncio.sleep(0.05)
-            pipe.send_text("\x14\r\x14\x14\r\x14\r")
-            assert await asyncio.wait_for(task, 2) == "https://tool.test"
+def test_links_can_recover_when_tools_are_only_links():
+    links = [Link("https://tool.test", "", "shell")]
+    assert pick(links, "\x14\r\x14\x14\r\x14\r") == "https://tool.test"
 
-    asyncio.run(run())
+
+def test_links_rows_search_url_label_and_source():
+    items = link_items([Link("https://a.test", "Manual", "user"), Link("https://b.test")])
+    # Newest first.
+    assert [item.id for item in items] == ["https://b.test", "https://a.test"]
+    assert [item.id for item in visible(items, "manual user", "substring")] == ["https://a.test"]
+    assert visible(items, "manualuser", "substring") == []
 
 
 def test_filter_tools_before_deduplicating_and_sort_by_last_appearance():
@@ -221,15 +221,7 @@ def test_link_recency_follows_interleaved_events_and_preserves_message_links():
     ]
     assert messages == [Link("https://a.test", "", "assistant")]
 
-    async def run():
-        with create_pipe_input() as pipe:
-            dialog = links_dialog(links, message_links=messages, input=pipe, output=DummyOutput())
-            task = asyncio.create_task(dialog.run_async())
-            await asyncio.sleep(0.05)
-            pipe.send_text("\x14\r")
-            assert await asyncio.wait_for(task, 2) == "https://a.test"
-
-    asyncio.run(run())
+    assert pick(links, "\x14\r", messages=messages) == "https://a.test"
 
 
 def test_tool_links_track_last_appearance():
@@ -295,3 +287,209 @@ def test_links_command_requests_picker_and_notes_when_empty():
         assert "No links" in output.getvalue()
 
     asyncio.run(run())
+
+
+def test_markdown_renders_file_links_as_hyperlinks_and_blocks_unsafe_schemes():
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, color_system="truecolor", width=120)
+    console.print(
+        Markdown(
+            "See [Makefile](file:///tmp/Makefile#L60-L61), "
+            "[js](javascript:alert(1)), [vb](vbscript:foo), "
+            "[html](data:text/html,hi), and [docs](https://example.com)."
+        )
+    )
+    rendered = buf.getvalue()
+    assert "\x1b]8;" in rendered
+    assert "file:///tmp/Makefile#L60-L61" in rendered
+    assert "[Makefile](" not in rendered
+    assert "[js](javascript:alert(1))" in rendered
+    assert "[vb](vbscript:foo)" in rendered
+    assert "[html](data:text/html,hi)" in rendered
+    assert "https://example.com" in rendered
+
+
+def test_extract_links_includes_file_urls():
+    text = (
+        "Check [Makefile](file:///Users/aaron/Makefile#L60-L61) + "
+        "[SKILL.md](file:///Users/aaron/SKILL.md) and bare file:///tmp/notes.txt."
+    )
+    assert extract_links(text, "assistant") == [
+        Link("file:///Users/aaron/Makefile#L60-L61", "Makefile", "assistant"),
+        Link("file:///Users/aaron/SKILL.md", "SKILL.md", "assistant"),
+        Link("file:///tmp/notes.txt", "", "assistant"),
+    ]
+
+
+def test_file_target_decodes_paths_and_line_anchors(tmp_path):
+    space_file = tmp_path / "my file.py"
+    space_file.write_text("print(1)\n")
+    assert file_target(f"file://{tmp_path}/my%20file.py#L60-L61") == (space_file, 60)
+    assert file_target(f"file://localhost{tmp_path}/my%20file.py#L12C4") == (space_file, 12)
+    assert file_target(f"file://{tmp_path}/my%20file.py#line=7") == (space_file, 7)
+    assert file_target(f"file://{tmp_path}/my%20file.py#42") == (space_file, 42)
+    assert file_target(f"file://{tmp_path}/my%20file.py#1-overview") == (space_file, None)
+    assert file_target(f"file://{tmp_path}/my%20file.py#2026-01-changelog") == (space_file, None)
+    assert file_target(f"file://{tmp_path}/my%20file.py:19:3") == (space_file, 19)
+    assert file_target("https://example.com/file.py#L10") is None
+    assert file_target("file://otherhost/tmp/file.py") is None
+
+
+def test_is_text_file_and_link_editor_command(tmp_path):
+    makefile = tmp_path / "Makefile"
+    makefile.write_text("test:\n\tpytest\n")
+    ts_file = tmp_path / "index.ts"
+    ts_file.write_text("export const x: number = 1;\n")
+    empty = tmp_path / "empty.txt"
+    empty.write_text("")
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n1 0 obj\n")
+    gzip_txt = tmp_path / "notes.txt.gz"
+    gzip_txt.write_bytes(b"\x1f\x8b\x08\x00fake")
+    control_blob = tmp_path / "ctrl.bin"
+    control_blob.write_bytes(b"\x01\x02\x03\x04\x05\x06abc")
+    non_utf8_blob = tmp_path / "raw.bin"
+    non_utf8_blob.write_bytes(bytes(range(1, 256)))
+    binary = tmp_path / "blob"
+    binary.write_bytes(b"\x7fELF\x00\x01\x02")
+    subdir = tmp_path / "dir"
+    subdir.mkdir()
+
+    assert is_text_file(makefile)
+    assert is_text_file(ts_file)
+    assert is_text_file(empty)
+    assert not is_text_file(image)
+    assert not is_text_file(pdf)
+    assert not is_text_file(gzip_txt)
+    assert not is_text_file(control_blob)
+    assert not is_text_file(non_utf8_blob)
+    assert not is_text_file(binary)
+    assert not is_text_file(subdir)
+
+    env = {"VISUAL": "nvim"}
+    assert link_editor_command(f"{makefile.as_uri()}#L60-L61", environ=env) == [
+        "nvim",
+        "+60",
+        str(makefile),
+    ]
+    assert link_editor_command(f"{makefile.as_uri()}#L60", environ={"EDITOR": "code"}) == [
+        "code",
+        "--goto",
+        f"{makefile}:60",
+    ]
+    assert link_editor_command(makefile.as_uri(), environ={"VISUAL": "   "}) == [
+        "vi",
+        str(makefile),
+    ]
+    try:
+        link_editor_command(makefile.as_uri(), environ={"VISUAL": 'nvim "unterminated'})
+    except RuntimeError as error:
+        assert "Invalid editor command" in str(error)
+    else:
+        raise AssertionError("unmatched quote in $VISUAL should raise")
+    assert link_editor_command(image.as_uri(), environ=env) is None
+    assert link_editor_command(pdf.as_uri(), environ=env) is None
+    assert link_editor_command(subdir.as_uri(), environ=env) is None
+    assert link_editor_command("https://example.com", environ=env) is None
+
+    try:
+        link_editor_command(f"file://{tmp_path}/missing.py", environ=env)
+    except RuntimeError as error:
+        assert "does not exist" in str(error)
+    else:
+        raise AssertionError("missing file:// link should raise")
+
+
+def test_open_link_unwraps_file_url_path(tmp_path, monkeypatch):
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    calls = []
+    monkeypatch.setattr("pcode.links.sys.platform", "darwin")
+    monkeypatch.setattr("pcode.links.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("pcode.links.subprocess.Popen", lambda argv, **kw: calls.append(argv))
+
+    open_link(f"{image.as_uri()}#L1")
+    assert calls == [["open", str(image)]]
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_choose_link_opens_text_file_in_editor_and_falls_back_for_binary(
+    tmp_path, monkeypatch, native
+):
+    """A native list has no terminal: $EDITOR then runs on the full screen once it closed."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from pydantic_ai import Agent
+
+    from pcode.app import PreviewApp
+    from pcode.live import AgentRuntime
+
+    text_file = tmp_path / "Makefile"
+    text_file.write_text("all:\n\techo hi\n")
+    image_file = tmp_path / "shot.png"
+    image_file.write_bytes(b"\x89PNG\r\n\x1a\n\x00")
+
+    monkeypatch.setenv("VISUAL", "nvim")
+    ran_editor = []
+    ran_opener = []
+    monkeypatch.setattr("pcode.app.subprocess.run", lambda cmd, **kw: ran_editor.append(cmd))
+    monkeypatch.setattr("pcode.links.open_link", lambda url: ran_opener.append(url))
+
+    async def run():
+        runtime = AgentRuntime(Agent("test"))
+        runtime.tree.consume({"kind": "turn_started", "run_id": "a", "prompt": "check"})
+        runtime.tree.consume(
+            {
+                "kind": "Message",
+                "markdown": (
+                    f"[Makefile]({text_file.as_uri()}#L2) and [shot]({image_file.as_uri()})"
+                ),
+            }
+        )
+        runtime.tree.consume({"kind": "turn_completed"})
+        output = StringIO()
+        app = PreviewApp(runtime=runtime, console=Console(file=output))
+
+        @asynccontextmanager
+        async def fake_popup(_output, _session, **options):
+            popups.append(options)
+            if native and options.get("pick"):
+
+                @asynccontextmanager
+                async def full_screen():
+                    popups.append("full screen")
+                    yield PopupSurface(None, _session.app.output)
+
+                native_picker = SimpleNamespace(hang_up=lambda: popups.append("hung up"))
+                yield PopupSurface(
+                    None, None, overlay=True, native=native_picker, full_screen=full_screen
+                )
+            else:
+                yield PopupSurface(None, _session.app.output)
+
+        monkeypatch.setattr(app, "popup", fake_popup)
+        fake_session = SimpleNamespace(app=SimpleNamespace(output=DummyOutput(), style=None))
+
+        picked = iter([f"{text_file.as_uri()}#L2", image_file.as_uri()])
+
+        async def fake_pick(surface, links, message_links, style):
+            return next(picked)
+
+        monkeypatch.setattr("pcode.links_ui.pick_link", fake_pick)
+
+        await app.choose_link(output=None, session=fake_session)
+        await app.choose_link(output=None, session=fake_session)
+
+    popups: list[dict] = []
+    asyncio.run(run())
+    assert ran_editor == [["nvim", "+2", str(text_file)]]
+    assert ran_opener == [image_file.as_uri()]
+    picks = [{"layout": "sheet", "title": "Links", "pick": True}] * 2
+    if native:
+        # The native list closed, then the editor took the full screen inside that popup.
+        assert popups == [picks[0], "hung up", "full screen", picks[1]]
+    else:
+        assert popups == picks

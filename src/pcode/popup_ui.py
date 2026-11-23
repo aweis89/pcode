@@ -1,6 +1,8 @@
 """Shared terminal-native styling for alternate-screen popups."""
 
+import asyncio
 import re
+import time
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from io import StringIO
@@ -29,7 +31,6 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import (
     AfterInput,
@@ -47,7 +48,7 @@ from rich.style import Style as RichStyle
 from rich.styled import Styled
 from rich.theme import Theme
 
-from pcode.frame import TITLE_CHROME, Frame, text_width
+from pcode.frame import TITLE_CHROME, Frame, SlimScrollbarMargin, frame_rows, text_width
 from pcode.input_keys import configure_newline_keys
 from pcode.preferences import SETTINGS, load_preferences
 from pcode.prefix_keys import PrefixKeys
@@ -77,9 +78,10 @@ def marked(renderable, key: str) -> Styled:
     return Styled(renderable, RichStyle(meta={_MARK + key: True}))
 
 
-# Framed selector panes: rows of list content, before the frame's own borders.
+# Framed selector panes: rows of list content, before the frame's own rows.
 LIST_ROWS_MIN = 3
 LIST_ROWS_MAX = 6
+# A boxed frame's borders, either side or above and below.
 _BORDERS = 2
 # Rows a docked editor grows to before it scrolls; the panes above keep the rest.
 INPUT_ROWS_MAX = 6
@@ -111,6 +113,8 @@ POPUP_ACCENTS = Style.from_dict(
         "popup scrollbar.background": _NATIVE,
         "popup scrollbar.button": f"{_NATIVE} reverse",
         "popup scrollbar.arrow": f"{_NATIVE} bold",
+        # An overlay's thin thumb (`frame.SlimScrollbarMargin`).
+        "popup scrollbar.slim": f"{_NATIVE} dim",
         "popup selected": f"{_NATIVE} reverse",
         "popup cursor-line": f"{_NATIVE} reverse nounderline",
         "popup placeholder": "dim italic",
@@ -240,7 +244,10 @@ def shortcut_hint(shortcuts: PrefixKeys):
         wrap_lines=True,
         dont_extend_height=True,
     )
-    frame = Frame(body, title=lambda: shortcuts.help_title, width=frame_width, footer=footer)
+    # Boxed even in an overlay: it floats over the content.
+    frame = Frame(
+        body, title=lambda: shortcuts.help_title, width=frame_width, footer=footer, boxed=True
+    )
     return ConditionalContainer(
         VSplit([frame], align=HorizontalAlign.LEFT),
         filter=Condition(lambda: shortcuts.visible),
@@ -382,33 +389,112 @@ def bind_list_paging(keys, listing, filter) -> None:
         listing.buffer.cursor_down(half())
 
 
-def steer_list_from_query(keys, query, listing) -> None:
+SEARCH_PAUSE = 0.12
+"""Seconds of no typing before a slow filter re-runs."""
+SEARCH_INSTANT = 0.015
+"""A filter that ran faster than this keeps running on every keystroke."""
+
+
+class SearchDebounce:
+    """Re-run a popup's filter as its query changes, waiting for a pause once it is slow.
+
+    A cheap filter runs on every keystroke, so short lists feel instant. Once
+    a run takes longer than `SEARCH_INSTANT`, later changes wait until typing
+    pauses for `SEARCH_PAUSE`, so a slow filter no longer holds up each key.
+    Without a running event loop (tests, setup) every change filters at once.
+
+    Call `flush()` before acting on the filtered result, as Enter-while-typing
+    does, so a pending re-filter lands first.
+    """
+
+    def __init__(
+        self,
+        buffer,
+        refresh: Callable[[], object],
+        pause: float = SEARCH_PAUSE,
+        instant: float = SEARCH_INSTANT,
+    ):
+        self.refresh = refresh
+        self.pause = pause
+        self.instant = instant
+        self.slow = False
+        self._timer: asyncio.TimerHandle | None = None
+        buffer.on_text_changed += self._changed
+
+    @property
+    def pending(self) -> bool:
+        return self._timer is not None
+
+    def flush(self) -> None:
+        if self._timer is not None:
+            self.cancel()
+            self._run()
+
+    def cancel(self) -> None:
+        """Drop a pending filter, as a closing popup does."""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _changed(self, _buffer) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None or not (self.slow or self.pending):
+            self._run()
+            return
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = loop.call_later(self.pause, self._fire)
+
+    def _fire(self) -> None:
+        self._timer = None
+        self._run()
+        get_app().invalidate()
+
+    def _run(self) -> None:
+        start = time.perf_counter()
+        self.refresh()
+        self.slow = time.perf_counter() - start > self.instant
+
+
+def steer_list_from_query(keys, query, listing, search: SearchDebounce | None = None) -> None:
     """Keep typing in the query while ↑/↓ move the selection in a TextArea list.
 
     A one-line query swallows vertical movement otherwise, which is what a
-    filter-as-you-type list makes people expect least.
+    filter-as-you-type list makes people expect least. A pending `search`
+    lands first, so the keys move through the list the query asked for.
     """
     typing = has_focus(query)
 
     def page() -> int:
         return _list_page(listing)
 
+    def flush() -> None:
+        if search is not None:
+            search.flush()
+
     @keys.add("up", filter=typing)
     @keys.add("c-p", filter=typing)
     def previous(event):
+        flush()
         listing.buffer.cursor_up()
 
     @keys.add("down", filter=typing)
     @keys.add("c-n", filter=typing)
     def following(event):
+        flush()
         listing.buffer.cursor_down()
 
     @keys.add("pageup", filter=typing)
     def previous_page(event):
+        flush()
         listing.buffer.cursor_up(page())
 
     @keys.add("pagedown", filter=typing)
     def following_page(event):
+        flush()
         listing.buffer.cursor_down(page())
 
 
@@ -527,9 +613,7 @@ class RichPane:
         # The window scrolls to keep the reported cursor visible on every render,
         # so a fixed row 0 would snap keyboard scrolling straight back to the top.
         self.control = Control()
-        self.window = Window(
-            self.control, wrap_lines=False, right_margins=[ScrollbarMargin(display_arrows=True)]
-        )
+        self.window = Window(self.control, wrap_lines=False, right_margins=[SlimScrollbarMargin()])
 
     def follow(self, renderables: list) -> None:
         """Replace streaming content: stay on the tail if the reader was there, else hold."""
@@ -681,10 +765,11 @@ def list_pane_height(rows: int = LIST_ROWS_MAX) -> Dimension:
     rows up front.
     """
     visible = max(LIST_ROWS_MIN, min(LIST_ROWS_MAX, rows))
+    chrome = frame_rows()
     return Dimension(
-        min=1 + _BORDERS,
-        preferred=visible + _BORDERS,
-        max=LIST_ROWS_MAX + _BORDERS,
+        min=1 + chrome,
+        preferred=visible + chrome,
+        max=LIST_ROWS_MAX + chrome,
     )
 
 

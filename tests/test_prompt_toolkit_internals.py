@@ -36,10 +36,18 @@ def test_application_state_used_by_the_scrollback_handoff(app):
     assert app._is_running is False
     assert app._running_in_terminal is False
     assert app._running_in_terminal_f is None or isinstance(app._running_in_terminal_f, Future)
-    # suspended_editor shadows the method with an instance attribute and then
-    # deletes it; that only restores resizing if the method lives on the class.
+    # install_resize_repaint and suspended_editor shadow the method with an
+    # instance attribute; deleting it only restores resizing if the method
+    # lives on the class.
     assert "_on_resize" in vars(Application) and "_on_resize" not in vars(app)
     assert parameters(app._on_resize) == []
+    # install_resize_repaint replaces it per instance before the app runs: that
+    # only takes effect while SIGWINCH binds it at run time and the size poller
+    # looks it up on every call.
+    assert "attach_winch_signal_handler(self._on_resize)" in inspect.getsource(
+        Application.run_async
+    )
+    assert "self._on_resize()" in inspect.getsource(Application._poll_output_size)
     assert parameters(app._request_absolute_cursor_position) == []
     assert "render_as_done" in parameters(app._redraw)
     assert app._merged_style is not None
@@ -67,6 +75,14 @@ def test_renderer_state_and_overridden_methods(app):
         parameters(Renderer.__init__)
     )
     assert hasattr(app, "cpr_not_supported_callback")
+    # install_nowrap_editor: every prompt paint turns autowrap off and back on
+    # through the output, and erase turns it on before resetting.
+    from prompt_toolkit import renderer as renderer_module
+
+    diff = inspect.getsource(renderer_module._output_screen_diff)
+    assert "output.disable_autowrap()" in diff and "output.enable_autowrap()" in diff
+    erase = inspect.getsource(Renderer.erase)
+    assert erase.index("output.enable_autowrap()") < erase.index("self.reset(")
 
 
 def test_screen_cells_read_by_the_reflow_renderer():
@@ -93,3 +109,11 @@ def test_vt100_prefix_cache_cleared_by_input_keys():
     cache = vt100_parser._IS_PREFIX_OF_LONGER_MATCH_CACHE
     cache.clear()
     assert isinstance(cache["\x1b["], bool)
+
+
+def test_buffer_state_used_to_find_unsent_text(app):
+    # `drafts.edited` compares the working lines against the history they
+    # were copied from, once the background copy is done.
+    buffer = Buffer()
+    assert list(buffer._working_lines) == [""]
+    assert buffer._load_history_task is None

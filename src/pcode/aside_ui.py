@@ -6,10 +6,12 @@ thread into the conversation is returned as a `Bridge` for the app to run.
 """
 
 import asyncio
+import subprocess
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from time import monotonic
 
-from prompt_toolkit.application import Application, get_app
+from prompt_toolkit.application import Application, get_app, run_in_terminal
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
@@ -26,18 +28,20 @@ from prompt_toolkit.layout import (
     Window,
 )
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label, TextArea
-from rich.markdown import Markdown
+from prompt_toolkit.widgets import Label
 from rich.text import Text
 from rich.theme import Theme
 
 from pcode.aside import Aside, Asides, Bridge
+from pcode.btw_view import outcome_blocks, question_blocks
 from pcode.clipboard import copy as copy_to_clipboard
 from pcode.conversation_tree import ConversationTree, TurnNode
 from pcode.copy_ui import Snippet, snippets
-from pcode.frame import Frame
-from pcode.links import Link, extract_links, open_link, remember_link
+from pcode.frame import Frame, ScrollingTextArea
+from pcode.links import Link, extract_links, link_editor_command, open_link, remember_link
 from pcode.links_ui import LinkPicker
+from pcode.markdown import Markdown
+from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
     PopupCommand,
     PopupInput,
@@ -50,10 +54,8 @@ from pcode.popup_ui import (
     popup_style,
 )
 from pcode.prefix_keys import PrefixKeys
-from pcode.session_ui import literal
-from pcode.task_prompt import TaskPrompt
 from pcode.text_selection import copy_drags
-from pcode.tool_display import plain
+from pcode.tool_display import literal, plain
 from pcode.tree_ui import CopyBrowser
 from pcode.ui import StatusLine, status_parts, status_spinner
 
@@ -89,35 +91,6 @@ def thread_tree(thread: list[Aside]) -> ConversationTree:
         )
         tree.active = aside.id
     return tree
-
-
-def question_blocks(aside: Aside, *, first: bool = True) -> list:
-    """A question as a thread shows it, and the blank row its answer starts after."""
-    blocks: list = [TaskPrompt(literal(aside.question))]
-    where = " ".join(
-        part
-        for part in (
-            f"on {aside.model}" if aside.model else "",
-            f"at {aside.effort} effort" if aside.effort else "",
-        )
-        if part
-    )
-    # A follow-up runs where its thread began, so only the first says where.
-    if where and first:
-        blocks.append(Text(f"  {where}", style="dim"))
-    blocks.append(Text(""))
-    return blocks
-
-
-def outcome_blocks(aside: Aside, answered: bool) -> list:
-    """What follows a settled answer: why it stopped, or that there is none."""
-    if aside.running:
-        return []  # Its progress is the viewer's status row, not text here.
-    if aside.error:
-        return [Text(f"  {aside.status}: {aside.error}", style="dim")]
-    if not answered:
-        return [Text(f"  ({aside.status}; no answer)", style="dim")]
-    return []
 
 
 def exchange(aside: Aside, *, code_theme: str, first: bool = True) -> list:
@@ -166,10 +139,10 @@ class AsideBrowser:
     question)` starts one, or raises `ValueError` saying why it cannot yet.
 
     With `check_bridge`, prefix `t` merges the selected thread into the
-    conversation tree and prefix `s` summarizes it into the conversation, after
+    conversation tree and prefix `s` sends the model a summary of it, after
     asking for optional instructions in the editor. Either closes the viewer,
-    returning a `Bridge` from `run`; `check_bridge(thread)` raises `ValueError`
-    when it cannot yet.
+    returning a `Bridge` from `run`; `check_bridge(thread, action)` raises
+    `ValueError` when it cannot yet.
 
     Prefix `y` opens `/copy`'s browser over the thread, in place of the viewer
     until something is copied or it is cancelled, and prefix `o` opens a link
@@ -189,9 +162,10 @@ class AsideBrowser:
     answer. Leave it off for a viewer that opens by itself: it could arrive
     mid-keystroke at the main prompt, and Enter would send what was typed.
 
-    With `pick`, for `btw_view swap`, the viewer only chooses a thread: it
-    opens on the list, and Enter closes it with the selected thread in
-    `picked`, for the app to swap in where the main editor replies to it.
+    With `pick`, for a drawer (`PreviewApp.btw_drawer`), the viewer only
+    chooses a thread: it opens on the list, and Enter closes it with the
+    selected thread in `picked`, for the app to open in the drawer, where the
+    main editor replies to it.
     """
 
     def __init__(
@@ -199,7 +173,7 @@ class AsideBrowser:
         asides: Asides,
         *,
         ask: Callable[[str, str], None] | None = None,
-        check_bridge: Callable[[str], object] | None = None,
+        check_bridge: Callable[[str, str], object] | None = None,
         stop: Callable[[], object] | None = None,
         selected: str | None = None,
         edit: bool = False,
@@ -208,10 +182,12 @@ class AsideBrowser:
         color_system: str | None = "truecolor",
         key_prefix: str | None = None,
         pick: bool = False,
+        handoff: Callable[[], AbstractContextManager] = nullcontext,
         **app_options,
     ) -> None:
         self.asides = asides
         self.pick = pick
+        self.handoff = handoff
         self.picked: str | None = None
         self.ask = ask
         self.edit = edit and ask is not None
@@ -242,7 +218,7 @@ class AsideBrowser:
         self.picker: LinkPicker | None = None
         # `/copy`'s browser in place of the viewer, while one is open.
         self.copying: CopyBrowser | None = None
-        self.list = TextArea(read_only=True, wrap_lines=False, scrollbar=True)
+        self.list = ScrollingTextArea(read_only=True, wrap_lines=False, scrollbar=True)
         copy_drags(self.list, lambda text: setattr(self, "notice", text))
         self.list.window.cursorline = Always()
         self.detail = RichPane(
@@ -319,18 +295,18 @@ class AsideBrowser:
 
             @shortcuts.add("s", "Summarize", filter=idle)
             def summarize(event):
-                if self.bridgeable():
+                if self.bridgeable("summary"):
                     thread = self.selected
                     self.input.prompt(
                         event.app,
-                        title="Summarize into the conversation · optional focus",
+                        title="Send the model a summary · optional focus",
                         placeholder="Enter summarizes as is, or say what to keep…",
                         submit=lambda text: self.finish(Bridge(thread, "summary", text)),
                     )
 
             @shortcuts.add("t", "Merge into conversation", filter=idle)
             def merge(event):
-                if self.bridgeable():
+                if self.bridgeable("merge"):
                     self.finish(Bridge(self.selected, "merge"))
 
         # Same key meaning as in /jobs: stop the work, keep the record. Listed
@@ -339,8 +315,8 @@ class AsideBrowser:
         def stop_running(event):
             self.stop()
 
-        # The key that opened the viewer closes it, as it leaves a swapped-in
-        # thread; the mouse toggle that other popups keep on `q` moves to `g`.
+        # The key that opened the viewer closes it, as it leaves a thread open
+        # in the drawer; the mouse toggle that other popups keep on `q` moves to `g`.
         # Never over a half-written follow-up, which closing would lose.
         # Picking, `q` leaves whatever was on screen, a thread or the conversation.
         @shortcuts.add("q", "Close" if pick else "Back to the conversation", filter=idle)
@@ -402,6 +378,8 @@ class AsideBrowser:
         picker = Frame(
             DynamicContainer(lambda: self.picker.container if self.picker else HSplit([])),
             title="Links",
+            # It floats over the browser: without its box it would run into it.
+            boxed=True,
         )
         overlaid = FloatContainer(
             root_container,
@@ -535,7 +513,7 @@ class AsideBrowser:
         """What the editor runs instead of asking: the shortcuts' actions, by name."""
 
         def bridge(kind: str, focus: str) -> None:
-            if not self.bridgeable():
+            if not self.bridgeable(kind):
                 # Said once, in the editor's title, beside the draft it keeps.
                 reason, self.notice = self.notice, ""
                 raise ValueError(reason)
@@ -549,7 +527,7 @@ class AsideBrowser:
             commands += [
                 PopupCommand(
                     "/summarize",
-                    "Summarize into the conversation",
+                    "Send the model a summary of this thread",
                     lambda focus: bridge("summary", focus),
                     argument="[focus]",
                 ),
@@ -569,13 +547,13 @@ class AsideBrowser:
         self.stop_running()
         self.notice = f"Stopping {running} running answer{'s' if running > 1 else ''}"
 
-    def bridgeable(self) -> bool:
-        """Whether the selected thread can join the conversation now; says why not."""
+    def bridgeable(self, action: str) -> bool:
+        """Whether the selected thread can join the conversation now by `action`; says why not."""
         if not self.selected:
             self.notice = "No side question to bring into the conversation"
             return False
         try:
-            self.check_bridge(self.selected)
+            self.check_bridge(self.selected, action)
         except ValueError as error:
             self.notice = str(error)
             return False
@@ -698,7 +676,7 @@ class AsideBrowser:
         return thread_links(self.current())
 
     def choose_link(self) -> None:
-        """Pick a URL from the selected thread and open it in the browser, as `/links` does."""
+        """Pick a URL from the selected thread and open it in the editor or browser."""
         links = self.links()
         if not links:
             self.notice = "No links in this side thread"
@@ -706,6 +684,31 @@ class AsideBrowser:
 
         def pick(close, url: str) -> None:
             close()
+            try:
+                command = link_editor_command(url)
+            except RuntimeError as error:
+                self.notice = f"Could not open {url}: {error}"
+                return
+            if command is not None:
+                # In the popup's terminal, which is an overlay's when it is on one.
+                terminal = terminal_fds()
+
+                async def edit() -> None:
+                    try:
+                        with self.handoff():
+                            await run_in_terminal(
+                                lambda: subprocess.run(command, check=False, **terminal),
+                                in_executor=True,
+                            )
+                    except OSError as error:
+                        self.notice = f"Could not start {command[0]}: {error}"
+                        self.app.invalidate()
+                        return
+                    self.notice = f"Opened {url}"
+                    self.app.invalidate()
+
+                self.app.create_background_task(edit())
+                return
             try:
                 open_link(url)
             except (OSError, RuntimeError) as error:

@@ -197,13 +197,13 @@ def true_color(monkeypatch):
 
 
 def test_the_header_step_looks_alike_on_either_theme():
-    # Dark, halfway back to the background, even on pure black.
-    assert header_shade("#000000", "dark") == "#080808"
-    assert frame_shade("#292929", "dark") == "#363636"
-    assert header_shade("#292929", "dark") == "#303030"
-    # Light, a small step darker than the box.
-    assert frame_shade("#ffffff", "light") == "#f4f4f4"
-    assert header_shade("#ffffff", "light") == "#ededed"
+    # Dark, roughly halfway back to the background, even on pure black.
+    assert header_shade("#000000", "dark") == "#111111"
+    assert frame_shade("#292929", "dark") == "#444444"
+    assert header_shade("#292929", "dark") == "#373737"
+    # Light, a step darker than the box.
+    assert frame_shade("#ffffff", "light") == "#f1f1f1"
+    assert header_shade("#ffffff", "light") == "#e6e6e6"
 
 
 @pytest.fixture

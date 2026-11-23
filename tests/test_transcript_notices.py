@@ -80,6 +80,7 @@ def test_warning_headline_is_coloured_and_detail_muted():
         ("Blocked: git commit -m 'fix. it'", ("Blocked: git commit -m 'fix. it'", "")),
         ("Blocked write to .", ("Blocked write to .", "")),
         ("Line one\r\nline two", ("Line one", "line two")),
+        ("First. \nSecond", ("First", "Second")),
         ("", ("", "")),
     ],
 )

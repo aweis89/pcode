@@ -191,15 +191,16 @@ def isolated_preferences(monkeypatch, tmp_path, request):
     monkeypatch.setattr("pcode.terminal_color._tmux_rgb", lambda pane: False)
     monkeypatch.setattr("pcode.terminal_color._setting", "auto")
     monkeypatch.setattr("pcode.glyphs._active", False)
+    monkeypatch.setattr("pcode.glyphs._nerd", False)
     # The CLI fixes the project overlay root once per process; tests that run
     # main() would otherwise leak this checkout's .pcode/preferences.json into
     # every later test.
     from pcode import preferences
 
     monkeypatch.setattr(preferences, "_project_root", None)
-    # main() sets the root again from the cwd, which is this checkout. Its
-    # committed overlay turns worktrees on, so every in-process main() would
-    # check out a real .worktrees/<session> here. Overlay tests use tmp repos.
+    # main() sets the root again from the cwd, which is this checkout. Ignore
+    # its overlay so a local worktree=on there can't make every in-process
+    # main() check out a real .worktrees/<session>. Overlay tests use tmp repos.
     checkout = Path(__file__).resolve().parents[1]
     set_root = preferences.set_project_root
 
@@ -216,6 +217,13 @@ def isolated_preferences(monkeypatch, tmp_path, request):
         preferences.SETTINGS,
         "group_tools",
         replace_setting(preferences.SETTINGS["group_tools"], default="off"),
+    )
+    # Scrollback is the shipped default, but most layout and model-settings tests
+    # assert on the activity-panel thought row and on no thinking budget.
+    monkeypatch.setitem(
+        preferences.SETTINGS,
+        "show_thinking",
+        replace_setting(preferences.SETTINGS["show_thinking"], default="activity-panel"),
     )
     # Existing UI tests exercise Ctrl chords. Keep the real default available
     # to regressions requesting shipped_key_prefix, without adding a saved
@@ -258,11 +266,25 @@ def isolated_preferences(monkeypatch, tmp_path, request):
             name,
             replace_setting(preferences.SETTINGS[name], default="off"),
         )
+    # Code mode is on by default, but existing tool, image, and delegation tests
+    # call read_file/list_files/grep directly; tests/test_code_mode.py exercises
+    # the shipped default via shipped_code_mode.
+    if "shipped_code_mode" not in request.fixturenames:
+        monkeypatch.setitem(
+            preferences.SETTINGS,
+            "code_mode",
+            replace_setting(preferences.SETTINGS["code_mode"], default="off"),
+        )
 
 
 @pytest.fixture
 def shipped_key_prefix():
     """Opt out of the suite's legacy chord default without replacing the real one."""
+
+
+@pytest.fixture
+def shipped_code_mode():
+    """Opt out of the suite's plain-tool default without replacing the real one."""
 
 
 @pytest.fixture(autouse=True)
@@ -293,6 +315,17 @@ def isolated_terminal_background(monkeypatch):
     from pcode import theme
 
     monkeypatch.setattr(theme, "_background", None)
+
+
+@pytest.fixture(autouse=True)
+def immediate_command_preview(monkeypatch):
+    """Show a command's live preview on its first redraw, as layout tests expect.
+
+    The wait itself is covered in `test_command_preview.py`, which restores it.
+    """
+    from pcode import ui
+
+    monkeypatch.setattr(ui, "COMMAND_PREVIEW_DELAY_SECONDS", 0.0)
 
 
 @pytest.fixture(autouse=True)

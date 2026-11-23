@@ -18,6 +18,17 @@ def compact_tokens(tokens: int | None) -> str:
     return str(tokens)
 
 
+def measured_context(message: ModelResponse) -> int | None:
+    """The context fill a multi-step ACP turn (Antigravity) reported, if any.
+
+    Such a turn reports cumulative billing across its internal requests in
+    `usage.input_tokens`, which re-counts the context once per step and can be
+    many times the window. `context_used` is the actual fill.
+    """
+    used = (message.provider_details or {}).get("context_used")
+    return used if type(used) is int and used > 0 else None
+
+
 def context_label(
     model: str | Model, history: Sequence[ModelMessage], *, compact_at: int | None = None
 ) -> str:
@@ -40,9 +51,13 @@ def context_label(
     for message in reversed(history):
         if (message.metadata or {}).get(MARKER):
             return f" · ~{compact_tokens(context_estimate(history))}/{compact_tokens(window)}"
-        if isinstance(message, ModelResponse) and message.usage.input_tokens:
-            used = message.usage.input_tokens
-            break
+        if isinstance(message, ModelResponse):
+            if context_used := measured_context(message):
+                used = context_used
+                break
+            if message.usage.input_tokens:
+                used = message.usage.input_tokens
+                break
     if not used:
         # Streaming providers may not report usage until the response finishes.
         # Missing usage is not an empty context (also common in resumed history).

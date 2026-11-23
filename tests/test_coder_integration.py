@@ -3,15 +3,62 @@ import json
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
+from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
-from pydantic_ai_harness.coder._capability import MAX_READ_CHARS
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.file_system import FileSystem
+from retry_parts import is_retry
 
-from pcode.agent import create_coder
+from pcode.agent import MAX_READ_CHARS, coding_capabilities, create_coder, tool_retries
 from pcode.live import AgentRuntime
 from pcode.runtime import EditCompleted, ToolSummary
+from pcode.tool_output_limits import create_tool_output_limits
+
+
+def test_coding_capabilities_keep_harness_coders_order(tmp_path):
+    # Instructions render in this order, so a reorder moves prompt text and the
+    # cache boundary. It mirrors Harness's `Coder`; change it on purpose only.
+    kinds = [type(c).__name__ for c in coding_capabilities(tmp_path, create_tool_output_limits())]
+    assert kinds == [
+        "Capability",
+        "DisplayFileSystem",
+        "JobShell",
+        "AutomaticRepoContext",
+        "CodingToolOutputLimits",
+        "RepairToolArguments",
+        "ReportExhaustedRetries",
+        "PrepareTools",
+    ]
+
+
+def test_a_tool_out_of_retries_reports_back_instead_of_ending_the_turn(tmp_path):
+    # A stale edit raises ModelRetry every time; once the budget is spent the
+    # model gets the failure as a result and the turn goes on.
+    (tmp_path / "f.txt").write_text("hello\n")
+    calls = 0
+
+    async def model(messages, info):
+        nonlocal calls
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        if any("failed several times" in str(p.content) for p in returns):
+            yield "changing approach"
+            return
+        calls += 1
+        args = {"path": "f.txt", "old_text": "absent", "new_text": "x"}
+        yield {0: DeltaToolCall(name="edit_file", json_args=json.dumps(args))}
+
+    agent = Agent(
+        FunctionModel(stream_function=model),
+        capabilities=[create_coder(tmp_path, delegation=False)],
+        retries=tool_retries(),
+    )
+
+    async def run():
+        async with agent.run_stream("edit") as result:
+            return await result.get_output()
+
+    assert asyncio.run(run()) == "changing approach"
+    assert calls == tool_retries()["tools"] + 1
 
 
 def test_coder_preserves_upstream_tools_schemas_and_read_budget(tmp_path, monkeypatch):
@@ -154,7 +201,7 @@ def test_real_coder_batch_edits_are_atomic_and_emit_one_completed_diff(tmp_path,
             }
         else:
             parts = [part for msg in messages for part in msg.parts]
-            assert any(isinstance(p, RetryPromptPart) for p in parts) is not valid
+            assert any(is_retry(p) for p in parts) is not valid
             if valid:
                 result = next(p for p in parts if isinstance(p, ToolReturnPart))
                 assert result.content == "Edited sample.txt."

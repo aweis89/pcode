@@ -8,10 +8,11 @@ monkeypatching of the graph, and no custom runner. The whole agent is built in
 Agent(model, capabilities=[create_coder(workspace, subagents, extensions), *extensions])
 ```
 
-`create_coder` starts from Harness's `Coder` and walks its capabilities through
-`_adapt`, which swaps a few of them for pcode subclasses (file tools that report
-diffs, a shell whose commands become named jobs, repo context that snapshots per
-run) and keeps the rest. It then appends pcode's own capabilities. Things that
+`create_coder` does not use Harness's `Coder`. `coding_capabilities` builds the
+same pieces directly, in Coder's order, with pcode subclasses where pcode needs
+different behavior (file tools that report diffs, a shell whose commands become
+named jobs, repo context that snapshots per run). `create_coder` then appends
+pcode's own capabilities. Things that
 belong to one turn rather than to the agent (steering, job notices, the retry
 checkpoint, token accounting, context tracking, auto-compaction) are added per
 run in `src/pcode/live.py:AgentRuntime._run_capabilities`, so each binds to the
@@ -36,10 +37,11 @@ Every class in `src/pcode` that derives from
 | --- | --- | --- | --- | --- | --- |
 | `WorkspaceGuard` | `workspace.py` | `AbstractCapability` | `before_run`, `wrap_tool_execute` | Static, first in the list | Stop cleanly when the session's worktree was deleted underneath it, instead of retrying doomed tool calls. |
 | `WorkspaceFileSystem` | `workspace_filesystem.py` | Harness `FileSystem` | `get_instructions`, `_toolset_type` | Base of `DisplayFileSystem` only | Workspace-relative paths without making the workspace a hard boundary. |
-| `DisplayFileSystem` | `filesystem.py` | `WorkspaceFileSystem` | `_toolset_type` (uses `DisplayFileSystemToolset`) | Static, replaces `FileSystem` in `_adapt` | Emit a `FileChangeEvent` with before/after content so the UI can show diffs. Its toolset also lets `read_file` return an image, a stopgap for Harness's own (pydantic-ai#9596, unreleased as of 0.57); delete it when the pin moves past that. |
-| `AutomaticRepoContext` | `repo_context.py` | Harness `RepoContext` | `for_run`, `before_run`, `get_instructions` | Static, replaces `RepoContext` in `_adapt` | Keep `AGENTS.md` loading but give each run its own repo inventory snapshot. |
-| `CodingToolOutputLimits` | `tool_output_limits.py` | Harness `ToolOutputLimits` | `get_instructions`, `after_tool_execute` | Static, replaces `ToolOutputLimits` in `_adapt`; shared | Spill big tool output to a file, but never spill the job envelope the model needs to reach a running command, nor a file (an image) that serialized is only base64. |
-| `JobShell` | `shell_tools.py` | Harness `Shell` | `_make_toolset` (uses `JobShellToolset`) | Static, replaces `Shell` in `_adapt` | Shell commands become named background jobs the model can wait on, read, and stop. |
+| `DisplayFileSystem` | `filesystem.py` | `WorkspaceFileSystem` | `_toolset_type` (uses `DisplayFileSystemToolset`) | Static, from `coding_capabilities` | Emit a `FileChangeEvent` with before/after content so the UI can show diffs. Its toolset also lets `read_file` return an image, a stopgap for Harness's own (pydantic-ai#9596, unreleased as of 0.57); delete it when the pin moves past that. |
+| `AutomaticRepoContext` | `repo_context.py` | Harness `RepoContext` | `for_run`, `before_run`, `get_instructions` | Static, from `coding_capabilities` | Keep `AGENTS.md` loading but give each run its own repo inventory snapshot. |
+| `CodingToolOutputLimits` | `tool_output_limits.py` | Harness `ToolOutputLimits` | `get_instructions`, `after_tool_execute` | Static, from `coding_capabilities`; shared | Spill big tool output to a file, but never spill the job envelope the model needs to reach a running command, nor a file (an image) that serialized is only base64. |
+| `JobShell` | `shell_tools.py` | Harness `Shell` | `_make_toolset` (uses `JobShellToolset`) | Static, from `coding_capabilities` | Shell commands become named background jobs the model can wait on, read, and stop. |
+| `ReportExhaustedRetries` | `agent.py` | `AbstractCapability` | `on_tool_execute_error` | Static, from `coding_capabilities` | Hand a tool's last `ModelRetry` error back to the model as a failed result once its retry budget is spent, instead of ending the turn. Adapted from Harness's private `_ReportExhaustedRetries` in `Coder`. |
 | `ClaudeWorkspace` | `claude_sdk/workspace.py` | `AbstractCapability` | `before_model_request` | Static; shared as a fallback | Run `claude:` models' CLI in the agent's workspace, not pcode's process directory. |
 | `IdentifiedPlanning` | `planning.py` | Harness `Planning` | `before_model_request`, `wrap_model_request`, `get_instructions`, `after_tool_execute` | Static | Replace Harness's planning guidance and `write_plan` description with text that names the user as the plan's reader and sets a trigger below "multi-step work"; show stable plan step ids so the model stops confusing them with row numbers; publish `PlanSnapshot` events. |
 | `BackgroundDelegation` | `background_delegation.py` | Harness `BackgroundTools` | `wrap_tool_execute`, `wrap_node_run`, `wrap_run_event_stream`, `after_node_run`, `wrap_run` | Static, parent only | When the user steers mid-delegation, return the `delegate_task` call so the message reaches the model now; the child keeps running and its result is enqueued. Holds the run open, still streaming child events, until every detached child reports. |
@@ -48,7 +50,8 @@ Every class in `src/pcode` that derives from
 | `ImageGate` | `images.py` | `AbstractCapability` | `before_model_request` | Static; shared | Send each request only the images its model can see, and only the newest that fit a size budget. The rest become notes naming the image and why it is gone; history keeps every picture, so a `/model` switch neither fails nor loses one. |
 | `MCPServers` | `mcp_notice.py` | `AbstractCapability` | `get_instructions`, `before_model_request` | Static | Tell the model which MCP servers are enabled, and again when that changes mid-session. |
 | `CacheBustReporting` | `cache_warnings.py` | Harness `WarnOnCacheBusts` | `after_model_request` | Static when the `cache_notices` preference is on; shared | Surface prompt-cache misses as a `CacheBustEvent` for the UI. |
-| `WorkspaceSubAgents` | `isolated_delegation.py` | Harness `SubAgents` | `get_toolset`, `get_instructions` | Static, built by `_delegation` | `delegate_task` with optional isolated git worktrees, plus integrate/discard tools. |
+| `WorkspaceSubAgents` | `isolated_delegation.py` | Harness `SubAgents` | `get_toolset`, `get_instructions`, `before_model_request` | Static, built by `_delegation` | `delegate_task` with optional isolated git worktrees, plus the `task_worktree` tool. Owns the `WorkerHub` (worker ids, reports, histories) and the parent's `manage_worker` tool (answer, message, stop, list); delivers workers' questions on the next request. |
+| `ChildChannel` | `worker_channel.py` | `AbstractCapability` | `get_instructions`, `get_toolset`, `before_model_request` | Shared only (every delegate) | `ask_parent`, delivery of `manage_worker` messages before the child's next request, and the fixed report format. Per-child state comes from `current_worker()`, never the instance. See dev/manager-mode.md. |
 | `TurnLimits` | `agent.py` | `AbstractCapability` | `before_model_request`, `before_tool_execute` | Static and shared, only under a remote profile (`remote_profile.py`) | Charge each request and tool call, sub-agents' included, to the turn's budget; past it, raise `TurnLimitReached` so the turn ends saying why. |
 | `ProviderCacheSettings` | `cache_settings.py` | `AbstractCapability` | `before_model_request` | Shared only | Sub-agents run with `model_settings=None`, so request prompt caching per request instead. |
 | `Steering` | `steering.py` | `AbstractCapability` | `before_model_request` | Per-run; also side questions | Inject messages the user typed mid-turn between model requests, never mid-tool. |
@@ -61,9 +64,10 @@ Every class in `src/pcode` that derives from
 | `AutoCompaction` | `compaction.py` | `AbstractCapability` | `get_ordering`, `before_model_request` | Per-run, when autocompact is on and the turn uses the conversation's model | Compact history before a request that would overflow the window, including mid-turn. |
 | `AsideGuard` | `aside_guard.py` | `AbstractCapability` | `wrap_tool_execute` | Per-run, side questions only | A side question shares the conversation's capabilities, so refuse the tools that would change its plan or start workers. |
 | `Browser` | `extensions/browser.py` | `Capability` | `before_tool_execute` | Extension (defined inside `_capability`) | Launch Chrome lazily on the first browser tool call, for the parent and the browser sub-agent alike. |
+| `_ACPBridged` | `ext.py` | `WrapperCapability` | — | Extension (`bridge_to_acp = True`, defined inside `_wrap_acp_bridge`) | Mark an extension capability for Antigravity's ACP MCP bridge so opt-in survives `for_run`, `CombinedCapability`, and frozen/slotted capabilities. |
 
 Harness capabilities pcode uses unchanged (`LocalWorkspace`, `StepPersistence`,
-code mode, strict tools, and whatever else `Coder` ships) are not listed. Two
+code mode, `RepairToolArguments`, `PrepareTools` for strict mode) are not listed. Two
 bundled extensions, `web_research.py` and `session_history.py`, register plain
 `WebSearch`/`WebFetch`/`Capability` instances rather than subclasses.
 
@@ -76,7 +80,7 @@ bundled extensions, `web_research.py` and `session_history.py`, register plain
 | `ProxiedCodexProvider` | `llm_proxy.py` | `OpenAICodexProvider` | Codex through a proxy on a dedicated HTTP client, without touching process-wide HTTP settings. |
 | `DisplayFileSystemToolset` | `filesystem.py` | Harness `FileSystemToolset` | Snapshots a file under Harness's write lock to build before/after diffs. |
 | `JobShellToolset` | `shell_tools.py` | Harness `ShellToolset` | Replaces the persistent shell tool with `shell`, `wait_for_job`, `job_output`, `stop_job`, `list_jobs`. |
-| `WorkspaceSubAgentToolset` | `isolated_delegation.py` | Harness `SubAgentToolset` | `delegate_task` in a throwaway worktree, plus `integrate_task`, `discard_task`, `list_task_worktrees`. |
+| `WorkspaceSubAgentToolset` | `isolated_delegation.py` | Harness `SubAgentToolset` | `delegate_task` in a throwaway worktree, plus `task_worktree` (list, integrate, discard) and `manage_worker`. |
 | `WorkerRuntimeTools` | `agent.py` | `CombinedToolset` | Gives each worker run the delegating turn's runtime toolsets (live MCP), resolved once per run via `for_run`. |
 
 ## Smallest examples worth reading first

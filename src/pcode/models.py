@@ -12,6 +12,7 @@ from typing import get_args
 PROVIDERS = {
     "alibaba": "Alibaba",
     "anthropic": "Anthropic",
+    "antigravity": "Antigravity",
     "azure": "Azure OpenAI",
     "bedrock": "Bedrock",
     "bedrock-mantle": "Bedrock Mantle",
@@ -80,9 +81,21 @@ ENV_PROVIDERS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
+def runs_own_loop(model) -> bool:
+    """Whether `model`'s own CLI runs the agent loop, with its tools, context and titles.
+
+    True for `antigravity:` (see `pcode.antigravity`): pcode's tools, plan
+    reminders and summaries don't apply to it. `model` is a model object or a
+    `provider:name` string.
+    """
+    if isinstance(model, str):
+        return model.strip().lower().startswith("antigravity:")
+    return getattr(model, "system", None) == "antigravity"
+
+
 def login_sources() -> tuple[str, ...]:
-    """What `/login` accepts; the first is what a bare `/login` signs in to."""
-    return ("claude", "openai-codex")
+    """What `/login` accepts; bare `/login` prefers the current model's provider, else the first."""
+    return ("claude", "openai-codex", "antigravity")
 
 
 def logout_sources() -> tuple[str, ...]:
@@ -99,6 +112,9 @@ def anthropic_credential_hint() -> str:
 # separate SDK catalog, so expose every OpenAI model ID and let the provider
 # enforce account access; Claude Code fronts Anthropic models.
 CATALOG_SOURCES = {"openai-codex": "openai", "claude": "anthropic"}
+# Released models Pydantic AI's KnownModelName doesn't list yet, by catalog
+# source. Drop an entry once the locked release lists it.
+UNLISTED_MODELS: dict[str, tuple[str, ...]] = {}
 
 
 def claude_code_configured() -> bool:
@@ -133,6 +149,8 @@ def active_providers(current: str | None) -> set[str]:
         active.add(current.partition(":")[0])
     if claude_sdk_installed() and claude_code_configured():
         active.add("claude")
+    if shutil.which("agy"):
+        active.add("antigravity")
     active.update(name for name, needs in ENV_PROVIDERS.items() if _configured(needs))
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
         active.add("anthropic")
@@ -166,7 +184,15 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
         if isinstance(name, str):
             source, _, model = name.partition(":")
             by_source.setdefault(source, set()).add(model)
+    for source, extra in UNLISTED_MODELS.items():
+        by_source.setdefault(source, set()).update(extra)
     models = set()
+    if "antigravity" in providers:
+        from pcode.antigravity import cached_models
+
+        # What the account offered last time; the default until a session has run.
+        offered = cached_models() or ("gemini-4-neon",)
+        models.update(f"antigravity:{name}" for name in offered)
     for provider in providers:
         source = CATALOG_SOURCES.get(provider, provider)
         # Providers without a catalog (openrouter, ollama, vllm...) take any

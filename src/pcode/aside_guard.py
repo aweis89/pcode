@@ -20,20 +20,30 @@ from pcode.tool_display import PLAN_TOOLS
 
 # Reading the plan is how a side question learns what the turn is doing.
 PLAN_READS = frozenset({"read_plan", "get_available_tasks"})
-# `list_task_worktrees` only reads, so it stays available with the plan reads.
-DELEGATION_TOOLS = frozenset({"delegate_task", "integrate_task", "discard_task"})
-REFUSED_TOOLS = (PLAN_TOOLS - PLAN_READS) | DELEGATION_TOOLS
+DELEGATION_TOOLS = frozenset({"delegate_task"})
+# Tools with read and write actions: listing stays available, like the plan reads.
+ACTION_TOOLS = frozenset({"task_worktree", "manage_worker"})
+# The local advisor tool: a consultation is the turn's to spend, not a side question's.
+ADVISOR_TOOLS = frozenset({"advisor"})
+# Cross-session conductor controls belong to the main conversation, and allowing
+# ask_host inside a side question would allow unbounded cross-host cycles.
+CONDUCTOR_TOOLS = frozenset({"ask_host", "send_to_host", "wait_for_hosts", "stop_host"})
+REFUSED_TOOLS = (PLAN_TOOLS - PLAN_READS) | DELEGATION_TOOLS | ADVISOR_TOOLS | CONDUCTOR_TOOLS
 
 
 class AsideGuard(AbstractCapability):
     """Per-run capability for side questions; see the module docstring."""
 
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
-        if call.tool_name in REFUSED_TOOLS:
+        refused = call.tool_name in REFUSED_TOOLS or (
+            call.tool_name in ACTION_TOOLS and args.get("action") != "list"
+        )
+        if refused:
             # A failed result rather than `ModelRetry`: nothing about the call
             # can be corrected, and a retry would spend the tool's retry budget.
             raise ToolFailed(
-                f"{call.tool_name} is unavailable in a side question: the plan and "
-                "delegated tasks belong to the main conversation. Answer without it."
+                f"{call.tool_name} is unavailable in a side question: the plan, "
+                "delegated tasks, the advisor, and cross-session conductor controls "
+                "belong to the main conversation. Answer without it."
             )
         return await handler(args)

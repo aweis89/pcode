@@ -11,18 +11,30 @@ carries on, and its result is enqueued for a later request. Harness then keeps
 the run alive until every detached child has reported: the model can answer the
 user, do other work, or end its response and be woken by the result.
 
-Reaches into `BackgroundTools`' private task group, outcome stream and live
-count; `tests/test_background_delegation.py` pins them.
+Reaches into `BackgroundTools`' private task group, outcome stream, live count
+and result framing; `tests/test_background_delegation.py` pins them.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 
 import anyio
 import anyio.lowlevel
-from pydantic_ai import CallToolsNode, CapabilityEvent
+from pydantic import ValidationError
+from pydantic_ai import (
+    CallToolsNode,
+    CapabilityEvent,
+    FinalResultEvent,
+    ModelRequestNode,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+)
 from pydantic_ai._run_context import dispatch_event_stream
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import (
@@ -30,23 +42,42 @@ from pydantic_ai.exceptions import (
     CallDeferred,
     ModelRetry,
     RunCancelled,
+    ToolFailed,
     ToolFailedError,
     ToolRetryError,
 )
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import TextContent, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai_harness._background_completion import make_background_result
 from pydantic_ai_harness.background_tools import BackgroundTools
 from pydantic_ai_harness.background_tools._capability import (
-    _deliver,
-    _format_background_error,
+    _Completion,
+    _format_background_failure,
     _format_background_result,
+    _position_in_response,
 )
 
 from pcode.steering import run_request, steering_pending, take_steering
+from pcode.worker_channel import hub_for
 
 DELEGATE = "delegate_task"
 # How often a waiting delegation checks for steering; `shell` polls as often.
 POLL_SECONDS = 0.2
+# Detach a foreground `delegate_task` before `agy` 1.5.13's 3m0s MCP tool-call
+# timeout kills it (`notifications/cancelled: context deadline exceeded`).
+MCP_DETACH_SECONDS = 150.0
+_MODEL_STREAM_EVENTS = (PartStartEvent, PartDeltaEvent, PartEndEvent, FinalResultEvent)
+
+
+async def _take_buffered(buffer: list):
+    while buffer:
+        yield buffer.pop(0)
+
+
+async def _close_stream(stream) -> None:
+    if callable(close := getattr(stream, "aclose", None)):
+        with contextlib.suppress(Exception):
+            await close()
 
 
 @dataclass(kw_only=True)
@@ -68,13 +99,54 @@ class DelegatesPending(CapabilityEvent, namespace="pcode_delegation", name="pend
     count: int
 
 
-def detached_message(task_id: str) -> str:
+WAIT_ADVICE = (
+    "Do not repeat or poll it: its result will arrive automatically as a later message. "
+    "Minutes without visible progress are normal: do not stop or replace it as stalled "
+    "unless manage_worker list says it may be stuck, and then tell the user first. "
+    "A shared-mode sub-agent is still editing the live files, so leave the files it is "
+    "working on alone until it reports."
+)
+
+
+def _named(task_id: str, worker_id: str) -> str:
+    return f"worker {worker_id}, task {task_id}" if worker_id else f"task {task_id}"
+
+
+def detached_message(task_id: str, worker_id: str = "") -> str:
     return (
-        f"The user sent a follow-up, so this delegation (task {task_id}) moved to the "
-        "background; the sub-agent is still working. Do not repeat or poll it: its result "
-        "will arrive automatically as a later message. Answer the user, continue independent "
-        "work, or end your response to wait for it. A shared-mode sub-agent is still "
-        "editing the live files, so leave the files it is working on alone until it reports."
+        f"The user sent a follow-up, so this delegation ({_named(task_id, worker_id)}) moved "
+        f"to the background; the sub-agent is still working. {WAIT_ADVICE} Answer the user, "
+        "continue independent work, or end your response to wait for it."
+    )
+
+
+def question_detached_message(task_id: str, worker_id: str = "") -> str:
+    return (
+        f"A worker asked you a question, so this delegation ({_named(task_id, worker_id)}) "
+        f"moved to the background; it is still working. {WAIT_ADVICE} The question follows; "
+        "answer it with manage_worker."
+    )
+
+
+def background_message(task_id: str, worker_id: str = "") -> str:
+    return (
+        f"Started in the background ({_named(task_id, worker_id)}). {WAIT_ADVICE} "
+        "Dispatch other independent work, talk to the user, or end your response to wait."
+    )
+
+
+def timeout_detached_message(task_id: str, worker_id: str = "") -> str:
+    return (
+        f"This delegation ({_named(task_id, worker_id)}) is still running, so it moved "
+        f"to the background to avoid the client tool timeout. {WAIT_ADVICE} "
+        "Continue independent work or end your response to wait for it."
+    )
+
+
+def stopped_message(task_id: str, worker_id: str = "") -> str:
+    return (
+        f"The background delegation ({_named(task_id, worker_id)}) was stopped as requested "
+        "before it reported. It may have left partial changes."
     )
 
 
@@ -122,22 +194,52 @@ class _Child:
     detached: bool = False
 
 
-def _failure(task_id: str, error: BaseException) -> tuple[str, ...] | BaseException:
-    """What a detached child's error delivers: a message, or the error that ends the run.
+# What Harness's own background tools report as a failed result (its private
+# `_SignalledError`); anything else ends the run.
+_REPORTED = (
+    ApprovalRequired,
+    CallDeferred,
+    ModelRetry,
+    ToolFailed,
+    ToolFailedError,
+    ToolRetryError,
+    ValidationError,
+)
+
+
+def _failure(
+    task_id: str, error: BaseException, max_retries: int, dispatched: tuple[int, int]
+) -> _Completion | BaseException:
+    """What a detached child's error delivers: a failed result, or the error that ends the run.
 
     Errors the foreground call would have turned into a failed tool result
-    become a message too. Anything else ends the run, as it would have inline:
-    Harness's `contain_errors` already turns child crashes into retries.
+    become a failed result too. Anything else ends the run, as it would have
+    inline: Harness's `contain_errors` already turns child crashes into retries.
+    Neither counts toward `delegate_task`'s retries: the call already returned.
+    `dispatched` is where the model made the call, which orders results
+    requeued at a pause.
     """
-    if isinstance(error, ToolRetryError | ToolFailedError | ApprovalRequired | CallDeferred):
-        detail = _format_background_error(error)
-    elif isinstance(error, ModelRetry):
-        detail = str(error)
-    elif isinstance(error, RunCancelled):
-        detail = f"the sub-agent was cancelled. {error}".strip()
-    else:
+    if isinstance(error, RunCancelled):
+        error = ToolFailed(f"the sub-agent was cancelled. {error}".strip())
+    elif not isinstance(error, _REPORTED):
         return error
-    return (f"Background tool '{DELEGATE}' (task {task_id}) failed: {detail}",)
+    result = _format_background_failure(DELEGATE, task_id, error)
+    return _Completion(DELEGATE, max_retries, result, dispatched)
+
+
+def _shown(completion: _Completion) -> str:
+    """A delivered result's text as the delegate row shows it.
+
+    The framework frames it for the model.
+    """
+    content = completion.result.content
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        item.content if isinstance(item, TextContent) else item
+        for item in content
+        if isinstance(item, TextContent | str)
+    )
 
 
 @dataclass
@@ -172,8 +274,17 @@ class BackgroundDelegation(BackgroundTools):
         if call.tool_name != DELEGATE:
             return await handler(args)
         task_id = call.tool_call_id
+        # As upstream: taken while the call's response is still the last message.
+        dispatched = (ctx.run_step, _position_in_response(ctx, call))
         child = _Child()
         scope = anyio.CancelScope()
+        hub = hub_for(ctx)
+        # Claimed before the child starts, so a receipt can name the worker.
+        handle = hub.claim(task_id, args) if hub is not None else None
+        worker_id = handle.id if handle is not None else ""
+
+        def stop_requested() -> bool:
+            return handle is not None and handle.stop_requested
 
         async def run() -> None:
             try:
@@ -187,35 +298,71 @@ class BackgroundDelegation(BackgroundTools):
                     child.cancelled = False
             finally:
                 child.done.set()
-                if child.detached and child.cancelled:
+                if handle is not None:
+                    handle.cancel = None
+                    if not handle.started:
+                        # Refused before delegate_task ran (another capability, a
+                        # validation error): no worker exists, so none stays running.
+                        hub.release(handle)
+                if child.detached and child.cancelled and not stop_requested():
                     self._live -= 1
                     _abandoned(ctx, task_id)
-            if not child.detached or child.cancelled:
+            if not child.detached:
                 return
-            if child.error is not None:
-                outcome = _failure(task_id, child.error)
+            outcome: _Completion | BaseException
+            if child.cancelled:
+                if not stop_requested():
+                    return
+                # Stopped by `manage_worker(action='stop')`, not by the run ending: say so.
+                stopped = stopped_message(task_id, worker_id)
+                result = make_background_result(DELEGATE, task_id, stopped, failed=True)
+                outcome = _Completion(DELEGATE, ctx.max_retries, result, dispatched)
+            elif child.error is not None:
+                if isinstance(child.error, ToolRetryError) and ctx.tool_manager is not None:
+                    # As upstream: core charged the child's retry to the step that
+                    # issued the call, which already counted it a success.
+                    ctx.tool_manager.failed_tools.discard(DELEGATE)
+                outcome = _failure(task_id, child.error, ctx.max_retries, dispatched)
             else:
-                outcome = _format_background_result(DELEGATE, task_id, child.result)
+                result = _format_background_result(DELEGATE, task_id, child.result)
+                outcome = _Completion(DELEGATE, ctx.max_retries, result, dispatched, succeeded=True)
             try:
                 if not isinstance(outcome, BaseException):
                     # Settles the delegate row; `_live` still holds the run open.
-                    await ctx.emit(DelegationDelivered(content="\n".join(map(str, outcome))))
+                    await ctx.emit(DelegationDelivered(content=_shown(outcome)))
             finally:
                 self._send.send_nowait(outcome)
                 self._live -= 1
 
         # Steering already pending still starts the child (steering never skips
         # a requested tool); the first check below detaches it at once.
+        from pcode.models import runs_own_loop
+
         self._task_group.start_soon(run, name=f"delegation ({task_id})")
+        background = bool(args.get("run_in_background"))
+        own_loop = runs_own_loop(getattr(ctx, "model", None))
+        started = monotonic()
         try:
             while not child.done.is_set():
                 # No await between this check and `detached`: the child either
                 # finished first and is returned below, or sees the flag.
-                if steering_pending(ctx):
+                # A worker's question needs a parent model request, which a
+                # waiting call would block, so it detaches like steering.
+                question = hub is not None and hub.has_undelivered()
+                timed_out = own_loop and (monotonic() - started >= MCP_DETACH_SECONDS)
+                if background or question or timed_out or steering_pending(ctx):
                     child.detached = True
                     self._live += 1
+                    if handle is not None:
+                        handle.cancel = scope.cancel
                     await ctx.emit(DelegationDetached())
-                    return detached_message(task_id)
+                    if background:
+                        return background_message(task_id, worker_id)
+                    if question:
+                        return question_detached_message(task_id, worker_id)
+                    if timed_out:
+                        return timeout_detached_message(task_id, worker_id)
+                    return detached_message(task_id, worker_id)
                 with anyio.move_on_after(POLL_SECONDS):
                     await child.done.wait()
         except BaseException:
@@ -261,7 +408,10 @@ class BackgroundDelegation(BackgroundTools):
         user is never stuck behind a child the model left running.
         """
         with anyio.move_on_after(POLL_SECONDS):
-            _deliver(ctx, await self._outcomes.receive())
+            self._deliver(ctx, await self._outcomes.receive())
+            return True
+        if (hub := hub_for(ctx)) is not None and (questions := hub.take_questions()):
+            ctx.enqueue(*questions)
             return True
         if steering_pending(ctx) and (messages := await take_steering(ctx)):
             ctx.enqueue(*messages)
@@ -270,7 +420,7 @@ class BackgroundDelegation(BackgroundTools):
             # The last outcome raced the timeout, or a child was cancelled
             # without one; either way nothing more will come.
             for outcome in self._arrived():
-                _deliver(ctx, outcome)
+                self._deliver(ctx, outcome)
             return True
         return False
 
@@ -283,14 +433,98 @@ class BackgroundDelegation(BackgroundTools):
             self._node = None
 
     async def wrap_run_event_stream(self, ctx, *, stream):
-        async for event in super().wrap_run_event_stream(ctx, stream=stream):
-            yield event
+        from pcode.models import runs_own_loop
+
         node = self._node
+        wrapped = super().wrap_run_event_stream(ctx, stream=stream)
+        if isinstance(node, ModelRequestNode) and runs_own_loop(getattr(ctx, "model", None)):
+            async for event in self._interleave_buffered(ctx, wrapped):
+                yield event
+        else:
+            async for event in wrapped:
+                yield event
         # Set by the time the stream is exhausted (private to Pydantic AI; pinned).
         ending = getattr(node, "_next_node", None) if isinstance(node, CallToolsNode) else None
         if self._ending(ctx, ending):
             async for event in dispatch_event_stream(ctx, self._drain_while_waiting(ctx)):
                 yield event
+
+    async def _interleave_buffered(self, ctx, stream):
+        """Yield `stream` while draining `ctx._event_stream_buffer` live as events arrive.
+
+        During a `ModelRequestNode`, Pydantic AI only drains the run's event
+        buffer between pulls of the model stream. An `antigravity:` model runs
+        bridged pcode delegations while that pull is in flight, so watching
+        the buffer's waiters lets worker start, activity, plan and prose reach
+        the panel and `/agents` immediately instead of after the turn ends.
+        """
+        buffer = ctx._event_stream_buffer
+        waiters = getattr(buffer, "waiters", None)
+        if buffer is None or waiters is None:
+            async for event in stream:
+                yield event
+            return
+        iterator = aiter(stream)
+        signal = asyncio.Event()
+        waiters.append(signal)
+        next_task: asyncio.Task | None = None
+        try:
+            while True:
+                while buffer:
+                    async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                        yield emitted
+                signal.clear()
+                if next_task is None:
+                    next_task = asyncio.create_task(anext(iterator))
+                wait_task = asyncio.create_task(signal.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {next_task, wait_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    if not wait_task.done():
+                        wait_task.cancel()
+                        with anyio.CancelScope(shield=True):
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await wait_task
+                if next_task in done:
+                    task, next_task = next_task, None
+                    try:
+                        event = task.result()
+                    except StopAsyncIteration:
+                        while buffer:
+                            async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                                yield emitted
+                        break
+                    if isinstance(event, _MODEL_STREAM_EVENTS):
+                        while buffer:
+                            async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                                yield emitted
+                        yield event
+                    else:
+                        # A buffered event popped ahead of anything still in `buffer`.
+                        yield event
+                        while buffer:
+                            async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                                yield emitted
+                else:
+                    while buffer:
+                        async for emitted in dispatch_event_stream(ctx, _take_buffered(buffer)):
+                            yield emitted
+        finally:
+            if signal in waiters:
+                waiters.remove(signal)
+            with anyio.CancelScope(shield=True):
+                try:
+                    if next_task is not None and not next_task.done():
+                        next_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await next_task
+                    elif next_task is not None and not next_task.cancelled():
+                        with contextlib.suppress(BaseException):
+                            next_task.exception()
+                finally:
+                    await _close_stream(iterator)
 
     async def _drain_while_waiting(self, ctx):
         buffer = ctx._event_stream_buffer
@@ -307,10 +541,14 @@ class BackgroundDelegation(BackgroundTools):
         from pydantic_graph import End
 
         if isinstance(result, End) and isinstance(result.data.output, DeferredToolRequests):
-            # As upstream: a deferred-tool pause must not become another request.
-            return result
+            # A deferred-tool pause is upstream's to settle: it waits for live
+            # tasks and records their results in dispatch order. No pcode agent
+            # ends on one today. If one ever does, this wait must wake for worker
+            # questions and steering as `_wait_step` does, or a worker blocked
+            # on a parent answer holds the pause forever.
+            return await super().after_node_run(ctx, node=node, result=result)
         for outcome in self._arrived():
-            _deliver(ctx, outcome)
+            self._deliver(ctx, outcome)
         if self._ending(ctx, result):
             await ctx.emit(DelegatesPending(count=self._live))
             while not ctx.pending_messages and not await self._wait_step(ctx):

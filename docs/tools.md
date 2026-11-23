@@ -1,5 +1,25 @@
 # Tools
 
+## Tools and bundled extensions at a glance
+
+| Built-in / extension | Default | Provides | How to toggle |
+| --- | --- | --- | --- |
+| **Core tools** | On | `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, `shell` + job tools, planning, `delegate_task` / `manage_worker` / `task_worktree` | Always on ([sandbox](#write-policy-and-shell-sandbox-opt-in) restricts writes) |
+| **Code mode** | On | `run_code` sandboxed Python batching for read-only lookups | `pcode config set code_mode off` |
+| `web_research` | On | `web_search` and `get_page` (or provider-native search/fetch) | `/extensions off web_research` or `web_search off` |
+| `session_history` | On | `search_sessions` and `read_session` for [recalling earlier sessions](sessions.md#recalling-earlier-sessions) | `/extensions off session_history` |
+| `conductor` | On | `list_hosts`, `inspect_host`, `ask_host`, `send_to_host`, `wait_for_hosts`, `stop_host` for [orchestrating other sessions](sessions.md#conductor-orchestrating-other-sessions) | `/extensions off conductor` |
+| `browser` | On (idle until launched) | `/browser launch\|attach\|off\|status` Playwright browser tools | `/browser launch` / `/browser off` (or `/extensions off browser`) |
+| `plan_mode` | On | `/plan` plan-first workflow before implementing | `/extensions off plan_mode` |
+| `reflect` | On | `/reflect` turn session failures into harness improvements | `/extensions off reflect` |
+| `sandbox` | Opt-in | Write policy and OS-level shell sandbox (`/allow-writes`) | `/extensions on sandbox` |
+| `manager` | Opt-in | Multi-worker coordination and review ([Manager mode](manager.md)) | `/extensions on manager` |
+| `workflows` | Opt-in | `run_workflow` scripted sub-agent fan-out ([below](#workflows-opt-in)) | `/extensions on workflows` |
+| `ponytail` | Opt-in | `/ponytail` minimal-diff discipline ruleset | `/extensions on ponytail` |
+
+Run `/reload` after `/extensions on|off` to apply the change to the running
+session.
+
 ## Tool permissions
 
 **The agent edits files and runs shell commands for real. There is no approval
@@ -155,6 +175,50 @@ session; extra delegations then wait for a slot. Provider limits and machine
 resources still apply. Sub-agents defined by extensions keep their own tools
 rather than gaining the worker's.
 
+### Talking to workers
+
+Delegation isn't fire-and-forget. Every worker gets a short id (`w1`, `w2`, ...)
+that the agent, and you, can refer to for the rest of the session.
+
+**Briefs say what a worker needs.** A worker sees none of the conversation, so
+besides the task itself a delegation can carry `context` (relevant files,
+earlier decisions), `boundaries` (what not to touch) and `done_when` (how the
+worker knows it's finished). A step that builds on earlier work can include
+those workers' reports in its brief, and a worker can be linked to a step of
+the agent's plan, which `/agents` shows beside it.
+
+**Reports come back in a fixed shape.** Each worker ends with a summary, its
+changes, the commands it ran, what it verified, what it didn't, open questions,
+and decisions other workers should follow. "Verified" lists only what the
+worker actually ran or checked, so you can tell a passing test from a hopeful
+one.
+
+**Workers can run in the background.** The agent can start a worker and carry
+on (dispatch the next independent piece, or keep talking to you) instead of
+waiting; its result arrives when it's done. A finished worker can also be
+resumed with its own context for a follow-up ("now add the test you skipped"),
+which is cheaper than briefing a new one from scratch. Resuming works for
+workers that shared the session's checkout, not isolated ones.
+
+**Workers ask instead of guessing.** When a brief is ambiguous in a way that
+changes the result, a worker can ask the agent a question. It does whatever
+doesn't depend on the answer first, then waits. The agent answers it, or asks
+you first if only you can decide. If nobody answers in time, the worker uses the fallback it
+named and notes the assumption in its report.
+
+**You can step in.** In `/agents`, a worker waiting on a question is marked
+`? asks parent`. Press `a` to answer it or `m` to send any worker a message:
+both put `Answer for w3: ` or `Message for w3: ` in your prompt, and the agent
+relays what you type. `r` shows a finished worker's report. You can also just
+ask in the conversation: "stop w2" (for a worker running in the background),
+"tell w1 to skip the migration", "what are the workers doing?". In manager
+mode the agent marks a worker's result accepted or rejected after checking it,
+which the dashboard shows as `Done · reviewed` or `Done · rejected`.
+
+[Manager mode](manager.md) (opt-in, `/extensions on manager`) builds on all of
+this for large tasks: the agent coordinates workers and checks every result
+before it counts.
+
 ### Sub-agents on other models
 
 By default every sub-agent runs on the session's model. A delegation can name
@@ -242,16 +306,16 @@ cleanliness details come from Git; test claims in the summary are the worker's
 own. Cancellation or failure keeps the checkout and record, and a task whose
 owning pcode died shows as failed.
 
-Only the parent can manage tasks:
+Only the parent can manage tasks, with one `task_worktree` tool:
 
-- `list_task_worktrees()` lists this checkout's tasks, including after a restart.
+- `list` shows this checkout's tasks, including after a restart.
   Task records are local files in the Git directory, never tracked files.
-- `integrate_task(task_id)` merges a finished result into its **parent branch**,
+- `integrate` merges a finished result into its **parent branch**,
   never into the main branch. Both checkouts must be clean (untracked files
   included), and the worker's branch must still match its result. Conflicts stay
   in the parent to resolve and commit before retrying. Review the diff first and
   run the combined checks afterward.
-- `discard_task(task_id, confirm=False)` removes an inactive task's checkout and
+- `discard` removes an inactive task's checkout and
   branch. Unintegrated or dirty work requires `confirm=True`, which the agent is
   told to use only after you approve. Running tasks cannot be discarded. This is
   an instruction to the model, not an approval prompt.
@@ -266,6 +330,31 @@ alone and explain how to restore its path.
 Sub-agents defined by extensions always share the workspace; isolation is only
 for the built-in worker.
 
+While [manager mode](manager.md) is on, `worktree=on` alone is enough: workers
+are isolated for the session without changing `worker_isolation`.
+
+### Workflows (opt-in)
+
+`/extensions on workflows` (then `/reload`) enables an experimental
+`run_workflow` tool for fanning work out to many sub-agents from a single
+Python script. Inside the script, `worker(task=...)` is an async function, so
+the model can gather a batch, chain one result into the next, and filter in
+plain Python. The whole script runs as one tool call and only its last
+expression returns to the conversation, keeping large batches from flooding
+context the way dozens of `delegate_task` reports would.
+
+- **Limits:** up to 200 sub-agent calls per turn. When `worker_concurrency` is
+  `0` (unlimited), `run_workflow` caps concurrent workflow workers at **8**; a
+  positive `worker_concurrency` sets the cap instead.
+- **Capabilities:** workflow workers inherit the session's model, file and
+  shell tools, MCP tools, and extension guardrails. Progress arrives as a notice
+  each time a worker finishes rather than streaming every tool call.
+- **Differences from `delegate_task`:** workflow workers always share the
+  parent's checkout (no worktree isolation, so concurrent workers must not edit
+  the same files), have no worker ID (no `ask_parent`, `manage_worker`, or
+  detach on steering), and `run_workflow` is only available to the parent
+  session, not to delegated workers.
+
 ## File and shell tools
 
 The agent has `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, and
@@ -274,7 +363,7 @@ search, and [recalling earlier sessions](sessions.md#recalling-earlier-sessions)
 `list_files` and `grep` use a bundled ripgrep and respect ignore files. An edit can be one replacement or a
 list of them, all checked before the file is written once. When the model sends
 a malformed list, pcode lets it correct itself: see
-[retries](sessions.md#retries-and-resend).
+[retries](sessions.md#retries-and-continue).
 
 ### Images
 
@@ -325,7 +414,7 @@ message.
 The footer below the editor shows the active total as `1 job` or `N jobs`,
 including jobs the model is waiting on, and hides the count when none remain.
 Use `/jobs` for details. While the model waits on a job, the status row says `Wait for job` and the tool row in the
-[activity panel](commands.md#activity-panel) names the job: `⧖ 45.2s · j3 · running the e2e suite · make e2e`.
+[activity panel](commands.md#activity-panel) names the job: `45.2s · j3 · running the e2e suite · make e2e`.
 The finished job goes to scrollback at the end of the turn (or at once while
 idle) as a normal `Run shell` block labeled `background`, with its id and
 elapsed time; `show_commands` and `tool_error_scrollback` apply as for other
@@ -369,14 +458,14 @@ backend available:
 
 | | Search | Fetch a URL |
 | --- | --- | --- |
-| Model has a native tool (`anthropic:`, `claude:` and OpenAI models) | provider runs it server-side | Anthropic runs it server-side; `claude:` uses `get_page` below by default |
+| Model has a native tool (`anthropic:`, `claude:`, OpenAI, and Gemini 3 or newer) | provider runs it server-side (Gemini through Google Search) | Anthropic and Gemini (URL context) run it server-side; OpenAI uses `get_page` below, and so does `claude:` by default |
 | `EXA_API_KEY` set | Exa `web_search` | Exa `get_page` |
 | Otherwise | DuckDuckGo `web_search` | HTTP fetch `get_page`, converted to Markdown |
 
 Native tools are billed by the provider per search. The Exa key is never passed
 to the model. Anthropic ties each native result to the account that ran the
 search, so a session resumed under a different login cannot replay them; see
-[Retries](sessions.md#retries-and-resend) for how pcode handles that. Search
+[Retries](sessions.md#retries-and-continue) for how pcode handles that. Search
 returns up to five results, and `get_page` up to 100,000 characters of a page
 (10,000 through Exa). By default a long page is
 [saved to disk](context.md#tool-output-limits) and read back in pieces rather
@@ -465,20 +554,21 @@ can tell it to act with your login, and nothing enforces otherwise beyond you
 watching the window. This is the bundled `browser` extension; a user file of the
 same name replaces it.
 
-## Code mode (opt-in)
+## Code mode
 
 [Code mode](https://pydantic.dev/docs/ai/harness/code-mode/) replaces individual
 tool calls with a single sandboxed Python snippet, so the model can fan out
 lookups with `asyncio.gather`, filter results, and return only what matters
-without a model turn per dependent batch.
+without a model turn per dependent batch. It is on by default:
 
 ```sh
-pcode config set code_mode on   # Applies on next launch
-pcode config unset code_mode    # Back to plain tool calling
+pcode config set code_mode off   # Back to plain tool calling (applies on next launch)
+pcode config unset code_mode     # Restore the default (on)
 ```
 
 Only read-only lookups are available inside a snippet: `read_file`,
-`list_files`, `grep`, `read_tool_result`, `web_search`, and `get_page`. Edits,
+`list_files`, `grep`, `read_tool_result`, `grep_tool_result`, `web_search`, and
+`get_page`. Edits,
 plan updates, the shell, and delegation stay ordinary tool calls, so diffs,
 command previews, and the plan panel still show what happened. A `run_code` call is displayed by the calls the
 snippet makes and its size (`grep · read_file ×2 · 12 lines`); the snippet

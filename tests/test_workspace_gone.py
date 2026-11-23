@@ -169,7 +169,7 @@ def test_a_missing_workspace_flag_names_the_directory(tmp_path, monkeypatch, cap
 
 def test_the_guard_reaches_a_delegated_worker(tmp_path, monkeypatch):
     """Sub-agents share the workspace, so they must stop on it too."""
-    from pydantic_ai_harness.subagents import SubAgents
+    from pydantic_ai_harness.sub_agents import SubAgents
 
     from pcode.agent import create_coder
     from pcode.workspace import WorkspaceGuard

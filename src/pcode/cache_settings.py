@@ -2,7 +2,7 @@
 
 `agent.model_settings` covers the main agent only. A sub-agent inherits the
 parent's *model object* but is run with `model_settings=None`
-(`subagents/_toolset.py`), and cache settings live on the agent, not the model,
+(`sub_agents/_toolset.py`), and cache settings live on the agent, not the model,
 so a delegated run would otherwise request no caching at all. Applying them per
 request also tracks a model switch without rebuilding the sub-agent.
 """

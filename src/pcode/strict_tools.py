@@ -3,14 +3,24 @@
 Claude sometimes emits a nested tool argument as an escaped JSON *string* rather
 than the array the schema asks for, and botches the escaping while doing it. In
 ~2k recorded `edit_file` calls the Anthropic share of `replacements` arrivals
-failed validation about one time in eight, while the OpenAI share never did --
-Pydantic AI turns OpenAI's strict mode on by itself, and strict mode is
-constrained decoding.
+failed validation about one time in eight, while the OpenAI share never did.
+Across every saved session through 2026-11-17, 11 of
+6,231 Anthropic `edit_file` calls (0.2%) came back to the model as validation
+retries, and none of 645 OpenAI ones. That OpenAI figure is not strict mode's
+doing today: OpenAI applies strict only to a schema it can constrain, and of
+the coding tools only `write_file`'s qualifies (2.69); Gemini constrains them all.
+
+Harness's `Coder` turned strict mode off for its tools from Pydantic AI 2.64
+(pydantic-ai#11743, a preference for repairing arguments over constraining
+them, with no measured failure behind it), and pcode inherited that until it
+stopped composing from `Coder`. On OpenAI's and Google's own APIs pcode now
+leaves `strict` unset, so they decide (`PROVIDER_STRICT`); on Gemini one
+`strict=False` tool would also drop every other tool in the request, MCP ones
+included, out of `VALIDATED`. Everywhere else the coding tools keep it off.
 
 Anthropic exposes the same thing as `tools[].strict`, but two gaps keep it off:
 `ToolDefinition.strict` defaults to `None`, which Pydantic AI reads as "off" for
-Anthropic (only OpenAI infers it), and the Anthropic profile carries no
-`json_schema_transformer`, so the schema Pydantic generates is rejected with
+Anthropic, and the schema Pydantic generates is rejected with
 `For 'object' type, 'additionalProperties' must be explicitly set to false`.
 This module closes the object nodes and sets the flag.
 
@@ -121,6 +131,33 @@ def prepare_strict_tools(ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefin
         else tool_def
         for tool_def in tool_defs
     ]
+
+
+# Model systems whose own API turns an unset `strict` into something sound:
+# OpenAI constrains the schemas it can, Gemini validates the whole request.
+# Elsewhere an unset `strict` can go out as `strict: true` on schemas nobody
+# adapted (OpenRouter, Together and Cerebras did, for every coding tool), so
+# the coding tools keep it off there.
+PROVIDER_STRICT = frozenset({"openai", "openai-codex", "google", "google-cloud"})
+
+
+def provider_strict_off(names: set[str]) -> PrepareTools:
+    """Turn strict mode off for `names` where nothing chose it, except on the
+    systems in `PROVIDER_STRICT`, which decide for themselves.
+    `create_strict_tools`, later in the list, still opts Anthropic's `edit_file` in.
+    """
+
+    def prepare(ctx, tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+        if getattr(getattr(ctx, "model", None), "system", None) in PROVIDER_STRICT:
+            return tool_defs
+        return [
+            replace(tool_def, strict=False)
+            if tool_def.strict is None and tool_def.name in names
+            else tool_def
+            for tool_def in tool_defs
+        ]
+
+    return PrepareTools(prepare)
 
 
 def create_strict_tools() -> PrepareTools | None:

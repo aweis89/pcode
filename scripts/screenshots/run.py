@@ -31,6 +31,7 @@ from pathlib import Path
 
 from iterm import Look, profile_look, progress_bar_svg
 from rich.console import Console
+from rich.terminal_theme import SVG_EXPORT_THEME
 from rich.text import Text
 
 HERE = Path(__file__).resolve().parent
@@ -104,7 +105,12 @@ def load(name: str):
 
 def svg(ansi: str, width: int, title: str, look: Look, progress: tuple | None) -> str:
     console = Console(
-        record=True, width=width, file=io.StringIO(), force_terminal=True, color_system="truecolor"
+        record=True,
+        width=width,
+        file=io.StringIO(),
+        force_terminal=True,
+        color_system="truecolor",
+        _environ={**os.environ, "TERM": "xterm-256color"},
     )
     # Decoded whole, then split: capture-pane sets a style once and lets it run
     # on into the next line, as a wrapped paragraph does on a real terminal.
@@ -312,6 +318,8 @@ def setup(iterm: bool) -> tuple[Look, dict]:
         "terminal_progress": "on",
         # A still of `arc` catches a broken circle; every braille frame reads whole.
         "spinner": "dots",
+        # Scripted scenes call read_file/grep directly rather than via code_mode.
+        "code_mode": "off",
     }
     if iterm:
         look = profile_look()
@@ -406,7 +414,7 @@ def play(
         if tab not in tabs:
             raise SystemExit(f"--live {name} plays one tab: --tab {' or '.join(tabs)}")
         root, steps, command = DEMO_ROOT / tab, tabs[tab].steps, [*command, tab]
-    background = look.theme.background_color.hex if look.theme else None
+    background = (look.theme or SVG_EXPORT_THEME).background_color.hex
     with session(command, root, (width, height), preferences, background) as pane:
         if not live:
             return play_steps(pane, steps, out, width, text=text, look=look, live=False)

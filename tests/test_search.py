@@ -65,12 +65,15 @@ def test_bundled_extension_is_discovered_last_and_shadowed_by_user_files(tmp_pat
     assert extension.summary() == "2 tools"
     assert load_extensions(tmp_path).report(tmp_path) == [
         "browser (bundled): /browser",
+        "conductor (bundled): 6 tools",
+        "manager (bundled): off by default (/extensions on manager)",
         "plan_mode (bundled): 1 tool, 4 hooks, /plan",
         "ponytail (bundled): off by default (/extensions on ponytail)",
         "reflect (bundled): /reflect",
         "sandbox (bundled): off by default (/extensions on sandbox)",
         "session_history (bundled): 2 tools",
         "web_research (bundled): 2 tools",
+        "workflows (bundled): off by default (/extensions on workflows)",
     ]
 
     user_extension_dir().mkdir(parents=True, exist_ok=True)
@@ -96,6 +99,17 @@ def test_native_search_and_fetch_hide_the_local_tools(tmp_path, monkeypatch, key
     capabilities = web_extension(tmp_path).capabilities
     assert request_shape(capabilities) == {"tools": [], "native": ["web_search", "web_fetch"]}
     assert request_shape(capabilities, NO_NATIVE) == {
+        "tools": ["web_search", "get_page"],
+        "native": [],
+    }
+
+
+def test_models_refusing_native_beside_function_tools_get_the_local_ones(tmp_path, monkeypatch):
+    # Gemini before 3 fails a request mixing native and function tools.
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    capabilities = web_extension(tmp_path).capabilities
+    old_gemini = ModelProfile(google_supports_tool_combination=False)  # type: ignore[typeddict-unknown-key]
+    assert request_shape(capabilities, old_gemini) == {
         "tools": ["web_search", "get_page"],
         "native": [],
     }
@@ -195,7 +209,12 @@ def test_exa_backs_the_local_tools_when_a_key_is_set(tmp_path, monkeypatch):
                 "Find example docs", model=FunctionModel(stream_function=model, profile=NO_NATIVE)
             )
             assert response.output == "Found the docs."
-            assert all(args == () and kwargs == {} for args, kwargs in ctor.call_args_list)
+            # pcode never handles the key: Exa reads it, or since Harness 0.66
+            # Harness passes it on from the same environment variable.
+            assert all(
+                args == () and kwargs in ({}, {"api_key": "test-exa-key"})
+                for args, kwargs in ctor.call_args_list
+            )
         client.search.assert_awaited_once()
         client.get_contents.assert_awaited_once_with(
             # One over the cap, so a longer page is marked truncated.
@@ -299,6 +318,109 @@ def test_native_search_streams_as_tool_rows():
         assert "EvEICioI" not in search.result
         assert "Example\nhttps://example.com\nAge: 2 weeks ago" in search.result
         assert "encrypted" in search.result
+
+    asyncio.run(run())
+
+
+def test_streaming_native_tool_call_waits_for_delta_args_before_emitting_start():
+    """Streaming native calls wait for valid dict args and handle edge cases cleanly."""
+    from pydantic_ai import PartDeltaEvent, PartEndEvent, PartStartEvent, ToolCallPartDelta
+
+    from pcode.stream_events import EventTranslator
+    from pcode.turn import TurnContext
+
+    async def run():
+        runtime = AgentRuntime(Agent(FunctionModel(lambda m, i: None)))
+        try:
+            translator = EventTranslator(
+                runtime,
+                TurnContext(run_id="r1"),
+                [],
+                plan_preview=None,
+                edit_preview=None,
+            )
+            # 1. None, partial JSON, and non-dict JSON strings all defer to PartEndEvent.
+            for idx, bad_args in enumerate((None, '{"query": "pco', "[1, 2]", '"hello"')):
+                cid = f"bad-{idx}"
+                start_events = [
+                    e
+                    async for e in translator.translate(
+                        PartStartEvent(
+                            index=idx,
+                            part=NativeToolCallPart(
+                                tool_name="web_search", args=bad_args, tool_call_id=cid
+                            ),
+                        )
+                    )
+                ]
+                assert not any(isinstance(e, ToolStarted) for e in start_events), bad_args
+
+            delta_events = [
+                e
+                async for e in translator.translate(
+                    PartDeltaEvent(
+                        index=0,
+                        delta=ToolCallPartDelta(
+                            args_delta='{"query": "pcode"}', tool_call_id="bad-0"
+                        ),
+                    )
+                )
+            ]
+            assert not any(isinstance(e, ToolStarted) for e in delta_events)
+            end_events = [
+                e
+                async for e in translator.translate(
+                    PartEndEvent(
+                        index=0,
+                        part=NativeToolCallPart(
+                            tool_name="web_search",
+                            args='{"query": "pcode"}',
+                            tool_call_id="bad-0",
+                        ),
+                    )
+                )
+            ]
+            started = [e for e in end_events if isinstance(e, ToolStarted)]
+            assert [(e.name, e.detail) for e in started] == [("web_search", "pcode")]
+
+            # 2. Complete JSON string on PartStartEvent emits once and dedupes on PartEndEvent.
+            part = NativeToolCallPart(
+                tool_name="web_search", args='{"query": "ready"}', tool_call_id="json-1"
+            )
+            s_events = [e async for e in translator.translate(PartStartEvent(index=10, part=part))]
+            e_events = [e async for e in translator.translate(PartEndEvent(index=10, part=part))]
+            assert [(e.name, e.detail) for e in s_events if isinstance(e, ToolStarted)] == [
+                ("web_search", "ready")
+            ]
+            assert not any(isinstance(e, ToolStarted) for e in e_events)
+
+            # 3. Late PartEndEvent after return is skipped, but a reused call_id on a new
+            # PartStartEvent starts normally.
+            ret = NativeToolReturnPart(tool_name="web_search", content=[], tool_call_id="json-1")
+            _ = [e async for e in translator.translate(PartStartEvent(index=11, part=ret))]
+            late_end = [e async for e in translator.translate(PartEndEvent(index=10, part=part))]
+            assert not any(isinstance(e, ToolStarted) for e in late_end)
+            reused = NativeToolCallPart(
+                tool_name="web_search", args={"query": "again"}, tool_call_id="json-1"
+            )
+            reused_events = [
+                e async for e in translator.translate(PartStartEvent(index=12, part=reused))
+            ]
+            assert [(e.name, e.detail) for e in reused_events if isinstance(e, ToolStarted)] == [
+                ("web_search", "again")
+            ]
+
+            # 4. Empty tool_call_id does not poison subsequent anonymous calls.
+            anon1 = NativeToolCallPart(tool_name="web_search", args={"query": "a"}, tool_call_id="")
+            anon_ret = NativeToolReturnPart(tool_name="web_search", content=[], tool_call_id="")
+            anon2 = NativeToolCallPart(tool_name="web_search", args={"query": "b"}, tool_call_id="")
+            a1 = [e async for e in translator.translate(PartStartEvent(index=13, part=anon1))]
+            _ = [e async for e in translator.translate(PartStartEvent(index=14, part=anon_ret))]
+            a2 = [e async for e in translator.translate(PartStartEvent(index=15, part=anon2))]
+            assert [e.detail for e in a1 if isinstance(e, ToolStarted)] == ["a"]
+            assert [e.detail for e in a2 if isinstance(e, ToolStarted)] == ["b"]
+        finally:
+            runtime.close()
 
     asyncio.run(run())
 

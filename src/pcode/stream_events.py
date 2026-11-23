@@ -30,7 +30,6 @@ from pydantic_ai.messages import (
     ModelResponse,
     NativeToolCallPart,
     NativeToolReturnPart,
-    RetryPromptPart,
     ToolCallPart,
 )
 from pydantic_ai_harness.shell import (
@@ -38,8 +37,9 @@ from pydantic_ai_harness.shell import (
     CommandOutputEvent,
     CommandStartedEvent,
 )
-from pydantic_ai_harness.subagents import DelegationEndEvent, DelegationStartEvent
+from pydantic_ai_harness.sub_agents import DelegationFinishedEvent, DelegationStartedEvent
 
+from pcode.antigravity_tools import BridgedToolFinished, BridgedToolStarted
 from pcode.background_delegation import (
     DelegatesPending,
     DelegationDelivered,
@@ -64,10 +64,12 @@ from pcode.runtime import (
     ThinkingDelta,
     ToolStarted,
     ToolSummary,
+    WorkerStatus,
 )
 from pcode.shell import ShellPreview
 from pcode.tool_display import (
     COMMAND_TOOLS,
+    SPILL_READERS,
     assignment,
     command_error,
     delegation_detail,
@@ -82,8 +84,10 @@ from pcode.tool_display import (
     stated_purpose,
     subject,
     target,
+    tool_outcome,
 )
 from pcode.turn import TurnContext
+from pcode.worker_channel import WorkerUpdate
 
 if TYPE_CHECKING:
     from pcode.live import AgentRuntime
@@ -104,10 +108,12 @@ class EventTranslator:
         *,
         plan_preview: StreamingPlanPreview | None,
         edit_preview: StreamingEditPreview | None,
+        provider_continuation: bool = False,
     ) -> None:
         self.runtime = runtime
         self.context = context
         self.run_id = context.run_id
+        self.provider_continuation = provider_continuation
         # The plan as last published; a settled tool republishes it on change.
         self.plan_items = plan_items
         self.plan_preview = plan_preview
@@ -115,12 +121,17 @@ class EventTranslator:
         self.emitted_text = False
         # Running tools by call id: (name, args, monotonic start).
         self.tools: dict[str, tuple[str, dict, float]] = {}
+        # Native calls already emitted from `PartStartEvent`, by call id:
+        # (name, args, raw_args, started_at). `PartEndEvent` updates them only
+        # when new arguments arrived and skips calls already settled.
+        self.native_calls: dict[str, tuple[str, dict, Any, str]] = {}
+        self.settled_native: set[str] = set()
         # Every tool this run called, by call id, settled or not: a later
-        # `read_tool_result` names the call whose spilled output it reads.
+        # spill reader (`SPILL_READERS`) names the call whose output it reads.
         self.called: dict[str, str] = {}
         self.delegates: dict[str, ToolStarted] = {}
         self.child_tools: dict[str, ToolStarted] = {}
-        self.delegation_ends: dict[str, DelegationEndEvent] = {}
+        self.delegation_ends: dict[str, DelegationFinishedEvent] = {}
         # Delegates whose call returned on steering, by call id, as in `tools`:
         # their rows stay running until the child's result is delivered.
         self.detached: dict[str, tuple[str, dict, float]] = {}
@@ -139,6 +150,9 @@ class EventTranslator:
             # The only handler that awaits: it rereads the plan store.
             async for out in self.on_tool_result(event):
                 yield out
+        elif isinstance(event, BridgedToolFinished):
+            async for out in self.on_tool_result(FunctionToolResultEvent(event.result)):
+                yield out
         else:
             for out in self._dispatch(event):
                 yield out
@@ -152,9 +166,9 @@ class EventTranslator:
                 return self.on_cache_bust(event)
             case FileChangeEvent():
                 return self.on_file_change(event)
-            case DelegationStartEvent():
+            case DelegationStartedEvent():
                 return self.on_delegation_start(event)
-            case DelegationEndEvent():
+            case DelegationFinishedEvent():
                 return self.on_delegation_end(event)
             case DelegationDetached():
                 return self.on_delegation_detached(event)
@@ -167,6 +181,8 @@ class EventTranslator:
                 return self.on_child_output(event)
             case ChildActivity():
                 return self.on_child_activity(event)
+            case WorkerUpdate():
+                return iter((self.on_worker_update(event),))
             case CommandStartedEvent() | CommandOutputEvent() | CommandFinishedEvent():
                 return self.on_shell(event)
             case PartStartEvent():
@@ -177,6 +193,8 @@ class EventTranslator:
                 return self.on_part_end(event)
             case FunctionToolCallEvent():
                 return self.on_tool_call(event)
+            case BridgedToolStarted():
+                return self.on_tool_call(FunctionToolCallEvent(event.call))
             case AgentRunResultEvent():
                 return self.on_run_result(event)
             case _:
@@ -195,13 +213,13 @@ class EventTranslator:
         return RunStatus(f"Running {len(tools)} tools · {names}…")
 
     def spill_source(self, name: str, args: dict) -> str:
-        """The tool whose stored output a `read_tool_result` call reads, or "".
+        """The tool whose stored output a `SPILL_READERS` call reads, or "".
 
         This run's calls are not in the turn's history until it settles;
         earlier turns', including a resumed session's, are. Either answer is
         remembered, so a call's start, status, and result scan history once.
         """
-        call_id = spilled_call_id(args) if name == "read_tool_result" else ""
+        call_id = spilled_call_id(args) if name in SPILL_READERS else ""
         if not call_id:
             return ""
         if call_id not in self.called:
@@ -225,13 +243,13 @@ class EventTranslator:
     def on_file_change(self, event: FileChangeEvent) -> Iterator[Event]:
         yield event.change
 
-    def on_delegation_start(self, event: DelegationStartEvent) -> Iterator[Event]:
+    def on_delegation_start(self, event: DelegationStartedEvent) -> Iterator[Event]:
         if start := self.delegates.get(event.tool_call_id):
             start = replace(start, activity="Waiting for model")
             self.delegates[event.tool_call_id] = start
             yield start
 
-    def on_delegation_end(self, event: DelegationEndEvent) -> Iterator[Event]:
+    def on_delegation_end(self, event: DelegationFinishedEvent) -> Iterator[Event]:
         self.delegation_ends[event.tool_call_id] = event
         # Deliberately not added to session totals: a child's *tokens*
         # already reach `result.usage` even under its own budget, so
@@ -280,6 +298,9 @@ class EventTranslator:
             elapsed_seconds=max(0, monotonic() - started),
             command=invocation(name, args),
             purpose=stated_purpose(args),
+            # A delayed completion, like a job's exit: it lands whenever the
+            # child finishes, often mid-word in the parent's reply.
+            execution="background",
         )
 
     def on_child_output(self, event: ChildOutput) -> Iterator[Event]:
@@ -306,6 +327,19 @@ class EventTranslator:
                     self.child_tools.pop(event.child.call_id, None)
                 yield event.child
 
+    def on_worker_update(self, event: WorkerUpdate) -> WorkerStatus:
+        return WorkerStatus(
+            call_id=event.call_id,
+            worker_id=event.worker_id,
+            question=event.question,
+            fallback=event.fallback,
+            answered=event.answered,
+            tokens=event.tokens,
+            review=event.review,
+            status=event.status,
+            workspace=event.workspace,
+        )
+
     def on_shell(
         self, event: CommandStartedEvent | CommandOutputEvent | CommandFinishedEvent
     ) -> Iterator[Event]:
@@ -323,12 +357,44 @@ class EventTranslator:
             if event.part.content:
                 yield ThinkingDelta(event.part.content)
             yield RunStatus("Thinking…")
+        elif isinstance(event.part, NativeToolCallPart):
+            if event.part.tool_call_id:
+                self.settled_native.discard(event.part.tool_call_id)
+            if self._native_call_ready(event.part):
+                yield from self.on_native_tool_call(event.part)
         elif isinstance(event.part, NativeToolReturnPart):
             yield from self.on_native_tool_return(event.part)
 
+    @staticmethod
+    def _native_call_ready(part: NativeToolCallPart) -> bool:
+        """Whether a `PartStartEvent`'s native tool call already has usable arguments.
+
+        Streaming API native tools (such as Anthropic's web search) open with
+        `args=None` or partial JSON and complete at `PartEndEvent`; emitting
+        early would show `query unavailable`. Non-delta native tools (such as
+        Antigravity ACP) arrive as a dict on start and do not get `PartEndEvent`
+        until the next part (often the return), so waiting hid running tools.
+        """
+        if isinstance(part.args, dict):
+            return True
+        if isinstance(part.args, str) and part.args.strip():
+            try:
+                part.args_as_dict(raise_if_invalid=True)
+            except ValueError, TypeError, AssertionError:
+                return False
+            return True
+        return False
+
     def on_native_tool_return(self, part: NativeToolReturnPart) -> Iterator[Event]:
+        if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
+            # `ToolBridge` emits `BridgedToolStarted`/`BridgedToolFinished` for the
+            # real `delegate_task` call so it joins the live panel and `/agents`.
+            return
         # Provider-executed tools (native web search/fetch) return
         # inside the response stream; there is no function event.
+        if part.tool_call_id:
+            self.settled_native.add(part.tool_call_id)
+            self.native_calls.pop(part.tool_call_id, None)
         name, args, started = self.tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
         provider = part.provider_name or ""
         detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
@@ -359,22 +425,38 @@ class EventTranslator:
         elif isinstance(event.part, ThinkingPart) and event.part.content:
             yield Thinking(event.part.content)
         elif isinstance(event.part, NativeToolCallPart):
-            yield from self.on_native_tool_call(event.part)
+            yield from self.on_native_tool_call(event.part, from_end=True)
 
-    def on_native_tool_call(self, part: NativeToolCallPart) -> Iterator[Event]:
+    def on_native_tool_call(
+        self, part: NativeToolCallPart, *, from_end: bool = False
+    ) -> Iterator[Event]:
+        if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
+            return
+        call_id = part.tool_call_id
+        if from_end and call_id and call_id in self.settled_native:
+            return
         try:
-            args = part.args_as_dict()
-        except ValueError, TypeError:
+            args = part.args_as_dict(raise_if_invalid=True)
+        except ValueError, TypeError, AssertionError:
             args = {}
-        self.tools[part.tool_call_id] = (part.tool_name, args, monotonic())
+        raw = args if args else part.args
+        previous = self.native_calls.get(call_id) if call_id else None
+        if previous is not None and previous[:3] == (part.tool_name, args, raw):
+            return
+        existing = self.tools.get(call_id) if call_id else None
+        started = existing[2] if existing is not None else monotonic()
+        started_at = previous[3] if previous is not None else datetime.now(timezone.utc).isoformat()
+        if call_id:
+            self.tools[call_id] = (part.tool_name, args, started)
+            self.native_calls[call_id] = (part.tool_name, args, raw, started_at)
         agent, task = assignment(part.tool_name, args)
         yield ToolStarted(
             part.tool_name,
             target(part.tool_name, args),
-            part.tool_call_id,
-            arguments=capture(args if args else part.args),
+            call_id,
+            arguments=capture(raw),
             run_id=self.run_id,
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=started_at,
             agent=agent,
             task=task,
         )
@@ -415,7 +497,7 @@ class EventTranslator:
             event.tool_call_id,
             (event.part.tool_name or "tool", {}, monotonic()),
         )
-        outcome = "retry" if isinstance(event.part, RetryPromptPart) else event.part.outcome
+        outcome = tool_outcome(event.part)
         detail, failed = result_detail(
             name, args, event.part.content, outcome, self.spill_source(name, args)
         )
@@ -481,5 +563,6 @@ class EventTranslator:
         # Full successful history. The outer persistence wrapper also
         # recovers settled tool-boundary snapshots after failures.
         self.context.history = result.all_messages()
-        self.context.pending_shell = []
-        self.runtime.turns += 1
+        if not self.provider_continuation:
+            self.context.pending_shell = []
+            self.runtime.turns += 1

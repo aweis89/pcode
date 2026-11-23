@@ -28,7 +28,7 @@ your environment. For Anthropic API models, use `anthropic:<model-id>` with
 `ANTHROPIC_API_KEY`; to use a Claude subscription instead, pick a
 [Claude Code model](#claude-code-provider). Use the exact model ID your account
 offers; pcode does not remap aliases. Every provider in the table below works with the default install except
-`claude:`, which needs the [`claude` extra](#claude-code-provider).
+`claude:`, which needs the [`claude` extra](#claude-code-provider), and `antigravity:`, which needs the [Antigravity CLI](#antigravity-provider) (`agy`).
 
 ## Supported providers
 
@@ -43,6 +43,7 @@ or only accepts IDs you type.
 | `openai-codex` | pcode login, then CLI credential file (`CODEX_HOME` honored) | yes (all OpenAI IDs) |
 | `openai`, `openai-chat`, `openai-responses` | `OPENAI_API_KEY` | yes |
 | `claude` | Claude Code config (`~/.claude`, `~/.claude.json`, or `CLAUDE_CONFIG_DIR`) or `claude` on `PATH` | yes (Anthropic IDs) |
+| `antigravity` | `agy` CLI on `PATH` (sign in with `/login antigravity`) | yes (models offered by your Google AI Pro/Ultra subscription) |
 | `google` | `GOOGLE_API_KEY` or `GEMINI_API_KEY` | yes |
 | `google-cloud` | `GOOGLE_CLOUD_PROJECT` or `GOOGLE_APPLICATION_CREDENTIALS` | yes |
 | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`, or `AWS_PROFILE` | yes |
@@ -69,10 +70,12 @@ or only accepts IDs you type.
 | `ollama` | `OLLAMA_BASE_URL` | typed IDs |
 | `vllm` | `VLLM_BASE_URL` | typed IDs |
 
-The catalog is a static list of known models, not what your account is entitled
-to. Providers not in the table (for example `mistral`, `cohere`, `huggingface`,
+The catalog is a static list of current models that comes with Pydantic AI, not
+what your account is entitled to. Older or preview IDs dropped from it (such as
+Gemini 2.5) still work when typed in full; Gemini before 3 searches the web
+through pcode's own tools, since it can't mix Google Search with them. Providers not in the table (for example `mistral`, `cohere`, `huggingface`,
 `litellm`) still work from `--model` once you install their Pydantic AI extra,
-but the picker does not offer them. Apart from Codex and Claude Code, every
+but the picker does not offer them. Apart from Codex, Claude Code, and Antigravity (`/login antigravity`), every
 provider is plain API-key access with no login in pcode: set the variable in your shell before launching.
 
 ## Choose a model in the terminal
@@ -98,7 +101,7 @@ same version.
 Suggestions are not an entitlement list; the provider checks access when you use
 the model. A typed `provider:model-id` is accepted for any supported provider,
 configured or not, so you can export a key after launch. If no provider is
-configured, run `/login claude` or `/login openai-codex`, or set
+configured, run `/login claude`, `/login openai-codex`, or `/login antigravity`, or set
 `ANTHROPIC_API_KEY`, first.
 
 **Changing models continues the current conversation.** History, session ID,
@@ -135,7 +138,7 @@ separate from saved conversations and unaffected by `--no-save`.
 
 ## Reasoning effort
 
-For OpenAI/Codex, Anthropic, and Claude Code models, Ctrl+N raises
+For OpenAI/Codex, Anthropic, Claude Code, Gemini, and Antigravity models, Ctrl+N raises
 effort and Ctrl+P lowers it; or use `/effort low|medium|high|xhigh`. `/effort`
 alone shows the current setting and `/effort default` removes the override. Each
 model remembers its own level. The footer shows the selected effort.
@@ -143,14 +146,77 @@ model remembers its own level. The footer shows the selected effort.
 - Shortcuts stop at the lowest and highest levels. From the provider default they
   start at medium, so Ctrl+N selects high and Ctrl+P selects low.
 - Changes apply from the next request, mid-turn too, and keep your draft.
-- Effort does not change the model's thinking configuration. Not every model
+- On OpenAI and Anthropic, effort does not change the model's thinking
+  configuration. Not every model
   accepts every level; the provider still validates it.
 - On Anthropic and Claude Code, only models that support effort accept
   it (Opus 4.5+ and Sonnet 4.6+, among others). For any other model, `/effort`
-  refuses a level and the footer shows `n/a`; `/effort default` still clears a
+  refuses a level and the footer shows no effort; `/effort default` still clears a
   saved level. `xhigh` becomes Anthropic's `max` where the model has no native
   `xhigh`.
-- The offline preview and other providers show `n/a`.
+- On Gemini (`google:` and `google-cloud:`), effort sets the model's thinking
+  level, matched to the nearest one it offers (Gemini 4 Neon has all four on the
+  Gemini API; `xhigh` is `high` on Vertex AI for now). Gemini models that don't
+  think, such as Gemma, have no effort control. A Gemini level also returns
+  thinking summaries, even with `/show-thinking off`; `default` leaves the level
+  to the model.
+- On Antigravity (`antigravity:`), effort sets the ACP session's thinking level,
+  matched to the nearest one the model offers. Models Antigravity exposes
+  without a thinking level have no effort control once seen.
+- The offline preview and other providers show no effort in the footer, and
+  `n/a` in `/effort` and `/status`.
+
+## Advisor
+
+An advisor is a stronger model the session's model can consult before it commits
+to an approach, when it's stuck, or before it calls complex work done. Most of the
+work stays on the cheaper, faster model, and the expensive one only weighs in at
+the moments that matter. A good pairing is Opus 5.5 doing the work with Claude
+Fable 5.2 advising:
+
+```text
+❯ /advisor anthropic:claude-fable-5-2
+Advisor: anthropic:claude-fable-5-2 (next turn).
+```
+
+- `/advisor` alone opens the model picker. `/advisor off` removes the advisor.
+- The choice carries across `/new` and `/resume`, and the session remembers it, so
+  resuming that session later (or moving it into a background host) brings it back.
+  Resuming a session that picked its own advisor, or turned it off, switches to
+  that choice, even if your saved default has changed since. Add `--save` to make
+  it the default for later launches too (`/advisor anthropic:claude-fable-5-2 --save`), or set it from the
+  shell with `pcode config set advisor_model anthropic:claude-fable-5-2`.
+  `/advisor off --save` clears the default.
+- Changes apply from the next turn. Adding or removing the advisor changes the
+  model's tool list, so that turn starts without the prompt cache.
+- The model decides when to consult. Ask for it in your prompt ("check with the
+  advisor before you start") when you want it at a particular point.
+- `/status` shows the advisor while one is set. Only the session's own model gets
+  one; sub-agents and workflow workers don't. A [`/btw`](side-questions.md) side
+  question sees the same tools, to keep sharing the prompt cache, but is refused
+  when it calls a separately run advisor. It can't be stopped from using
+  Anthropic's built-in one.
+
+How the advice is produced depends on the pairing:
+
+- **Anthropic API model advised by a Claude model** (`anthropic:` or `claude:`
+  name): Anthropic's own advisor tool runs inside the same request. The advisor
+  reads the whole conversation, and its tokens are billed at its own rates. The
+  newest advisors, Fable 5.2 among them, return their advice encrypted, so pcode
+  can't show what it said. A Fable 5.2 or Mythos 5.2 session only accepts a 5.2
+  advisor this way; any other advisor uses the separate request below.
+- **Every other pairing**, including a Claude Code (`claude:`) session: the
+  advisor runs as a separate request on pcode's own login for that model, the way
+  a [`/btw` question on another model](side-questions.md#choosing-the-model) does.
+  It sees only the question and context the session's model sends it, not the
+  conversation.
+
+`/advisor` refuses a name pcode can't use (an unknown provider, or one you aren't
+signed in to) before anything changes, and a Claude name missing from the `/model`
+catalog too, since Anthropic would fail every request over a name it doesn't know.
+`pcode config set advisor_model` saves the name without checking it. A separately
+run advisor is looked up again each turn, so after a `/logout` it's left out of
+the turn instead of failing it.
 
 ## Claude Code provider
 
@@ -179,6 +245,11 @@ has the design and measurements.
 usual login (`CLAUDE_CONFIG_DIR` is honored), so an existing Claude Code sign-in
 already works. pcode never reads or stores the credential. A request that fails
 because the login is missing or expired tells you to run `/login claude`.
+
+To switch accounts, run `/login claude` again, even mid-turn, or run
+`claude auth login` in another terminal (with the same `CLAUDE_CONFIG_DIR`, if you set one).
+Claude Code rereads its login about every 30 seconds, so requests move to the new
+account within half a minute, including the rest of a turn already running.
 
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, and Claude
 Code's cloud routes (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, and the
@@ -217,6 +288,96 @@ writes it to the cache again.
 - Text pcode adds beside tool results (steering, MCP server notices)
   reaches the model as a message the user sent while it was working.
 - Thinking is shown in summarized form.
+
+## Antigravity provider
+
+An `antigravity:` model uses your Google AI Pro or Ultra subscription through
+Google's Antigravity CLI:
+
+```sh
+pcode -m antigravity:gemini-4-neon
+```
+
+Install the [Antigravity CLI](https://antigravity.google/docs/cli/) and sign in
+with `/login antigravity` (or `agy acp --login` in a terminal). `antigravity:` shows
+up in `/model` whenever `agy` is on your `PATH`. The picker lists the models your
+account offered the last time a session started.
+
+This works differently from every other provider. pcode runs Google's own
+`agy acp` server unmodified and acts only as its front end, which is the setup
+Google [permits for subscription use](https://discuss.ai.google.dev/t/tos-clarification-is-t3-code-official-antigravity-acp-agent-permitted-under-the-antigravity-terms-of-service/192027).
+Antigravity runs the whole turn with its own tools, rules, and skills, and
+pcode shows its tool calls, edits, and replies as they stream. That has a few
+consequences:
+
+- **pcode's own coding tools aren't duplicated.** Files, shell jobs, web
+  search, and plans stay on Antigravity's built-in versions. Everything that
+  belongs to pcode itself — delegation (`delegate_task`, `manage_worker`,
+  `task_worktree`), `/advisor`, `/browser` (both `launch` and `attach`,
+  including screenshots), `session_history`, `conductor`, spilled tool-output
+  handles (`read_tool_result`, `grep_tool_result`), and any extension that sets
+  `pcode.bridge_to_acp = True` — is offered to Antigravity through pcode's ACP
+  MCP server whenever enabled.
+- **It can delegate to pcode workers on its own model or other providers.** pcode
+  offers Antigravity its `delegate_task`, `manage_worker`, and `task_worktree`
+  tools, so Antigravity can spin up a worker on its own current model (when
+  `model` is omitted), ask for a Claude reviewer or OpenAI second opinion, or
+  call pcode's `browser` sub-agent. Each `antigravity:` worker runs in an
+  isolated `agy` session of its own; workers on other providers run in pcode
+  with pcode's tools. Workers appear live in the task panel and in `/agents`
+  with their activity, plan, and transcript, just like workers started by any
+  other model. A worker can run in the background (and long foreground workers
+  automatically move to the background before `agy`'s 3-minute MCP tool-call
+  timeout): when it finishes, or asks a question, pcode tells Antigravity,
+  which picks the work up again.
+- **Other models can delegate to `antigravity:` too.** Passing an `antigravity:`
+  model to `delegate_task` (or adding one to `subagent_models`) runs that worker
+  in its own isolated `agy acp` session.
+- **pcode tells it what it tells any model.** A finished background job, a
+  worker's result or question, and a message you queued all reach Antigravity
+  as prompts, and a finished job can wake it. `/continue` sends "Continue."
+  Switching to Antigravity with `/model` mid-turn hands it the tool results
+  the other model was waiting on, as text.
+- **Side uses run in sessions of their own.** `/btw`, session titles,
+  summaries, and an advisor on an `antigravity:` model each get a separate
+  `agy acp` session (without bridged pcode MCP tools), so they run alongside a turn
+  without touching the conversation's session. A `/btw` thread's follow-ups
+  continue its side session.
+- **`/compact` and `/autocompact` use Antigravity's own compaction.** pcode
+  sends its `/compact` command (before your prompt, once the context reaches
+  the autocompact threshold), and Antigravity summarizes its own session.
+  pcode's transcript is left as it is.
+- **Antigravity runs without asking,** as pcode's own tools do. pcode starts
+  it with `--dangerously-skip-permissions`, since otherwise a background
+  sub-agent's permission prompt never reaches pcode and the sub-agent stalls,
+  and approves any prompt that still arrives one action at a time (never
+  "always allow", so your Antigravity settings are left alone). pcode's own
+  guardrails don't see Antigravity's tool calls.
+- **Your API keys don't apply.** `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+  `GOOGLE_APPLICATION_CREDENTIALS`, and every `GOOGLE_CLOUD_*`,
+  `GOOGLE_GENAI_*`, `GOOGLE_VERTEX_*`, and `GOOGLE_GEMINI_*` variable are
+  removed from its environment, so a turn always bills the subscription you
+  signed in with.
+- **Prompts take text and images.** Other attachments are refused.
+- **Messages you send while it works steer the running turn,** as with other
+  models: Antigravity folds each into the work in progress.
+- **Background work continues cleanly.** When Antigravity leaves a shell
+  command or schedule running across a turn, pcode holds the turn open until
+  it finishes and its follow-up closes. If Antigravity wakes up later on its
+  own (for example when a background sub-agent reports back, or after a
+  brief quiet gap), pcode opens a continuation turn without prompting it so
+  its tools, edits, bridged MCP calls, and reply stream normally instead of
+  landing as post-turn notes.
+- **Plan mode is Antigravity's own.** `/plan` switches its session to its
+  plan mode, where it writes a plan of its own (not pcode's plan file) and
+  waits for your go-ahead; leaving plan mode in pcode switches it back.
+
+Conversations carry over: each session keeps one `agy` process, a follow-up
+continues it, and `--continue` reopens the same Antigravity session. After a
+rewind, a branch in `/tree`, or a switch from another model, the conversation
+is replayed to a new Antigravity session once, as text, since the old one
+remembers turns your history no longer has. Interrupting a turn cancels it in
+Antigravity too.
 
 ## Model-only HTTP proxy
 

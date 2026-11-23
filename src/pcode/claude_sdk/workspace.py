@@ -9,6 +9,8 @@ from pydantic_ai.models import ModelRequestContext
 
 # Model setting carrying the workspace the CLI runs in (see `ClaudeWorkspace`).
 CWD_SETTING = "pcode_claude_cwd"
+# Systems whose agent CLI runs in a directory: `claude:` and `antigravity:`.
+CLI_SYSTEMS = frozenset({"claude", "antigravity"})
 
 
 class ClaudeWorkspace(AbstractCapability):
@@ -28,7 +30,9 @@ class ClaudeWorkspace(AbstractCapability):
         self, ctx: RunContext, request_context: ModelRequestContext
     ) -> ModelRequestContext:
         settings = request_context.model_settings or {}
-        if request_context.model.system != "claude" or (self.fallback and CWD_SETTING in settings):
+        if request_context.model.system not in CLI_SYSTEMS or (
+            self.fallback and CWD_SETTING in settings
+        ):
             return request_context
         settings = {**settings, CWD_SETTING: str(self.workspace)}
         return replace(request_context, model_settings=settings)

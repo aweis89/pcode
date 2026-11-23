@@ -31,18 +31,21 @@ from pcode.controller import INTENTS, SESSION_FIELDS, SessionController
 from pcode.error_report import error_message
 from pcode.host_protocol import (
     LINE_LIMIT,
+    NOTHING_TO_RESUME,
     PROTOCOL,
     HostEntry,
     code_fingerprint,
     dumps,
     forget_stopped,
     host_dir,
+    new_host_id,
     read_message,
     remember_stopped,
     remove_entry,
     socket_path,
     write_entry,
 )
+from pcode.jobs import registry as job_registry
 from pcode.rpc import Peer
 from pcode.runtime import CommandOutput, EditPreview, TextDelta, ThinkingDelta
 from pcode.ui import Activity
@@ -54,6 +57,8 @@ DELTA_EVENTS = (TextDelta, ThinkingDelta)
 # How long a host with nothing to do waits for a terminal before stopping, when
 # `session_host_idle_minutes` is 0: long enough to /attach away and back.
 IDLE_GRACE_SECONDS = 15.0
+# How often drawers watching the side questions hear of changes (`pcode.drawer`).
+OBSERVER_INTERVAL = 0.08
 SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 
 # View calls that change what the conversation is, so a terminal attaching
@@ -61,7 +66,20 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
 
 # What a terminal may call besides the controller's intents.
-HOST_CALLS = frozenset({"attach", "query", "send", "run", "stop", "stop_if_idle", "asides_read"})
+HOST_CALLS = frozenset(
+    {
+        "attach",
+        "peek",
+        "ask_aside",
+        "query",
+        "send",
+        "run",
+        "stop",
+        "stop_if_idle",
+        "restart",
+        "asides_read",
+    }
+)
 
 _MISSING = object()
 
@@ -226,6 +244,14 @@ class _Client:
         """
         return self.host.attach(self)
 
+    async def peek(self) -> dict:
+        """Read-only live snapshot without attaching, clearing `unseen`, or reading scrollback."""
+        return await self.host.peek()
+
+    async def ask_aside(self, question: str, model: str = "") -> dict:
+        """One-shot headless `/btw` against this host's context; records nothing."""
+        return await self.host.ask_aside(question, model)
+
     async def query(self, name: str, *args):
         return await self.host.controller.query(name, *args)
 
@@ -241,9 +267,15 @@ class _Client:
         self.host.keep_worktree = bool(keep_worktree) or remote_profile.active() is not None
         self.host.stop()
 
-    def stop_if_idle(self) -> str:
+    def stop_if_idle(self, require_detached: bool = False, keep_worktree: bool = False) -> str:
         """`pcode --kill-hosts idle`: "" once stopping, else what it is busy with."""
-        return self.host.stop_if_idle()
+        return self.host.stop_if_idle(
+            require_detached=require_detached, keep_worktree=keep_worktree
+        )
+
+    def restart(self) -> dict:
+        """`/restart all`: `{"id": successor}` once stopping, else `{"skipped": why not}`."""
+        return self.host.restart()
 
 
 class HostView:
@@ -257,6 +289,11 @@ class HostView:
 
     def __init__(self, host: "SessionHost") -> None:
         self._host = host
+        # The running command's tag as its terminal gave it (see `read_asides`).
+        self._command_tag = None
+        # Side-answer viewers open in a terminal (see `read_asides`), and
+        # what they asked for while it is kept.
+        self.viewers: set[asyncio.Task] = set()
 
     def __getattr__(self, name: str):
         if name.startswith("_"):
@@ -327,11 +364,13 @@ class HostView:
         self._host.run_began(tag)
         client, own_tag = self._host.sender(tag)
         self._host.running_command = client
+        self._command_tag = own_tag
         if client is not None:
             client.peer.notify("command_started", own_tag)
 
     def command_finished(self) -> None:
         client, self._host.running_command = self._host.running_command, None
+        self._command_tag = None
         if client is not None and client.peer is not None:
             client.peer.notify("command_finished")
 
@@ -349,10 +388,44 @@ class HostView:
         return await self._ask("choose_model", list(values), sorted(providers), current)
 
     async def read_asides(self):
-        return await self._ask("read_asides")
+        """Open the side-answer viewer in the asking terminal, without waiting for it.
+
+        The viewer stays open as long as its reader likes, and the host runs
+        one command at a time: awaited here, one terminal's open viewer would
+        stall every other terminal's commands behind it. So the command ends
+        at once, and a thread the viewer asks to bring into the conversation
+        is kept from outside the queue, as a thread in the drawer is (`keep_thread`).
+        """
+        client = self._host.running_command
+        if client is None or client.headless:
+            # A headless caller only says it cannot show the viewer, at once
+            # and while its command still runs, so `run` reports it failed.
+            return await self._ask("read_asides")
+        task = asyncio.create_task(self._read_asides(client, self._command_tag))
+        self.viewers.add(task)
+        task.add_done_callback(self.viewers.discard)
+        return None
+
+    async def _read_asides(self, client: "_Client", tag) -> None:
+        # The tag goes along: the command has finished by the time the viewer
+        # opens, and the terminal needs it to tell an auto-open (see `PreviewApp.read_asides`).
+        try:
+            request = await client.peer.request("read_asides", tag)
+        except ConnectionError:
+            return
+        if request is None:
+            return
+        controller = self._host.controller
+        try:
+            await controller.keep_thread(request.thread, request.action, request.instructions)
+        except Exception as error:
+            controller.command_failed("/btw", error)
 
     async def browse_jobs(self) -> None:
         await self._ask("browse_jobs")
+
+    async def read_secret(self, title: str, prompt: str, detail: str = "") -> str | None:
+        return await self._ask("read_secret", title, prompt, detail)
 
 
 class SessionHost:
@@ -388,11 +461,22 @@ class SessionHost:
         self.active_at = time.monotonic()
         # Stopped for being idle, not asked to: an unseen result is remembered.
         self.idle_stopped = False
+        # The host `restart` asked to carry the session on once this one has gone.
+        self.successor: str | None = None
         # Open connections, counted from hello on: a terminal mid-handshake is not
         # a client yet, and must not find the host gone.
         self.connections = 0
+        # In-flight headless `ask_aside` RPCs, counted in `busy_with()`.
+        self._host_asides = 0
         # A remote profile's per-turn wall clock, while a turn runs.
         self._turn_clock: asyncio.TimerHandle | None = None
+        # Drawers watching the side questions (`pcode.drawer`): not terminals,
+        # not connections, and allowed to call nothing.
+        self.observers: set[Peer] = set()
+        # Side questions changed since observers last heard, sent together
+        # shortly after, so a streaming answer is not rendered per token.
+        self._observed: dict[str, object] = {}
+        self._observe_flush: asyncio.TimerHandle | None = None
 
     @property
     def socket(self) -> Path:
@@ -468,7 +552,6 @@ class SessionHost:
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.connections += 1
-        self.active_at = time.monotonic()
         try:
             await self._handshake(reader, writer)
         finally:
@@ -479,6 +562,9 @@ class SessionHost:
             hello = await read_message(reader)
         except ValueError:
             hello = None
+        if hello is not None and hello.get("type") == "observe":
+            await self._observe(hello, reader, writer)
+            return
         if hello is None or hello.get("type") != "hello":
             writer.close()
             return
@@ -513,9 +599,54 @@ class SessionHost:
                 if not self.stopped.is_set():
                     self.update(attached=len(self.terminals()))
 
+    async def _observe(
+        self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """A drawer showing the side questions (`pcode.drawer`), until it goes.
+
+        It gets every side question, then each change. It may call nothing,
+        and it is not a terminal: it neither keeps an idle host running nor
+        marks a finished turn seen.
+        """
+        from pcode import drawer
+
+        if hello.get("version") != drawer.OBSERVER_VERSION:
+            message = "This session host's pcode does not speak this drawer's version."
+            writer.write(dumps({"type": "error", "message": message}))
+            await writer.drain()
+            writer.close()
+            return
+        writer.write(dumps({"type": "ready", "version": drawer.OBSERVER_VERSION}))
+        peer = Peer(reader, writer, object(), allowed=frozenset())
+        counted = False
+        try:
+            self.observers.add(peer)
+            asides = self.controller.asides.items
+            peer.notify("asides", [self.aside_state(aside) for aside in asides])
+            # Counted from hello on, as every connection; no longer once it is a drawer.
+            self.connections -= 1
+            counted = True
+            await peer.serve()
+        except ValueError, ConnectionError:
+            pass
+        finally:
+            if counted:
+                self.connections += 1
+            self.observers.discard(peer)
+            peer.close()
+
+    def _notify_observers(self) -> None:
+        self._observe_flush = None
+        changed, self._observed = list(self._observed.values()), {}
+        for aside in changed:
+            state = self.aside_state(aside)
+            for peer in list(self.observers):
+                peer.notify("aside_changed", state)
+
     def attach(self, client: _Client) -> dict:
         from pcode.rpc import encode
 
+        self.active_at = time.monotonic()
         self.clients[client.number] = client
         client.displaced, self._latest = self._latest, client
         client.unseen_before = self.entry.unseen
@@ -540,6 +671,121 @@ class SessionHost:
             "calls": [
                 [name, encode(list(args)), encode(kwargs)] for name, args, kwargs in self.buffer
             ],
+        }
+
+    async def peek(self) -> dict:
+        """Read-only live snapshot: state, plan, running jobs, asides, and activity.
+
+        Does not register as a terminal, change `attached`, clear `unseen`, or
+        serialize the scrollback catch-up buffer.
+        """
+        controller = self.controller
+        runtime = controller.runtime
+        plan_store = getattr(runtime, "plan_store", None)
+        plan = (
+            [item.model_dump(mode="json") for item in await plan_store.get_items()]
+            if plan_store is not None
+            else []
+        )
+        jobs_reg = getattr(runtime, "jobs", None)
+        jobs = (
+            [
+                {
+                    "id": job.id,
+                    "command": job.command,
+                    "purpose": job.purpose,
+                    "adopted": job.adopted,
+                }
+                for job in jobs_reg.running()
+            ]
+            if jobs_reg is not None
+            else []
+        )
+        asides = controller.asides
+        return {
+            "id": self.entry.id,
+            "session_id": self.entry.session_id,
+            "workspace": self.entry.workspace,
+            "model": controller.model or self.entry.model,
+            "state": self.entry.state,
+            "title": self.entry.title,
+            "last_prompt": self.entry.last_prompt,
+            "turns": self.entry.turns,
+            "outcome": self.entry.outcome,
+            "attached": len(self.terminals()),
+            "unseen": self.entry.unseen,
+            "held": self.entry.held,
+            "busy_with": self.busy_with(),
+            "startup_pending": controller.startup_pending,
+            "startup_error": (
+                error_message(controller.startup_error) if controller.startup_error else ""
+            ),
+            "activity": {
+                "busy": self.activity.busy,
+                "status": self.activity.status,
+                "queued": self.activity.queued,
+                "queued_prompts": list(self.activity.queued_prompts),
+                "prompt": self.activity.prompt,
+                "prompt_state": self.activity.prompt_state,
+                "turn_outcome": self.activity.turn_outcome,
+                "job_count": self.activity.job_count,
+            },
+            "plan": plan,
+            "jobs": jobs,
+            "asides": {
+                "total": len(asides.items),
+                "running": asides.running + self._host_asides,
+                "unread": asides.unread,
+                "recent": [
+                    {
+                        "id": aside.id,
+                        "question": aside.question,
+                        "status": aside.status,
+                        "read": aside.read,
+                    }
+                    for aside in asides.items[-5:]
+                ],
+            },
+        }
+
+    async def ask_aside(self, question: str, model: str = "") -> dict:
+        """Answer `question` beside this conversation without recording an aside."""
+        from pcode.aside import ASIDE_TIMEOUT_SECONDS, SideTarget, split_effort
+
+        cleaned = question.strip()
+        if not cleaned:
+            raise ValueError("Provide a non-empty question.")
+        controller = self.controller
+        self._host_asides += 1
+        try:
+            async with asyncio.timeout(ASIDE_TIMEOUT_SECONDS):
+                if controller.startup_pending:
+                    await controller.ready.wait()
+                if controller.startup_error is not None:
+                    raise RuntimeError(
+                        f"Agent startup failed: {error_message(controller.startup_error)}"
+                    )
+                runtime = controller.runtime
+                if getattr(runtime, "aside", None) is None:
+                    raise RuntimeError("This session host cannot answer side questions.")
+                self.active_at = time.monotonic()
+                chosen_model = model.strip()
+                options = {}
+                if chosen_model:
+                    name, effort = split_effort(chosen_model)
+                    target = SideTarget(name, effort)
+                    controller.check_effort(target)
+                    options = await controller.target_options(target)
+                reply = await runtime.aside(cleaned, **options)
+        finally:
+            self._host_asides -= 1
+        self.active_at = time.monotonic()
+        return {
+            "host_id": self.entry.id,
+            "session_id": self.entry.session_id,
+            "state": self.entry.state,
+            "model": chosen_model or controller.model or self.entry.model,
+            "answer": reply.answer,
         }
 
     def touch(self, client: _Client) -> None:
@@ -581,6 +827,9 @@ class SessionHost:
         """Send a view call to every terminal and keep it for the ones that attach later."""
         if method in RESETS:
             self.reset_buffer()
+        if method == "conversation_reset":
+            self.update(session_id="", forked_from="", title="", last_prompt="", outcome="")
+            self.own_jobs()
         for client in list(self.clients.values()):
             client.peer.notify(method, *args, **kwargs)
         if method in RESETS:
@@ -637,6 +886,12 @@ class SessionHost:
     def emit_aside(self, aside) -> None:
         for client in list(self.clients.values()):
             client.peer.notify("aside_changed", self.aside_state(aside))
+        if self.observers:
+            self._observed[aside.id] = aside
+            if self._observe_flush is None:
+                self._observe_flush = asyncio.get_running_loop().call_later(
+                    OBSERVER_INTERVAL, self._notify_observers
+                )
 
     def push_state(self) -> None:
         """Send the session state if it changed since the last one sent."""
@@ -649,9 +904,19 @@ class SessionHost:
         if session is not None and session.info.id != self.entry.session_id:
             self.update(session_id=session.info.id, forked_from=session.info.forked_from or "")
             forget_stopped(session.info.id, self.directory)
+            self.own_jobs()
         # /attach lists the session by its name once it has one, not its first prompt.
         if (title := state.get("session_title")) and title != self.entry.title:
             self.update(title=title)
+
+    def own_jobs(self) -> None:
+        """Tag the jobs this host launches with its session, and take back that session's.
+
+        Jobs a /detach or an earlier host of this session left running are this
+        conversation's, not adopted strangers: they keep the host up and wake it.
+        """
+        jobs = getattr(self.controller.runtime, "jobs", None)
+        (job_registry() if jobs is None else jobs).session = self.entry.session_id
 
     # The entry other terminals read
 
@@ -662,7 +927,11 @@ class SessionHost:
 
     def turn_began(self, prompt: str) -> None:
         self.reset_buffer()
-        self.update(state="working", last_prompt=prompt, title=self.entry.title or prompt)
+        changes: dict[str, str] = {"state": "working"}
+        if prompt:
+            changes["last_prompt"] = prompt
+            changes["title"] = self.entry.title or prompt
+        self.update(**changes)
         profile = remote_profile.active()
         if profile is not None:
             remote_profile.BUDGET.start()
@@ -713,25 +982,62 @@ class SessionHost:
         work = (
             (self.busy, "a turn or command is running"),
             (not controller.command_idle.is_set(), "a command is running"),
-            # A job outlives its host, but its finish would wake nobody.
-            (jobs is not None and jobs.running(), "a background command is running"),
+            # A job outlives its host, but its finish would wake nobody. Not one
+            # adopted from an exited pcode: it never wakes this session, and
+            # stopping leaves it for the next pcode to adopt. Counting it let a
+            # daemon some other session started keep a host up for days.
+            (
+                jobs is not None and any(not job.adopted for job in jobs.running()),
+                "a background command is running",
+            ),
             (controller.startup_pending, "it is starting up"),
-            (controller.asides.running, "a side question is running"),
+            (
+                getattr(controller.runtime, "has_provider_wake", lambda: False)(),
+                "Antigravity is continuing background work",
+            ),
+            (controller.asides.running or self._host_asides, "a side question is running"),
+            # A thread brought into the conversation from it would be lost.
+            (self.view.viewers, "a side-answer viewer is open"),
             # A title asked for beside the first turn, or a name /rename asked for, would be lost.
             (controller.naming(), "it is naming the session"),
         )
         return next((reason for busy, reason in work if busy), "")
 
-    def stop_if_idle(self) -> str:
-        """Stop as an idle host stops itself, terminals or not; else say what it is busy with.
+    def stop_if_idle(self, require_detached: bool = False, keep_worktree: bool = False) -> str:
+        """Stop as an idle host stops itself; else say what it is busy with.
 
+        When `require_detached` is True, attached terminals also refuse the stop.
+        When `keep_worktree` is True, the session's worktree is left untouched.
         Checked and stopped with no await in between, so nothing starts in the gap.
         """
+        if require_detached and (attached := len(self.terminals())):
+            return f"{attached} terminal(s) attached"
         if reason := self.busy_with():
             return reason
+        if keep_worktree:
+            self.keep_worktree = True
         self.idle_stopped = True
         self.stop()
         return ""
+
+    def restart(self) -> dict:
+        """Stop, leaving a successor to resume this session on the pcode installed now.
+
+        `main` starts the successor once this host has let go of the session,
+        from this process, so it keeps this host's environment and remote
+        profile rather than those of whoever asked. Attached terminals do not
+        stop it; work in progress does. Checked and stopped with no await in
+        between, so nothing starts in the gap.
+        """
+        if reason := self.busy_with():
+            return {"skipped": reason}
+        if not self.entry.session_id:
+            return {"skipped": NOTHING_TO_RESUME}
+        self.successor = new_host_id()
+        # The successor resumes in this worktree.
+        self.keep_worktree = True
+        self.stop()
+        return {"id": self.successor}
 
     async def stop_when_idle(
         self, minutes: float, *, every: float = 2.0, grace: float = IDLE_GRACE_SECONDS
@@ -746,6 +1052,7 @@ class SessionHost:
         limit = minutes * 60 if minutes else grace
         while not self.stopped.is_set():
             await asyncio.sleep(every)
+            self.held_by("" if self.clients or self.connections else self.busy_with())
             if not self.idle():
                 self.active_at = time.monotonic()
             elif time.monotonic() - self.active_at >= limit:
@@ -753,6 +1060,20 @@ class SessionHost:
                 self.idle_stopped = True
                 self.stop()
                 return
+
+    def held_by(self, reason: str) -> None:
+        """Publish what keeps a host with no terminal from stopping, when it changes.
+
+        A host nobody is attached to is invisible otherwise: /attach shows the
+        reason on its row, and the log keeps when it started and ended.
+        """
+        if reason == self.entry.held:
+            return
+        note = f"not stopping: {reason}" if reason else "nothing holds it now"
+        print(note, file=sys.stderr, flush=True)
+        self.entry.held = reason
+        # Not activity: /attach ages and orders hosts by `updated`.
+        write_entry(self.entry, self.directory, touch=False)
 
     def stop(self) -> None:
         # At once, not in close(): a prompt an attached terminal sends before
@@ -767,12 +1088,20 @@ class SessionHost:
         # (a "Run cancelled" for a host stopped while idle).
         clients, self.clients = list(self.clients.values()), {}
         for client in clients:
-            client.peer.notify("host_closed")
+            # Older terminals ignore the argument; newer ones point at the successor.
+            client.peer.notify("host_closed", self.successor)
             client.peer.close()
-        controller.cancel()
-        for task in self.tasks:
+        if self._observe_flush is not None:
+            self._observe_flush.cancel()
+            self._notify_observers()
+        for peer in list(self.observers):
+            peer.notify("host_closed")
+            peer.close()
+        controller.cancel_all()
+        viewers = list(self.view.viewers)
+        for task in (*self.tasks, *viewers):
             task.cancel()
-        await asyncio.gather(*self.tasks, *controller.tasks(), return_exceptions=True)
+        await asyncio.gather(*self.tasks, *viewers, *controller.tasks(), return_exceptions=True)
         await controller.asides.close()
         # Stopping them settled them: their journal entries go in before the session closes.
         await controller.side_records_settled()
@@ -782,7 +1111,7 @@ class SessionHost:
         if controller.extensions is not None:
             await controller.extensions.close()
         remove_entry(self.entry.id, self.directory)
-        if self.idle_stopped and self.entry.unseen:
+        if self.idle_stopped and self.entry.unseen and self.successor is None:
             # After the entry goes, so /attach never sees both. Only a saved
             # session has an ID, so only one /resume could reopen.
             remember_stopped(self.entry, self.directory)
@@ -849,7 +1178,8 @@ def fork_worktree(saved, workspace: Path) -> Path:
     return created
 
 
-async def _serve(args: argparse.Namespace) -> None:
+async def _serve(args: argparse.Namespace) -> dict | None:
+    """Run the host until it stops; `spawn_host` arguments for its successor, if any."""
     from pcode.app import _enter_worktree, _resume_workspace
     from pcode.preferences import (
         SETTINGS,
@@ -875,6 +1205,7 @@ async def _serve(args: argparse.Namespace) -> None:
         workspace=str(workspace),
         log=os.environ.get("PCODE_HOST_LOG", ""),
         code=code_fingerprint(),
+        python=sys.executable,
     )
     write_entry(entry)
     set_project_root(workspace)
@@ -933,6 +1264,8 @@ async def _serve(args: argparse.Namespace) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, host.stop)
     print(f"serving {host.socket}", file=sys.stderr, flush=True)
+    # Before boot adopts what an earlier pcode left running.
+    host.own_jobs()
     await host.boot()
     watcher = None
     try:
@@ -946,14 +1279,25 @@ async def _serve(args: argparse.Namespace) -> None:
             watcher.cancel()
         from pcode.claude_sdk import shutdown
 
-        try:
-            await host.close()
-        finally:
-            await shutdown()
         runtime = controller.runtime
-        if runtime is not None and hasattr(runtime, "close"):
-            runtime.close()
-        if not host.keep_worktree:
+        try:
+            try:
+                await host.close()
+            finally:
+                from pcode import antigravity
+
+                try:
+                    await shutdown()
+                finally:
+                    await antigravity.shutdown()
+        finally:
+            # Lets go of the session, which a successor is about to open.
+            if runtime is not None and hasattr(runtime, "close"):
+                runtime.close()
+            elif saved is not None:
+                saved.close()  # Startup failed before a runtime took it.
+        # A stop that came after `restart` must not tidy away the successor's worktree.
+        if not host.keep_worktree and host.successor is None:
             # A terminal that asked to keep it tidies it itself, and can ask first.
             leave_worktree(
                 controller.workspace,
@@ -964,6 +1308,32 @@ async def _serve(args: argparse.Namespace) -> None:
                 # so its branch waits to be resumed rather than merged.
                 merge=not host.idle_stopped,
             )
+    if host.successor is None:
+        return None
+    return {
+        "identity": host.successor,
+        "model": controller.model,
+        "workspace": controller.workspace,
+        "resume": entry.session_id,
+        "session_dir": controller.session_dir,
+        "profile": profile,
+    }
+
+
+def start_successor(successor: dict) -> None:
+    """Start the host a `restart` asked for, now this one has let go of the session.
+
+    Spawned from here, it inherits this host's environment (a remote profile's
+    is scrubbed already) and its remote profile.
+    """
+    from pcode.remote import spawn_host
+
+    try:
+        identity, _, log = spawn_host(**successor)
+    except Exception as error:  # noqa: BLE001 - the log is the only reader.
+        print(f"could not start the successor: {error_message(error)}", file=sys.stderr)
+        return
+    print(f"restarted as {identity} (log: {log})", file=sys.stderr, flush=True)
 
 
 def _idle_minutes(preferences: dict, settings: dict) -> int | None:
@@ -986,12 +1356,14 @@ def main(argv: list[str] | None = None) -> None:
     # The terminal that started the host may close; the host outlives it.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        asyncio.run(_serve(args))
+        successor = asyncio.run(_serve(args))
     except Exception as error:  # noqa: BLE001 - the log is the only reader.
         print(f"session host failed: {error_message(error)}", file=sys.stderr, flush=True)
         remove_entry(args.id)
         raise SystemExit(1) from error
     remove_entry(args.id)
+    if successor is not None:
+        start_successor(successor)
 
 
 if __name__ == "__main__":

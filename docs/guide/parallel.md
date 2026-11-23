@@ -43,10 +43,23 @@ files like `.envrc`. See
 
 `/detach` moves a session into a background host, or `pcode --host` starts it
 in one, so you can juggle several from one terminal. `/attach` moves to another
-running session, `/new PROMPT` starts one, and Ctrl+^ flips back to the last one.
-Closing the terminal doesn't stop a hosted turn; `pcode --attach` picks it back
-up, and you get a desktop notification when a background session finishes. See
+running session, `/new PROMPT` starts one, `/fork PROMPT` branches a copy of
+the current conversation onto another approach in its own worktree, and Ctrl+^
+flips back to the last one. Closing the terminal doesn't stop a hosted turn;
+`pcode --attach` picks it back up, and you get a desktop notification when a
+background session finishes. See
 [background sessions](../sessions.md#background-sessions).
+
+### Orchestrating many sessions: Conductor
+
+Once you have several background hosts running, you don't need to hop between
+tabs to check on them. Open one session and ask it to coordinate the rest: the
+built-in **Conductor** gives the agent `list_hosts`, `inspect_host`,
+`ask_host` (a side query against another session's full context without
+interrupting its turn), `send_to_host`, `wait_for_hosts`, and `stop_host`.
+That lets one session fan out prompts across multiple worktrees, collect status
+or answers, and wait for them to finish. See
+[conductor](../sessions.md#conductor-orchestrating-other-sessions).
 
 ## Sub-agents in parallel
 
@@ -75,8 +88,12 @@ panel lists each running agent beneath your task with its purpose, and
 - every tool call it makes
 - its reasoning, with Ctrl+T
 
-The view is read-only, so watching never steers an agent. Their tool calls
-also show under the parent's in scrollback and in `/tools`.
+![The /agents live dashboard showing running workers, their plans, and tool calls](../assets/screenshots/agents.svg)
+
+From `/agents`, press **`a`** to answer a worker's question directly, **`m`**
+to send a steering message before its next step, or **`r`** to read its full
+report ([talking to workers](../tools.md#talking-to-workers)). Workers' tool
+calls also show under the parent's in scrollback and in `/tools`.
 
 ### Agents on other models
 
@@ -89,6 +106,10 @@ different vendor for a second opinion:
 ```text
 ❯ /subagents openai-codex:gpt-6-astra anthropic:claude-sonnet-5
 ```
+
+If you want a second opinion from a stronger model *without* delegating a whole
+tool-using worker, use [`/advisor`](../providers.md#advisor) instead—it advises
+the main agent on the current context without running tools of its own.
 
 ### Agents in their own worktrees
 
@@ -105,3 +126,12 @@ pcode config project set worker_isolation on
 
 See [sub-agents](../tools.md#sub-agents-on-other-models) and
 [worker worktrees](../tools.md#worker-worktrees).
+
+### Let the agent coordinate: `/manager`
+
+For a task big enough to need several workers, `/manager` turns the main agent
+into a coordinator: it splits the work, briefs each worker, runs diff review
+gates before ticking off a step, tracks shared contracts in `decisions.md` and
+cross-session `lessons.md`, and enforces token budgets so a runaway loop can't
+burn through your quota. It's opt-in (`/extensions on manager`). See
+[manager mode](../manager.md).

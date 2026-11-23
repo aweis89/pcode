@@ -12,9 +12,14 @@ from collections.abc import Callable
 from contextlib import aclosing, suppress
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
+from pcode.advisor import AdvisorChoice
+from pcode.advisor import adopt as adopt_advisor
+from pcode.advisor import record as record_advisor
 from pcode.aside import (
     EFFORT_MARK,
     MODEL_MARK,
@@ -24,12 +29,11 @@ from pcode.aside import (
     SideReply,
     SideTarget,
     effort_fragment,
-    exchanges,
     model_fragment,
     model_labels,
     parse_models,
     prompt_target,
-    summary_request,
+    summary_message,
 )
 from pcode.commands import Command, CommandRegistry
 from pcode.error_report import error_message
@@ -173,13 +177,16 @@ QUERIES = frozenset(
 )
 
 # Commands that change the conversation itself, refused while a turn runs or
-# prompts wait (bar /compact and /resend sent while idle, which go first).
-IDLE_COMMANDS = frozenset({"/resend", "/new", "/resume", "/login", "/logout", "/compact"})
+# prompts wait (bar /compact and /continue sent while idle, which go first).
+# /login is not among them: sent while working, it waits beside the turn.
+IDLE_COMMANDS = frozenset(
+    {"/continue", "/retry", "/new", "/delete", "/resume", "/logout", "/compact"}
+)
 
 # Commands that make a model request or change the toolset. Each holds the
 # session busy from Enter until its handler starts, so a Ctrl+C in the same
 # input batch cancels it instead of clearing the draft.
-MODEL_COMMANDS = frozenset({"/compact", "/resend"})
+MODEL_COMMANDS = frozenset({"/compact", "/continue", "/retry"})
 
 # Commands that only change the display. They run even before the runtime is
 # ready and are never dropped by a Ctrl+C clearing the queue.
@@ -211,6 +218,8 @@ FRONTEND_COMMANDS = frozenset(
 # Session commands that can recover from a failed startup: picking a model that
 # builds starts the agent the bad one could not, and signing in is often the fix.
 RECOVERY_COMMANDS = frozenset({"/model", "/login"})
+SAVE_FLAG = "--save"
+ADVISOR_USAGE = "Usage: /advisor [MODEL | off] [--save]"
 
 # One queued command: the queue generation it was sent in, its text, whether
 # the session was idle when it was sent, and the popup generation the terminal
@@ -229,7 +238,7 @@ class MessageOwner(Protocol):
 
 
 # One queued message: the queue generation it was sent in, its text, how it is
-# sent ("steering", "queue", "interrupt", "shell", "resend", "wake"), and its
+# sent ("steering", "queue", "interrupt", "shell", "continue", "wake"), and its
 # owner, if anyone waits on it, and when it was sent (ISO 8601, UTC).
 Item = tuple[int, str, str, MessageOwner | None, str]
 
@@ -451,6 +460,7 @@ class SessionView(Protocol):
     async def browse_jobs(self) -> None: ...
     async def choose_model(self, values, providers, current: str | None) -> str | None: ...
     async def read_asides(self): ...
+    async def read_secret(self, title: str, prompt: str, detail: str = "") -> str | None: ...
 
 
 # What a host may call on an attached terminal: its view, and the mirrors of
@@ -505,7 +515,7 @@ class SessionController:
     - Background work: MCP enabling and sign-out, compaction, history rewrites.
     - Shell jobs: the footer's active count, a watched tail, and job wake-ups.
     - MCP servers: `/mcp` and saving default servers.
-    - History: `/compact`, `/autocompact`, `/resend`.
+    - History: `/compact`, `/autocompact`, `/continue`.
     - The session: skills, extensions and sub-agents, building the runtime,
       switching models, effort, worktrees, startup, and resuming.
     - Side questions (`/btw`) and conversation branches (`/tree`).
@@ -545,6 +555,9 @@ class SessionController:
         self.borrowed_turn = None
         # User extensions load with the runtime; their commands register once it exists.
         self.extensions = None
+        # The /advisor choice: `advisor_model` until changed, kept across agent
+        # rebuilds and recorded in the session (see `pcode.advisor`).
+        self.advisor = AdvisorChoice()
         self.extension_command_names: list[str] = []
         self.skill_command_names: list[str] = []
         self._startup_context_shown: set[str] = set()
@@ -579,6 +592,8 @@ class SessionController:
         # they settled, so a follow-up's node always lands after its parent's.
         self._side_lock = asyncio.Lock()
         self._side_records: set[asyncio.Task] = set()
+        # Side threads being summarized for the model (`start_summary`).
+        self._summaries: set[asyncio.Task] = set()
         # Titling a session beside its first turn (`session_naming`): the running
         # request, and the sessions asked already while open, so a failure is
         # not retried on every turn. Opening a session (/new, /resume) clears it.
@@ -663,7 +678,7 @@ class SessionController:
         """Commands for the model, its sign-ins, and the extensions it runs with."""
         from pcode.models import login_sources, logout_sources
 
-        login_targets = "Claude Code or OpenAI Codex"
+        login_targets = "Claude Code, OpenAI Codex, or Antigravity"
         return (
             Command(
                 "/model",
@@ -676,6 +691,15 @@ class SessionController:
                 "Set reasoning effort: low / medium / high / xhigh / default",
                 self.effort,
                 ("low", "medium", "high", "xhigh", "default"),
+                group="Model",
+            ),
+            Command(
+                "/advisor",
+                "Model the session's model consults on hard decisions: MODEL / off, "
+                "--save keeps it; bare picks one",
+                self.set_advisor,
+                free_arguments=True,
+                argument_completer=self.advisor_completions,
                 group="Model",
             ),
             Command(
@@ -732,6 +756,12 @@ class SessionController:
                 group="Session",
             ),
             Command(
+                "/delete",
+                "Delete this saved session and start a new conversation",
+                self.delete,
+                group="Session",
+            ),
+            Command(
                 "/rename",
                 "Name this conversation for /resume: NAME | ask model",
                 self.rename,
@@ -764,9 +794,10 @@ class SessionController:
                 group="Session",
             ),
             Command(
-                "/resend",
-                "Ask the model again from the last checkpoint, without a new message",
-                self.resend,
+                "/continue",
+                "Pick the last turn up from its checkpoint, keeping finished tool calls",
+                self.continue_turn,
+                aliases=("/retry",),
                 group="Session",
             ),
         )
@@ -794,8 +825,10 @@ class SessionController:
             ),
             Command(
                 "/usage",
-                "Plan limits and spend for the Claude Code and Codex logins",
+                "Plan limits and spend (current provider, or claude / openai-codex / "
+                "antigravity / all)",
                 self.usage,
+                ("claude", "openai-codex", "antigravity", "all"),
                 group="Inspect",
             ),
         )
@@ -1094,7 +1127,7 @@ class SessionController:
 
     def take_typed(self) -> tuple[list[str], list[tuple[str, str]]]:
         """Commands and messages (with their modes) the user left waiting, for the
-        host this session moves into. Job wake-ups and resends stay behind: the
+        host this session moves into. Job wake-ups and continues stay behind: the
         host makes its own."""
         commands = []
         while not self.commands.empty():
@@ -1103,7 +1136,9 @@ class SessionController:
                 commands.append(text)
         self.command_idle.set()
         messages = [
-            (text, mode) for text, mode in self.prompts.take_all() if mode not in ("wake", "resend")
+            (text, mode)
+            for text, mode in self.prompts.take_all()
+            if mode not in ("wake", "continue", "provider_wake")
         ]
         return commands, messages
 
@@ -1127,7 +1162,14 @@ class SessionController:
         """Ctrl+C: clear the queue and stop what is running."""
         self.interrupt_pending = False
         self.clear_queue()
+        clear_wake = getattr(self.runtime, "clear_provider_wake", None)
+        if callable(clear_wake):
+            clear_wake(quarantine=True)
         active = [task for task in self.tasks() if not task.done()]
+        # A sign-in waiting beside a turn is not what Ctrl+C aims at: it
+        # carries on, and goes with the next Ctrl+C once nothing else runs.
+        if any(task is not self.login_task for task in active):
+            active = [task for task in active if task is not self.login_task]
         # Ctrl+C means "stop working", so a command the turn is waiting on is
         # stopped with it. A typed follow-up takes the other branch and only
         # abandons the wait. Either way a job the model explicitly backgrounded
@@ -1140,6 +1182,9 @@ class SessionController:
             for task in active:
                 if not task.cancelling():
                     task.cancel()
+            # A side thread's summary is not such work: it is a message on its
+            # way to the model, which would start a turn right after this stop.
+            self.cancel_summaries()
         # Nothing in the foreground: stop what runs beside it, each one saying so.
         elif not (self.cancel_asides() + self.cancel_background_rename()):
             self.activity.busy = False
@@ -1147,11 +1192,25 @@ class SessionController:
             if self.running:
                 self.view.cancelled()
 
+    def cancel_all(self) -> None:
+        """The session is ending: stop what Ctrl+C would, and a sign-in it spares."""
+        self.cancel()
+        if self.login_task is not None:
+            self.login_task.cancel()
+
     def cancel_asides(self) -> int:
-        """Stop the running side questions alone; a running turn carries on."""
+        """Stop the running side questions and summaries alone; a running turn carries on."""
         if stopped := self.asides.cancel():
             self.view.note(f"Stopped {stopped} side question(s).")
-        return stopped
+        return stopped + self.cancel_summaries()
+
+    def cancel_summaries(self) -> int:
+        """Stop the side-thread summaries still being written; returns how many."""
+        return sum(task.cancel() for task in list(self._summaries) if not task.cancelling())
+
+    @property
+    def summarizing(self) -> bool:
+        return bool(self._summaries)
 
     def cancel_background_rename(self) -> bool:
         """Ctrl+C with no turn running: a bare /rename's request is what is left to stop."""
@@ -1227,7 +1286,7 @@ class SessionController:
         """Run one slash command: the session's own here, anything else in the terminal.
 
         `idle` says whether the session was idle when it was sent: /compact or
-        /resend sent then runs ahead of prompts queued behind it since.
+        /continue sent then runs ahead of prompts queued behind it since.
         """
         name = text.split(maxsplit=1)[0]
         before_queue = name in MODEL_COMMANDS and idle and not self.working()
@@ -1239,10 +1298,18 @@ class SessionController:
             and not before_queue
             and not background
         ):
-            self.view.warning(
-                f"{name} is unavailable while working. "
-                "Cancel with Ctrl+C or wait for the run to finish, then retry."
-            )
+            others = [t for t in self.tasks() if t is not self.login_task and not t.done()]
+            if self.login_task is not None and not (others or self.activity.queued):
+                # What holds the session is a sign-in left waiting after its turn.
+                self.view.warning(
+                    f"{name} is unavailable while a sign-in waits in the browser. "
+                    "Finish it, or cancel it with Ctrl+C, then retry."
+                )
+            else:
+                self.view.warning(
+                    f"{name} is unavailable while working. "
+                    "Cancel with Ctrl+C or wait for the run to finish, then retry."
+                )
         elif background or self.registry.find(name) is None:
             await self.view.run_command(text, idle=idle, tag=tag)
         else:
@@ -1252,10 +1319,10 @@ class SessionController:
                 await self.run_command(text, before_queue=before_queue)
             finally:
                 self.view.command_finished()
-        await self.follow_up()
+        await self.follow_up(tag)
         self.view.session_changed()
 
-    async def follow_up(self) -> None:
+    async def follow_up(self, tag=None) -> None:
         """Do what the command just handled asked for once its handler returned."""
         if self.job_requested is not None:
             await self.perform_job()
@@ -1278,7 +1345,7 @@ class SessionController:
         # Not once the terminal shows another controller (/detach, /attach):
         # they share its activity, which this would reset under the new one.
         if not self.running and not self.superseded:
-            self.cancel()
+            self.cancel_all()
             if active := self.tasks():
                 await asyncio.gather(*active, return_exceptions=True)
         if self.reload_requested:
@@ -1287,33 +1354,69 @@ class SessionController:
             # Deferred by busy work that was not a turn, which `consume` would wait out.
             await self.apply_pending_reload()
         if self.login_requested:
-            await self.perform_login()
+            await self.perform_login(tag)
         if self.logout_requested:
             await self.logins.perform_logout()
 
-    async def perform_login(self) -> None:
+    async def perform_login(self, tag=None) -> None:
         """Run the requested sign-in as cancellable work, so Ctrl+C abandons it.
 
         Waiting on a browser holds the session busy, which is what routes
         Ctrl+C to `cancel` rather than to the draft. A cancelled sign-in ends
         here; only the command loop's own cancellation propagates.
+
+        Sent while a turn or other work runs, the sign-in waits beside it
+        instead, so switching accounts never stops a long turn: the command
+        loop carries on, and the turn's next request uses the new login (see
+        `Logins`). Ctrl+C stops that work first and the sign-in once it is all
+        that is left (`cancel`).
         """
         # Taken here, not in the task: a Ctrl+C landing before the task's first
         # step must still consume the request, or the next command would rerun it.
         source, self.login_requested = self.login_requested, None
-        task = asyncio.create_task(self.logins.perform_login(source))
+        if self.login_task is not None:
+            # Both flows wait on a browser, and Codex's on a fixed local port.
+            self.view.warning(
+                "A sign-in is already waiting in the browser. "
+                "Finish it, or press Ctrl+C once nothing else runs."
+            )
+            return
+        # Queued prompts count: the next turn would otherwise wait on the browser.
+        beside = self.working() or bool(self.activity.queued_prompts)
+        if source == "antigravity" and beside:
+            self.view.warning(
+                "Wait for active work and queued messages to finish before running "
+                "/login antigravity (it opens a code-entry prompt)."
+            )
+            return
+        task = asyncio.create_task(self.logins.perform_login(source, beside=beside))
         self.login_task = task
         self.activity.busy = True
+        if beside:
+            task.add_done_callback(self._login_finished)
+            return
+        if tag is not None:
+            self.view.command_started(tag)
         try:
             await asyncio.wait({task})
         except asyncio.CancelledError:
             task.cancel()
             raise
         finally:
+            if tag is not None:
+                self.view.command_finished()
             self.login_task = None
             self.refresh_busy()
         if not task.cancelled():
             task.result()
+
+    def _login_finished(self, task: asyncio.Task) -> None:
+        """A sign-in that ran beside other work ended: nothing awaits it to settle it."""
+        if self.login_task is task:
+            self.login_task = None
+        self.refresh_busy()
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self.command_failed("/login", error)
 
     async def run_command(self, text: str, *, before_queue: bool = False) -> None:
         """Run one of the session's own commands; a handler may be sync or async."""
@@ -1334,6 +1437,14 @@ class SessionController:
             self.view.error(str(error))
 
     # --- Turns ---
+
+    def on_provider_wake(self) -> None:
+        """Queue a continuation turn when `agy` wakes up on its own between turns."""
+        if not self.running or self.closing() or self.superseded:
+            return
+        if "provider_wake" in self.activity.queued_modes:
+            return
+        self.submit("Antigravity background work", "provider_wake")
 
     async def consume(self) -> None:
         """Run queued messages one at a time, each once nothing holds the queue."""
@@ -1365,7 +1476,7 @@ class SessionController:
                 owner.started()
             success = True
             try:
-                resend = mode == "resend"
+                continuing = mode == "continue"
                 if mode == "shell":
                     self.live_task = asyncio.create_task(self.run_shell(text))
                     try:
@@ -1374,11 +1485,23 @@ class SessionController:
                         if self.closing():
                             return
                         success = False
-                elif not (resend or self.model):
+                elif not (continuing or self.model):
                     self.view.preview_reply(text)
                 else:
                     wake = mode == "wake"
-                    if wake:
+                    provider_wake = mode == "provider_wake"
+                    if (
+                        provider_wake
+                        and not getattr(self.runtime, "has_provider_wake", lambda: False)()
+                    ):
+                        # Model changed or a user turn already took over the wake.
+                        self.refresh_busy()
+                        continue
+                    if provider_wake:
+                        self.activity.start_prompt(
+                            "Antigravity", kind="system", detail="Continuing from background work"
+                        )
+                    elif wake:
                         label, detail = wake_row(text)
                         self.activity.start_prompt(label, kind="system", detail=detail)
                     else:
@@ -1387,9 +1510,10 @@ class SessionController:
                     self.runtime.has_steering = self.has_steering
                     self.live_task = asyncio.create_task(
                         self.run_turn(
-                            text,
-                            resend=resend,
+                            "" if provider_wake else text,
+                            continuing=continuing,
                             wake=wake,
+                            provider_wake=provider_wake,
                         )
                     )
                     try:
@@ -1444,14 +1568,20 @@ class SessionController:
         self,
         text: str,
         *,
-        resend: bool = False,
+        continuing: bool = False,
         wake: bool = False,
+        provider_wake: bool = False,
     ) -> bool:
-        """Run a turn: `resend` asks again from the last checkpoint, and `wake` is one
-        a finished job started, shown as a badge rather than as typed text."""
+        """Run a turn: `continuing` asks again from the last checkpoint, `wake` is one
+        a finished job started, and `provider_wake` drains unsolicited post-turn
+        updates from a provider (`agy acp`) without sending a new prompt."""
         runtime = self.runtime
-        self.view.turn_started(text, echo=not wake)
-        if wake:
+        self.view.turn_started("" if provider_wake else text, echo=not (wake or provider_wake))
+        if provider_wake:
+            self.activity.start_prompt(
+                "Antigravity", kind="system", detail="Continuing from background work"
+            )
+        elif wake:
             # Scrollback already carries the job's summary line; the prompt is
             # pcode's, so it is labelled as system work rather than quoted.
             label, detail = wake_row(text)
@@ -1468,6 +1598,7 @@ class SessionController:
             self.view.note(text)
 
         runtime.compaction_notice = compaction_notice
+        runtime.record_settings = partial(record_advisor, self.advisor)
 
         def retry_notice(text):
             # Separate abandoned partial text/thinking from the next attempt.
@@ -1480,15 +1611,25 @@ class SessionController:
             runtime.warning_notice = self.view.warning
         if hasattr(runtime, "notice"):
             runtime.notice = self.view.note
+        if hasattr(runtime, "retained_notice"):
+            runtime.retained_notice = self.view.retained_note
+        if hasattr(runtime, "title_notice"):
+            runtime.title_notice = self.apply_provider_title
+        if hasattr(runtime, "provider_wake_notice"):
+            runtime.provider_wake_notice = self.on_provider_wake
         failure = None
         cancelled = False
-        chosen, prompt = (None, text) if resend or wake else prompt_target(text)
+        chosen, prompt = (
+            (None, text) if continuing or wake or provider_wake else prompt_target(text)
+        )
         # A `/model` during this turn says which model the rest of it is on.
         self.borrowed_turn = chosen
         source = (
-            self.stream_on(chosen, prompt)
+            runtime.stream("", provider_continuation=True)
+            if provider_wake
+            else self.stream_on(chosen, prompt)
             if chosen is not None
-            else runtime.stream(None if resend else text)
+            else runtime.stream(None if continuing else text)
         )
         # A turn creates the session's journal on first use. Attached terminals
         # read it from disk (/tools, /diffs), so they need its path mid-turn,
@@ -1500,7 +1641,9 @@ class SessionController:
         # left the session untitled for minutes. A session that existed already
         # (resumed, or after a first turn that failed) is named from its first
         # prompt on disk.
-        first_prompt = prompt if session is None and not (resend or wake) else None
+        first_prompt = (
+            prompt if session is None and not (continuing or wake or provider_wake) else None
+        )
         if journaled:
             self.start_naming(first_prompt)
         try:
@@ -1576,7 +1719,9 @@ class SessionController:
 
         command = shell_command(text)
         assert command is not None
-        call_id = f"shell_mode_{id(self):x}"
+        # One id per run: the live preview times each command from when its
+        # output first shows, so a reused id would let the next one skip the wait.
+        call_id = f"shell_mode_{uuid4().hex[:12]}"
         cwd, env = (
             self.runtime.shell_environment()
             if hasattr(self.runtime, "shell_environment")
@@ -1796,18 +1941,27 @@ class SessionController:
         )
 
     def start_summary(self, request) -> None:
-        # Checked before the task marks the session busy, which would refuse it.
-        follows = self.check_bridge(request.thread)
-        self.start_history_task(
-            self.summarize_thread(follows, request.instructions),
-            label="Summarizing side thread",
-            detail=request.instructions,
-            status="Summarizing side thread…",
-            note="Summarizing the side thread into the conversation. Ctrl+C cancels.",
-            done=lambda result: "Side thread summary added to the conversation.",
-            cancelled="Summary cancelled; the conversation is unchanged.",
-            failed="Side thread summary failed",
+        """Summarize a side thread beside whatever runs, then send it to the model.
+
+        Like a side question it only reads the conversation, so it neither
+        waits for a running turn nor holds prompts back; the summary is sent
+        as steering once it is ready (see `summarize_thread`).
+        """
+        follows = self.check_bridge(request.thread, "summary")
+        self.view.note(
+            "Summarizing the side thread; the summary goes to the model when it is ready."
         )
+
+        def finished(task):
+            self._summaries.discard(task)
+            if task.cancelled():
+                self.view.note("Side thread summary stopped; nothing was sent.")
+            elif (error := task.exception()) is not None:
+                self.view.error(error_message(error), title="Side thread summary failed")
+
+        task = asyncio.create_task(self.summarize_thread(follows, request.instructions))
+        self._summaries.add(task)
+        task.add_done_callback(finished)
 
     def start_history_task(
         self, work, *, label, detail, status, note, done, cancelled, failed
@@ -2183,21 +2337,25 @@ class SessionController:
 
     # --- Preferences the session saves (model, effort, autocompact) ---
 
-    def persist_defaults(self, **updates: str) -> None:
+    def persist_defaults(self, **updates: str) -> bool:
         try:
             save_preferences(**updates)
         except OSError, ValueError:
             self.view.warning("Could not save defaults; this selection applies only here.")
+            return False
+        return True
 
-    def forget_defaults(self, *keys: str) -> None:
+    def forget_defaults(self, *keys: str) -> bool:
         from pcode.preferences import update_preferences
 
         try:
             update_preferences({}, remove=keys)
         except OSError, ValueError:
             self.view.warning("Could not update defaults; this change applies only here.")
+            return False
+        return True
 
-    # --- History: compaction and resending ---
+    # --- History: compaction and continuing ---
 
     def compact(self, argument: str, *, before_queue: bool = False) -> None:
         if not self.model or not hasattr(self.runtime, "compact"):
@@ -2255,17 +2413,17 @@ class SessionController:
         cap = self.compact_cap()
         return f"on at {compact_tokens(cap)}" if cap else "on (auto threshold)"
 
-    def resend(self, argument: str, *, before_queue: bool = False) -> None:
+    def continue_turn(self, argument: str, *, before_queue: bool = False) -> None:
         """Ask again from the settled checkpoint instead of typing "continue"."""
         if argument:
-            raise ValueError("/resend takes no arguments.")
+            raise ValueError("/continue takes no arguments.")
         if not self.model or not hasattr(self.runtime, "resend_prompt"):
-            raise ValueError("/resend requires a live model session.")
+            raise ValueError("/continue requires a live model session.")
         if not before_queue and (self.activity.busy or self.activity.queued_prompts):
-            raise ValueError("/resend is unavailable while working. Cancel or wait, then retry.")
+            raise ValueError("/continue is unavailable while working. Cancel or wait, then retry.")
         previous = self.runtime.resend_prompt()
         # Sent idle, before any prompts now queued behind it: keep that order.
-        self.prompts.put(previous, "resend", first=True)
+        self.prompts.put(previous, "continue", first=True)
         self.activity.start_prompt(previous)
         self.activity.busy = True
 
@@ -2470,6 +2628,90 @@ class SessionController:
             if model not in words and needle in model.casefold():
                 yield Completion(model, start_position=-len(fragment))
 
+    async def set_advisor(self, argument: str) -> None:
+        """`/advisor` picks the advisor; `MODEL` or `off` sets it; `--save` makes it the default.
+
+        The choice is recorded in the session, so resuming it (or moving it into
+        a host) keeps it, even after the default changes; `--save` also makes it
+        the default for new sessions. It reaches the next turn: the agent
+        resolves its advisor once per turn.
+        """
+        from pcode.advisor import SETTING, native_id
+
+        words = argument.split()
+        save = SAVE_FLAG in words
+        words = [word for word in words if word != SAVE_FLAG]
+        if len(words) > 1:
+            raise ValueError(ADVISOR_USAGE)
+        if not self.model:
+            raise ValueError("/advisor requires a live model session.")
+        if words:
+            name = words[0]
+        else:
+            name = await self.pick_model(self.advisor.name)
+            if name is None:
+                self.view.note(f"Advisor: {self.advisor.name or 'off'}. {ADVISOR_USAGE}")
+                return
+        if name == "off":
+            name = None
+        else:
+            from pcode.agent import side_model
+
+            # Resolve now, so an unknown provider or a missing login is refused
+            # here rather than leaving every turn without its advisor.
+            await asyncio.to_thread(side_model, name)
+            known = set(await asyncio.to_thread(self.model_suggestions))
+            if name not in known:
+                # A Claude advisor can run inside the turn's own request, where
+                # Anthropic fails every request over a name it does not know.
+                if native_id(name) is not None:
+                    raise ValueError(f"Not in the /model catalog: {name}. Check the spelling.")
+                self.view.warning(f"Not in the /model catalog, so check the spelling: {name}")
+        self.advisor.name = name
+        self.advisor.chosen = True
+        session = getattr(self.runtime, "session", None)
+        if session is not None:
+            # Recorded now, not only with the next turn: a restart before it keeps it.
+            record_advisor(self.advisor, session.info)
+            try:
+                session.save_info(touch=False)
+            except OSError as error:
+                self.view.warning(f"Could not record the advisor in this session: {error}")
+        saved = ""
+        if save:
+            if name is None:
+                stored = self.forget_defaults(SETTING)
+            else:
+                stored = self.persist_defaults(**{SETTING: name})
+            if stored:
+                saved = " Saved as the default."
+                if from_project(SETTING):
+                    saved += (
+                        " This workspace's .pcode/preferences.json also sets advisor_model, "
+                        "and wins at launch."
+                    )
+        chosen = f"{name} (next turn)" if name else "off"
+        self.view.note(f"Advisor: {chosen}.{saved}")
+
+    def advisor_completions(self, argument: str):
+        """Complete `/advisor`: a model from the /model catalog or `off`, then `--save`."""
+        from prompt_toolkit.completion import Completion
+
+        words = argument.split()
+        fragment = words.pop() if words and not argument[-1].isspace() else ""
+        if SAVE_FLAG not in words and fragment and SAVE_FLAG.startswith(fragment):
+            yield Completion(
+                SAVE_FLAG, start_position=-len(fragment), display_meta="Make it the default"
+            )
+        if [word for word in words if word != SAVE_FLAG] or fragment.startswith("-"):
+            return
+        if "off".startswith(fragment):
+            yield Completion("off", start_position=-len(fragment), display_meta="No advisor")
+        needle = fragment.casefold()
+        for model in self.model_suggestions():
+            if needle in model.casefold():
+                yield Completion(model, start_position=-len(fragment))
+
     def reload(self, argument: str) -> None:
         if argument:
             raise ValueError("/reload takes no arguments.")
@@ -2516,7 +2758,12 @@ class SessionController:
         loaded = await asyncio.to_thread(self._load_extensions)
         # Construct first, so a failure leaves the previous agent in place.
         agent = await asyncio.to_thread(
-            create_agent, self.model, self.workspace, loaded.capabilities, loaded.subagents
+            create_agent,
+            self.model,
+            self.workspace,
+            loaded.capabilities,
+            loaded.subagents,
+            self.advisor,
         )
         apply_effort(agent, self.model, effort_for(self.model))
         apply_thinking(agent, self.model, self.activity.thinking_mode)
@@ -2565,12 +2812,16 @@ class SessionController:
         from pcode.live import AgentRuntime
 
         self.extensions = self._load_extensions()
+        # Off the loop: an /advisor typed while this runs is newer and wins.
+        if self._saved_session is not None and not self.advisor.chosen:
+            adopt_advisor(self.advisor, self._saved_session.info)
         return AgentRuntime(
             create_agent(
                 self.model,
                 self.workspace,
                 self.extensions.capabilities,
                 self.extensions.subagents,
+                self.advisor,
             ),
             self._saved_session,
             session_factory=self._create_session if self.save_sessions else None,
@@ -2625,7 +2876,7 @@ class SessionController:
         capabilities = self.extensions.capabilities if self.extensions else ()
         subagents = self.extensions.subagents if self.extensions else ()
         agent = await asyncio.to_thread(
-            create_agent, model, self.workspace, capabilities, subagents
+            create_agent, model, self.workspace, capabilities, subagents, self.advisor
         )
         apply_effort(agent, model, effort_for(model))
         apply_thinking(agent, model, self.activity.thinking_mode)
@@ -2698,6 +2949,9 @@ class SessionController:
         # Replace rather than mutate: a request already sent keeps its settings,
         # and a running turn's next request reads the new ones.
         apply_effort(agent, self.model, value)
+        # On Gemini a level and readable thinking share one setting, so
+        # `default` must hand it back to the thinking mode.
+        apply_thinking(agent, self.model, self.activity.thinking_mode)
         self.persist_defaults(model=self.model)
         # Per model: raising effort on one model must not raise it on the next.
         try:
@@ -2739,6 +2993,7 @@ class SessionController:
             *([("Title", saved.info.title)] if saved and saved.info.title else []),
             ("Model", self.model),
             ("Effort", self.current_effort()),
+            *([("Advisor", self.advisor.name)] if self.advisor.name else []),
             ("Workspace", str(self.workspace)),
             ("Turns", str(self.runtime.turns)),
             ("Tokens in/out", f"{self.runtime.input_tokens}/{self.runtime.output_tokens}"),
@@ -2861,9 +3116,16 @@ class SessionController:
             self.view.redraw()
 
     def usage(self, argument: str) -> None:
-        from pcode.usage import usage_report
+        from pcode.usage import usage_provider_for, usage_report
 
-        self.defer("Checking usage", "", usage_report)
+        arg = argument.strip()
+        if arg == "all":
+            target = None
+        elif arg:
+            target = arg
+        else:
+            target = usage_provider_for(self.model)
+        self.defer("Checking usage", target or "", lambda: usage_report(target))
 
     # --- Worktrees ---
 
@@ -3049,7 +3311,7 @@ class SessionController:
         self.view.flash("Asking the model for a name…")
 
     async def _suggest_name(self, session) -> None:
-        from pcode.aside import ASIDE_TIMEOUT_SECONDS
+        from pcode.aside import ASIDE_TIMEOUT_SECONDS, retire_reply
         from pcode.diagnostics import provider_context
         from pcode.error_report import error_message
         from pcode.session_naming import RENAME_REQUEST, clean_title
@@ -3076,6 +3338,7 @@ class SessionController:
             )
             self.view.warning(f"Could not name the session: {reason}")
             return
+        retire_reply(reply)
         name = clean_title(reply.answer)
         if not name:
             self.view.warning("Could not name the session: the model gave no name.")
@@ -3112,8 +3375,11 @@ class SessionController:
         `prompt` is the session's first prompt when the caller has it; without
         one it is read from the journal.
         """
+        from pcode.models import runs_own_loop
+
         session = getattr(self.runtime, "session", None)
-        if session is None or not self.model:
+        # Antigravity titles its own session (`AgentRuntime.title_notice`).
+        if session is None or not self.model or runs_own_loop(self.model):
             return
         info = session.info
         if info.name or info.title or info.id in self._naming_tried:
@@ -3125,6 +3391,27 @@ class SessionController:
             return
         self._naming_tried.add(info.id)
         self.naming_task = asyncio.create_task(self._name_session(session, self.model, prompt))
+
+    def apply_provider_title(self, title: str) -> None:
+        """Save a session title pushed by the model itself (`session_info_update`)."""
+        from pcode.session_naming import clean_title
+
+        session = getattr(self.runtime, "session", None)
+        if session is None or session.info.name or session.info.title:
+            return
+        setting = SETTINGS["session_naming"]
+        if load_preferences().get("session_naming", setting.default) != "on":
+            return
+        cleaned = clean_title(title)
+        if not cleaned:
+            return
+        session.info.title = cleaned
+        try:
+            session.save_info(touch=False)
+        except OSError:
+            return
+        self.view.session_changed()
+        self.view.redraw()
 
     async def _name_session(self, session, model: str, prompt: str | None) -> None:
         import logging
@@ -3167,6 +3454,8 @@ class SessionController:
             self.naming_task.cancel()
         self.cancel_rename()
         self._naming_tried.clear()
+        if hasattr(self.runtime, "title_notice"):
+            self.runtime.title_notice = lambda title: None
 
     def naming(self) -> bool:
         """Whether a title or name is being asked for."""
@@ -3199,8 +3488,49 @@ class SessionController:
         # The old conversation's name leaves the tab with it.
         self.view.session_changed()
 
+    async def delete(self, argument: str) -> None:
+        from pcode.host_protocol import forget_stopped
+        from pcode.sessions import SessionError, delete_session
+
+        session = getattr(self.runtime, "session", None)
+        if session is None:
+            raise ValueError("Nothing is saved yet; /delete removes a saved session.")
+        identity = session.info.id
+        root = session.directory.parent
+        await self.stop_naming()
+        self.runtime.reset()
+        # Drain after reset so no newly-settled /btw starts recording to the old
+        # session and any in-flight write finishes before the directory is removed.
+        await self.side_records_settled()
+        error: str | None = None
+        try:
+            await asyncio.to_thread(delete_session, identity, root)
+        except (SessionError, OSError) as exc:
+            error = str(exc)
+        if error is None:
+            forget_stopped(identity)
+        # On the host too, not just this terminal's copy, so one attaching later agrees.
+        self.activity.turn_outcome = ""
+        self.view.conversation_reset("New conversation")
+        if error is not None:
+            self.view.warning(f"Could not delete session {identity[:8]}: {error}")
+        else:
+            self.view.note(
+                f"Deleted session {identity[:8]}. Context reset; MCP servers are off unless "
+                "marked enabled. Screen cleared; input history is unchanged."
+            )
+        self.mcp_defaults_requested = True
+        # The old conversation's name leaves the tab with it.
+        self.view.session_changed()
+
     async def select_model(self, argument: str) -> None:
         """Pick a model in the terminal from the providers this session can reach."""
+        model = await self.pick_model(self.model)
+        if model is not None:
+            await self.switch_model(model)
+
+    async def pick_model(self, current: str | None) -> str | None:
+        """The /model picker over the reachable providers; None when dismissed or none."""
         from pcode.models import active_providers, model_catalog
 
         providers = await asyncio.to_thread(active_providers, self.model)
@@ -3211,11 +3541,9 @@ class SessionController:
                 "provider's API key (see docs/providers.md). "
                 "If model_providers is set, check that it allows an active provider."
             )
-            return
-        values = model_catalog(providers, self.model)
-        model = await self.view.choose_model(values, providers, self.model)
-        if model is not None:
-            await self.switch_model(model)
+            return None
+        values = model_catalog(providers, current)
+        return await self.view.choose_model(values, providers, current)
 
     async def initialize_runtime(self) -> None:
         """Build the agent (off the event loop) and restore a resumed conversation."""
@@ -3287,14 +3615,16 @@ class SessionController:
             subagents = extensions.subagents if extensions else ()
             retired = None
             try:
-                agent = create_agent(saved.info.model, target, capabilities, subagents)
+                agent = create_agent(
+                    saved.info.model, target, capabilities, subagents, self.advisor
+                )
             except UserError as error:
                 # A provider pcode has since dropped (meridian:) leaves the
                 # conversation stranded; carry it on with the model in use now.
                 if not is_unknown_model(error) or not self.model:
                     raise
                 retired = saved.info.model
-                agent = create_agent(self.model, target, capabilities, subagents)
+                agent = create_agent(self.model, target, capabilities, subagents, self.advisor)
                 saved.info.model = self.model
             apply_effort(agent, saved.info.model, effort_for(saved.info.model))
             apply_thinking(agent, saved.info.model, self.activity.thinking_mode)
@@ -3319,6 +3649,8 @@ class SessionController:
         if target != self.workspace:
             self._switch_workspace(target, extensions)
         self.runtime = runtime
+        if adopt_advisor(self.advisor, saved.info):
+            self.view.note(f"Advisor: {self.advisor.name or 'off'} (chosen in this session).")
         self._seen_stopped_host()
         self.restore_side_threads()
         self.model = saved.info.model
@@ -3558,7 +3890,8 @@ class SessionController:
         from pcode.agent import side_model, with_effort
 
         if target.model not in ("", self.model):
-            return {"model": await asyncio.to_thread(side_model, target.model, target.effort)}
+            resolved = await asyncio.to_thread(side_model, target.model, target.effort)
+            return {"model": resolved}
         if not target.effort:
             return {}
         agent = self.runtime.agent
@@ -3620,15 +3953,28 @@ class SessionController:
         """
 
         async def work(aside):
+            from pcode.aside import retire_reply
+
             def report(answer: str, activity: str) -> None:
                 self.asides.update(aside, answer=answer, activity=activity)
 
             chosen = options
+            temporary_after = None
             if follows is not None:
-                chosen = {**chosen, "after": await self.side_reply(follows)}
+                restored = follows.reply is None
+                after_reply = await self.side_reply(follows)
+                if restored:
+                    temporary_after = after_reply
+                chosen = {**chosen, "after": after_reply}
             if target is not None:
                 chosen = {**chosen, **await self.target_options(target)}
-            return await self.runtime.aside(question, report=report, **chosen)
+            try:
+                result = await self.runtime.aside(question, report=report, **chosen)
+            except BaseException:
+                retire_reply(temporary_after)
+                raise
+            retire_reply(temporary_after, keep=result)
+            return result
 
         return work
 
@@ -3674,15 +4020,16 @@ class SessionController:
         self.check_effort(target)
         return target
 
-    def check_bridge(self, thread: str) -> Aside:
+    def check_bridge(self, thread: str, action: str = "merge") -> Aside:
         """The answer a thread would be brought into the conversation from.
 
         Raises `ValueError` saying why it cannot be yet: like forking in
-        /tree, changing the conversation waits for the running turn, and a
-        thread from another conversation has nowhere here to go.
+        /tree, a merge moves the conversation and so waits for the running
+        turn, and a thread from another conversation has nowhere here to go.
+        A summary goes as a message, so it never waits.
         """
-        if self.activity.busy or self.activity.queued:
-            raise ValueError("Adding to the conversation waits for the running turn")
+        if action == "merge" and (self.activity.busy or self.activity.queued):
+            raise ValueError("Merging into the conversation waits for the running turn")
         follows = self.asides.follows(thread)
         root = self.asides.thread(thread)[0]
         tree = getattr(self.runtime, "tree", None)
@@ -3701,7 +4048,7 @@ class SessionController:
         `ValueError` says why it cannot be yet.
         """
         if action == "merge":
-            self.check_bridge(thread)
+            self.check_bridge(thread, action)
             # Outside the command queue, so hold prompts back the way a
             # history task does: none may start on the tree while it moves.
             self.compact_idle.clear()
@@ -3747,20 +4094,38 @@ class SessionController:
         )
 
     async def summarize_thread(self, follows: Aside, instructions: str) -> None:
-        """Add a summary of `follows`'s thread to the conversation, and show it."""
-        from pcode.diagnostics import strip_controls
+        """Summarize `follows`'s thread and send the summary to the model.
 
-        asked = self.asides.thread(follows.thread)
-        reply = await self.side_reply(follows)
-        questions = [aside.question for aside, _ in exchanges(asked, reply.messages)]
-        request = summary_request(questions, instructions)
-        summary = await self.runtime.summarize_aside(reply, request, instructions)
+        Sent as steering: it joins a running turn at its next request, or
+        starts one when the session is idle, so the model acts on it without
+        the user having to say so.
+        """
+        from pcode.aside import retire_reply
+
+        with self.activity.waiting("Summarizing side thread"):
+            restored = follows.reply is None
+            reply = await self.side_reply(follows)
+            try:
+                summary = await self.runtime.summarize_aside(reply, instructions)
+            finally:
+                if restored:
+                    retire_reply(reply)
+            # Its node may still be on its way to the journal, where the mark goes.
+            await self.side_records_settled()
+        try:
+            # /new or /resume while it was written leaves it nowhere to go.
+            self.check_bridge(follows.thread, "summary")
+        except ValueError as error:
+            self.view.warning(f"Side thread summary not sent: {error}.")
+            return
+        # The model reads it as a plain message; only the transcript says where
+        # it came from (and the journal, through `mark_side` below).
+        self.view.note("Sent the side thread's summary to the model.")
+        self.submit(summary_message(summary), "steering")
         follows.bridged = "summarized"
         if follows.recorded:
             self.runtime.mark_side(follows.id, "summarized")
         self.view.aside_changed(follows)
-        self.view.user(strip_controls(request))
-        self.view.show_events((Message(strip_controls(summary)),))
 
     def aside_completions(self, argument: str):
         """Complete a `$MODEL` word in `/btw` arguments from the /model catalog.

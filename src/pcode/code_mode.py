@@ -1,4 +1,4 @@
-"""Opt-in sandboxed batching for the read-only tools, keeping mutations native.
+"""Sandboxed batching for the read-only tools, keeping mutations native.
 
 Code mode collapses many dependent tool calls into one `run_code` snippet, which
 pays off for investigation (fan out greps and reads, filter in Python). Tools
@@ -22,6 +22,7 @@ SANDBOXED_TOOLS = (
     "list_files",
     "grep",
     "read_tool_result",
+    "grep_tool_result",
     "web_search",
     "get_page",
 )

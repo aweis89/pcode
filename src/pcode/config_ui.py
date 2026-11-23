@@ -15,8 +15,15 @@ from prompt_toolkit.widgets import TextArea
 from rich.text import Text
 
 from pcode import config
-from pcode.frame import Frame
-from pcode.popup_ui import RichPane, focus_overlay, fuzzy_match, popup_container, popup_style
+from pcode.frame import Frame, frame_rows
+from pcode.popup_ui import (
+    RichPane,
+    SearchDebounce,
+    focus_overlay,
+    fuzzy_match,
+    popup_container,
+    popup_style,
+)
 from pcode.preferences import (
     SETTINGS,
     USER_ONLY,
@@ -61,7 +68,7 @@ class ConfigBrowser:
         self.message = ""
         self.search = TextArea(height=1, prompt="Filter: ", multiline=False)
         self.value = TextArea(height=1, prompt="Value: ", multiline=False)
-        self.search.buffer.on_text_changed += self.filter
+        self.searching = SearchDebounce(self.search.buffer, self.filter)
         self.name_width = name_width()
         self.reload()
         self.filter()
@@ -131,6 +138,7 @@ class ConfigBrowser:
 
         @keys.add("enter", eager=True)
         def accept(event):
+            self.searching.flush()
             if self.editing:
                 value = self.choices[self.choice] if self.choices else self.value.text
                 self.apply("set", value)
@@ -234,8 +242,8 @@ class ConfigBrowser:
             # Header, filter, two message rows, and keys take five. The details
             # get the larger share: the list row already shows name and value.
             body = get_app().output.get_size().rows - 5
-            # Always leave the list at least one row between its borders.
-            return max(3, min(16, body * 3 // 5, body - 3))
+            # Always leave the list at least one row inside its frame.
+            return max(3, min(16, body * 3 // 5, body - 1 - frame_rows()))
 
         wide = VSplit(
             [

@@ -72,10 +72,10 @@ def tools(workspace, root):
     return result.capabilities[0].get_toolset().tools
 
 
-def call(tool, **kwargs):
+def call(tool, *, conversation_id="caller", **kwargs):
     if "query" in kwargs:
         kwargs["queries"] = [kwargs.pop("query")]
-    return asyncio.run(tool.function(SimpleNamespace(conversation_id="session-a"), **kwargs))
+    return asyncio.run(tool.function(SimpleNamespace(conversation_id=conversation_id), **kwargs))
 
 
 def test_load_is_lazy_and_registers_two_tools(tmp_path, root):
@@ -88,7 +88,12 @@ def test_load_is_lazy_and_registers_two_tools(tmp_path, root):
 def test_tools_search_and_read_with_custom_root(tmp_path, root):
     save(root, tmp_path)
     registered = tools(tmp_path, root)
-    result = call(registered["search_sessions"], query="redraws", scope="session")
+    result = call(
+        registered["search_sessions"],
+        conversation_id="session-a",
+        query="redraws",
+        scope="session",
+    )
     assert result["mode"] == "keyword"
     (group,) = result["results"]
     assert group["session_id"] == "session-a"
@@ -204,9 +209,20 @@ def test_compaction_preserves_recall_and_ancestor_context(tmp_path, root):
     assert turns["run-a"].active
     assert turns["run-b"].parent == "run-a"
     registered = tools(tmp_path, root)
-    result = call(registered["search_sessions"], query="bounded queue", scope="session")
+    result = call(
+        registered["search_sessions"],
+        conversation_id="session-a",
+        query="bounded queue",
+        scope="session",
+    )
     assert result["results"][0]["turns"][0]["turn_id"] == "run-a"
-    read = call(registered["read_session"], session_id=info.id, turn_id="run-b", scope="session")
+    read = call(
+        registered["read_session"],
+        conversation_id="session-a",
+        session_id=info.id,
+        turn_id="run-b",
+        scope="session",
+    )
     assert "bounded queue" in read["context"][0]["text"]
 
 
@@ -541,7 +557,12 @@ def test_current_turn_excluded_and_current_session_flagged(tmp_path, root):
     assert group["current"]
     assert [t["turn_id"] for t in group["turns"]] == ["run-a"]
     # Without the in-flight run ID the prompt itself still comes back.
-    again = call(registered["search_sessions"], query="bounded queue", scope="session")
+    again = call(
+        registered["search_sessions"],
+        conversation_id="session-a",
+        query="bounded queue",
+        scope="session",
+    )
     (group,) = again["results"]
     assert "live" in [t["turn_id"] for t in group["turns"]]
 
@@ -828,3 +849,195 @@ def test_overview_ignores_quoted_failures_and_pages_by_size(tmp_path, root):
     assert "ghp_" not in page["title"]
     # One turn always fits, however small the budget.
     assert len(history.read("session-a", max_chars=1)["turns"]) == 1
+
+
+def test_non_session_scopes_exclude_current_session_but_read_still_resolves_it(tmp_path, root):
+    save(root, tmp_path, "session-a", records=turn("Current", "unique-needle"))
+    save(root, tmp_path, "session-b", records=turn("Other", "unique-needle"))
+    registered = tools(tmp_path, root)
+
+    for scope in ("project", "workspace", "all"):
+        result = call(
+            registered["search_sessions"],
+            conversation_id="session-a",
+            query="unique-needle",
+            scope=scope,
+        )
+        assert [g["session_id"] for g in result["results"]] == ["session-b"]
+        assert result["sessions_in_scope"] == 1
+
+    # scope="session" still searches the current session.
+    own = call(
+        registered["search_sessions"],
+        conversation_id="session-a",
+        query="unique-needle",
+        scope="session",
+    )
+    assert [g["session_id"] for g in own["results"]] == ["session-a"]
+
+    # read_session still resolves the current session under default project scope.
+    read = call(
+        registered["read_session"],
+        conversation_id="session-a",
+        session_id="session-a",
+        turn_id="run-a",
+    )
+    assert read["session_id"] == "session-a"
+
+
+def test_recent_listing_orders_newest_first_and_filters_by_time_window(tmp_path, root):
+    save(
+        root,
+        tmp_path,
+        "old-session",
+        title="Old work",
+        created="2026-11-10T10:00:00+00:00",
+        updated="2026-11-10T11:00:00+00:00",
+    )
+    save(
+        root,
+        tmp_path,
+        "mid-session",
+        title="Yesterday work",
+        created="2026-11-19T12:00:00+00:00",
+        updated="2026-11-19T15:00:00+00:00",
+    )
+    save(
+        root,
+        tmp_path,
+        "new-session",
+        title="Today work",
+        created="2026-11-20T12:00:00+00:00",
+        updated="2026-11-20T16:00:00+00:00",
+    )
+    registered = tools(tmp_path, root)
+
+    # Omitting queries lists recent sessions newest first, excluding current session.
+    recent = call(registered["search_sessions"], conversation_id="new-session")
+    assert recent["mode"] == "recent"
+    assert [r["session_id"] for r in recent["results"]] == ["mid-session", "old-session"]
+    assert recent["results"][0]["title"] == "Yesterday work"
+
+    # Empty list behaves the same and respects limit and time bounds.
+    window = call(
+        registered["search_sessions"],
+        queries=[],
+        since="2026-11-19T00:00:00+00:00",
+        until="2026-11-19T23:59:59+00:00",
+    )
+    assert [r["session_id"] for r in window["results"]] == ["mid-session"]
+
+    limited = call(registered["search_sessions"], limit=1)
+    assert [r["session_id"] for r in limited["results"]] == ["new-session"]
+
+    # Recent listing reads metadata only and does not build the SQLite index.
+    assert not (root / index_name()).exists()
+
+    # Empty time window reports a time-window-specific note.
+    empty = call(
+        registered["search_sessions"],
+        since="2020-01-01",
+        until="2020-01-02",
+    )
+    assert not empty["results"]
+    assert "time window" in empty["note"]
+
+
+def test_parse_bound_handles_date_only_compact_dates_and_dst(monkeypatch):
+    import time as time_mod
+
+    from pcode.history import parse_bound
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    time_mod.tzset()
+    try:
+        # Winter (EST, -05:00) vs Summer (EDT, -04:00) resolve their own DST offsets.
+        winter = parse_bound("2026-01-15")
+        summer = parse_bound("2026-07-15")
+        assert winter is not None and winter.utcoffset().total_seconds() == -5 * 3600
+        assert summer is not None and summer.utcoffset().total_seconds() == -4 * 3600
+
+        # Compact ISO date with end=True resolves to end-of-day, not start-of-day.
+        compact_end = parse_bound("20261119", end=True)
+        assert compact_end is not None and (compact_end.hour, compact_end.minute) == (23, 59)
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time_mod.tzset()
+
+
+def test_keyword_search_filters_sessions_and_turns_by_since_and_until(tmp_path, root):
+    # A multi-day session with one old turn and one recent turn.
+    records = turn("Day 1", "shared-keyword", "run-1", time="2026-11-18T12:00:00+00:00") + turn(
+        "Day 2", "shared-keyword", "run-2", time="2026-11-19T18:00:00+00:00"
+    )
+    save(
+        root,
+        tmp_path,
+        "multi-day",
+        records=records,
+        created="2026-11-18T12:00:00+00:00",
+        updated="2026-11-19T18:00:00+00:00",
+    )
+    save(
+        root,
+        tmp_path,
+        "ancient",
+        records=turn("Ancient", "shared-keyword", "run-old", time="2026-11-01T12:00:00+00:00"),
+        created="2026-11-01T12:00:00+00:00",
+        updated="2026-11-01T12:00:00+00:00",
+    )
+    registered = tools(tmp_path, root)
+
+    result = call(
+        registered["search_sessions"],
+        query="shared-keyword",
+        since="2026-11-19T00:00:00+00:00",
+        until="2026-11-19T23:59:59+00:00",
+    )
+    (group,) = result["results"]
+    assert group["session_id"] == "multi-day"
+    assert [t["turn_id"] for t in group["turns"]] == ["run-2"]
+    assert group["turns"][0]["turn_index"] == 2
+
+    # Date-only bounds and invalid bounds validation.
+    with pytest.raises(ModelRetry, match="Invalid timestamp"):
+        call(registered["search_sessions"], since="not-a-date")
+    with pytest.raises(ModelRetry, match="since must not be after until"):
+        call(
+            registered["search_sessions"],
+            since="2026-11-20",
+            until="2026-11-19",
+        )
+
+
+def test_turn_index_and_local_timestamps_in_search_and_read(tmp_path, root):
+    from datetime import datetime
+
+    records = turn("First", "alpha", "run-1", time="2026-11-20T01:53:31.940462+00:00") + turn(
+        "Second", "beta", "run-2", time="2026-11-20T02:10:00+00:00"
+    )
+    save(
+        root,
+        tmp_path,
+        "session-a",
+        records=records,
+        created="2026-11-20T01:53:31.940462+00:00",
+        updated="2026-11-20T02:10:00+00:00",
+    )
+    registered = tools(tmp_path, root)
+    expected_offset = datetime.fromisoformat("2026-11-20T01:53:31+00:00").astimezone().utcoffset()
+
+    (group,) = call(registered["search_sessions"], query="beta")["results"]
+    (hit,) = group["turns"]
+    assert hit["turn_index"] == 2
+    assert datetime.fromisoformat(hit["time"]).utcoffset() == expected_offset
+
+    overview = call(registered["read_session"], session_id="session-a")
+    assert [t["turn_index"] for t in overview["turns"]] == [1, 2]
+    assert datetime.fromisoformat(overview["created"]).utcoffset() == expected_offset
+    assert datetime.fromisoformat(overview["updated"]).utcoffset() == expected_offset
+    assert datetime.fromisoformat(overview["turns"][0]["time"]).utcoffset() == expected_offset
+
+    single = call(registered["read_session"], session_id="session-a", turn_id="run-2")
+    assert single["turn_index"] == 2
+    assert datetime.fromisoformat(single["time"]).utcoffset() == expected_offset

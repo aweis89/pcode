@@ -18,6 +18,7 @@ import os
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from uuid import uuid4
 
 from pcode.runtime import (
     CacheBust,
@@ -36,6 +37,7 @@ from pcode.runtime import (
     ThinkingDelta,
     ToolStarted,
     ToolSummary,
+    WorkerStatus,
 )
 
 # Bumped on any incompatible message change. An editable install lets a host
@@ -65,6 +67,7 @@ EVENT_TYPES = {
         PlanPreview,
         ChildPlan,
         ChildText,
+        WorkerStatus,
         CommandOutput,
         EditCompleted,
         EditPreview,
@@ -113,6 +116,14 @@ def host_dir() -> Path:
     return state / "pcode" / "hosts"
 
 
+# What `restart` answers for a host with no saved conversation for a successor to resume.
+NOTHING_TO_RESUME = "it has no saved conversation to resume"
+
+
+def new_host_id() -> str:
+    return uuid4().hex[:8]
+
+
 def socket_path(identity: str, directory: Path | None = None) -> Path:
     path = (directory or host_dir()) / f"{identity}.sock"
     if len(os.fsencode(path)) > SOCKET_PATH_MAX:
@@ -150,8 +161,14 @@ class HostEntry:
     # Terminals showing it now, and whether a turn finished with none watching.
     attached: int = 0
     unseen: bool = False
+    # What keeps it running with no terminal attached ("" for nothing), so a
+    # host that should have stopped itself says why it has not.
+    held: str = ""
     # `code_fingerprint()` when the host started, to spot hosts on older code.
     code: str = ""
+    # The interpreter it runs on, so a drawer in the terminal app can start
+    # `pcode.btw_tail` on the same pcode (`pcode.drawer`).
+    python: str = ""
 
     @property
     def socket(self) -> Path:
@@ -204,8 +221,9 @@ def _read(path: Path) -> HostEntry | None:
         return None
 
 
-def write_entry(entry: HostEntry, directory: Path | None = None) -> None:
-    entry.updated = time.time()
+def write_entry(entry: HostEntry, directory: Path | None = None, *, touch: bool = True) -> None:
+    if touch:
+        entry.updated = time.time()
     _write(entry, (directory or host_dir()) / f"{entry.id}.json")
 
 

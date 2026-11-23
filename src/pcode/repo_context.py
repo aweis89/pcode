@@ -1,22 +1,91 @@
 """Discover assistant assets as context, rather than asking the model to do it."""
 
 import asyncio
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic_ai.capabilities import on_event
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
-from pydantic_ai_harness.filesystem import DirectoryListedEvent, FilesSearchedEvent
+from pydantic_ai_harness.file_system import DirectoryListedEvent, FilesSearchedEvent
 from pydantic_ai_harness.repo_context import RepoContext
 
 # Harness exposes no public scanner; reuse its metadata-only scan so the
 # inventory stays consistent with the upstream tool. Covered by integration tests.
 from pydantic_ai_harness.repo_context._inventory import scan_assets
-from pydantic_ai_harness.repo_context._loader import discover_instruction_files
+from pydantic_ai_harness.repo_context._loader import (
+    ContextFile,
+    context_file_label,
+    discover_instruction_files,
+    render_context_files,
+)
 
 from pcode.context_breakdown import REPO_CONTEXT
 from pcode.preferences import SETTINGS, load_preferences
+
+# Harness's defaults plus their untracked `.local.md` variants (Claude Code's
+# CLAUDE.local.md; AGENTS.local.md as proposed in agentsmd/agents.md#13).
+# Every one present in a directory loads, in this order, so a personal file
+# lands after the shared ones and takes precedence by coming later. Nested discovery takes only
+# the first match per directory, so there a local file shows only on its own.
+INSTRUCTION_FILENAMES = ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md", "AGENTS.local.md")
+
+
+async def discover_every_instruction_file(
+    workspace: Workspace, working_dir: Path, top: Path | None
+) -> list[ContextFile]:
+    """Every instruction file present in each directory, not just the first.
+
+    Harness 0.67 narrowed discovery to the first of `filenames` per directory,
+    which would drop a repo's AGENTS.md beside its CLAUDE.md and every
+    `.local.md` override. Discover each name on its own, then order ancestor
+    first (all directories lie on one chain, so depth orders them) and by
+    `INSTRUCTION_FILENAMES` within a directory, keeping the first copy of
+    identical content, as Harness does (a `CLAUDE.md -> AGENTS.md` link loads once).
+    """
+    found = [
+        file
+        for name in INSTRUCTION_FILENAMES
+        for file in await discover_instruction_files(workspace, working_dir, top, (name,))
+    ]
+    seen: set[str] = set()
+    files = []
+    for file in sorted(found, key=lambda file: len(file.directory.parts)):
+        digest = hashlib.sha256(file.content.encode()).hexdigest()
+        if digest not in seen:
+            seen.add(digest)
+            files.append(file)
+    return files
+
+
+_NATIVE_AGY_FILENAMES = ("AGENTS.md", "GEMINI.md")
+
+
+def _native_agy_dirs(working_dir: Path) -> list[Path]:
+    """Directories whose rules `agy acp` loads natively (CWD up to the git root)."""
+    chain: list[Path] = []
+    for directory in (working_dir, *working_dir.parents):
+        chain.append(directory)
+        if (directory / ".git").exists():
+            return chain
+    # Outside a git repository, `agy` only loads rules from the workspace root itself.
+    return [working_dir]
+
+
+def _native_agy_rule_hashes(native_dirs: list[Path]) -> set[str]:
+    """Content hashes of rule files (`AGENTS.md`, `GEMINI.md`) that `agy acp` loads natively."""
+    hashes: set[str] = set()
+    for directory in native_dirs:
+        for name in _NATIVE_AGY_FILENAMES:
+            candidate = directory / name
+            try:
+                if candidate.is_file():
+                    content = candidate.read_bytes().decode("utf-8", errors="replace")
+                    hashes.add(hashlib.sha256(content.encode("utf-8")).hexdigest())
+            except OSError:
+                continue
+    return hashes
 
 
 @dataclass
@@ -38,8 +107,18 @@ class AutomaticRepoContext(RepoContext):
         return run
 
     async def before_run(self, ctx) -> None:
+        # Upstream's run setup stays (nested-traversal bookkeeping included);
+        # only its first-match-per-directory file list is replaced.
         await super().before_run(ctx)
+        if self.autoload_instructions:
+            self._context_files = await self._discover(ctx.workspace)
         await self._load_inventory(ctx.workspace)
+
+    async def _discover(self, workspace: Workspace):
+        working_dir = await self._working_dir(workspace)
+        # `home_dir` needs its symlinks resolved to contain the resolved working directory.
+        top = None if self.home_dir is None else Path(await workspace.realpath(str(self.home_dir)))
+        return await discover_every_instruction_file(workspace, working_dir, top)
 
     async def _load_inventory(self, workspace: Workspace) -> None:
         working_dir = await self._working_dir(workspace)
@@ -88,6 +167,33 @@ class AutomaticRepoContext(RepoContext):
         parts = (self._render_instructions(), self._inventory_context)
         return "\n\n".join(part for part in parts if part) or None
 
+    def instructions_for_antigravity(self) -> str | None:
+        """Render discovered instruction files that `agy acp` does not load natively.
+
+        `agy acp` walks from the working directory up to the git root loading
+        `AGENTS.md` and `GEMINI.md`, so it misses ancestor files above the repo
+        root (such as `~/AGENTS.md`) as well as `CLAUDE.md`, `CLAUDE.local.md`,
+        and `AGENTS.local.md`. Filter out any file `agy` already loads — both
+        `AGENTS.md` in its walk range and any file with identical content (e.g.
+        a `CLAUDE.md -> AGENTS.md` or `GEMINI.md` symlink, or a parent mainline
+        copy when running in a `.worktrees/` checkout). Because ACP only exposes
+        `systemPrompt.append`, forwarded files land after `agy`'s native rules.
+        """
+        if not self._context_files or self._cached_working_dir is None:
+            return None
+        native_dirs = _native_agy_dirs(self._cached_working_dir)
+        native_dir_set = set(native_dirs)
+        native_hashes = _native_agy_rule_hashes(native_dirs)
+        extra = [
+            file
+            for file in self._context_files
+            if not (file.directory in native_dir_set and file.path.name == "AGENTS.md")
+            and hashlib.sha256(file.content.encode("utf-8")).hexdigest() not in native_hashes
+        ]
+        if not extra:
+            return None
+        return render_context_files(extra, relative_to=self._cached_working_dir)
+
     def preload(self) -> "AutomaticRepoContext":
         """Load `root` as `before_run` would, outside a run; returns self.
 
@@ -98,12 +204,8 @@ class AutomaticRepoContext(RepoContext):
         async def load():
             workspace = Workspace(LocalWorkspaceBackend(self.root))
             self._cached_working_dir = None
-            working_dir = await self._working_dir(workspace)
-            home = None if self.home_dir is None else Path(self.home_dir)
             self._context_files = (
-                await discover_instruction_files(workspace, working_dir, home, self.filenames)
-                if self.autoload_instructions
-                else []
+                await self._discover(workspace) if self.autoload_instructions else []
             )
             await self._load_inventory(workspace)
 
@@ -123,7 +225,9 @@ class AutomaticRepoContext(RepoContext):
         files = self.preload()._context_files or []
         if not files:
             return []
-        labels = ", ".join(self._label(file.path) for file in files)
+        labels = ", ".join(
+            context_file_label(file.path, self._cached_working_dir) for file in files
+        )
         return [f"Loaded repository instructions: {labels}"]
 
 
@@ -133,8 +237,8 @@ def create_repo_context(workspace: Path) -> AutomaticRepoContext:
     Snapshot saved defaults at agent creation, not during an active run. Disabling
     the walk keeps workspace instructions; nested discovery is independently opt-in.
 
-    Harness owns the rest: startup files are deduplicated by resolved path and
-    content (first occurrence wins) and loaded per agent run, while nested
+    Startup files load per agent run, every instruction file in each directory
+    (`discover_every_instruction_file`, which dedupes by content), while nested
     discovery takes only the first matching filename in a directory and surfaces
     each directory once per run.
     """
@@ -152,6 +256,7 @@ def create_repo_context(workspace: Path) -> AutomaticRepoContext:
         # inventory to it; the id is metadata and never reaches the model.
         id=REPO_CONTEXT,
         root=workspace,
+        filenames=INSTRUCTION_FILENAMES,
         home_dir=boundary,
         nested_traversal=nested != "off",
         nested_inject="contents" if nested == "contents" else "pointer",

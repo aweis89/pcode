@@ -14,9 +14,10 @@ on every turn, which is why pytest turned the same feature off by default.
 import asyncio
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from time import monotonic
+from typing import Protocol
 
 from pcode.plan_sizes import plan_progress
 
@@ -29,6 +30,8 @@ CLEAR, NORMAL, ERROR, INDETERMINATE, PAUSED = 0, 1, 2, 3, 4
 # recommends re-sending well inside that; other terminals do not mind.
 KEEPALIVE_SECONDS = 5.0
 TICK_SECONDS = 1.0
+# Slow-moving terminal state (the title, the pane's session): nobody needs it sooner.
+RECONCILE_SECONDS = 5.0
 
 
 def _passthrough(sequence: str) -> str:
@@ -280,7 +283,7 @@ def title(text: str) -> str:
 
 
 class TabTitle:
-    """Keep the terminal's title on the session's name, sampled once a second.
+    """Keep the terminal's title on the session's name, checked by a `Reconciler`.
 
     `source` is read on each tick, so a name given by /rename, by the model
     during the first turn, or by the host a hosted terminal follows needs no
@@ -315,15 +318,45 @@ class TabTitle:
         if self.saved and _write_all(self.fd, RESTORE_TITLE.encode()):
             self.saved, self.sent = False, ""
 
-    async def run(self) -> None:
+    @property
+    def enabled(self) -> bool:
         if self.mode != "on" or self.fd is None or not _isatty(self.fd):
-            return
-        if os.environ.get("TERM") == "dumb":
+            return False
+        return os.environ.get("TERM") != "dumb"
+
+
+class Reconcilable(Protocol):
+    def tick(self) -> None: ...
+    def close(self) -> None: ...
+
+
+class Reconciler:
+    """Bring slow-moving terminal state in line with the session, every few seconds.
+
+    Each item compares what it would send with what it last sent, so a tick
+    with nothing changed writes nothing. One loop for all of them keeps their
+    cadence in one place.
+    """
+
+    def __init__(self, items: Iterable[Reconcilable], interval: float = RECONCILE_SECONDS) -> None:
+        self.items = list(items)
+        self.interval = interval
+
+    def tick(self) -> None:
+        for item in self.items:
+            item.tick()
+
+    def close(self) -> None:
+        for item in self.items:
+            item.close()
+
+    async def run(self) -> None:
+        if not self.items:
             return
         try:
             while True:
                 self.tick()
-                await asyncio.sleep(TICK_SECONDS)
+                await asyncio.sleep(self.interval)
         finally:
             self.close()
 
