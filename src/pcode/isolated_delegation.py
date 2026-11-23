@@ -218,7 +218,8 @@ class WorkspaceSubAgents(SubAgents):
             + PARENT_INSTRUCTIONS
             + (
                 # Harness's listing above reads as the only keys allowed.
-                "\nBesides the keys listed, `model` takes any other provider:model name."
+                "\nBesides the keys listed, `model` takes any other provider:model name, "
+                "or a bare model name for the session's provider."
                 if self._menu
                 else ""
             )
@@ -253,28 +254,41 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
                 "description": (
                     "Optional model to run the sub-agent on, as provider:model (any "
                     "/model name), such as for a second opinion from another model. "
-                    "Omit it to use the sub-agent's default, the session's model."
+                    "A bare model name (no provider:) resolves against the session's "
+                    "provider first. Omit it to use the sub-agent's default, the "
+                    "session's model."
                 ),
             },
         }
         return replace(tool_def, parameters_json_schema=schema)
 
-    async def _add_model(self, agent_name: str, key: str | None) -> None:
+    async def _add_model(self, ctx, agent_name: str, key: str | None) -> str | None:
         """Put a name off the /subagents menu on it, resolved the way /btw resolves one.
 
-        Harness's own key check then runs unchanged. A delegate restricted to
-        some keys is left for that check to refuse, without resolving anything.
+        Returns the key to delegate with: a bare name qualified with the
+        provider of the session's model (`ctx.model`) when that provider has
+        it, so it matches a /subagents key of the same name and a later
+        /model switch never reuses another provider's entry. Harness's own key
+        check then runs unchanged. A delegate restricted to some keys is left
+        for that check to refuse, without resolving anything.
         """
+        if key is None:
+            return None
+        from pcode.models import qualify_model
+
+        session = getattr(ctx, "model", None)
+        # Reads the catalog and preferences from disk.
+        key = await asyncio.to_thread(qualify_model, key, session)
         sub_agent = self._agents.get(agent_name)
-        if key is None or key in self._models or sub_agent is None or sub_agent.models:
-            return
+        if key in self._models or sub_agent is None or sub_agent.models:
+            return key
         from pydantic_ai_harness.sub_agents import ModelOption
 
         from pcode.agent import worker_model
 
         try:
             # Reads logins and preferences from disk.
-            chosen = await asyncio.to_thread(worker_model, key)
+            chosen = await asyncio.to_thread(worker_model, key, session)
         except ValueError as error:
             raise ModelRetry(str(error)) from error
         except Exception as error:
@@ -282,6 +296,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             raise ModelRetry(f"Cannot use {key}: {type(error).__name__}: {error}") from error
         # Kept for later delegations in this session; the schema never lists it.
         self._models[key] = ModelOption(chosen.model, settings=chosen.settings)
+        return key
 
     async def delegate_task(
         self,
@@ -387,7 +402,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         return result
 
     async def _delegate(self, ctx, agent_name, task, workspace_mode, model):
-        await self._add_model(agent_name, model)
+        model = await self._add_model(ctx, agent_name, model)
         isolated = workspace_mode == "isolated" or (
             workspace_mode == "auto" and agent_name == "worker" and isolation_enabled()
         )

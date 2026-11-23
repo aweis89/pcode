@@ -212,6 +212,66 @@ def model_catalog(providers: set[str], current: str | None = None) -> list[str]:
     )
 
 
+def session_provider(model) -> str:
+    """The pcode provider of a session's model: a `provider:name` string or a model object.
+
+    A model object's `system` is its provider's name, which matches the prefix
+    it was chosen under for every provider bare names can resolve against.
+    "" when there is no model or its provider is not one pcode knows.
+    """
+    if model is None:
+        return ""
+    provider = (
+        model.partition(":")[0]
+        if isinstance(model, str)
+        else str(getattr(model, "system", "") or "")
+    )
+    return provider if provider in PROVIDERS else ""
+
+
+def has_provider(name: str) -> bool:
+    """Whether `name` names its provider, as in `claude:claude-opus-5-5`.
+
+    Model ids can hold `:` themselves (`llama3:8b`), so only a known provider
+    before the first one counts.
+    """
+    return name.partition(":")[0] in PROVIDERS
+
+
+def provider_models(provider: str) -> list[str]:
+    """The catalog's names under `provider`, without the prefix; [] when it has no catalog."""
+    prefix = f"{provider}:"
+    return [
+        name.removeprefix(prefix)
+        for name in sorted(model_catalog({provider}), key=model_sort_key)
+        if name.startswith(prefix)
+    ]
+
+
+def qualify_model(name: str, session=None) -> str:
+    """`name` with the session's provider when it was given bare, else as given.
+
+    A name that names its provider is never rewritten. A bare one becomes
+    `<session provider>:<name>` when the catalog lists it there, when it is
+    the session's own model, or when that provider has no catalog and takes
+    any id (openrouter, ollama...). Anything
+    else comes back unchanged for the usual inference to try. Reads no
+    credentials, so it is safe before a model is resolved. `session` is the
+    session's model, as for `session_provider`.
+    """
+    name = name.strip()
+    if not name or has_provider(name):
+        return name
+    provider = session_provider(session)
+    if not provider:
+        return name
+    qualified = f"{provider}:{name}"
+    if qualified in (session, getattr(session, "model_id", None)):
+        return qualified
+    known = provider_models(provider)
+    return qualified if not known or name in known else name
+
+
 def model_sort_key(name: str):
     """Group providers/families alphabetically, then numeric versions newest first.
 

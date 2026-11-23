@@ -800,6 +800,7 @@ def _delegation_schema(schema: dict, ctx: RunContext[Any] | None = None) -> dict
         "description": (
             "Optional model to run the sub-agent on, as provider:model"
             + (f", such as: {offered}." if offered else ".")
+            + " A bare model name (no provider:) resolves against the session's provider first."
             + default_note
         ),
     }

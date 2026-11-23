@@ -3850,6 +3850,7 @@ class SessionController:
         Bare `/btw` reads the answers.
         """
         models, question = parse_models(argument)
+        models = list(dict.fromkeys(self.qualified(target) for target in models))
         if not question:
             if not self.asides.items:
                 raise ValueError(
@@ -3871,6 +3872,22 @@ class SessionController:
         for target in models:
             self.check_effort(target)
         await self.start_aside(question, models)
+
+    def qualified(self, target: SideTarget) -> SideTarget:
+        """`target` with a bare model name put under this session's provider.
+
+        Done before anything else reads the name, so `$NAME` for the
+        conversation's own model shares its cache and its effort is judged on
+        the real provider. See `pcode.models.qualify_model`; `side_model`
+        applies the same rule and its fallback to anything still bare.
+        """
+        from dataclasses import replace
+
+        from pcode.models import qualify_model
+
+        if not target.model:
+            return target
+        return replace(target, model=qualify_model(target.model, self.model))
 
     def check_effort(self, target: SideTarget) -> None:
         """Refuse an effort the way /effort refuses it, before anything starts.
@@ -3900,7 +3917,7 @@ class SessionController:
         from pcode.agent import side_model, with_effort
 
         if target.model not in ("", self.model):
-            resolved = await asyncio.to_thread(side_model, target.model, target.effort)
+            resolved = await asyncio.to_thread(side_model, target.model, target.effort, self.model)
             return {"model": resolved}
         if not target.effort:
             return {}
@@ -3998,6 +4015,7 @@ class SessionController:
         target is unusable, which the viewer shows as is.
         """
         models, question = parse_models(question)
+        models = [self.qualified(target) for target in models]
         if len(models) > 1:
             raise ValueError("A follow-up asks one model; start a new /btw to ask several.")
         follows = self.asides.follows(thread)

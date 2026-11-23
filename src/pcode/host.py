@@ -773,7 +773,7 @@ class SessionHost:
                 options = {}
                 if chosen_model:
                     name, effort = split_effort(chosen_model)
-                    target = SideTarget(name, effort)
+                    target = controller.qualified(SideTarget(name, effort))
                     controller.check_effort(target)
                     options = await controller.target_options(target)
                 reply = await runtime.aside(cleaned, **options)
