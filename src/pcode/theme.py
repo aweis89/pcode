@@ -346,7 +346,7 @@ def _query_background(
                     )
                 if not fenced and chunk == b"c":
                     fenced = _FENCE_REPLY.search(response) is not None
-            if fence:
+            if fence and fenced:
                 response[:] = _FENCE_REPLY.sub(b"", response, count=1)
             if glide_query:
                 _glide_protocol = None
