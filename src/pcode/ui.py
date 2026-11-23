@@ -2387,7 +2387,10 @@ class TerminalOutput:
         # before the next submitted prompt (`begin_turn`) once it is rendered.
         self.marks = False
         self.park = False
-        self._park_next = False
+        # The submitted prompt's write, whose turn row takes the park.
+        self._park_entry = None
+        # The turn ended: once its last rows are written, end its park.
+        self._park_off = False
 
     def regenerate(self, replay) -> None:
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
@@ -2405,8 +2408,23 @@ class TerminalOutput:
     def begin_turn(self, prompt: str) -> None:
         # The live row shows the running tool, not the prompt, so the quote goes
         # to scrollback as soon as the turn starts rather than waiting for output.
-        self._park_next = self.park
+        self._park_off = False
+        start = len(self.pending)
         self.commit_user(prompt)
+        # The park belongs to this prompt's own write, not to whichever turn
+        # row is queued next (a steering prompt still pending, say).
+        self._park_entry = (
+            next(
+                (
+                    entry
+                    for entry in self.pending[start:]
+                    if any(isinstance(obj, TaskPrompt) for obj in entry[0])
+                ),
+                None,
+            )
+            if self.park
+            else None
+        )
 
     def user(self, prompt: str) -> None:
         self.print()
@@ -2420,6 +2438,7 @@ class TerminalOutput:
     def end_turn(self) -> None:
         self.finish_thinking(complete=True)
         self.finish()
+        self._park_off = self.park
 
     def _commit(self, source: str) -> None:
         if source.strip():
@@ -2536,7 +2555,7 @@ class TerminalOutput:
         self.transient_pending = []
         if replay:
             # A submitted prompt not yet written is in the replay: no park for it.
-            self._park_next = False
+            self._park_entry = None
         pieces = [
             (entry, piece, self.typed and not replay and typed_prose(entry[0]))
             for entry, piece in zip(pending, self._render(pending, width), strict=True)
@@ -2548,21 +2567,25 @@ class TerminalOutput:
             for part in split_rows(piece):
                 text, typed = text + part, typed and piece_typed
                 if text.endswith("\n"):
-                    self._queue_row(text, typed)
+                    self._queue_row(text, typed, entry)
                     text, typed = "", True
             if any(entry is note for note in transient):
                 # Its last character is in the open row, or the one just closed.
                 last = len(self.rows) + (1 if text else 0)
                 self._queued_transient.append((entry, self._row_base + last))
         if text:
-            self._queue_row(text, typed)
+            self._queue_row(text, typed, pieces[-1][0])
 
-    def _queue_row(self, text: str, typed: bool) -> None:
+    def _queue_row(self, text: str, typed: bool, entry) -> None:
         """Queue one rendered row, its reader-mode sentinel taken out into ``mark``."""
         text, mark = take_mark(text)
-        park = self._park_next and mark == smooth_scroll.MARK_TURN
+        park = (
+            self._park_entry is not None
+            and entry is self._park_entry
+            and mark == smooth_scroll.MARK_TURN
+        )
         if park:
-            self._park_next = False
+            self._park_entry = None
         self.rows.append(QueuedRow(text, typed, mark, park))
 
     def _row_text(self, row: QueuedRow) -> str:
@@ -2578,7 +2601,9 @@ class TerminalOutput:
         pieces = []
         previous_file = self.console._file
         try:
-            with self.console.use_theme(self.rich_theme()), marking():
+            # Only a terminal that takes marks gets sentinels: everyone else
+            # renders exactly as before.
+            with self.console.use_theme(self.rich_theme()), marking(self.marks):
                 for objects, end, soft_wrap in entries:
                     self.console.file = rendered = StringIO()
                     with self.console:
@@ -2688,7 +2713,11 @@ class TerminalOutput:
                         self._written(due)
                         self._typed = typed
                         counter = RowCounter(self.console.file)
-                        counter.write("".join(self._row_text(row) for row in chunk))
+                        written = "".join(self._row_text(row) for row in chunk)
+                        if self._park_off and not self.rows and not self.pending:
+                            written += smooth_scroll.PARK_OFF
+                            self._park_off = False
+                        counter.write(written)
                         counter.flush()
                         handoff.rows_written = counter.rows
                         scrolled = self._scrolled(drawn, counter.rows)
@@ -4827,7 +4856,12 @@ class Transcript:
             detect_theme(
                 probe_width=probe_width,
                 probe_cursor=probe_cursor,
-                probe_glide=probe_glide and self.smooth_scroll == "auto",
+                # Reader mode marks need the answer too, glide or not.
+                probe_glide=probe_glide
+                and (
+                    self.smooth_scroll == "auto"
+                    or preferences.get("reader_park", SETTINGS["reader_park"].default) == "on"
+                ),
                 # Asked whatever `popup_view` says, so turning it on needs no restart.
                 probe_drawer=probe_glide,
                 probe_kitty=probe_glide

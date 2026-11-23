@@ -4,6 +4,7 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -570,6 +571,7 @@ def test_render_tags_the_first_row_of_a_turn_a_code_block_and_a_diff():
 
     transcript = view()
     output = TerminalOutput(transcript.console, SimpleNamespace(output=DummyOutput()))
+    output.marks = True
     edit = EditTranscript(EditCompleted("1", "x.py", "edited", DIFF, added=1, removed=1))
     entries = [
         ((TaskPrompt("TASK"),), "\n", False),
@@ -591,6 +593,24 @@ def test_render_tags_the_first_row_of_a_turn_a_code_block_and_a_diff():
     queued = "".join(row.text for row in output.rows)
     assert SENTINEL not in queued and SENTINEL not in console.file.getvalue()
     assert queued == console.file.getvalue()
+
+
+@pytest.mark.parametrize("marks", [True, False])
+def test_marks_leave_thinking_code_blocks_as_they_were(marks):
+    from pcode.thinking_markdown import ThinkingMarkdown
+
+    transcript = view()
+    output = TerminalOutput(transcript.console, SimpleNamespace(output=DummyOutput()))
+    output.marks = marks
+    entries = [((ThinkingMarkdown("Plan:\n\n```py\nx = 1\n```\n\nDone.\n"),), "", False)]
+    output._enqueue(entries, 80)
+    # No jump targets in reasoning, and no extra padding row kept for one.
+    assert not any(row.mark for row in output.rows)
+    console = Console(file=StringIO(), width=80, color_system=None)
+    with console.use_theme(output.rich_theme()):
+        for objects, end, _ in entries:
+            console.print(*objects, end=end)
+    assert "".join(row.text for row in output.rows) == console.file.getvalue()
 
 
 def test_consoles_outside_the_transcript_never_see_the_sentinel():
@@ -649,6 +669,37 @@ def test_park_is_only_for_a_submitted_turn_and_not_replayed(monkeypatch):
         transcript.user("STEER")
         await output.flush()
         assert smooth_scroll.PARK not in transcript.console.file.getvalue()
+
+    asyncio.run(run())
+
+
+def test_park_goes_to_the_submitted_prompt_not_a_pending_one(monkeypatch):
+    async def run():
+        transcript, output, smooth_scroll = marked_output(monkeypatch)
+        # A steering prompt still queued when the turn starts.
+        transcript.user("STEER")
+        output.begin_turn("NEW")
+        await output.flush()
+        written = transcript.console.file.getvalue()
+        assert written.count(smooth_scroll.PARK) == 1
+        assert smooth_scroll.PARK not in written.split("NEW")[0].split("STEER")[0]
+        assert smooth_scroll.PARK in written.split("STEER")[1]
+
+    asyncio.run(run())
+
+
+def test_park_ends_once_the_turn_is_written(monkeypatch):
+    async def run():
+        transcript, output, smooth_scroll = marked_output(monkeypatch)
+        output.begin_turn("NEW")
+        await output.flush()
+        assert smooth_scroll.PARK_OFF not in transcript.console.file.getvalue()
+        output.delta("A short answer.\n")
+        output.end_turn()
+        await output.flush(drain=True)
+        written = transcript.console.file.getvalue()
+        assert written.endswith(smooth_scroll.PARK_OFF)
+        assert written.count(smooth_scroll.PARK_OFF) == 1
 
     asyncio.run(run())
 

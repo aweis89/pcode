@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from rich.segment import Segment
 
 from pcode.markdown import Markdown
+from pcode.row_marks import marking
 from pcode.terminal_text import safe_text
 
 
@@ -29,7 +30,11 @@ class ThinkingMarkdown:
         # also pads lists/code with blank rows; don't double those on replay.
         pending_blank = False
         rendered = False
-        for line in Segment.split_lines(console.render(markdown, options)):
+        # Code in reasoning is not somewhere to jump to; its mark would also
+        # keep the padding row the folding below drops.
+        with marking(False):
+            lines = list(Segment.split_lines(console.render(markdown, options)))
+        for line in lines:
             if not any(segment.text.strip() for segment in line):
                 pending_blank = rendered
                 continue

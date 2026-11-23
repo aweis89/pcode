@@ -64,6 +64,9 @@ MARK_BLOCK = 2
 # Arms a park: the next turn mark binds to it, and once that row scrolls off
 # the top the terminal stops following output there and enters reader mode.
 PARK = "\x1b_smooth;park\x1b\\"
+# The turn's rows are all written: a park that never came due is dropped, so
+# later output cannot park at an old prompt.
+PARK_OFF = "\x1b_smooth;park;off\x1b\\"
 
 
 def mark(kind: int) -> str:
