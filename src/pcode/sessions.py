@@ -78,6 +78,11 @@ def session_root() -> Path:
     return state / "pcode" / "sessions"
 
 
+def _unsaved_workers(directory: str, names: list[str]) -> list[str]:
+    """What a fork leaves out of `workers/`: half-written temporaries and symlinks."""
+    return [n for n in names if n.startswith(".") or (Path(directory) / n).is_symlink()]
+
+
 def private_file(path: Path) -> None:
     fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
@@ -979,7 +984,7 @@ class SavedSession(SessionJournal):
             # replaced whole when written, so a copy never sees one torn.
             workers = source / "workers"
             if workers.is_dir() and not workers.is_symlink():
-                shutil.copytree(workers, directory / "workers", ignore=shutil.ignore_patterns(".*"))
+                shutil.copytree(workers, directory / "workers", ignore=_unsaved_workers)
             stamp = now()
             info = info.model_copy(
                 update={

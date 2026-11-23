@@ -325,11 +325,27 @@ def test_an_attached_hub_numbers_after_saved_workers_and_forgets_on_switch(tmp_p
     assert fresh.claim("c3", {"agent_name": "worker"}).id == "w2"  # w2 never finished.
     assert fresh.get("w1").task == "A" and fresh.total_tokens() == 0
 
+    other = WorkerHub()
+    other.attach(tmp_path / "b")
+    theirs = other.claim("b1", {"agent_name": "worker", "task": "B's"})
+    theirs.status, theirs.tokens = "done", 50
+    other.save(theirs)
+
+    # A switch detaches the running w2: reachable by its call, not by its id.
     hub.attach(tmp_path / "b")
-    assert hub.handles() == [running]
-    with pytest.raises(ModelRetry, match="Known workers: w2"):
-        hub.require("w1")
-    assert hub.claim("c4", {"agent_name": "worker"}).id == "w3"
+    assert hub.handles() == [] and hub.for_call("c2") is running
+    assert hub.get("w1").task == "B's" and hub.total_tokens() == 0
+    with pytest.raises(ModelRetry, match="Known workers: w1"):
+        hub.require("w2")
+    assert hub.claim("c4", {"agent_name": "worker"}).id == "w2"
+    # The detached worker saves with the session that started it.
+    running.status = "done"
+    hub.save(running)
+    assert (tmp_path / "a" / "workers" / "w2.json").is_file()
+    assert json.loads((tmp_path / "b" / "workers" / "w1.json").read_text())["task"] == "B's"
+    # Switching away after loading never takes the budget below zero.
+    hub.attach(tmp_path / "a")
+    assert hub.total_tokens() == 0 and hub.for_call("c2") is None
     assert hub.get("../a/workers/w1") is None
 
 

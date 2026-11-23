@@ -173,6 +173,9 @@ class WorkerHandle:
     previous: tuple | None = None
     # Whether `delegate_task` got as far as running it since the last claim.
     started: bool = False
+    # `<session>/workers` it belongs to, fixed at claim so a worker still running
+    # across `/new` or `/resume` is saved with the session that started it.
+    directory: Path | None = None
     # Dedicated `AntigravityModel(worker=True)` for this worker, reused across `continue_worker`.
     worker_model: Any = None
     # Liveness for `manage_worker(action='list')`, as `monotonic()` times. Without
@@ -260,7 +263,8 @@ class WorkerHub:
 
     def __init__(self) -> None:
         self._handles: dict[str, WorkerHandle] = {}
-        self._by_call: dict[str, str] = {}
+        # By delegate call, including running workers detached by a session switch.
+        self._by_call: dict[str, WorkerHandle] = {}
         self._count = 0
         self._claims = 0
         self._trimmed_tokens = 0
@@ -271,16 +275,22 @@ class WorkerHub:
         """Save finished workers under this session, and resume them from it.
 
         Called each turn, since `/new` and `/resume` change the session. A
-        switch forgets the old session's finished workers (they are saved
-        there) and numbers new workers after the ones this session saved.
+        switch forgets the old session's workers: finished ones are saved
+        there, and running ones stay reachable only through their delegate
+        call, so their ids cannot shadow this session's and they save to
+        their own session when they settle. Token spend restarts with it.
         """
         directory = session_directory / "workers" if session_directory is not None else None
         if directory == self._directory:
             return
         if self._directory is not None:
-            for handle in [h for h in self._handles.values() if not h.running]:
-                self._forget(handle)
-            self._count = max((_number(h.id) for h in self._handles.values()), default=0)
+            # Workers detached by an earlier switch that have settled since.
+            for handle in {*self._by_call.values()} - {*self._handles.values()}:
+                if not handle.running:
+                    self._forget_detached(handle)
+            for handle in list(self._handles.values()):
+                self._forget(handle, detach=handle.running)
+            self._count = self._trimmed_tokens = 0
         self._directory = directory
         self._count = max(self._count, *(_number(i) for i in self._saved_ids()), 0)
 
@@ -302,20 +312,23 @@ class WorkerHub:
         return handle
 
     def save(self, handle: WorkerHandle) -> None:
-        """Write a settled worker to the attached session; a failure only logs."""
-        if self._directory is None or handle.running:
+        """Write a settled worker to its session; a failure only logs."""
+        if (directory := handle.directory) is None or handle.running:
             return
         data: dict[str, Any] = {name: getattr(handle, name) for name in SAVED_FIELDS}
         # An isolated worker cannot be resumed, so only its report is worth keeping.
         messages = handle.messages if handle.workspace_mode != "isolated" else []
-        path = self._directory / f"{handle.id}.json"
+        path = directory / f"{handle.id}.json"
         temporary = path.with_name(f".{path.name}.tmp")
         try:
             data["messages"] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
-            self._directory.mkdir(mode=0o700, exist_ok=True)
+            # Not `parents`: a session directory that is gone stays gone.
+            directory.mkdir(mode=0o700, exist_ok=True)
             fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as file:
                 json.dump(data, file)
+                file.flush()
+                os.fsync(file.fileno())
             os.replace(temporary, path)
         except Exception:
             # Losing a resumable history must not fail the delegation that made it.
@@ -327,6 +340,8 @@ class WorkerHub:
         if self._directory is None or not WORKER_ID.fullmatch(worker_id):
             return None
         path = self._directory / f"{worker_id}.json"
+        if path.is_symlink():
+            return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             messages = ModelMessagesTypeAdapter.validate_python(data.get("messages") or [])
@@ -336,13 +351,15 @@ class WorkerHub:
         except Exception:
             logger.warning("Could not load worker %s from %s", worker_id, path, exc_info=True)
             return None
-        if handle.id != worker_id or handle.running:
+        if handle.id != worker_id or handle.running or not isinstance(handle.tokens, int):
             return None
         handle.messages = list(messages)
+        handle.directory = self._directory
         # Its earlier tokens were spent before this process; only new ones count.
+        # Evened out again when it is trimmed or forgotten.
         self._trimmed_tokens -= handle.tokens
         self._handles[handle.id] = handle
-        self._trim()
+        self._trim(keep=handle)
         return handle
 
     def _saved_ids(self) -> list[str]:
@@ -355,8 +372,7 @@ class WorkerHub:
         return [name for name in names if WORKER_ID.fullmatch(name)]
 
     def for_call(self, call_id: str) -> WorkerHandle | None:
-        worker_id = self._by_call.get(call_id)
-        return self._handles.get(worker_id) if worker_id else None
+        return self._by_call.get(call_id)
 
     def claim(self, call_id: str, args: dict[str, Any]) -> WorkerHandle:
         """The handle for this delegate call, created or resumed on its first claim.
@@ -393,7 +409,7 @@ class WorkerHub:
             if handle.agent != agent:
                 raise ModelRetry(f"Worker {handle.id} is a {handle.agent!r}; use that agent_name.")
             # The previous call no longer names it, so its row stops updating.
-            self._by_call = {c: w for c, w in self._by_call.items() if w != handle.id}
+            self._unmap(handle)
             handle.previous = (handle.status, handle.review, handle.review_note, handle.call_id)
             handle.resume_from = handle.messages
             handle.status = "running"
@@ -402,7 +418,9 @@ class WorkerHub:
             handle.cancel = None
         else:
             self._count += 1
-            handle = WorkerHandle(id=f"w{self._count}", call_id=call_id, agent=agent)
+            handle = WorkerHandle(
+                id=f"w{self._count}", call_id=call_id, agent=agent, directory=self._directory
+            )
             self._handles[handle.id] = handle
             self._trim()
         handle.claimed = self._claims
@@ -412,7 +430,7 @@ class WorkerHub:
         handle.purpose = str(args.get("purpose") or "")
         handle.plan_step = str(args.get("plan_step") or "")
         handle.model = str(args.get("model") or "")
-        self._by_call[call_id] = handle.id
+        self._by_call[call_id] = handle
         return handle
 
     def release(self, handle: WorkerHandle) -> None:
@@ -420,28 +438,36 @@ class WorkerHub:
 
         A new worker is forgotten; a continued one gets back the state it had.
         """
-        self._by_call = {c: w for c, w in self._by_call.items() if w != handle.id}
+        self._unmap(handle)
         handle.resume_from = None
         if handle.previous is None:
             self._handles.pop(handle.id, None)
             return
         handle.status, handle.review, handle.review_note, handle.call_id = handle.previous
         handle.previous = None
-        self._by_call[handle.call_id] = handle.id
+        self._by_call[handle.call_id] = handle
 
-    def _trim(self) -> None:
-        finished = [h for h in self._handles.values() if not h.running]
+    def _trim(self, keep: WorkerHandle | None = None) -> None:
+        finished = [h for h in self._handles.values() if not h.running and h is not keep]
         for handle in finished[: max(0, len(self._handles) - HISTORY)]:
             # Forgotten workers still count against a token budget.
             self._trimmed_tokens += handle.tokens
             self._forget(handle)
 
-    def _forget(self, handle: WorkerHandle) -> None:
+    def _forget(self, handle: WorkerHandle, *, detach: bool = False) -> None:
+        """Drop a worker by id; `detach` keeps a running one reachable by its call."""
+        del self._handles[handle.id]
+        if not detach:
+            self._forget_detached(handle)
+
+    def _forget_detached(self, handle: WorkerHandle) -> None:
         if handle.worker_model is not None:
             handle.worker_model.retire()
             handle.worker_model = None
-        del self._handles[handle.id]
-        self._by_call = {c: w for c, w in self._by_call.items() if w != handle.id}
+        self._unmap(handle)
+
+    def _unmap(self, handle: WorkerHandle) -> None:
+        self._by_call = {c: h for c, h in self._by_call.items() if h is not handle}
 
     def has_undelivered(self) -> bool:
         return any(
