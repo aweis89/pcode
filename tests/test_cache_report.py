@@ -527,3 +527,19 @@ def test_antigravity_delegated_workers_scored_by_session_id(tmp_path):
     assert len(delegated) == 1
     assert delegated[0].level == "ok"
     assert "1/1 eligible turns" in delegated[0].message
+
+
+def test_antigravity_legacy_short_first_turn_still_scores_later_turns(tmp_path):
+    """A pre-context_used session starting below MIN_CACHEABLE_INPUT still scores once it grows."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000011",
+        [
+            _ag_response(0, read=0, total=500, context_used=None),
+            _ag_response(1, read=0, total=50_000, context_used=None),
+            _ag_response(2, read=48_000, total=52_000, context_used=None),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "1/1 eligible turns" in report.findings[0].message

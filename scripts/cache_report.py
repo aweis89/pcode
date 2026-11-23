@@ -378,7 +378,7 @@ def _turn_aggregated_reuse_finding(timeline: Sequence[Request]) -> Finding | Non
             # Always track the actual ending context fill so compaction drops
             # and legacy-to-modern transitions update the baseline accurately.
             seen_prefix[key] = request.context_used
-        elif key not in seen_prefix and request.total_input > 0:
+        elif prior < MIN_CACHEABLE_INPUT and request.total_input > prior:
             seen_prefix[key] = request.total_input
     if not eligible:
         return None
