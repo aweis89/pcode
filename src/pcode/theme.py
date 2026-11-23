@@ -116,6 +116,13 @@ def native_completion_supported() -> bool:
     return _popup_protocol is not None and _popup_protocol >= drawer.COMPLETE_PROTOCOL
 
 
+def native_toast_supported() -> bool:
+    """Whether that terminal also shows brief confirmations as toasts (`drawer.toast`)."""
+    from pcode import drawer
+
+    return _popup_protocol is not None and _popup_protocol >= drawer.TOAST_PROTOCOL
+
+
 def kitty_graphics_supported() -> bool:
     """Whether the startup probe confirmed Kitty graphics support."""
     return _kitty_graphics is True

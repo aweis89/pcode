@@ -3430,6 +3430,10 @@ class PromptLayout:
         self.native_style: tuple[object, dict[str, str]] | None = None
         # The completions the terminal's list last showed.
         self.native_completions: list | None = None
+        # Whether the terminal shows notices as toasts (`drawer.toast`), and the
+        # notice last sent: (text, expiry).
+        self.native_toasts = self._native_toasts()
+        self.toast_sent: tuple[str, float] | None = None
         self.frame: Container | None = None  # set by `editor_frame()`
         self.menu = CompletionsMenu(
             max_height=20,
@@ -3716,6 +3720,8 @@ class PromptLayout:
     @_per_render
     def notice_rows(self):
         """Freeze the expiring notice for this render so height matches content."""
+        if self.native_toasts:
+            return []  # The terminal shows it (`sync_native_toast`).
         width = self.size().columns - 1
         return self.activity.notice_rows(width)
 
@@ -4592,7 +4598,8 @@ class PromptLayout:
             or self.startup_border_active()
             # Keep redrawing while a notice is live: nothing else will ask for
             # the frame that finally removes it.
-            or activity.notice_shown
+            # A toast fades by itself.
+            or (activity.notice_shown and not self.native_toasts)
             or activity.asides_running
             or bool(activity.waits)
             or (activity.tasks_shown and activity.tools.animating)
@@ -4645,6 +4652,7 @@ class PromptLayout:
             self.animation_task.cancel()
             self.animation_task = None
         self.sync_native_menu(app)
+        self.sync_native_toast(app)
         self.replay_after_menu(app)
         self.refill_after_shrink(app)
 
@@ -4703,6 +4711,29 @@ class PromptLayout:
                 style=self._native_style(app),
             )
         )
+
+    def _native_toasts(self) -> bool:
+        from pcode.preferences import overlay_popups
+        from pcode.theme import native_toast_supported
+
+        return self.transcript is not None and native_toast_supported() and overlay_popups()
+
+    def sync_native_toast(self, app) -> None:
+        """Show the terminal each new notice once, as a toast over the editor."""
+        from pcode.drawer import toast
+
+        activity = self.activity
+        if not self.native_toasts or app.is_done or not activity.notice_shown:
+            return
+        notice = (activity.notice, activity.notice_expires)
+        if notice == self.toast_sent:
+            return
+        self.toast_sent = notice
+        place = self._native_place(app)
+        seconds = activity.notice_expires - monotonic()
+        rows = place[1] if place else 0
+        app.output.write_raw(toast(activity.notice, rows_above=rows, seconds=seconds))
+        app.output.flush()
 
     def _native_place(self, app):
         """The cursor, and rows from the editor box's top to it; None if the editor isn't drawn."""
