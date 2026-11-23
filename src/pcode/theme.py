@@ -109,6 +109,13 @@ def native_pick_supported() -> bool:
     return _popup_protocol is not None and _popup_protocol >= drawer.PICK_PROTOCOL
 
 
+def native_completion_supported() -> bool:
+    """Whether that terminal also draws the editor's completion menu (`native_completions`)."""
+    from pcode import drawer
+
+    return _popup_protocol is not None and _popup_protocol >= drawer.COMPLETE_PROTOCOL
+
+
 def kitty_graphics_supported() -> bool:
     """Whether the startup probe confirmed Kitty graphics support."""
     return _kitty_graphics is True

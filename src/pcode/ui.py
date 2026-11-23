@@ -30,8 +30,9 @@ from prompt_toolkit.layout import (
     VSplit,
     Window,
 )
-from prompt_toolkit.layout.containers import VerticalAlign
+from prompt_toolkit.layout.containers import Container, VerticalAlign
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.layout import walk
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output import Output, create_output
 from prompt_toolkit.renderer import Renderer
@@ -3420,8 +3421,15 @@ class PromptLayout:
         self.thought_max_rows = parse_height(load_preferences().get("thinking_max_lines")) or float(
             THOUGHT_ROWS
         )
+        # The terminal's own completion list, where it draws one (Ghostty Smooth).
+        self.native = self._native_completions()
+        self.native_style: tuple[object, dict[str, str]] | None = None
+        self.frame: Container | None = None  # set by `editor_frame()`
         self.menu = CompletionsMenu(
-            max_height=20, scroll_offset=1, extra_filter=has_focus(session.default_buffer)
+            max_height=20,
+            scroll_offset=1,
+            extra_filter=has_focus(session.default_buffer)
+            & ~Condition(lambda: self.native is not None and self.native.active),
         )
         self.menu.content.dont_extend_height = Always()
         from pcode.btw_view import ThreadView
@@ -4431,6 +4439,8 @@ class PromptLayout:
         editor_frame = Frame(
             self.editor, title=self.idle_title, height=self.frame_height, style="class:shaded"
         )
+        # The terminal's completion list sits above its top row.
+        self.frame = editor_frame.container
         # Replace only the bottom border: the badge must not add a row or alter CPR sizing.
         editor_frame.container.children[-1] = VSplit(
             [
@@ -4628,8 +4638,93 @@ class PromptLayout:
         elif self.animation_task is not None:
             self.animation_task.cancel()
             self.animation_task = None
+        self.sync_native_menu(app)
         self.replay_after_menu(app)
         self.refill_after_shrink(app)
+
+    # The completion menu, where the terminal draws it (`native_completions`).
+
+    def _native_completions(self):
+        from pcode.native_completions import NativeCompletions
+        from pcode.preferences import overlay_popups
+        from pcode.theme import native_completion_supported
+
+        if self.transcript is None or not native_completion_supported() or not overlay_popups():
+            return None
+
+        def write_raw(text: str) -> None:
+            output = self.session.app.output
+            output.write_raw(text)
+            output.flush()
+
+        native = NativeCompletions(write_raw, self.accept_native_completion)
+        native.on_change = lambda: self.session.app.invalidate()
+        return native
+
+    def sync_native_menu(self, app) -> None:
+        """Show the terminal the editor's completion menu as just drawn, or hide it."""
+        from pcode.native_completions import menu_message, start_column, window_offset
+
+        native = self.native
+        if native is None:
+            return
+        # Opened as the editor first draws, so it is ready by the first `/`.
+        native.connect()
+        if not native.active:
+            return
+        buffer = self.session.default_buffer
+        state = buffer.complete_state
+        dy = None
+        if state is not None and state.completions and app.layout.has_focus(buffer):
+            dy = self._native_rows_above(app)
+        if state is None or dy is None or app.is_done:
+            native.hide()
+            return
+        selected = state.complete_index
+        native.offset = window_offset(native.offset, selected, len(state.completions))
+        completion = state.current_completion or state.completions[0]
+        native.show(
+            menu_message(
+                state.completions,
+                selected,
+                native.offset,
+                dx=start_column(buffer.document, completion),
+                dy=dy,
+                style=self._native_style(app),
+            )
+        )
+
+    def _native_rows_above(self, app) -> int | None:
+        """Rows from the editor box's top to the cursor's, or None while the editor isn't drawn."""
+        screen = app.renderer._last_screen
+        cursor = screen.cursor_positions.get(self.editor) if screen is not None else None
+        if cursor is None:
+            return None
+        positions = screen.visible_windows_to_write_positions
+        tops = [
+            positions[window].ypos
+            for window in (walk(self.frame) if self.frame is not None else ())
+            if window in positions
+        ]
+        return max(0, cursor.y - min(tops)) if tops else 0
+
+    def _native_style(self, app) -> dict[str, str]:
+        from pcode.pick_ui import native_style
+
+        key = app.style.invalidation_hash()
+        if self.native_style is None or self.native_style[0] != key:
+            self.native_style = (key, native_style(app.style))
+        return self.native_style[1]
+
+    def accept_native_completion(self, index: int) -> None:
+        """A row of the terminal's list was clicked: take it, as Enter on it would."""
+        buffer = self.session.default_buffer
+        state = buffer.complete_state
+        if state is None or not 0 <= index < len(state.completions):
+            return
+        buffer.go_to_completion(index)
+        buffer.complete_state = None
+        self.session.app.invalidate()
 
     def layout_gap(self, app) -> int:
         """Blank rows above the layout that scrolled-away transcript used to fill.

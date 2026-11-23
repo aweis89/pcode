@@ -18,6 +18,11 @@ Commands are grouped the same way `/help` lists them. See [Keys and layout](#key
 Type `/` to open the command menu, then narrow it by typing. Use Tab or the
 arrow keys to choose. Enter accepts a selected completion; another Enter runs it.
 
+In Ghostty Smooth (`popup_view auto`), this menu and the `@` file menu float
+over the conversation as a native list instead of being drawn in the terminal,
+so a long menu never scrolls the conversation away. The keys stay the same,
+since the editor keeps the keyboard, and clicking a row accepts it.
+
 - `/help` (or `/commands`): grouped command list and keyboard shortcuts.
 - `/config`: open the searchable settings editor to inspect values and their sources,
   edit user/project defaults, or remove an override. `/config list | diff | path |

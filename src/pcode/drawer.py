@@ -37,6 +37,8 @@ QUERY = b"\x1b_pcode;?\x1b\\"
 POPUP_PROTOCOL = 1
 # A terminal answering this or later also draws pick lists natively (`popup_surface`).
 PICK_PROTOCOL = 2
+# This or later also draws the editor's completion menu (`native_completions`).
+COMPLETE_PROTOCOL = 3
 POPUP_QUERY = b"\x1b_pcode;popup?\x1b\\"
 # Any pcode reply, so a future shape is still kept out of typing.
 REPLY = re.compile(rb"\x1b_pcode;([^\x1b\x07]{0,32})\x1b\\")
