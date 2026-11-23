@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,11 @@ def fake_agy(tmp_path, monkeypatch):
     log = tmp_path / "agy.jsonl"
     monkeypatch.setenv("FAKE_AGY_LOG", str(log))
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    # The fake reports every GEMINI*/GOOGLE* variable it sees; drop the
+    # developer's own so only the synthetic ones below are in play.
+    for name in list(os.environ):
+        if name.startswith(("GEMINI", "GOOGLE")):
+            monkeypatch.delenv(name)
     for name in (
         "GEMINI_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
@@ -1132,7 +1138,7 @@ def test_a_plain_side_job_is_sent_its_instructions_and_its_process_expires(
     assert [block["text"] for block in prompts(fake_agy)[0]] == ["Write a title.", "hello"]
 
 
-def test_side_uses_and_workers_get_sessions_of_their_own():
+def test_side_uses_and_workers_get_sessions_of_their_own(fake_agy):
     from pcode.agent import side_model, subagent_menu, worker_model
     from pcode.compaction import CompactionError, summarize
 
