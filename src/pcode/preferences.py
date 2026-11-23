@@ -547,9 +547,11 @@ SETTINGS = {
         "answer for it (a patched Ghostty) and needs paced_scrollback not off",
     ),
     # Read at launch. Needs Ghostty Smooth's reader mode (protocol 10), which
-    # the smooth_scroll probe asks after.
+    # the smooth_scroll probe asks after. Off by default: a park puts the
+    # terminal in reader mode unasked, so the first letter typed afterwards
+    # runs a reader key (`y` opens the copy chooser) instead of typing.
     "reader_park": Setting(
-        "on",
+        "off",
         ("on", "off"),
         description="In Ghostty Smooth, stop a new answer after its first page so it doesn't "
         "scroll away; read on in reader mode",

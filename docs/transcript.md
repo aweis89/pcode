@@ -395,9 +395,9 @@ and `]` to jump between your prompts, `{` and `}` between code blocks and
 diffs, `g` and `G` to the top and bottom, and `y` to copy a response or
 snippet. The jumps work while `reader_park` is on or `smooth_scroll` is
 `auto`, which is when pcode asks the terminal at launch whether it can mark
-rows. With `reader_park` on (the default), the screen stops following a
-new answer once your prompt reaches the top, so the answer's start stays in
-view, and you read on from there in reader mode.
+rows. With `reader_park` on (it's off by default), the screen stops
+following a new answer once your prompt reaches the top, so the answer's
+start stays in view, and you read on from there in reader mode.
 
 ## Regenerating the terminal transcript
 
