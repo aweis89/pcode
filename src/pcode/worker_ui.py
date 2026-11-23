@@ -22,6 +22,7 @@ from rich.theme import Theme
 from pcode import glyphs
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.markdown import Markdown
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -258,7 +259,7 @@ class WorkerBrowser:
             [
                 top,
                 body,
-                Label(lambda: f"a Answer · m Message · r Report · {shortcuts.summary()}"),
+                popup_bar(shortcuts, "agents"),
             ]
         )
         self.app = Application(

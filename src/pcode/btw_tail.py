@@ -7,7 +7,8 @@ observer, which may call nothing, and draws one thread with
 colors. Settled blocks come out paced as the conversation's do (`paced_scrollback`:
 rolled in by row, or prose typed out). A width change draws the thread again
 at the new width, whole; the only key it reads is Esc (or `q`), which gives
-the keyboard back to pcode's pane.
+the keyboard back to pcode's pane. The keys that answer the thread there go in
+the drawer's footer (`pcode;hints;…`, `popup_hints`).
 """
 
 import asyncio
@@ -24,6 +25,8 @@ from pcode.btw_view import Entry, ThreadWriter, entry
 from pcode.conversation_tree import excerpt
 from pcode.drawer import FOCUS, OBSERVER_VERSION, valid_host
 from pcode.host_protocol import LINE_LIMIT, dumps, read_message, socket_path
+from pcode.popup_hints import Hint, hints, hints_apc
+from pcode.prefix_keys import shortcut_label
 from pcode.tool_display import literal, plain
 from pcode.ui import ESCAPES, Pacer, QueuedRow, split_rows, typed_prose
 
@@ -62,6 +65,8 @@ class Tail:
         self.asides: list[Aside] = []
         self.writer = ThreadWriter()
         self.note = ""
+        # The footer last sent to the drawer (`footer`); None before the first.
+        self._footer: list[Hint] | None = None
         # Pacing needs a loop to time its frames; without one, text lands at once.
         self.loop = loop
         self.paced = loop is not None and transcript.paced_scrollback != "off"
@@ -110,6 +115,18 @@ class Tail:
     def shown(self) -> list[Aside]:
         return [aside for aside in self.asides if aside.thread == self.thread]
 
+    def footer(self) -> list[Hint]:
+        """The keys pcode's editor answers this thread with, as the drawer's footer shows them."""
+        threads = {aside.thread for aside in self.asides}
+        return hints("btw_drawer", label=shortcut_label, state={"others": lambda: len(threads) > 1})
+
+    def _send_footer(self) -> None:
+        footer = self.footer()
+        if footer != self._footer:
+            self._footer = footer
+            self.console.file.write(hints_apc(footer).decode("ascii"))
+            self.console.file.flush()
+
     def draw(self, *, whole: bool = False) -> None:
         thread = self.shown()
         with self.console.use_theme(self.transcript.rich_theme):
@@ -136,6 +153,8 @@ class Tail:
                 else:
                     # The next frame writes the rows; the status row changes now.
                     self._show(0, self._typed)
+        # After the frame, so a whole redraw still starts the output.
+        self._send_footer()
 
     def _queue(self, entries: list[Entry], *, typed: bool) -> None:
         """Render entries into rows to write, marking prose to type out."""
@@ -206,8 +225,7 @@ class Tail:
             (f" {question}", "pcode.btw"),
             (f" · {label}" if label else "", "pcode.muted"),
         )
-        keys = Text("Reply in pcode's editor · Esc back to it", style="pcode.muted")
-        return [entry(title), entry(keys), entry()]
+        return [entry(title), entry()]
 
 
 def _typed_part(text: str, count: int) -> str:

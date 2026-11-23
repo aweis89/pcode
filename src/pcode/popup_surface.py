@@ -27,6 +27,8 @@ The overlay protocol (`ESC _ pcode;… ESC \\`):
     pcode;popup-close;<token>       give up on that popup (it never came, say)
     pcode;ready                     (from the overlay) shown it: focus it
     pcode;title;<base64 utf-8>      (from the overlay) the popup's title, for its header
+    pcode;hints;<base64 json>       (from the overlay, protocol 4) its key hints, for a
+                                    footer below it: `popup_hints.native_hints`, `[]` for none
     pcode;done                      (from the overlay) close it
 
 The token names a socket and an entry file in `popup_dir()`, which this user
@@ -74,7 +76,7 @@ import socket
 import struct
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -94,6 +96,7 @@ from pcode.startup_input import StartupInput
 if TYPE_CHECKING:
     # Imported where used: `pick_ui` draws with `frame`, which imports this module.
     from pcode.pick_ui import Match, PickAction, Picked, PickItem
+    from pcode.popup_hints import Hint
 
 PROTOCOL = 1  # Probed as `drawer.POPUP_QUERY`.
 PICK_HELLO = b"pcode-pick 1\n"
@@ -177,6 +180,17 @@ def set_title(title: str) -> None:
     writer = _overlay_writer(app.output if app is not None else None)
     if writer is not None:
         writer.title = title or writer.opened_title
+
+
+def set_hints(found: "Sequence[Hint]") -> None:
+    """Show `found` in the overlay's footer, if the app being drawn is on one.
+
+    Sent with the next frame, and only when they changed.
+    """
+    app = get_app_or_none()
+    writer = _overlay_writer(app.output if app is not None else None)
+    if writer is not None:
+        writer.hints = tuple(found)
 
 
 def terminal_fds() -> dict[str, Any]:
@@ -375,6 +389,9 @@ class _OverlayWriter:
         # The header's title, sent before the next frame whenever it changes.
         # The one it opened with went in the open request, already shown.
         self.title = self.opened_title = self._sent_title = title
+        # The footer's key hints (`popup_hints`), likewise; it opens with none.
+        self.hints: tuple[Hint, ...] = ()
+        self._sent_hints: tuple[Hint, ...] = ()
 
     def fileno(self) -> int:
         return self.fd
@@ -393,6 +410,10 @@ class _OverlayWriter:
         # Before `ready`, so the popup is shown with its header.
         if self.title != self._sent_title:
             data, self._sent_title = title_apc(self.title) + data, self.title
+        if self.hints != self._sent_hints:
+            from pcode.popup_hints import hints_apc
+
+            data, self._sent_hints = hints_apc(self.hints) + data, self.hints
         deadline = time.monotonic() + _WRITE_TIMEOUT
         while data and not self.gone:
             try:

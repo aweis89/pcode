@@ -29,6 +29,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Label, TextArea
 
 from pcode.frame import Dialog
+from pcode.popup_hints import Hint, hints, native_hints, popup_bar
 from pcode.popup_ui import SearchDebounce, fuzzy_match, popup_container, popup_mouse, popup_style
 from pcode.prefix_keys import PrefixKeys
 
@@ -88,6 +89,20 @@ class Picked:
     id: str | None
     action: str | None = None
     query: str = ""
+
+
+def action_hints(actions: Sequence[PickAction], label: Callable[[str], str]) -> list[Hint]:
+    """The pick list's actions as hints, pressed as `label` says (Ctrl+R, or Cmd+R natively)."""
+    found = []
+    for action in actions:
+        found.append(Hint(label(action.key), action.label))
+        if action.delete:
+            found.append(Hint("Delete", action.label))
+    return found
+
+
+def native_action_label(key: str) -> str:
+    return f"Cmd+{key.upper()}"
 
 
 def key_hints(text: str, label: Callable[[str], str]) -> str:
@@ -229,6 +244,11 @@ def payload(
         "query": query,
         "match": match,
         "custom": custom,
+        "hints": native_hints(
+            hints(
+                "pick", label=native_action_label, extra=action_hints(actions, native_action_label)
+            )
+        ),
         "items": [
             {
                 "id": item.id,
@@ -408,7 +428,11 @@ class PickList:
                                     Label(lambda: self.status, dont_extend_height=True),
                                     filter=Condition(lambda: bool(self.status)),
                                 ),
-                                Label(shortcuts.summary, dont_extend_height=True),
+                                popup_bar(
+                                    shortcuts,
+                                    "pick",
+                                    extra=action_hints(self.actions, shortcuts.label),
+                                ),
                             ],
                             padding=1,
                         ),

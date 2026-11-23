@@ -6,6 +6,7 @@ from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.widgets import Label, TextArea
 
 from pcode.frame import Dialog
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import popup_container, popup_style
 from pcode.prefix_keys import PrefixKeys
 
@@ -46,7 +47,7 @@ class SecretPrompt:
         if detail:
             body.append(Label(detail, dont_extend_height=True))
         body.append(self.field)
-        body.append(Label(shortcuts.summary, dont_extend_height=True))
+        body.append(popup_bar(shortcuts, "secret"))
         dialog = Dialog(title=title, body=HSplit(body, padding=1))
         self.app = Application(
             layout=Layout(popup_container(dialog, shortcuts), focused_element=self.field),

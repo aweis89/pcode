@@ -16,6 +16,7 @@ from rich.text import Text
 
 from pcode import config
 from pcode.frame import Frame, frame_rows
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     RichPane,
     SearchDebounce,
@@ -31,7 +32,7 @@ from pcode.preferences import (
     read_preferences,
     valid_preferences,
 )
-from pcode.prefix_keys import PrefixKeys, compact_label
+from pcode.prefix_keys import PrefixKeys
 
 # Side by side from this width; stacked below it.
 WIDE_COLUMNS = 100
@@ -198,24 +199,6 @@ class ConfigBrowser:
                 parts.append(("dim", note))
             return parts
 
-        def keys_hint():
-            def key(letter):
-                return compact_label(shortcuts.label(letter))
-
-            tab = "Tab Back" if get_app().layout.has_focus(self.detail.window) else "Tab Details"
-            if self.editing:
-                parts = ["Enter Save", "Esc Cancel", tab]
-            else:
-                parts = ["Enter Edit", "Esc Close"]
-                if self.project_path is not None:
-                    parts.append(f"{key('t')} Scope")
-                parts += [f"{key('o')} Overrides", f"{key('r')} Reset", tab]
-            # Drop the least important hints rather than cutting off the help key.
-            room = get_app().output.get_size().columns
-            while parts and len(" · ".join([*parts, shortcuts.summary()])) > room:
-                parts.pop()
-            return " · ".join([*parts, shortcuts.summary()])
-
         def list_title():
             total = sum(
                 self.scope == "user" or key not in USER_ONLY for key in config.listed_settings()
@@ -276,7 +259,14 @@ class ConfigBrowser:
                     wrap_lines=True,
                     style="class:hint.message",
                 ),
-                line(keys_hint, "dim"),
+                popup_bar(
+                    shortcuts,
+                    "config",
+                    state={
+                        "editing": lambda: self.editing,
+                        "details": lambda: get_app().layout.has_focus(self.detail.window),
+                    },
+                ),
             ]
         )
         self.app = Application(

@@ -28,6 +28,7 @@ from pcode.conversation_tree import ConversationTree, TurnNode, excerpt
 from pcode.copy_ui import Snippet, SnippetMarkdown, SnippetPicker, snippets, turn_snippets
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.markdown import Markdown
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -59,6 +60,9 @@ class TreeBrowser:
     browser's keys behind the host's `shortcuts`, and `finish(result)` stands in
     for exiting with that result.
     """
+
+    # Which `popup_hints.POPUPS` entry the bottom row lists.
+    hint_kind = "tree"
 
     def __init__(
         self,
@@ -151,8 +155,16 @@ class TreeBrowser:
             [
                 header,
                 body,
-                Label(shortcuts.summary),
                 Label(self.footer_text()),
+                # Hosted too: the host shows this browser in place of its own layout.
+                popup_bar(
+                    shortcuts,
+                    self.hint_kind,
+                    state={
+                        "picking": lambda: self.picker is not None,
+                        "navigable": lambda: self.navigable,
+                    },
+                ),
             ]
         )
         picker = Frame(
@@ -366,6 +378,8 @@ class CopyBrowser(TreeBrowser):
     text as selected, so the reader sees exactly what leaves the popup.
     The app's result is the chosen `Snippet`, or None.
     """
+
+    hint_kind = "copy"
 
     def __init__(self, tree: ConversationTree, **options) -> None:
         # Filled by `list_rows`, which the base constructor calls.
