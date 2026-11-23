@@ -1432,8 +1432,28 @@ def test_usage_update_used_fallback_when_reply_omits_usage(fake_agy, tmp_path):
     model = AntigravityModel("fake-flash")
     result = run(agent_for(model, tmp_path).run("NO_REPLY_USAGE"))
     response = result.all_messages()[-1]
-    assert response.usage.input_tokens == 42
+    # Context fill lives in `provider_details["context_used"]`, never stuffed
+    # into billing `usage.input_tokens` (which would look like uncached tokens).
+    assert response.usage.input_tokens == 0
+    assert response.provider_details["context_used"] == 42
     assert context_label(model, result.all_messages()) == " · 42/1.05m"
+
+
+def test_continuation_turn_does_not_count_context_used_as_uncached_usage():
+    from pydantic_ai.models import ModelRequestParameters
+
+    from pcode.antigravity import AntigravityStream
+
+    stream = AntigravityStream(
+        model_request_parameters=ModelRequestParameters(),
+        model_id="fake-flash",
+        continuation=True,
+    )
+    list(stream._map({"sessionUpdate": "usage_update", "used": 150_000, "size": 1_048_576}))
+    stream._finish({"stopReason": "end_turn"})
+    assert stream.provider_details == {"stop_reason": "end_turn", "context_used": 150_000}
+    assert stream._usage.input_tokens == 0
+    assert stream._usage.cache_read_tokens == 0
 
 
 def test_usage_update_ignores_malformed_and_handles_idle_updates(monkeypatch):

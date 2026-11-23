@@ -2061,6 +2061,11 @@ class AntigravityStream(StreamedResponse):
             details["context_used"] = self.context_used
         self.provider_details = details or None
         # Each prompt reports its own usage; a steered turn is all of them.
+        # Unsolicited continuation turns (no `session/prompt` reply) or replies
+        # without `usage` leave `_usage` empty instead of copying `context_used`
+        # into `input_tokens`, which would count context fill as uncached billing
+        # tokens with `cache_read_tokens=0`; the context meter reads
+        # `provider_details["context_used"]` directly.
         total = RequestUsage()
         for reply in self.replies:
             if not reply.done() or reply.cancelled() or reply.exception():
@@ -2074,8 +2079,6 @@ class AntigravityStream(StreamedResponse):
                 cache_write_tokens=written,
                 output_tokens=int(usage.get("outputTokens") or 0),
             )
-        if not total.input_tokens and self.context_used:
-            total += RequestUsage(input_tokens=self.context_used)
         self._usage = total
 
     def _map(self, update: dict) -> Iterator[ModelResponseStreamEvent]:

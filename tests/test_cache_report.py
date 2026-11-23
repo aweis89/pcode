@@ -287,3 +287,259 @@ def test_selectors_read_real_session_layout(tmp_path, selector):
     write_session(tmp_path, "aaaaaaaa", healthy=True)
     write_session(tmp_path, "bbbbbbbb", healthy=False)
     assert cache_report.main([selector, "--root", str(tmp_path)]) == 0
+
+
+def _write_antigravity_session(
+    root: Path, identity: str, responses: list[ModelResponse]
+) -> Path:
+    directory = root / identity
+    directory.mkdir(parents=True)
+    write_info(directory, identity, model="antigravity:gemini-4-neon")
+    store = PrivateStepStore(database=directory / "steps.sqlite3")
+    history: list = []
+
+    async def build() -> None:
+        for index, resp in enumerate(responses):
+            history.append(ModelRequest(parts=[UserPromptPart(content=f"turn {index}")]))
+            history.append(resp)
+            await store.save_snapshot(
+                ContinuableSnapshot(run_id="run", step_index=index, messages=list(history))
+            )
+
+    asyncio.run(build())
+    return directory
+
+
+def _ag_response(
+    index: int,
+    *,
+    session_id: str = "agy-sess-1",
+    turn: int | None = None,
+    read: int,
+    total: int,
+    output: int = 500,
+    context_used: int | None = None,
+) -> ModelResponse:
+    details = {"stop_reason": "end_turn"}
+    if context_used is not None:
+        details["context_used"] = context_used
+    return ModelResponse(
+        parts=[TextPart(f"reply {index}")],
+        usage=RequestUsage(
+            input_tokens=total,
+            output_tokens=output,
+            cache_read_tokens=read,
+        ),
+        model_name="gemini-4-neon",
+        provider_name="antigravity",
+        provider_response_id=f"{session_id}#{turn or index + 1}",
+        provider_details=details,
+        timestamp=datetime(2026, 1, 1, 0, index // 60, index % 60, tzinfo=timezone.utc),
+    )
+
+
+def test_antigravity_short_followup_after_long_turn_is_healthy(tmp_path):
+    """A 1-call follow-up after a 50-call turn must not fail against the prior turn's sum."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000001",
+        [
+            _ag_response(0, read=4_200_000, total=4_400_000, context_used=180_000),
+            _ag_response(1, read=182_000, total=185_000, context_used=185_000),
+            _ag_response(2, read=370_000, total=380_000, context_used=192_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "3/3 eligible turns" in report.findings[0].message
+
+
+def test_antigravity_unbilled_continuations_are_excluded(tmp_path):
+    """Both post-fix (input=0) and legacy (input==context_used, read=0, out=0) continuations."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000002",
+        [
+            _ag_response(0, read=150_000, total=160_000, context_used=60_000),
+            # Legacy pre-fix continuation fallback: input == context_used, read=0, out=0.
+            _ag_response(1, read=0, total=65_000, output=0, context_used=65_000),
+            # Post-fix continuation: input=0, read=0, out=0, context_used set.
+            _ag_response(2, read=0, total=0, output=0, context_used=70_000),
+            _ag_response(3, read=142_000, total=145_000, context_used=74_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert len(report.requests) == 2
+    assert report.unbilled_turns == 2
+    assert [f.level for f in report.findings] == ["ok"]
+    assert report.read_share > 0.95
+    assert "unbilled continuations=2" in cache_report.render(report)
+
+
+def test_antigravity_real_cache_miss_still_fails(tmp_path):
+    """A real follow-up turn with output>0 and read=0 is still flagged as a miss."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000003",
+        [
+            _ag_response(0, read=0, total=150_000, output=800, context_used=150_000),
+            _ag_response(1, read=0, total=155_000, output=600, context_used=155_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["fail"]
+    assert "0/1 eligible turns" in report.findings[0].message
+
+
+def test_antigravity_cold_short_multicall_turn_is_healthy(tmp_path):
+    """A cold 2-call turn with 100% reuse on call 2 has <50% raw share but 100% cacheable reuse."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000005",
+        [
+            # Call 1 cold (13,165), call 2 hits 13,165 of 17,760 -> total 30,925, ctx 17,760.
+            _ag_response(0, read=13_165, total=30_925, context_used=17_760),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "1/1 eligible turns" in report.findings[0].message
+
+
+def test_antigravity_interleaved_side_session_does_not_taint_main_session(tmp_path):
+    """A single-call /btw side session starts cold and is not judged against main context."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000004",
+        [
+            _ag_response(
+                0, session_id="main", turn=1, read=300_000, total=350_000, context_used=80_000
+            ),
+            _ag_response(1, session_id="btw", turn=1, read=0, total=40_000, context_used=40_000),
+            _ag_response(
+                2, session_id="main", turn=2, read=162_000, total=166_000, context_used=84_000
+            ),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "2/2 eligible turns" in report.findings[0].message
+
+
+def test_mixed_provider_session_scores_both_groups(tmp_path):
+    """Switching between Anthropic and Antigravity still catches Antigravity misses."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000006",
+        [
+            response(0, read=0, write=4000, total=4000),
+            response(1, read=4000, write=300, total=4300),
+            _ag_response(2, read=0, total=150_000, output=800, context_used=150_000),
+            _ag_response(3, read=0, total=155_000, output=600, context_used=155_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    levels = [f.level for f in report.findings]
+    assert "ok" in levels
+    assert "fail" in levels
+    assert any("0/1 eligible turns" in f.message for f in report.findings)
+
+
+def test_antigravity_compaction_shrinks_prefix_baseline(tmp_path):
+    """After compaction drops context_used, the next turn is judged against the compacted size."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000007",
+        [
+            _ag_response(0, read=1_000_000, total=1_400_000, context_used=400_000),
+            # Compaction happened in-place on the same session_id, leaving 50k context.
+            _ag_response(1, read=45_000, total=50_000, context_used=50_000),
+            # 1-call follow-up with 25k new prompt hitting 100% of the 50k compacted prefix.
+            _ag_response(2, read=50_000, total=75_000, context_used=75_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "3/3 eligible turns" in report.findings[0].message
+
+
+def test_antigravity_legacy_to_modern_context_used_transition(tmp_path):
+    """A legacy turn without context_used must not pin the baseline above later context_used."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000008",
+        [
+            _ag_response(0, read=4_000_000, total=4_400_000, context_used=None),
+            _ag_response(1, read=170_000, total=180_000, context_used=180_000),
+            # Follow-up with 60k new prompt hitting 100% of the 180k context.
+            _ag_response(2, read=180_000, total=240_000, context_used=240_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "2/2 eligible turns" in report.findings[0].message
+
+
+def test_antigravity_unbilled_continuation_advances_prefix_baseline(tmp_path):
+    """Unbilled continuations still update context_used so a subsequent miss is caught."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000009",
+        [
+            _ag_response(0, read=100_000, total=160_000, context_used=60_000),
+            # Unbilled continuation grows context from 60k to 150k.
+            _ag_response(1, read=0, total=0, output=0, context_used=150_000),
+            # Partial cache drop: only 50k of the 150k context reused -> should miss.
+            _ag_response(2, read=50_000, total=155_000, output=500, context_used=155_000),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert report.unbilled_turns == 1
+    assert [f.level for f in report.findings] == ["warn"]
+    assert "1/2 eligible turns" in report.findings[0].message
+
+
+def test_antigravity_delegated_workers_scored_by_session_id(tmp_path):
+    """Delegated Antigravity workers with separate session IDs are scored independently."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000010",
+        [_ag_response(0, session_id="parent", read=300_000, total=350_000, context_used=80_000)],
+    )
+    store = PrivateStepStore(database=directory / "steps.sqlite3")
+    worker_msgs = [
+        ModelRequest(parts=[UserPromptPart(content="w1")]),
+        _ag_response(
+            1, session_id="worker-1", turn=1, read=180_000, total=220_000, context_used=40_000
+        ),
+        ModelRequest(parts=[UserPromptPart(content="w2")]),
+        _ag_response(2, session_id="worker-2", turn=1, read=0, total=40_000, context_used=40_000),
+    ]
+    asyncio.run(
+        store.save_snapshot(
+            ContinuableSnapshot(
+                run_id="child", step_index=0, messages=worker_msgs, parent_run_id="run"
+            )
+        )
+    )
+    report = cache_report.analyze(directory)
+    delegated = [f for f in report.findings if f.message.startswith("delegated:")]
+    assert len(delegated) == 1
+    assert delegated[0].level == "ok"
+    assert "1/1 eligible turns" in delegated[0].message
+
+
+def test_antigravity_legacy_short_first_turn_still_scores_later_turns(tmp_path):
+    """A pre-context_used session starting below MIN_CACHEABLE_INPUT still scores once it grows."""
+    directory = _write_antigravity_session(
+        tmp_path,
+        "ag000011",
+        [
+            _ag_response(0, read=0, total=500, context_used=None),
+            _ag_response(1, read=0, total=50_000, context_used=None),
+            _ag_response(2, read=48_000, total=52_000, context_used=None),
+        ],
+    )
+    report = cache_report.analyze(directory)
+    assert [f.level for f in report.findings] == ["ok"]
+    assert "1/1 eligible turns" in report.findings[0].message
