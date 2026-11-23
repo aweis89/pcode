@@ -216,3 +216,36 @@ def model_sort_key(name: str):
         for part in re.split(r"(\d+)", model)
     )
     return provider, parts
+
+
+# A date snapshot: `-2024-08-06` or a run of six or more digits (`-20250514`).
+_DATE = re.compile(r"[-_.]\d{4}-\d{2}-\d{2}(?=$|[-_./])|(?<![a-z\d])\d{6,}(?![a-z\d])")
+
+
+def _family_and_version(name: str) -> tuple[tuple, tuple[int, ...]]:
+    """`claude-opus-4-5` -> family (provider, claude, opus), version (4, 5).
+
+    Only standalone numbers are versions: `ministral-14b` and `gpt-4o` keep their
+    digits as part of the name, since those are sizes or variants, not releases.
+    """
+    provider, _, model = name.casefold().partition(":")
+    segments = re.split(r"[-_./]", _DATE.sub("", model))
+    family = tuple(part for part in segments if part and not part.isdigit() and part != "latest")
+    version = tuple(int(part) for part in segments if part.isdigit())
+    return (provider, *family), version
+
+
+def latest_models(names: list[str]) -> list[str]:
+    """The newest version of each model family in `names`, in their original order.
+
+    `claude-opus-5-5` drops `claude-opus-4-8` and dated snapshots of either; an
+    undated alias beats a snapshot of the same version.
+    """
+    best: dict[tuple, tuple[tuple[int, ...], int, str]] = {}
+    for name in names:
+        family, version = _family_and_version(name)
+        candidate = (version, -len(name), name)
+        if family not in best or candidate[:2] > best[family][:2]:
+            best[family] = candidate
+    keep = {entry[2] for entry in best.values()}
+    return [name for name in names if name in keep]
