@@ -744,10 +744,13 @@ async def _emit_bridged(ctx: RunContext[Any], event: CustomEvent) -> None:
 
 
 def offered_models() -> list[str]:
-    """The models a sub-agent may run on: everything in the /model picker."""
-    from pcode.models import active_providers, model_catalog
+    """The models offered to sub-agents: the newest of each /model picker family.
 
-    return list(model_catalog(active_providers(None)))
+    Older versions still work when named; they are just not suggested.
+    """
+    from pcode.models import active_providers, latest_models, model_catalog
+
+    return latest_models(model_catalog(active_providers(None)))
 
 
 def _session_model(ctx: RunContext[Any] | None) -> str:

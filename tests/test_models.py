@@ -10,6 +10,7 @@ from pcode.models import (
     ENV_PROVIDERS,
     PROVIDERS,
     active_providers,
+    latest_models,
     model_catalog,
     model_sort_key,
 )
@@ -191,6 +192,38 @@ def test_numeric_version_sort_newest_first_with_alias_before_snapshots():
         "openai-codex:gpt-5.6-luna",
     ]
     assert sorted(reversed(expected), key=model_sort_key) == expected
+
+
+def test_latest_models_keeps_newest_of_each_family_in_order():
+    names = [
+        "anthropic:claude-opus-5-5",
+        "anthropic:claude-opus-4-8",
+        "anthropic:claude-opus-5-5-20261001",
+        "anthropic:claude-3-opus-latest",
+        "anthropic:claude-sonnet-4-6",
+        "claude:claude-opus-4-8",
+        "openai:gpt-6.2-sol",
+        "openai:gpt-6.1-sol",
+        "openai:gpt-6.1-terra",
+        "openai:gpt-4o",
+        "openai:gpt-4o-2024-08-06",
+        "openai:gpt-5",
+        "mistral:ministral-14b-latest",
+        "mistral:ministral-8b-latest",
+    ]
+    assert latest_models(names) == [
+        "anthropic:claude-opus-5-5",
+        "anthropic:claude-sonnet-4-6",
+        # Each provider keeps its own copy.
+        "claude:claude-opus-4-8",
+        "openai:gpt-6.2-sol",
+        "openai:gpt-6.1-terra",
+        # Digits glued to letters name a variant or size, not a release.
+        "openai:gpt-4o",
+        "openai:gpt-5",
+        "mistral:ministral-14b-latest",
+        "mistral:ministral-8b-latest",
+    ]
 
 
 def test_current_model_does_not_override_version_order():

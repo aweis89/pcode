@@ -2617,8 +2617,11 @@ class SessionController:
         """Complete the word being typed in `/subagents` from the /model catalog.
 
         Names already typed are not offered again, and `off` only as the first word.
+        Only the newest version of each family is offered; older names still work.
         """
         from prompt_toolkit.completion import Completion
+
+        from pcode.models import latest_models
 
         words = argument.split()
         fragment = words.pop() if words and not argument[-1].isspace() else ""
@@ -2629,7 +2632,7 @@ class SessionController:
                 "off", start_position=-len(fragment), display_meta="Only the session's model"
             )
         needle = fragment.casefold()
-        for model in self.model_suggestions():
+        for model in latest_models(self.model_suggestions()):
             if model not in words and needle in model.casefold():
                 yield Completion(model, start_position=-len(fragment))
 
