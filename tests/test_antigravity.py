@@ -3401,8 +3401,27 @@ def test_antigravity_tool_started_emits_while_tool_is_still_running(
     summaries = [e for e in seen if isinstance(e, ToolSummary) and e.call_id == "gate-1"]
     assert len(starts) == 1
     assert starts[0].detail == "pytest"
+    assert starts[0].command == "pytest"
     assert len(summaries) == 1
+    assert summaries[0].command == "pytest"
     assert summaries[0].elapsed_seconds >= 0.02
+
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.ui import Transcript
+
+    stream = StringIO()
+    transcript = Transcript(
+        Console(file=stream, width=80, color_system=None),
+        preferences={"group_tools": "on"},
+    )
+    transcript.tool_result(summaries[0])
+    transcript.settle_tools()
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("✓ Run shell · ") and lines[0].endswith(" · pytest")
 
 
 def test_antigravity_parallel_tools_both_report_running_before_completion(
@@ -3468,6 +3487,7 @@ def test_antigravity_late_raw_input_updates_running_tool_without_duplicating(
     assert "Run tests" in starts[1].arguments
     assert len(summaries) == 1
     assert summaries[0].detail == "make test"
+    assert summaries[0].command == "make test"
     assert summaries[0].elapsed_seconds >= 0.02
     # Text streamed around the late update and tool return must all settle into messages.
     from pcode.runtime import Message
