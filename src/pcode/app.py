@@ -3368,6 +3368,9 @@ class PreviewApp:
 
     def cancel(self) -> None:
         """Ctrl+C, for whichever controller this terminal is showing now."""
+        # It drops queued commands, auto-open `/btw`s among them: left counted,
+        # one would swallow the next `/btw` typed in the same generation.
+        self._auto_opens_pending = 0
         self.controller.cancel()
 
     def run_controller(self, controller: SessionController) -> None:

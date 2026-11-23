@@ -259,6 +259,25 @@ def test_a_typed_btw_after_an_auto_open_in_the_drawer_still_picks(monkeypatch):
     assert picks == [True] and app.activity.btw_thread == first.thread
 
 
+def test_auto_opens_are_counted_per_generation_and_ctrl_c_forgets_them(monkeypatch):
+    app, _ = seeded_app()
+    queued = []
+    app.controller.command = lambda text, tag: queued.append((text, tag))
+    app.controller.cancel = lambda: None
+    monkeypatch.setattr(app, "auto_open_asides", lambda: True)
+    _, second = app.controller.asides.items
+    app.aside_answered(second)
+    app.aside_answered(second)
+    assert queued == [("/btw", 0), ("/btw", 0)] and app._auto_opens_pending == 2
+    # A popup shown since starts the count again in the new generation.
+    app._popup_generation = 1
+    app.aside_answered(second)
+    assert app._auto_open_generation == 1 and app._auto_opens_pending == 1
+    # Ctrl+C drops the queued auto-open; the next typed /btw is the reader's.
+    app.cancel()
+    assert app._auto_opens_pending == 0
+
+
 def test_ctrl_q_toggles_and_ctrl_backslash_moves_between_threads():
     app, _ = seeded_app()
     first, second = app.controller.asides.items
