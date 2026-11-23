@@ -70,8 +70,22 @@ CORE_TOOLS = (
     "manage_worker",
     "task_worktree",
     "advisor",
+    "ask_parent",
     "read_tool_result",
     "grep_tool_result",
+)
+# Tools that belong only to the parent conversation, never to delegated workers.
+WORKER_EXCLUDED_TOOLS = frozenset(
+    {
+        "delegate_task",
+        "manage_worker",
+        "task_worktree",
+        "advisor",
+        "ask_host",
+        "send_to_host",
+        "wait_for_hosts",
+        "stop_host",
+    }
 )
 # Capability IDs whose tools and instructions are bridged to Antigravity when active.
 # Any capability with `bridge_to_acp = True` is bridged the same way.
@@ -337,17 +351,35 @@ def _capability_instructions(capability: Any, ctx: RunContext[Any]) -> list[str]
     return _extract_instruction_texts(getter(), ctx)
 
 
-def _exposed_names(ctx: RunContext[Any]) -> list[str]:
+def _excluded_tools(*, side: bool = False, worker: bool = False) -> frozenset[str]:
+    """Tool names excluded from the ACP bridge for a side question or worker."""
+    excluded: set[str] = set()
+    if side:
+        from pcode.aside_guard import REFUSED_TOOLS
+
+        excluded.update(REFUSED_TOOLS)
+        excluded.add("ask_parent")
+    if worker:
+        excluded.update(WORKER_EXCLUDED_TOOLS)
+    return frozenset(excluded)
+
+
+def _exposed_names(ctx: RunContext[Any], *, side: bool = False, worker: bool = False) -> list[str]:
     """Tool names bridged to Antigravity for `ctx`, in stable order."""
     manager = ctx.tool_manager
     if manager is None:
         return []
+    excluded = _excluded_tools(side=side, worker=worker)
     candidates: list[str] = list(CORE_TOOLS)
     for cap_id, capability in (ctx.capabilities or {}).items():
         if not _is_bridged_capability(cap_id, capability):
             continue
         candidates.extend(_capability_tool_names(capability))
-    return [name for name in dict.fromkeys(candidates) if manager.get_tool_def(name) is not None]
+    return [
+        name
+        for name in dict.fromkeys(candidates)
+        if name not in excluded and manager.get_tool_def(name) is not None
+    ]
 
 
 def _bridge_instructions(ctx: RunContext[Any], exposed: list[str]) -> str:
@@ -355,9 +387,13 @@ def _bridge_instructions(ctx: RunContext[Any], exposed: list[str]) -> str:
     capabilities = ctx.capabilities or {}
     parts: list[str] = []
     for cap_id, capability in capabilities.items():
+        if cap_id == "advisor_guidance" and "advisor" not in exposed:
+            continue
         if _is_bridged_capability(cap_id, capability):
             parts.extend(_capability_instructions(capability, ctx))
         elif cap_id == "tool_output_limits" and "read_tool_result" in exposed:
+            parts.extend(_capability_instructions(capability, ctx))
+        elif "ask_parent" in exposed and "ask_parent" in _capability_tool_names(capability):
             parts.extend(_capability_instructions(capability, ctx))
     return "\n\n".join(dict.fromkeys(parts))
 
@@ -373,16 +409,18 @@ def repo_context_instructions(ctx: RunContext[Any] | None) -> str | None:
     return render() if callable(render) else None
 
 
-def _system_prompt_append(ctx: RunContext[Any] | None) -> str:
+def _system_prompt_append(
+    ctx: RunContext[Any] | None, *, side: bool = False, worker: bool = False
+) -> str:
     """Concise pcode-specific instructions appended to `agy`'s system prompt on `session/new`."""
     from pcode.agent import PCODE_CLIENT_INSTRUCTIONS
 
-    parts: list[str] = [PCODE_CLIENT_INSTRUCTIONS]
+    parts: list[str] = [] if (side or worker) else [PCODE_CLIENT_INSTRUCTIONS]
     if ctx is not None:
         if repo := repo_context_instructions(ctx):
             parts.append(repo)
         if ctx.tool_manager is not None:
-            exposed = _exposed_names(ctx)
+            exposed = _exposed_names(ctx, side=side, worker=worker)
             if "delegate_task" in exposed:
                 parts.append(DELEGATION_PROMPT_NOTE)
             if "advisor" in exposed:
@@ -400,6 +438,8 @@ class ToolBridge:
         notify: Callable[[str], None] = lambda text: None,
         *,
         wake_starting: Callable[[], bool] = lambda: False,
+        side: bool = False,
+        worker: bool = False,
     ) -> None:
         # The turn calls run in, and its context variables (sandbox, deadline,
         # tracing); set while a turn streams. Tasks would otherwise copy the
@@ -407,6 +447,8 @@ class ToolBridge:
         self.run_context: RunContext[Any] | None = None
         self._context: contextvars.Context | None = None
         self._wake_starting = wake_starting
+        self._side = side
+        self._worker = worker
         self._turn_ready = asyncio.Event()
         # Retained for callers passing `notify=`; bridged `delegate_task` calls
         # now stream directly into the live panel and `/agents` via `ctx.emit`.
@@ -417,9 +459,16 @@ class ToolBridge:
         self._listed: list[dict] = []
         self._instructions_text: str = ""
 
+    def has_tools(self) -> bool:
+        """Whether the current turn exposes any bridged pcode tools."""
+        ctx = self.run_context
+        return bool(ctx is not None and _exposed_names(ctx, side=self._side, worker=self._worker))
+
     async def servers(self) -> list[dict]:
         """The ACP `mcpServers` entry for a new or resumed session; none if it can't start."""
         global _swept
+        if (self._side or self._worker) and not self.has_tools():
+            return []
         if self._server is None:
             if not _swept:
                 _swept = True
@@ -574,13 +623,13 @@ class ToolBridge:
         ctx = self.run_context
         if ctx is None or ctx.tool_manager is None:
             return self._instructions_text
-        text = _bridge_instructions(ctx, _exposed_names(ctx))
+        text = _bridge_instructions(ctx, _exposed_names(ctx, side=self._side, worker=self._worker))
         self._instructions_text = text
         return text
 
     def system_prompt_append(self) -> str:
         """pcode-specific system prompt addition for `session/new` `_meta`."""
-        return _system_prompt_append(self.run_context)
+        return _system_prompt_append(self.run_context, side=self._side, worker=self._worker)
 
     def _build_tools(self, ctx: RunContext[Any]) -> list[dict]:
         manager = ctx.tool_manager
@@ -588,7 +637,7 @@ class ToolBridge:
             return []
         has_browser = "browser" in (ctx.capabilities or {})
         tools = []
-        for name in _exposed_names(ctx):
+        for name in _exposed_names(ctx, side=self._side, worker=self._worker):
             definition = manager.get_tool_def(name)
             if definition is None:
                 continue
@@ -638,7 +687,10 @@ class ToolBridge:
         if ctx is None or ctx.tool_manager is None:
             raise RuntimeError(NO_TURN)
         manager = ctx.tool_manager
-        if name not in _exposed_names(ctx) or manager.get_tool_def(name) is None:
+        if (
+            name not in _exposed_names(ctx, side=self._side, worker=self._worker)
+            or manager.get_tool_def(name) is None
+        ):
             raise RuntimeError(f"pcode offers no tool named {name!r} here.")
         arguments = dict(arguments)
         if name == "delegate_task":

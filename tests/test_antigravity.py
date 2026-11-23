@@ -1867,6 +1867,211 @@ def test_core_tools_bridged_extensions_and_opt_in_extension_are_exposed(fake_agy
     assert "Use ticket_lookup for issue IDs." in instructions
 
 
+def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(fake_agy, tmp_path):
+    from pydantic_ai.capabilities import Capability
+
+    from pcode.antigravity_tools import DELEGATION_PROMPT_NOTE
+    from pcode.ext import ExtensionAPI, ExtensionUI
+
+    def delegate_task(task: str) -> str:
+        """Delegate."""
+        return task
+
+    def manage_worker(action: str) -> str:
+        """Manage workers."""
+        return action
+
+    def advisor(question: str) -> str:
+        """Consult advisor."""
+        return question
+
+    def ask_parent(question: str) -> str:
+        """Ask parent."""
+        return f"asked:{question}"
+
+    def read_tool_result(handle: str) -> str:
+        """Read spilled output."""
+        return f"slice:{handle}"
+
+    def read_session(session_id: str) -> str:
+        """Read saved session."""
+        return f"session:{session_id}"
+
+    def search_sessions(query: str) -> list:
+        """Search saved sessions."""
+        return [query]
+
+    def list_hosts() -> list:
+        """List hosts."""
+        return ["h1"]
+
+    def inspect_host(host_id: str) -> dict:
+        """Inspect host."""
+        return {"host_id": host_id}
+
+    def ask_host(target: str, question: str) -> str:
+        """Ask host."""
+        return f"{target}:{question}"
+
+    def send_to_host(target: str, prompt: str) -> str:
+        """Send to host."""
+        return f"{target}:{prompt}"
+
+    ext_opt_in = ExtensionAPI("worker_ext", tmp_path, ExtensionUI())
+    ext_opt_in.bridge_to_acp = True
+
+    @ext_opt_in.tool
+    def ticket_lookup(ticket_id: str) -> str:
+        """Look up a ticket."""
+        return f"ticket:{ticket_id}"
+
+    advisor_guidance = Capability(id="advisor_guidance", instructions="Consult advisor wisely.")
+    advisor_guidance.bridge_to_acp = True
+
+    caps = [
+        Capability(id="sub_agents", tools=[delegate_task, manage_worker]),
+        Capability(id="advisor", tools=[advisor]),
+        advisor_guidance,
+        Capability(id="child_channel", tools=[ask_parent], instructions="Ask parent when stuck."),
+        Capability(id="tool_output_limits", tools=[read_tool_result]),
+        Capability(
+            id="ext.session_history",
+            tools=[search_sessions, read_session],
+            instructions="Search saved history.",
+        ),
+        Capability(
+            id="ext.conductor",
+            tools=[list_hosts, inspect_host, ask_host, send_to_host],
+            instructions="Use list_hosts and inspect_host.",
+        ),
+        *ext_opt_in.capabilities(),
+    ]
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-neon", worker=True),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=caps,
+        )
+        ok = await streamed(agent, mcp_prompt("read_session", {"session_id": "abc12345"}))
+        asked = await streamed(
+            agent, mcp_prompt("ask_parent", {"question": "which branch?"}), ok.all_messages()
+        )
+        denied = await streamed(
+            agent, mcp_prompt("ask_host", {"target": "h1", "question": "hi"}), asked.all_messages()
+        )
+        return ok.output, asked.output, denied.output
+
+    ok_out, asked_out, denied_out = run(go())
+    assert ok_out == "tool said: session:abc12345"
+    assert asked_out == "tool said: asked:which branch?"
+    assert "no tool named 'ask_host'" in denied_out
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e][:1]
+    names = {t["name"] for t in listed["mcp_tools"]}
+    assert names == {
+        "ask_parent",
+        "read_tool_result",
+        "search_sessions",
+        "read_session",
+        "list_hosts",
+        "inspect_host",
+        "ticket_lookup",
+    }
+    instructions = listed["mcp_initialize"]["instructions"]
+    assert "Search saved history." in instructions
+    assert "Ask parent when stuck." in instructions
+    assert "Consult advisor wisely." not in instructions
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 1
+    meta = new_calls[0]["params"].get("_meta") or {}
+    append = meta.get("antigravity", {}).get("systemPrompt", {}).get("append", "")
+    assert DELEGATION_PROMPT_NOTE not in append
+
+
+def test_side_btw_bridges_scoped_tools_and_respects_aside_guard(fake_agy, tmp_path):
+    from pydantic_ai.capabilities import Capability
+
+    from pcode.aside_guard import AsideGuard
+
+    def delegate_task(task: str) -> str:
+        """Delegate."""
+        return task
+
+    def manage_worker(action: str, worker_id: str = "") -> dict:
+        """Manage workers."""
+        return {"action": action, "worker_id": worker_id}
+
+    def advisor(question: str) -> str:
+        """Consult advisor."""
+        return question
+
+    def read_session(session_id: str) -> str:
+        """Read saved session."""
+        return f"session:{session_id}"
+
+    def list_hosts() -> list:
+        """List hosts."""
+        return ["h1"]
+
+    def ask_host(target: str, question: str) -> str:
+        """Ask host."""
+        return f"{target}:{question}"
+
+    caps = [
+        AsideGuard(),
+        Capability(id="sub_agents", tools=[delegate_task, manage_worker]),
+        Capability(id="advisor", tools=[advisor]),
+        Capability(id="ext.session_history", tools=[read_session]),
+        Capability(id="ext.conductor", tools=[list_hosts, ask_host]),
+    ]
+
+    async def go():
+        agent = Agent(
+            AntigravityModel("fake-neon", side=True),
+            model_settings={CWD_SETTING: str(tmp_path)},
+            capabilities=caps,
+        )
+        ok_read = await streamed(agent, mcp_prompt("read_session", {"session_id": "s99"}))
+        ok_list = await streamed(
+            agent, mcp_prompt("manage_worker", {"action": "list"}), ok_read.all_messages()
+        )
+        refused_stop = await streamed(
+            agent,
+            mcp_prompt("manage_worker", {"action": "stop", "worker_id": "w1"}),
+            ok_list.all_messages(),
+        )
+        refused_host = await streamed(
+            agent,
+            mcp_prompt("ask_host", {"target": "h1", "question": "hi"}),
+            refused_stop.all_messages(),
+        )
+        return ok_read.output, ok_list.output, refused_stop.output, refused_host.output
+
+    ok_read, ok_list, refused_stop, refused_host = run(go())
+    assert ok_read == "tool said: session:s99"
+    assert '"action": "list"' in ok_list
+    assert "unavailable in a side question" in refused_stop
+    assert "no tool named 'ask_host'" in refused_host
+    [listed] = [e for e in fake_agy() if "mcp_tools" in e][:1]
+    names = {t["name"] for t in listed["mcp_tools"]}
+    assert names == {"manage_worker", "read_session", "list_hosts"}
+
+
+def test_plain_side_completion_bridges_no_mcp_tools(fake_agy, tmp_path):
+    async def go():
+        model = AntigravityModel("fake-neon", side=True)
+        await Agent(
+            model,
+            instructions="Write a title.",
+            model_settings={CWD_SETTING: str(tmp_path)},
+        ).run("hello")
+
+    run(go())
+    new_calls = fake_agy("session/new")
+    assert len(new_calls) == 1
+    assert new_calls[0]["params"]["mcpServers"] == []
+
+
 def test_delegate_task_lists_browser_subagent_without_notes(fake_agy, tmp_path, subagent_models):
     from types import SimpleNamespace
 

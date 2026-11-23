@@ -340,8 +340,11 @@ consequences:
   the other model was waiting on, as text.
 - **Side uses run in sessions of their own.** `/btw`, session titles,
   summaries, and an advisor on an `antigravity:` model each get a separate
-  `agy acp` session (without bridged pcode MCP tools), so they run alongside a turn
-  without touching the conversation's session. A `/btw` thread's follow-ups
+  `agy acp` session, so they run alongside a turn without touching the
+  conversation's session. `/btw` and delegated `antigravity:` workers receive
+  scoped pcode MCP tools (such as read-only session and host tools, without
+  parent-only delegation or conductor controls); plain completions like titles
+  and summaries run without bridged MCP tools. A `/btw` thread's follow-ups
   continue its side session.
 - **`/compact` and `/autocompact` use Antigravity's own compaction.** pcode
   sends its `/compact` command (before your prompt, once the context reaches

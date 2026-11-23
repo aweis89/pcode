@@ -15,8 +15,9 @@ other ACP clients do: the user's prompts, and the session's own events (a
 finished background job or worker, a worker's question, a continuation),
 written out as text since Antigravity has no pcode tool calls for them to
 answer. Side uses (`/btw`, titles, summaries, an advisor) and delegated workers
-each run in their own `agy acp` session (`side=True` or `worker=True`, with no
-bridged pcode tools), so they never block or pollute the conversation's.
+each run in their own `agy acp` session (`side=True` or `worker=True`, with
+scoped bridged pcode tools when active and none on plain completions), so they
+never block or pollute the conversation's.
 
 Context is Antigravity's own: `/compact` and automatic compaction send its
 `/compact` command, and pcode's plan mode switches the session to its `plan`
@@ -786,14 +787,13 @@ class AntigravityModel(Model):
         from pcode.antigravity_tools import ToolBridge
 
         # pcode's bridged tools, which Antigravity may call (see antigravity_tools).
-        # Side questions and delegated workers never get bridged pcode MCP tools.
-        self.tools = (
-            None
-            if (side or worker)
-            else ToolBridge(
-                notify=self._show,
-                wake_starting=lambda: self._wake_pending or self._continuing_wake,
-            )
+        # Side questions and delegated workers receive scoped bridged tools (e.g.
+        # read-only session/host tools), excluding parent-only controls.
+        self.tools = ToolBridge(
+            notify=self._show,
+            wake_starting=lambda: self._wake_pending or self._continuing_wake,
+            side=side,
+            worker=worker,
         )
 
     def _history_matches_session(self, history: list[ModelMessage] | None) -> bool:
@@ -1056,12 +1056,13 @@ class AntigravityModel(Model):
         cwd = str((model_settings or {}).get(CWD_SETTING) or os.getcwd())
         raw_effort = (model_settings or {}).get(EFFORT_SETTING)
         effort = raw_effort if isinstance(raw_effort, str) and raw_effort else None
+        plain_side = self._side and not getattr(model_request_parameters, "function_tools", None)
         if not continuing:
             # A new user turn lifts any cancel quarantine from an earlier Ctrl+C.
             self._wake_quarantined = False
             # Before the lock or a process: a refusal must cost nothing.
             prompt, interrupted = user_prompt(messages, side=self._side)
-            if self._side and not getattr(model_request_parameters, "function_tools", None):
+            if plain_side:
                 # A plain completion (a title, a summary, an advisor's answer): its
                 # instructions are the task. A side question's are pcode's own
                 # system prompt, about tools Antigravity doesn't have.
@@ -1087,8 +1088,9 @@ class AntigravityModel(Model):
             self._expiry = None
         handed_off = False
         # Set first: a new session lists the tools as this turn has them.
+        # Plain side completions (titles, summaries, advisor) bridge no tools.
         if self.tools is not None:
-            self.tools.begin_turn(run_context)
+            self.tools.begin_turn(None if plain_side else run_context)
         try:
             if continuing:
                 session = self._session
