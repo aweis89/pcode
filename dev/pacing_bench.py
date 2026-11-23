@@ -42,6 +42,7 @@ import random
 import resource
 import shlex
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -130,7 +131,12 @@ def _redraw_source() -> str:
 
 def child(out: Path, frames: Path, profile: dict) -> None:
     """Run inside the measured terminal: stream the reply, write stats to ``out``."""
+    import termios
     from collections import Counter
+
+    # The window is reused: replies to the last run's terminal queries may
+    # still be queued as input, and would read as keystrokes here.
+    termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
 
     from prompt_toolkit.application import Application
     from prompt_toolkit.renderer import Renderer
@@ -342,6 +348,28 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _pid(path: Path) -> int | None:
+    """The pid a launcher recorded; None until it has (`echo $$ >` truncates first)."""
+    try:
+        return int(path.read_text())
+    except FileNotFoundError, ValueError:
+        return None
+
+
+def _end(pid: int | None) -> None:
+    """Stop a process for good: SIGTERM, then SIGKILL if it is still there."""
+    if pid is None:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 3
+        while _alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+
 class HostWindow:
     """One Ghostty Smooth window that runs every benchmark run in turn.
 
@@ -361,10 +389,11 @@ class HostWindow:
         q = lambda path: shlex.quote(str(path))  # noqa: E731
         host = work / "host.sh"
         # RIS resets modes, kitty images and smooth-scroll state; 3J drops scrollback.
+        # It also ends if the benchmark dies, so no window outlives it.
         host.write_text(
             "#!/bin/sh\n"
             f"echo $$ > {q(self.host_pid)}\n"
-            f"while [ ! -e {q(self.stop)} ]; do\n"
+            f"while [ ! -e {q(self.stop)} ] && kill -0 {os.getpid()} 2>/dev/null; do\n"
             f"  if [ -e {q(self.next)} ]; then\n"
             f"    mv {q(self.next)} {q(work / 'running.sh')}\n"
             f"    sh {q(work / 'running.sh')}\n"
@@ -378,22 +407,30 @@ class HostWindow:
         command = ["open", "-na", str(app), "--env", f"GHOSTTY_SMOOTH_FRAME_LOG={self.frames}"]
         command += ["--args", "--window-width=110", "--window-height=40"]
         command += ["--quit-after-last-window-closed=true", "-e", str(host)]
+        self.pid: int | None = None
+        self.child_pid: Path | None = None  # the running run's pid file
         subprocess.run(command, check=True)
-        deadline = time.monotonic() + 30
-        while not self.host_pid.exists():
+        # A cold start can be slow; a window that turns up after this gives up
+        # finds `stop` and closes.
+        deadline = time.monotonic() + 60
+        while (pid := _pid(self.host_pid)) is None:
             if time.monotonic() > deadline:
+                self.stop.touch()
                 sys.exit("the Ghostty Smooth host window never started")
             time.sleep(0.2)
-        self.pid = int(self.host_pid.read_text())
+        self.pid = pid
 
     def close(self) -> None:
         """End the loop, closing the window (and the instance) before `work` goes."""
         self.stop.touch()
+        if self.child_pid is not None:
+            _end(_pid(self.child_pid))  # the loop sees `stop` once its run ends
+        if self.pid is None:
+            return
         deadline = time.monotonic() + 5
         while _alive(self.pid) and time.monotonic() < deadline:
             time.sleep(0.1)
-        if _alive(self.pid):
-            subprocess.run(["kill", str(self.pid)], capture_output=True)
+        _end(self.pid)
 
     def run(
         self, setup: str, n: int, timeout: float, profile: str, src: Path | None
@@ -422,11 +459,12 @@ class HostWindow:
             f"--child {q(str(out))} --frames {q(str(self.frames))} --profile {profile} "
             f"2>{q(str(err))}\n"
         )
+        self.child_pid = pid_file
         staged.rename(self.next)  # whole, so the loop never runs half a script
 
         def give_up(why: str) -> None:
-            if pid_file.exists():
-                subprocess.run(["kill", pid_file.read_text().strip()], capture_output=True)
+            # Waited out, so the loop is free for the next run.
+            _end(_pid(pid_file))
             tail = err.read_text()[-2000:] if err.exists() else ""
             print(f"  {mode} run {n}: no result ({why})\n{tail}", file=sys.stderr)
 
@@ -437,23 +475,25 @@ class HostWindow:
             if time.monotonic() > deadline:
                 give_up("timed out")
                 return None
-            if pid_file.exists() and not _alive(int(pid_file.read_text())):
+            child = _pid(pid_file)
+            # Re-checked: the child writes its result and exits straight away.
+            if child is not None and not _alive(child) and not out.exists():
                 give_up("pcode exited")
                 return None
             time.sleep(0.5)
         # The child exits on its own once it has written its result; wait for
         # it, and the loop's reset, so runs never overlap.
-        child = int(pid_file.read_text())
-        while _alive(child) and time.monotonic() < deadline + 10:
+        child = _pid(pid_file)
+        while child is not None and _alive(child) and time.monotonic() < deadline + 10:
             time.sleep(0.1)
-        if _alive(child):
-            subprocess.run(["kill", str(child)], capture_output=True)
+        _end(child)
         time.sleep(0.5)
         result = json.loads(out.read_text())
         if self.frames.exists():
             with self.frames.open() as log:
                 log.seek(result.pop("frame_log_from"))
-                result["frames"] = [json.loads(line) for line in log if line.strip()]
+                # A line still being written has no newline yet.
+                result["frames"] = [json.loads(line) for line in log if line.endswith("\n")]
         return result
 
 
@@ -604,8 +644,9 @@ def main() -> None:
     spinners = list(SPINNERS) if args.spinners == "both" else [args.spinners]
     setups = [f"{mode}/{spinner}" for spinner in spinners for mode in MODES]
     results: dict[str, list[dict]] = {setup: [] for setup in setups}
-    window = HostWindow(args.app, work)
+    window = None
     try:
+        window = HostWindow(args.app, work)
         for n in range(1, args.runs + 1):
             order = setups if n % 2 else list(reversed(setups))
             for setup in order:
@@ -629,7 +670,8 @@ def main() -> None:
                 print(f"  {mode} run {n}: {json.dumps(shown)}")
         report(results)
     finally:
-        window.close()
+        if window is not None:
+            window.close()
         if args.keep:
             print(f"\nraw results in {work}")
         else:
