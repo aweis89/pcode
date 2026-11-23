@@ -11,14 +11,25 @@ import threading
 import pytest
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output.color_depth import ColorDepth
+from prompt_toolkit.utils import get_cwidth
 from rich.cells import cell_len
 from rich.console import Console
 from rich.table import Table
 
 from pcode import glyphs, terminal_color, theme
+from pcode.runtime import ToolStarted, ToolSummary
 from pcode.startup_input import TerminalReplyParser
-from pcode.tool_panel import plan_row
-from pcode.ui import TOOL_GLYPHS, _tool_glyph, status_spinner, tally, tool_glyphs_on
+from pcode.tool_panel import panel_fragments, plan_row
+from pcode.ui import (
+    TOOL_GLYPHS,
+    Activity,
+    _row_keys,
+    _tool_glyph,
+    fit_fragments,
+    status_spinner,
+    tally,
+    tool_glyphs_on,
+)
 
 
 @pytest.mark.parametrize(
@@ -115,6 +126,7 @@ def test_when_ascii_is_wanted(setting, env, wide, expected):
         ("auto", {"TERM": "xterm-ghostty"}, False, True),
         ("auto", {"TERM_PROGRAM": "ghostty"}, False, True),
         ("auto", {"TERM": "xterm-ghostty", "TMUX": "/tmp/s,1,0"}, False, False),
+        ("auto", {"TERM_PROGRAM": "ghostty", "STY": "1234.pts-0.host"}, False, False),
         ("auto", {"TERM_PROGRAM": "iTerm.app"}, False, False),
         ("auto", {"TERM": "xterm-ghostty"}, True, False),
         ("nerd", {"TERM": "xterm-256color"}, False, True),
@@ -130,7 +142,8 @@ def test_when_nerd_is_wanted(setting, env, ascii_on, expected):
 def test_nerd_icons_are_single_cell_and_active_when_enabled():
     assert set(glyphs.NERD_ICONS) == set(glyphs.ICONS)
     for name, char in glyphs.NERD_ICONS.items():
-        assert cell_len(char) == 1, f"{name} is not 1 cell wide"
+        assert cell_len(char) == 1, f"{name} is not 1 cell wide (Rich)"
+        assert get_cwidth(char) == 1, f"{name} is not 1 cell wide (prompt_toolkit)"
         assert len(glyphs.to_ascii(char)) == 1 and glyphs.to_ascii(char).isascii()
 
     # Wait for job no longer carries a redundant hourglass beside the spinner.
@@ -154,10 +167,57 @@ def test_nerd_icons_are_single_cell_and_active_when_enabled():
     )
     assert tally(2, 1) == f"{glyphs.NERD_ICONS['ok']} 2 {glyphs.NERD_ICONS['fail']} 1"
 
-    # ASCII mode always wins over Nerd Fonts.
-    glyphs._active = True
-    assert not glyphs.apply_nerd(True)
-    assert not glyphs.nerd()
+    # End-to-end through `plain()` / `fit_fragments()` / `panel_fragments()`:
+    # PUA Nerd Font codepoints must not be stripped to spaces.
+    activity = Activity(prompt="Fix bug", prompt_state="running")
+    activity.plan = [
+        {"status": "completed", "content": "One"},
+        {"status": "cancelled", "content": "Two"},
+    ]
+    activity.tools.record(ToolStarted("read_file", "src/app.py", "c1"))
+    running_rows = activity.tool_rows(activity.status_line(), 60, spinner="◜")
+    running_text = "".join(text for _, text in running_rows[0])
+    assert glyphs.NERD_ICONS["read"] in running_text and "src/app.py" in running_text
+
+    activity.tools.record(ToolSummary("read_file", "src/app.py", call_id="c1"))
+    settled_rows = activity.tool_rows(activity.status_line(), 60, spinner="◜")
+    settled_text = "".join(text for _, text in settled_rows[0])
+    assert glyphs.NERD_ICONS["tool_done"] in settled_text
+    assert glyphs.NERD_ICONS["read"] in settled_text
+
+    # `panel_fragments` keeps the task icon styled as `plan.icon.<status>`.
+    plan_frags = panel_fragments(activity.plan_rows(5, "⠋"), 60)
+    assert ("class:plan.icon.completed", glyphs.NERD_ICONS["completed"]) in plan_frags
+    assert ("class:plan.icon.cancelled", glyphs.NERD_ICONS["cancelled"]) in plan_frags
+
+    # `fit_fragments` preserves Nerd Font turn marks.
+    fitted = "".join(t for _, t in fit_fragments([("class:session.done", glyphs.icon("ok"))], 10))
+    assert fitted == glyphs.NERD_ICONS["ok"]
+
+    # Smooth-scroll `_row_keys` matches a running tool row to its settled row.
+    class _Cell:
+        def __init__(self, char: str) -> None:
+            self.char = char
+
+    class _Screen:
+        def __init__(self, row_text: str) -> None:
+            self.height = 3
+            self.data_buffer = {2: {i: _Cell(ch) for i, ch in enumerate(row_text)}}
+
+    assert _row_keys(_Screen(running_text)) == _row_keys(_Screen(settled_text))
+
+    # ASCII mode always wins over Nerd Fonts, regardless of call order.
+    master, slave = pty.openpty()
+    try:
+        stream = io.TextIOWrapper(os.fdopen(os.dup(slave), "wb"), encoding="utf-8")
+        assert glyphs.apply(True, stream)
+        assert not glyphs.nerd()
+        assert glyphs.icon("ok") == glyphs.ICONS["ok"]
+        assert not glyphs.apply_nerd(True)
+        stream.close()
+    finally:
+        os.close(master)
+        os.close(slave)
 
 
 def test_ascii_mode_reencodes_the_terminal_stream(monkeypatch):

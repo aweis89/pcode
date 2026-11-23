@@ -282,8 +282,11 @@ class PreviewApp:
         )
         if console is None:
             # The editor's own terminal, which the startup probe has measured.
-            glyphs.apply(glyphs.wanted(glyph_setting, wide=ambiguous_wide()))
-            glyphs.apply_nerd(glyphs.wanted_nerd(glyph_setting, ascii_on=glyphs.active()))
+            ascii_wanted = glyphs.wanted(glyph_setting, wide=ambiguous_wide())
+            glyphs.apply(ascii_wanted)
+            glyphs.apply_nerd(
+                glyphs.wanted_nerd(glyph_setting, ascii_on=ascii_wanted or glyphs.active())
+            )
         self.running = True
         self._popup_generation = 0
         self._command_popup_generation: int | None = None

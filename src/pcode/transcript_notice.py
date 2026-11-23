@@ -65,7 +65,7 @@ class TranscriptNotice:
         return Markdown(f"{fence}text\n{text}\n{fence}", code_theme=self.code_theme)
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        symbol = glyphs.icon("fail") if self.kind == "error" else "!"
+        symbol = glyphs.icon("fail") if self.kind == "error" else glyphs.icon("blocked")
         style = "pcode.error" if self.kind == "error" else "pcode.warning"
         yield Text(f"{symbol} {self.title}", style=style)
         if not self.text:

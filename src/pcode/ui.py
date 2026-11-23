@@ -1402,7 +1402,7 @@ class Activity:
             return []
         # Persisted task status describes unfinished work, not a live request.
         # Use the turn lifecycle rather than busy, which also includes queued input.
-        icon = spinner if self.status_shown else "○"
+        icon = spinner if self.status_shown else glyphs.icon("pending")
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
         return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
@@ -3226,7 +3226,7 @@ def _row_keys(screen) -> dict[int, str]:
         text = "".join(
             cell.char
             for _, cell in sorted(cells.items())
-            if unicodedata.category(cell.char[:1] or " ") != "So"
+            if unicodedata.category(cell.char[:1] or " ") not in ("So", "Co")
         ).strip()
         text = _LEADING_MARK.sub("", text)
         if text:

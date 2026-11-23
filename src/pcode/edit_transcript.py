@@ -15,7 +15,8 @@ from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
-from pcode.block import DONE, block_heading, block_rule
+from pcode import glyphs
+from pcode.block import block_heading, block_rule
 from pcode.delta import Delta, preview_patch
 from pcode.edits import edit_text, patch_text
 from pcode.markdown import Markdown
@@ -37,7 +38,7 @@ class EditTranscript:
         change = self.change
         yield block_rule(
             block_heading(
-                DONE,
+                glyphs.icon("ok"),
                 f"{change.operation.capitalize()} {edit_text(change.path)}"
                 f" · +{change.added} −{change.removed}",
             )

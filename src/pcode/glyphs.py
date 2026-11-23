@@ -57,6 +57,9 @@ NERD_ICONS: dict[str, str] = {
     "tool_done": "\ueab2",  # cod-check
     "turn_cancelled": "\uf4b7",  # oct-skip
 }
+# Private Use Area chars are not `str.isprintable()` in Python; `plain()`
+# preserves only this known set so untrusted PUA input is still sanitized.
+NERD_ICON_CHARS: frozenset[str] = frozenset(NERD_ICONS.values())
 
 # Symbols outside the ranges `_by_name` sorts out.
 _SYMBOLS = {
@@ -214,7 +217,7 @@ def nerd() -> bool:
 
 def icon(name: str) -> str:
     """Return the active 1-cell icon for `name` (Nerd Font when enabled, else Unicode)."""
-    return NERD_ICONS[name] if _nerd else ICONS[name]
+    return NERD_ICONS[name] if (_nerd and not _active) else ICONS[name]
 
 
 def legacy_locale(env: Mapping[str, str]) -> bool:
@@ -263,7 +266,7 @@ def wanted_nerd(
     if setting == "nerd":
         return True
     env = os.environ if env is None else env
-    if env.get("TMUX"):
+    if env.get("TMUX") or env.get("STY"):
         return False
     return env.get("TERM") == "xterm-ghostty" or env.get("TERM_PROGRAM") == "ghostty"
 
@@ -280,7 +283,7 @@ def apply(on: bool, stream=None) -> bool:
 
     Only a terminal is switched: a reply piped elsewhere keeps its symbols.
     """
-    global _active
+    global _active, _nerd
     stream = sys.stdout if stream is None else stream
     if not on or not isinstance(stream, io.TextIOWrapper) or not stream.isatty():
         return _active
@@ -290,4 +293,5 @@ def apply(on: bool, stream=None) -> bool:
         # name that isn't UTF-8 print rather than raise.
         stream.reconfigure(encoding=f"{CODEC}-{stream.encoding}", errors=stream.errors)
     _active = True
+    _nerd = False
     return True

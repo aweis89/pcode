@@ -54,7 +54,7 @@ LABELS = {
 
 def plain(value: str, limit: int | None = 90) -> str:
     """Remove controls (including bidi/ANSI introducers) and bound terminal text."""
-    text = "".join(c if c.isprintable() else " " for c in value)
+    text = "".join(c if c.isprintable() or c in glyphs.NERD_ICON_CHARS else " " for c in value)
     return text if limit is None or len(text) <= limit else text[: limit - 1] + "…"
 
 
