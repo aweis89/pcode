@@ -136,14 +136,15 @@ which pcode binds to its response and snippet copy chooser.
   into `QueuedRow.mark` before anything reads the row. Not a Rich control
   segment: the render console writes to a `StringIO` without
   `force_terminal`, so Rich drops control text.
-- Marks need the startup probe, which runs with `smooth_scroll auto` or
-  `reader_park on` (the default). Sentinels are only rendered when the
+- Marks need the startup probe, which asks in Ghostty whatever
+  `smooth_scroll` and `reader_park` say. Sentinels are only rendered when the
   terminal takes marks, and never inside thinking: its blank-row folding kept
   a sentinel's padding row (trap: an extra row for every user).
 
 ### 4. Park: built
 
-- `reader_park` (default on). Steering and shell-mode prompts are marked but
+- `reader_park` (default off: a park used to enter the reader table unasked,
+  so the next typed letter ran a reader key). Steering and shell-mode prompts are marked but
   never park.
 
 ### 5. Copy: built

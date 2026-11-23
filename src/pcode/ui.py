@@ -5092,12 +5092,9 @@ class Transcript:
             detect_theme(
                 probe_width=probe_width,
                 probe_cursor=probe_cursor,
-                # Reader mode marks need the answer too, glide or not.
-                probe_glide=probe_glide
-                and (
-                    self.smooth_scroll == "auto"
-                    or preferences.get("reader_park", SETTINGS["reader_park"].default) == "on"
-                ),
+                # Reader mode marks need the answer too, glide or not; the
+                # drawer query already makes this Ghostty-only round trip.
+                probe_glide=probe_glide,
                 # Asked whatever `popup_view` says, so turning it on needs no restart.
                 probe_drawer=probe_glide,
                 probe_kitty=probe_glide
