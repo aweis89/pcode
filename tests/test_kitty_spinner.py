@@ -60,7 +60,8 @@ def _probe(monkeypatch, *, env, reply: bytes, probe_kitty: bool = True, timeout:
                 break
             sent.extend(chunk)
             if b"\x1b]11;?" in sent:
-                os.write(master, reply)
+                # The device attributes reply answers the probe's fence.
+                os.write(master, reply + b"\x1b[?62;22c")
                 break
 
     thread = threading.Thread(target=peer, daemon=True)
@@ -84,6 +85,17 @@ def test_startup_probe_enables_kitty_graphics_on_ok_reply(monkeypatch):
         reply=OK_REPLY + b"\x1b]11;rgb:1111/1111/1111\x1b\\",
     )
     assert kitty_spinner.QUERY in sent
+    assert theme.kitty_graphics_supported() is True
+    assert pending == b""
+
+
+def test_startup_probe_hears_a_kitty_reply_after_the_background_one(monkeypatch):
+    sent, pending = _probe(
+        monkeypatch,
+        env={"TERM": "xterm-ghostty", "COLORTERM": "truecolor"},
+        reply=b"\x1b]11;rgb:1111/1111/1111\x1b\\" + OK_REPLY,
+    )
+    assert sent.endswith(b"\x1b[c")
     assert theme.kitty_graphics_supported() is True
     assert pending == b""
 

@@ -25,6 +25,11 @@ _BACKGROUND = re.compile(
     rb"\x1b\]11;rgb:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})(?:\x07|\x1b\\)"
 )
 _CPR = re.compile(rb"\x1b\[(\d+);(\d+)R")
+# Primary device attributes: every terminal answers it, and answers in order,
+# so sent after the capability queries its reply means theirs are all in
+# (or never coming), and the probe can stop without waiting out the timeout.
+_FENCE = b"\x1b[c"
+_FENCE_REPLY = re.compile(rb"\x1b\[\?[0-9;]{1,32}c")
 # Where the cursor is, then save it, draw the ambiguous-width glyph, say where
 # the cursor is now, and put the cursor back and wipe what was drawn. Sent as
 # one write, so the glyph is gone before the terminal can show it; the
@@ -294,6 +299,10 @@ def _query_background(
     )
     expected_cprs = 2 if probe_width else 1 if probe_cursor else 0
     measured = expected_cprs == 0
+    # Only with a capability query, which goes to Ghostty and kitty alone:
+    # without one, the background reply is all there is to wait for.
+    fence = b"" if not (glide_query or drawer_query or kitty_query) else _FENCE
+    fenced = not fence
     detected = None
     try:
         # Don't steal already queued input, or flush it on entering/leaving cbreak.
@@ -316,10 +325,10 @@ def _query_background(
             probe = _WIDTH_PROBE if probe_width else _CURSOR_PROBE if probe_cursor else b""
             os.write(
                 query_fd,
-                glide_query + drawer_query + kitty_query + b"\x1b]11;?\x1b\\" + probe,
+                glide_query + drawer_query + kitty_query + b"\x1b]11;?\x1b\\" + probe + fence,
             )
             deadline = time.monotonic() + timeout
-            while detected is None or not measured:
+            while detected is None or not measured or not fenced:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
                     break
@@ -335,6 +344,10 @@ def _query_background(
                     measured = (
                         _measure_width(response) if probe_width else _measure_cursor(response)
                     )
+                if not fenced and chunk == b"c":
+                    fenced = _FENCE_REPLY.search(response) is not None
+            if fence:
+                response[:] = _FENCE_REPLY.sub(b"", response, count=1)
             if glide_query:
                 _glide_protocol = None
                 _take_glide_reply(response)

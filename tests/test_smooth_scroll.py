@@ -19,6 +19,7 @@ from pcode.ui import TerminalOutput, Transcript
 
 REPLY = b"\x1b_smooth;ok;%d\x1b\\" % smooth_scroll.PROTOCOL
 BACKGROUND = b"\x1b]11;rgb:0000/0000/0000\x1b\\"
+DA1 = b"\x1b[?62;22c"
 
 
 def test_glide_settles_and_never_exceeds_its_cap():
@@ -84,6 +85,7 @@ def _probe(
     probe_glide=True,
     probe_drawer=False,
     background=True,
+    late=b"",
 ):
     """Run the startup query on a pty; return what was sent and the leftover input."""
     master, slave = pty.openpty()
@@ -98,7 +100,8 @@ def _probe(
     def terminal():
         if select.select([master], [], [], 2)[0]:
             received.append(os.read(master, 1024))
-            os.write(master, answer + (BACKGROUND if background else b""))
+            # The device attributes reply answers the probe's fence.
+            os.write(master, answer + (BACKGROUND if background else b"") + late + DA1)
 
     worker = threading.Thread(target=terminal)
     try:
@@ -117,6 +120,20 @@ def _probe(
         os.close(master)
         os.close(slave)
     return b"".join(received), bytes(theme._pending_input)
+
+
+def test_probe_waits_for_a_reply_that_follows_the_background_one(monkeypatch):
+    # The fence, not the background reply, ends the wait once a capability
+    # was asked, so a terminal that answers out of order is still heard.
+    sent, left = _probe(monkeypatch, late=REPLY)
+    assert sent.endswith(b"\x1b[c")
+    assert theme.glide_supported()
+    assert left == b""
+
+
+def test_no_fence_without_a_capability_query(monkeypatch):
+    sent, _ = _probe(monkeypatch, term="xterm-256color")
+    assert b"\x1b[c" not in sent
 
 
 def test_probe_finds_a_terminal_that_glides(monkeypatch):
@@ -172,7 +189,8 @@ def test_the_drawer_is_not_asked_after_unless_wanted(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "reply", [REPLY.decode(), "\x1b_smooth;error;7\x1b\\", "\x1b_pcode;ok;1\x1b\\"]
+    "reply",
+    [REPLY.decode(), "\x1b_smooth;error;7\x1b\\", "\x1b_pcode;ok;1\x1b\\", "\x1b[?62;22;52c"],
 )
 def test_a_late_reply_is_kept_out_of_typing(reply):
     text = "ab" + reply + "c\x1b[A"
