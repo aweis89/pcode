@@ -12,7 +12,8 @@ show and never carries it:
     ESC _ pcode;focus ESC \\                 (from the drawer) give the keyboard back
     ESC _ pcode;session;<id> ESC \\          this pane shows session <id> (empty: none);
                                             restored windows run `pcode -c <id>` there
-    ESC _ pcode;toast;<dy>;<ms>;<text> ESC \\ a brief confirmation over the pane (`toast`)
+    ESC _ pcode;toast;<dy>;<ms>;<base64> ESC \\ a brief confirmation over the pane (`toast`);
+                                            empty text hides the one on show
 
 The drawer's terminal runs `pcode.btw_tail` with the session host's own Python
 (`HostEntry.python`), which connects to the host as an observer
@@ -82,8 +83,15 @@ def toast(text: str, *, rows_above: int, seconds: float) -> str:
     can end the APC.
     """
     plain = " ".join("".join(c if c.isprintable() else " " for c in text).split())
-    encoded = base64.b64encode(plain[:TOAST_MAX].encode("utf-8", "replace")).decode("ascii")
+    if len(plain) > TOAST_MAX:
+        plain = plain[: TOAST_MAX - 1] + "…"
+    encoded = base64.b64encode(plain.encode("utf-8", "replace")).decode("ascii")
     return f"\x1b_pcode;toast;{max(0, rows_above)};{max(0, round(seconds * 1000))};{encoded}\x1b\\"
+
+
+def hide_toast() -> str:
+    """Hide the toast on show, if any: a toast with no text."""
+    return "\x1b_pcode;toast;0;0;\x1b\\"
 
 
 _SESSION = re.compile(r"[0-9A-Za-z_-]{1,64}")

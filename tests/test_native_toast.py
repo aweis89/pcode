@@ -26,14 +26,17 @@ def test_toast_is_one_plain_line_that_cannot_end_the_apc():
     assert (rows, ms) == ("2", "5000")
     text = base64.b64decode(encoded).decode()
     assert text.startswith("Copied \\ code block")
-    assert len(text) == drawer.TOAST_MAX
+    assert len(text) == drawer.TOAST_MAX and text.endswith("…")
     assert drawer.toast("x", rows_above=-3, seconds=-1).startswith("\x1b_pcode;toast;0;0;")
 
 
-def render(monkeypatch, protocol, *flashes):
-    """Each notice flashed then rendered: the output written, and what the pane drew."""
+def render(monkeypatch, protocol, *flashes, prefs=None):
+    """Each notice flashed then rendered: the output written, and what the pane drew.
+
+    A flash of "" clears the notice early, as a finished job's progress does.
+    """
     monkeypatch.setattr(theme, "_popup_protocol", protocol)
-    monkeypatch.setattr(preferences, "load_preferences", lambda: {})
+    monkeypatch.setattr(preferences, "load_preferences", lambda: prefs or {})
 
     async def run():
         stream = StringIO()
@@ -51,7 +54,9 @@ def render(monkeypatch, protocol, *flashes):
             screens = []
             with set_app(session.app):
                 for text in flashes:
-                    if text is not None:
+                    if text == "":
+                        app.activity.notice = ""
+                    elif text is not None:
                         app.activity.flash(text)
                     session.app.renderer.render(session.app, session.app.layout)
                     session.app.after_render.fire()
@@ -83,3 +88,25 @@ def test_an_older_terminal_draws_the_notice_in_the_pane(monkeypatch):
     written, screens = render(monkeypatch, drawer.TOAST_PROTOCOL - 1, "Copied answer.")
     assert "pcode;toast" not in written
     assert "Copied answer." in screens[0]
+
+
+def test_a_notice_cleared_early_hides_its_toast(monkeypatch):
+    written, _ = render(monkeypatch, drawer.TOAST_PROTOCOL, "Merging ▸ pcode…", "", None)
+    assert written.count(drawer.hide_toast()) == 1
+
+
+def test_popup_view_popup_keeps_the_notice_in_the_pane(monkeypatch):
+    prefs = {"popup_view": "popup"}
+    written, screens = render(monkeypatch, drawer.TOAST_PROTOCOL, "Copied answer.", prefs=prefs)
+    assert "pcode;toast" not in written
+    assert "Copied answer." in screens[0]
+
+
+def test_a_host_sends_a_flash_in_one_update():
+    from pcode.host import MirroredActivity
+
+    updates = []
+    activity = MirroredActivity(updates.append)
+    activity.flash("Copied answer.")
+    assert len(updates) == 1
+    assert updates[0]["notice"] == "Copied answer." and "notice_expires" in updates[0]
