@@ -696,14 +696,6 @@ def status_parts(status: str) -> tuple[str, str]:
 
 
 ASCII_SPINNERS = {"spinner": "line", "tool_spinner": "balloon"}
-# With Nerd Font icons, frames drawn in the same full-cell circle as the
-# task icons (`cod-pass`, `cod-issues`), so the spinner lines up with them
-# where braille and `◜◝◞◟` sit small and high. The model gets a filling
-# pie (md-circle_slice_1..8), a tool call the arc (extra-progress_spinner_1..6).
-NERD_SPINNERS = {
-    "spinner": [chr(0xF0A9E + i) for i in range(8)],
-    "tool_spinner": [chr(0xEE06 + i) for i in range(6)],
-}
 
 
 def status_spinner(setting: str = "spinner") -> Spinner:
@@ -720,7 +712,7 @@ def status_spinner(setting: str = "spinner") -> Spinner:
         name = ASCII_SPINNERS[setting]
     spinner = Spinner(name)
     if glyphs.nerd():
-        spinner.frames = NERD_SPINNERS[setting]
+        spinner.frames = glyphs.NERD_SPINNERS[setting]
         spinner.interval = 100
     # Every frame is a full layout pass (~2-3ms), so the animation loop alone
     # costs a few percent of a core for the length of a turn. Rich's built-in

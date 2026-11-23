@@ -274,6 +274,12 @@ def test_nerd_spinners_share_the_task_icons_circle(monkeypatch):
     model, tool = status_spinner(), status_spinner("tool_spinner")
     assert model.frames == [chr(0xF0A9E + i) for i in range(8)]  # md-circle_slice_1..8
     assert tool.frames == [chr(0xEE06 + i) for i in range(6)]  # extra-progress_spinner_1..6
+    # The row sanitizers keep the frames rather than blanking them as unknown PUA.
+    for frame in model.frames + tool.frames:
+        assert fit_fragments([("class:activity.spinner", f"{frame} ")], 40)[0][1] == f"{frame} "
+        row = panel_fragments([("class:plan.in_progress", f"{frame} step")], 40)
+        assert frame in "".join(text for _, text in row)
+        assert frame.encode("pcode-ascii-utf-8") in (b"o", b"*")
     monkeypatch.setattr(glyphs, "_nerd", False)
     assert status_spinner().frames != model.frames
 

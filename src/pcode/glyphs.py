@@ -57,9 +57,17 @@ NERD_ICONS: dict[str, str] = {
     "tool_done": "\ueab2",  # cod-check
     "turn_cancelled": "\uf4b7",  # oct-skip
 }
+# Spinner frames for Nerd Font mode, drawn in the same full-cell circle as the
+# task icons (`cod-pass`, `cod-issues`), so they line up where braille and
+# `◜◝◞◟` sit small and high. The model gets a filling pie
+# (md-circle_slice_1..8), a tool call the arc (extra-progress_spinner_1..6).
+NERD_SPINNERS: dict[str, list[str]] = {
+    "spinner": [chr(0xF0A9E + i) for i in range(8)],
+    "tool_spinner": [chr(0xEE06 + i) for i in range(6)],
+}
 # Private Use Area chars are not `str.isprintable()` in Python; `plain()`
 # preserves only this known set so untrusted PUA input is still sanitized.
-NERD_ICON_CHARS: frozenset[str] = frozenset(NERD_ICONS.values())
+NERD_ICON_CHARS: frozenset[str] = frozenset(NERD_ICONS.values()).union(*NERD_SPINNERS.values())
 
 # Symbols outside the ranges `_by_name` sorts out.
 _SYMBOLS = {
@@ -106,6 +114,8 @@ _SYMBOLS = {
     "\ueab2": "v",
     "\uea76": "x",
 }
+_SYMBOLS.update(dict.fromkeys(NERD_SPINNERS["spinner"], "o"))
+_SYMBOLS.update(dict.fromkeys(NERD_SPINNERS["tool_spinner"], "*"))
 
 # Unicode blocks drawn from by name: box drawing, block elements, geometric
 # shapes, arrows and braille (spinners).
