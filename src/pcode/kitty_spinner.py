@@ -61,6 +61,9 @@ class SlotSpec:
     rgb1: tuple[int, int, int]
     rgb2: tuple[int, int, int]
     is_light: bool = False
+    # Drawn toward the left of a 2x1 box, so it sits over a 1-cell icon
+    # column and its right cell is the gap before the row's text.
+    inset: bool = False
 
 
 STYLES: dict[str, StyleSpec] = {
@@ -84,6 +87,8 @@ SLOTS: dict[str, int] = {
     "accent": 0x706303,
     "aside": 0x706304,
     "startup": 0x706305,
+    "task": 0x706306,
+    "agent": 0x706307,
 }
 
 # prompt_toolkit style classes encoding each slot's 24-bit image ID in fg RGB.
@@ -141,6 +146,14 @@ def placeholder_text(cols: int = 1) -> str:
     if cols > len(DIACRITICS):
         raise ValueError(f"cols={cols} exceeds supported diacritics ({len(DIACRITICS)})")
     return "".join(f"{PLACEHOLDER}{DIACRITICS[0]}{DIACRITICS[c]}" for c in range(cols))
+
+
+# An inset slot's placeholder: a 2x1 image whose right cell stands in for the
+# space before the row's text, so the text lines up with rows whose icon is
+# one cell. That leaves room for a spinner as tall as `✔`, which 1x1 is not.
+INSET_ICON = placeholder_text(2)
+# An inset image's centre, in pixels from its left edge.
+INSET_CX = 20.5
 
 
 def smooth_style_for(setting: str, configured: str, default: str) -> str | None:
@@ -418,18 +431,27 @@ class _Canvas:
         return top_pad + bytes(buf) + bot_pad
 
 
-@cache
 def _grid_1x1() -> tuple[int, int, tuple[tuple[float, float, float, float], ...], float]:
-    cx = 0.5 * CELL_W
+    return _grid(1, 0.5 * CELL_W, 1.42, 1.55)
+
+
+@cache
+def _grid(
+    cols: int, cx: float, reach: float, aa_px: float
+) -> tuple[int, int, tuple[tuple[float, float, float, float], ...], float]:
+    """Polar coordinates of a `cols`-wide box's rows within `reach` of its centre.
+
+    `cx` is the centre's pixel column, and distances are in half-cell widths.
+    """
     cy = 0.50 * CELL_H
     half_s = 0.5 * CELL_W
-    aa = 1.55 / half_s
-    y_min = max(0, int(cy - half_s * 1.42))
-    y_max = min(CELL_H, int(cy + half_s * 1.42) + 1)
+    aa = aa_px / half_s
+    y_min = max(0, int(cy - half_s * reach))
+    y_max = min(CELL_H, int(cy + half_s * reach) + 1)
     coords: list[tuple[float, float, float, float]] = []
     for y in range(y_min, y_max):
         py = (y + 0.5 - cy) / half_s
-        for x in range(CELL_W):
+        for x in range(cols * CELL_W):
             px = (x + 0.5 - cx) / half_s
             coords.append((px, py, math.hypot(px, py), math.atan2(py, px)))
     return y_min, y_max, tuple(coords), aa
@@ -441,10 +463,15 @@ def _render_helix(
     c2: tuple[float, float, float],
     is_light: bool,
     cols: int,
+    inset: bool = False,
 ) -> bytes:
     """Horizontal DNA helix (5 paired glossy beads at 2x1, compact 3-pair at 1x1)."""
     cv = _Canvas(cols)
-    if cols >= 2:
+    if cols >= 2 and inset:
+        # Four pairs, as far apart as five, in the room an inset leaves.
+        cv.cx = INSET_CX
+        n_pairs, span, amp, phase_step, r_back, r_span = 4, 1.15, 0.84, 0.98, 0.16, 0.135
+    elif cols >= 2:
         n_pairs, span, amp, phase_step, r_back, r_span = 5, 1.54, 0.84, 0.78, 0.16, 0.135
     else:
         n_pairs, span, amp, phase_step, r_back, r_span = 3, 0.62, 0.78, 1.05, 0.13, 0.10
@@ -475,12 +502,18 @@ def _render_gyro(
     c2: tuple[float, float, float],
     is_light: bool,
     cols: int,
+    inset: bool = False,
 ) -> bytes:
     """3D counter-precessing orbital rings + glowing core (2x1 square or compact 1x1)."""
     cv = _Canvas(cols)
     ang = phase * TAU
     wide = cols >= 2
-    r_ring = 1.32 if wide else 0.74
+    r_ring = 0.74
+    if wide:
+        r_ring = 1.32
+    if wide and inset:
+        # Smaller, to leave the gap before the row's text.
+        cv.cx, r_ring = INSET_CX, 1.18
     steps = 28 if wide else 22
     prims: list[tuple[float, str, tuple[Any, ...]]] = []
 
@@ -653,24 +686,50 @@ def _render_swept(
     return top_pad + bytes(buf) + bot_pad
 
 
+@dataclass(frozen=True)
+class _DualShape:
+    """Where `dual` sits in its box and how heavy its arcs are."""
+
+    cx: float  # centre, in pixels from the box's left edge
+    reach: float  # outer extent, anti-aliasing included, in half-cell widths
+    aa_px: float
+    r1: float  # outer arc radius and half-thickness
+    w1: float
+    r2: float  # inner arc
+    w2: float
+    fade1: float  # how far each tail fades
+    fade2: float
+
+
+_DUAL_CELL = _DualShape(0.5 * CELL_W, 1.42, 1.55, 0.79, 0.095, 0.45, 0.090, 0.76, 0.65)
+# About 70% of the cell's height, like `✔`, with heavier arcs to match it.
+_DUAL_INSET = _DualShape(INSET_CX, 1.47, 1.10, 1.25, 0.135, 0.712, 0.125, 0.50, 0.45)
+
+
 def _render_dual(
     t_sec: float,
     c1: tuple[float, float, float],
     c2: tuple[float, float, float],
     is_light: bool,
+    cols: int = 1,
+    inset: bool = False,
 ) -> bytes:
-    """1x1 counter-rotating dual crescents with subtle dual-tone and lit tips."""
-    y_min, y_max, coords, aa = _grid_1x1()
-    top_pad = b"\x00" * (y_min * CELL_W * 4)
-    bot_pad = b"\x00" * ((CELL_H - y_max) * CELL_W * 4)
-    buf = bytearray((y_max - y_min) * CELL_W * 4)
+    """Counter-rotating dual crescents with subtle dual-tone and lit tips."""
+    shape = _DUAL_INSET if inset and cols >= 2 else _DUAL_CELL
+    y_min, y_max, coords, aa = _grid(cols, shape.cx, shape.reach, shape.aa_px)
+    width = cols * CELL_W
+    top_pad = b"\x00" * (y_min * width * 4)
+    bot_pad = b"\x00" * ((CELL_H - y_max) * width * 4)
+    buf = bytearray((y_max - y_min) * width * 4)
     idx = 0
     h1, h2 = t_sec * 3.6, -t_sec * 5.4
+    r1, w1, r2, w2 = shape.r1, shape.w1, shape.r2, shape.w2
+    fade1, fade2 = shape.fade1, shape.fade2
     for px, py, dist, ang in coords:
-        d1, f1 = _sd_arc_cap(px, py, dist, ang, 0.79, 0.095, h1, 2.65)
-        d2, f2 = _sd_arc_cap(px, py, dist, ang, 0.45, 0.090, h2, 2.45)
-        a1 = _smoothstep(aa, -aa, d1) * (1.0 - 0.76 * f1)
-        a2 = _smoothstep(aa, -aa, d2) * (0.90 - 0.65 * f2)
+        d1, f1 = _sd_arc_cap(px, py, dist, ang, r1, w1, h1, 2.65)
+        d2, f2 = _sd_arc_cap(px, py, dist, ang, r2, w2, h2, 2.45)
+        a1 = _smoothstep(aa, -aa, d1) * (1.0 - fade1 * f1)
+        a2 = _smoothstep(aa, -aa, d2) * (0.90 - fade2 * f2)
         if a1 > 0.002 or a2 > 0.002:
             if a1 >= a2:
                 a = a1
@@ -775,15 +834,15 @@ def _render_frame(spec: SlotSpec, frame_idx: int) -> bytes:
     c2 = _norm(spec.rgb2)
     style = spec.style
     if style == "helix":
-        return _render_helix(phase, c1, c2, spec.is_light, spec.cols)
+        return _render_helix(phase, c1, c2, spec.is_light, spec.cols, spec.inset)
     if style == "gyro":
-        return _render_gyro(phase, c1, c2, spec.is_light, spec.cols)
+        return _render_gyro(phase, c1, c2, spec.is_light, spec.cols, spec.inset)
     if style == "octa":
         return _render_octa(phase, c1, c2, spec.is_light)
     if style == "swept":
         return _render_swept(t_sec, c1, c2, spec.is_light)
     if style == "dual":
-        return _render_dual(t_sec, c1, c2, spec.is_light)
+        return _render_dual(t_sec, c1, c2, spec.is_light, spec.cols, spec.inset)
     if style == "orbit":
         return _render_orbit(t_sec, c1, c2, spec.is_light)
     if style == "wave":
@@ -899,10 +958,10 @@ class KittySpinners:
         return self.enabled and self.ready and slot in self._uploaded_slots
 
     def _default_cols(self, slot: str) -> int:
-        if slot == "status" and self.status_style is not None:
+        if slot in ("status", "agent") and self.status_style is not None:
             return style_cols(self.status_style)
-        if slot == "startup":
-            return style_cols("gyro")
+        if slot in ("startup", "aside", "task"):
+            return 2
         return 1
 
     def slot_cols(self, slot: str) -> int:
@@ -928,11 +987,21 @@ class KittySpinners:
                 accent_rgb,
                 is_light,
             )
-            slots["aside"] = SlotSpec("gyro", 1, muted_rgb, muted_alt_rgb, is_light)
+            slots["aside"] = SlotSpec("gyro", 2, muted_rgb, muted_alt_rgb, is_light, inset=True)
             slots["startup"] = SlotSpec("gyro", 2, heading_rgb, accent_rgb, is_light)
+            # Sub-agents are agents too, so they turn with the main agent's
+            # spinner: inset when it is a 2x1 one, to keep their text in place.
+            wide = style_cols(self.status_style) >= 2
+            slots["agent"] = SlotSpec(
+                self.status_style, 2 if wide else 1, heading_rgb, accent_rgb, is_light, wide
+            )
         if self.tool_style is not None:
             slots["tool"] = SlotSpec(self.tool_style, 1, muted_rgb, muted_alt_rgb, is_light)
             slots["accent"] = SlotSpec(self.tool_style, 1, accent_rgb, heading_rgb, is_light)
+            # Only `dual` has an inset shape; other styles leave task rows on
+            # the 1x1 accent slot.
+            if self.tool_style == "dual":
+                slots["task"] = SlotSpec("dual", 2, accent_rgb, heading_rgb, is_light, inset=True)
         return slots
 
     def sync(

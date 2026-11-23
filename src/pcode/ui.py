@@ -1257,7 +1257,10 @@ class Activity:
                 if aside.activity:
                     parts.append(plain(aside.activity, limit=None))
                 parts.append(f"{aside.elapsed:.0f}s")
-                rest = Text(" " + " \u00b7 ".join(parts))
+                # An inset spinner's right cell is its own gap, which keeps the
+                # text in line with the tool rows' above it.
+                gap = "" if spinner[1] == kitty_spinner.INSET_ICON else " "
+                rest = Text(gap + " \u00b7 ".join(parts))
                 rest.truncate(max(0, width - cell_len(spinner[1])), overflow="ellipsis")
                 rows.append([spinner, ("class:activity.aside", rest.plain)])
             else:
@@ -1404,8 +1407,13 @@ class Activity:
     def displayed_plan(self) -> list[dict]:
         return self.plan if self.plan_preview is None else self.plan_preview
 
-    def plan_rows(self, budget: int, spinner: str = ACTIVE_TASK_ICON):
-        """`spinner` marks the step in progress while a turn runs."""
+    def plan_rows(
+        self, budget: int, spinner: str = ACTIVE_TASK_ICON, agent_spinner: str | None = None
+    ):
+        """`spinner` marks the step in progress while a turn runs.
+
+        `agent_spinner`, when set, replaces each running sub-agent's `»`.
+        """
         if not self.tasks_shown:
             return []
         # Persisted task status describes unfinished work, not a live request.
@@ -1413,7 +1421,9 @@ class Activity:
         icon = spinner if self.status_shown else glyphs.icon("pending")
         # A configured height is room the user asked the tasks to fill.
         max_tasks = TASK_ROWS if self.tasks_max_height is None else budget
-        return task_panel_rows(self.displayed_plan, self.tools, budget, icon, max_tasks)
+        return task_panel_rows(
+            self.displayed_plan, self.tools, budget, icon, max_tasks, agent_spinner
+        )
 
     def hidden_step(self) -> str:
         """The active plan step, when the task panel is not showing it.
@@ -3548,9 +3558,17 @@ class PromptLayout:
         return self.tool_spinner_frame()
 
     def plan_spinner_icon(self) -> str:
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("task"):
+            return kitty_spinner.INSET_ICON
         if self.kitty_spinners is not None and self.kitty_spinners.active_for("accent"):
             return kitty_spinner.PLACEHOLDER
         return self.tool_spinner_frame()
+
+    def agent_spinner_icon(self) -> str | None:
+        """The main agent's spinner, for sub-agents, which are agents too."""
+        if self.kitty_spinners is not None and self.kitty_spinners.active_for("agent"):
+            return self.kitty_spinners.fragment("agent")[1]
+        return None
 
     def startup_spinner_mark(self, elapsed: float) -> str | tuple[str, str]:
         if self.kitty_spinners is not None and self.kitty_spinners.active_for("startup"):
@@ -3578,7 +3596,7 @@ class PromptLayout:
                 )
             )
         # The active step turns with the running commands' spinner.
-        return self.activity.plan_rows(budget, self.plan_spinner_icon())
+        return self.activity.plan_rows(budget, self.plan_spinner_icon(), self.agent_spinner_icon())
 
     @_per_render
     def preview_layout(self):

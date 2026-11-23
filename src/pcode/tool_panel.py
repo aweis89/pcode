@@ -4,9 +4,11 @@ import re
 from dataclasses import dataclass, field
 from time import monotonic
 
+from rich.cells import cell_len
 from rich.text import Text
 
 from pcode import glyphs
+from pcode.kitty_spinner import DIACRITICS, INSET_ICON, PLACEHOLDER
 from pcode.runtime import EditCompleted, ToolStarted, ToolSummary
 from pcode.tool_display import JOB_HANDLE_TOOLS, PLAN_TOOLS, command_preview, label, plain
 
@@ -48,6 +50,14 @@ AGENT_HUES = 3
 # parts. Only task and sub-agent rows qualify: other rows pass through whole.
 _TREE_GUIDE = re.compile(r"[│├└─ ]*")
 _PART_STYLED = re.compile(rf"plan\.({'|'.join(['agent', 'in_progress', *PLAN_ICONS])})\b")
+# A Kitty spinner standing in for a row's icon: its placeholder cells, each
+# with any row and column diacritics a multi-cell placement carries.
+_SPINNER = re.compile(f"(?:{PLACEHOLDER}[{''.join(DIACRITICS)}]*)+")
+
+
+def _spinner(line: str) -> re.Match[str] | None:
+    """The Kitty spinner just after a row's tree guides, if it has one."""
+    return _SPINNER.match(line, _TREE_GUIDE.match(line).end())
 
 
 @dataclass
@@ -86,16 +96,17 @@ class ToolCall:
         """Seconds so far; a settled call keeps the duration it finished with."""
         return (self.settled if self.settled is not None else monotonic()) - self.started
 
-    def line(self, *, timed: bool = True) -> str:
+    def line(self, *, timed: bool = True, agent_icon: str | None = None) -> str:
         """The call without a status icon; each surface supplies its own.
 
         `timed=False` leaves the duration out, for the status row, which
-        keeps its clock in a fixed column of its own.
+        keeps its clock in a fixed column of its own. `agent_icon` replaces a
+        delegate's `»`, as the task panel's animated spinner does.
         """
         event = self.event
         elapsed = self.elapsed if timed else None
         if event.name == DELEGATE:
-            return self._delegate_line(elapsed)
+            return self._delegate_line(elapsed, agent_icon or glyphs.icon("agent"))
         # A stated purpose is what this row is for: the widget is the one place
         # that shows a job while it runs, when the command has not paid off yet.
         command = (
@@ -116,7 +127,7 @@ class ToolCall:
         clock = "" if elapsed is None else f"{elapsed:.1f}s"
         return " · ".join(part for part in (label(event.name), state, clock, detail) if part)
 
-    def _delegate_line(self, elapsed: float | None) -> str:
+    def _delegate_line(self, elapsed: float | None, agent: str) -> str:
         """`» reviewing the fix · 5.5s · Thinking`: what the delegate is doing.
 
         The parent's stated purpose leads, since it is what tells delegates
@@ -136,17 +147,18 @@ class ToolCall:
             state = plain(event.activity) or "Starting"
         name = event.agent[:1].upper() + event.agent[1:] or label(event.name)
         clock = "" if elapsed is None else f"{elapsed:.1f}s"
-        agent = glyphs.icon("agent")
+        # An inset spinner's right cell is its own gap, as on a task row.
+        gap = "" if agent == INSET_ICON else " "
         if event.purpose:
             # Sessions saved before delegates recorded their agent had only workers.
             default = event.agent in ("", DEFAULT_AGENT)
             # Its own ` · ` would end the bold head partway through.
             purpose = plain(event.purpose.replace(" · ", " – "), PURPOSE_CELLS)
             head = purpose if default else f"{name}: {purpose}"
-            parts = (f"{agent} {head}", clock, state)
+            parts = (f"{agent}{gap}{head}", clock, state)
         else:
             task = event.task or plain(event.detail, limit=None)
-            parts = (f"{agent} {name}", clock, state, task)
+            parts = (f"{agent}{gap}{name}", clock, state, task)
         return " · ".join(part for part in parts if part)
 
 
@@ -291,7 +303,7 @@ class ToolHistory:
     def rows(self, count: int, *, nested: bool = False, icon: str = ACTIVE_TASK_ICON):
         return _tree_rows(self._nodes(count, icon), "" if nested else None)
 
-    def _nodes(self, count: int, icon: str) -> list[_PanelNode]:
+    def _nodes(self, count: int, icon: str, agent_icon: str | None = None) -> list[_PanelNode]:
         """Running sub-agents, each with a window of its plan beneath it.
 
         Only delegates get rows here. Ordinary calls, the parent's or a
@@ -308,7 +320,9 @@ class ToolHistory:
             # `»` stands in for a task icon: with a task's icon in front, a
             # sub-agent would read as one of the parent's tasks. Its hue,
             # shared with its plan rows, tells parallel sub-agents apart.
-            node = _PanelNode((f"class:plan.agent,agent.hue.{parent.hue}", parent.line()))
+            node = _PanelNode(
+                (f"class:plan.agent,agent.hue.{parent.hue}", parent.line(agent_icon=agent_icon))
+            )
             nodes.append(node)
             plan = self.plans.get(parent.event.call_id, [])
             steps, _ = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
@@ -330,7 +344,9 @@ def plan_row(item: dict, active_icon: str, hue: int | None = None) -> tuple[str,
     status = item["status"] if item["status"] in (*PLAN_ICONS, "in_progress") else "pending"
     style = f"class:plan.{status}" + ("" if hue is None else f",agent.hue.{hue}")
     icon = active_icon if status == "in_progress" else glyphs.icon(status)
-    return style, f"{icon} {plain(item['content'], limit=None)}"
+    # The wide task spinner's right cell is its own gap before the text.
+    gap = "" if icon == INSET_ICON else " "
+    return style, f"{icon}{gap}{plain(item['content'], limit=None)}"
 
 
 def task_panel_rows(
@@ -339,6 +355,7 @@ def task_panel_rows(
     budget: int,
     active_icon: str,
     max_tasks: int = TASK_ROWS,
+    agent_icon: str | None = None,
 ):
     """A bounded task viewport, with running delegates below the active task.
 
@@ -352,7 +369,7 @@ def task_panel_rows(
     agent_rows = min(DELEGATE_ROWS + tools.plan_rows(), tools.wanted(), room)
     steps, active = plan_window(items, min(max_tasks, len(items), budget - agent_rows))
     nodes = []
-    agent_nodes = tools._nodes(agent_rows, active_icon)
+    agent_nodes = tools._nodes(agent_rows, active_icon, agent_icon)
     for index in steps:
         node = _PanelNode(plan_row(items[index], active_icon))
         nodes.append(node)
@@ -377,19 +394,25 @@ def panel_fragments(lines: list, width: int):
             fragments.extend(row)
             continue
         style, line = row
-        if "plan.in_progress" in style:
-            guides = _TREE_GUIDE.match(line).end()
-            if line[guides : guides + 1] == "\U0010eeee":
-                sanitized = line[: guides + 1] + plain(line[guides + 1 :], limit=None)
-            else:
-                sanitized = plain(line, limit=None)
+        width = max(1, width)
+        # `plain` would blank a spinner's placeholder cells and strand their
+        # diacritics, so only the text after one is cleaned. Only that text
+        # is clipped too: a spinner shows whole, or not at all.
+        spinner = _spinner(line) if ("plan.in_progress" in style or "plan.agent" in style) else None
+        head = line[: spinner.end()] if spinner is not None else ""
+        if head and cell_len(head) <= width:
+            text = Text(plain(line[spinner.end() :], limit=None))
+            room = width - cell_len(head)
+            # Rich leaves text alone when asked to truncate it to nothing.
+            text.truncate(room, overflow="ellipsis")
+            clipped = head + (text.plain if room else "")
         else:
-            sanitized = plain(line, limit=None)
-        text = Text(sanitized)
-        text.truncate(max(1, width), overflow="ellipsis")
+            text = Text(plain(line, limit=None))
+            text.truncate(width, overflow="ellipsis")
+            clipped = text.plain
         if index:
             fragments.append(("", "\n"))
-        fragments.extend(_row_parts(style, text.plain))
+        fragments.extend(_row_parts(style, clipped))
     return fragments
 
 
@@ -399,24 +422,32 @@ def _row_parts(style: str, line: str) -> list[tuple[str, str]]:
     The guides stay muted whatever the row's status, so a dimmed row keeps
     its place in the tree. A task's icon takes its status's colour even under
     a sub-agent's hue; a sub-agent's `»` and head (its purpose, or name) go bold in that hue.
+    A Kitty spinner in the icon's place gets its slot's image: the main
+    agent's on a sub-agent row, and the wide task spinner, else the 1x1
+    accent one, on the active task.
     """
     kind = _PART_STYLED.search(style)
     if kind is None:
         return [(style, line)]
     guides = _TREE_GUIDE.match(line).end()
+    spinner = _spinner(line) if kind[1] in ("agent", "in_progress") else None
     icon_end = line.find(" ", guides)
     icon_end = len(line) if icon_end < 0 else icon_end
+    parts = [("class:plan.tree", line[:guides])]
     if kind[1] == "agent":
-        name_end = line.find(" · ", icon_end)
+        head = guides
+        if spinner is not None:
+            parts.append(("class:kitty.spinner.agent", spinner[0]))
+            head = spinner.end()
+        name_end = line.find(" · ", head)
         icon_end, icon_style = (len(line) if name_end < 0 else name_end), f"{style} bold"
+        parts.append((icon_style, line[head:icon_end]))
     else:
         icon_style = f"class:plan.icon.{kind[1]}"
-        if kind[1] == "in_progress" and line[guides : guides + 1] == "\U0010eeee":
-            icon_end = guides + 1
-            icon_style = "class:kitty.spinner.accent"
-    parts = [
-        ("class:plan.tree", line[:guides]),
-        (icon_style, line[guides:icon_end]),
-        (style, line[icon_end:]),
-    ]
+        if spinner is not None:
+            icon_end = spinner.end()
+            wide = spinner[0] == INSET_ICON
+            icon_style = f"class:kitty.spinner.{'task' if wide else 'accent'}"
+        parts.append((icon_style, line[guides:icon_end]))
+    parts.append((style, line[icon_end:]))
     return [part for part in parts if part[1]]
