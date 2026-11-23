@@ -1,7 +1,7 @@
 # Reader mode plan
 
-Status: phases 1 and 2 built in the fork (`ghostty-smooth` commits `9c5ca8751`
-and `be9f810b9`, branch `pcode-smooth`), not yet judged by eye. Builds on the terminal-side glide in
+Status: phases 1 and 2 built in the fork (`ghostty-smooth` commits `9c5ca8751`,
+`be9f810b9` and `cf836a3f0`, branch `pcode-smooth`); first feedback applied. Builds on the terminal-side glide in
 [ghostty-app-plan.md](ghostty-app-plan.md) (protocol 9, `smooth_scroll.py`).
 
 ## Goal
@@ -10,10 +10,16 @@ Read a long response without chasing it. A new turn can stop after its first
 page instead of scrolling away, and vim-style keys move through the
 conversation with the same 120 Hz glide that streamed output has:
 
-- `g` to the start of the current response, `G` back to the live bottom.
-- `Space`, `d`, `u`, `j`, `k` to page and step.
-- `c` to cruise at a steady reading speed, `+` and `-` to change it.
-- `[[` and `]]` between turns, `{` and `}` between code blocks and diffs.
+- `g` to the top of the chat, `G` back to the live bottom.
+- `[` to the start of the current request (again: the turn before), `]` to
+  the next one. The turn mark sits on the prompt line, so the request and the
+  response under it are one jump.
+- `{` and `}` between code blocks and diffs.
+- `Space`, `d`, `u` to page; `j`, `k` scroll steadily while held.
+- `c` to cruise at a steady reading speed, `=`/`+` and `-` to change it.
+
+All single keys: as a sequence (`gg`, `[[`), the first key followed by any
+other types both into pcode.
 
 ## Decisions
 
@@ -84,7 +90,9 @@ scroll to top or bottom, plus new `jump_to_mark:KIND,±1`, `cruise` and
   alternate screen): the glide remembers where it left the viewport and stops
   if that changed, rather than gliding on from the new place.
 - Default `reader` table, entered with Cmd+R (Ctrl+Shift+R off macOS): `j`/`k`,
-  arrows, `Space`/`f`/`b`, `d`/`u` (and Ctrl), `g`, `G`, `c`, `+`/`-`, and
+  arrows (held: `smooth_hold`, a steady 12 rows/s from press to release, then
+  on to the next whole row, so a tap moves one), `Space`/`f`/`b`, `d`/`u` (and
+  Ctrl), `g`, `G`, `c`, `=`/`+`/`-`, and
   `q`/`Esc`/`i` to leave and go back to the bottom. Shortcuts held with Ctrl,
   Alt or Cmd skip the table's catch_all and reach their usual bindings. Any other
   key leaves the table and still reaches pcode (`unconsumed:catch_all`), which
@@ -94,7 +102,8 @@ scroll to top or bottom, plus new `jump_to_mark:KIND,±1`, `cruise` and
 - Trap found on the way: a table's `catch_all` matched a lone modifier press,
   so holding Shift to type `G` would have left the table first. `getEvent` now
   never matches `catch_all` for a modifier key.
-- `g` goes to the top of scrollback until marks exist.
+- `g` goes to the top of scrollback, and stays that way.
+- The spring is stiffness 160 (first tried 400, too fast).
 
 ### 2. Cruise (fork only): built
 
@@ -106,7 +115,9 @@ scroll to top or bottom, plus new `jump_to_mark:KIND,±1`, `cruise` and
 
 - Fork: `mark`, `jump_to_mark`, protocol bumped to 10.
 - pcode: emit marks in `_enqueue()` where rows are split, only when the
-  terminal answered 10. `g` becomes "start of the current response".
+  terminal answered 10.
+- Keys: `[`/`]` for turns (`[` lands on the current request first), `{`/`}`
+  for code blocks and diffs.
 
 ### 4. Park
 
