@@ -11,10 +11,18 @@ has `Text.wrap` mark the rows it split with zero-width characters, which
 
 Positions are (row, character index) pairs, as prompt_toolkit's window hands
 them to a control's mouse handler: a wide character is one position.
+
+prompt_toolkit sends each mouse report to whatever is under the pointer, so a
+drag that strays onto a scroll bar, a frame's padding or the pane beside it
+would lose its moves and its release. `drag_capture` keys a popup on: while a
+pane's drag is held, every move and the release go to that pane, clamped to
+its edges.
 """
 
 import re
 import time
+import weakref
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,6 +31,11 @@ from dataclasses import dataclass
 from prompt_toolkit.application import get_app
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.bindings.mouse import load_mouse_bindings
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.mouse_handlers import MouseHandlers
 from prompt_toolkit.layout.processors import Processor, Transformation, TransformationInput
 from prompt_toolkit.layout.utils import explode_text_fragments
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
@@ -164,6 +177,8 @@ class Selection:
     def __init__(self, rows: Callable[[], list[Row]], on_select: Callable[[str], None]):
         self.rows = rows
         self.on_select = on_select
+        # The window drawing these rows: a drag held here is captured to it.
+        self.window: Window | None = None
         self.anchor: Position | None = None
         self.cursor: Position | None = None
         # Whether anything is selected: a drag that moved, or a word or line
@@ -231,9 +246,16 @@ class Selection:
         return "\n".join(pieces).strip("\n")
 
     def handle(self, event: MouseEvent):
-        """Track a press, drag and release; NotImplemented for anything else (the wheel)."""
+        """Track a press, drag and release.
+
+        None when what is drawn changed, so prompt_toolkit redraws; otherwise
+        NotImplemented, as for anything else (the wheel). Every redraw is
+        output, and a terminal restarts its cursor's blink on any output, so
+        a plain click must not cause one.
+        """
         position = (event.position.y, event.position.x)
         kind = event.event_type
+        shown = self.span()
         # urxvt's encoding reports no button on a press.
         if kind == MouseEventType.MOUSE_DOWN and event.button in (
             MouseButton.LEFT,
@@ -241,23 +263,27 @@ class Selection:
         ):
             self.anchor = self.cursor = position
             self.active, self.pressed = False, True
-            return None
-        if kind == MouseEventType.MOUSE_MOVE and self.pressed:
+            if self.window is not None:
+                _held[get_app()] = self
+        elif kind == MouseEventType.MOUSE_MOVE and self.pressed:
             # Any-motion tracking reports hovering too. A move with no button
-            # held means the release landed outside this pane: end the drag
-            # where it last was, not where the pointer came back in.
+            # held means the release was never seen: end the drag where it
+            # last was, not where the pointer came back in.
             if event.button == MouseButton.NONE:
-                self._release(self.cursor or position, click=False)
+                if self._release(self.cursor or position, click=False):
+                    return None
             else:
                 self.cursor = position
                 self.active = self.active or position != self.anchor
-            return None
-        if kind == MouseEventType.MOUSE_UP and self.pressed:
-            self._release(position, click=True)
-            return None
-        return NotImplemented
+        elif kind == MouseEventType.MOUSE_UP and self.pressed:
+            if self._release(position, click=True):
+                return None
+        else:
+            return NotImplemented
+        return None if self.span() != shown else NotImplemented
 
-    def _release(self, position: Position, *, click: bool) -> None:
+    def _release(self, position: Position, *, click: bool) -> bool:
+        """End the drag at ``position``; whether it copied anything."""
         self.pressed = False
         self.cursor = position
         self.active = self.active or position != self.anchor
@@ -267,6 +293,7 @@ class Selection:
         selected = self.text()
         if selected:
             self.on_select(selected)
+        return bool(selected)
 
     def _count_click(self, position: Position) -> int:
         now = time.monotonic()
@@ -317,6 +344,7 @@ def copy_drags(area, notify: Callable[[str], None]) -> None:
         lambda: [Row(line) for line in area.document.lines],
         lambda text: notify(copy_selected(text)),
     )
+    selection.window = area.window
 
     def source(event: MouseEvent) -> MouseEvent:
         # The window reports drawn columns; a prompt or an ellipsis shifts them.
@@ -334,18 +362,20 @@ def copy_drags(area, notify: Callable[[str], None]) -> None:
         if kind in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
             return handle(event)
         if kind == MouseEventType.MOUSE_DOWN:
-            taken = selection.handle(source(event)) is None
-            result = handle(event)
-            return None if taken else result
+            redraw = selection.handle(source(event)) is None
+            if not selection.pressed:
+                return handle(event)
+            # The press is the drag's; the buffer's cursor still follows it.
+            return None if handle(event) is None or redraw else NotImplemented
         if not selection.pressed:
             # A drag that began elsewhere: never the buffer's own selection.
-            return None if kind == MouseEventType.MOUSE_UP else NotImplemented
-        selection.handle(source(event))
+            return NotImplemented
+        result = selection.handle(source(event))
         clicked = event.event_type == MouseEventType.MOUSE_UP and selection.span() is None
         if clicked and get_app().layout.current_control is not control:
             # A plain click on an unfocused area: let it focus, if it does that.
-            handle(event)
-        return None
+            return handle(event)
+        return result
 
     def forget(_) -> None:
         if not selection.pressed:
@@ -363,3 +393,83 @@ def copy_drags(area, notify: Callable[[str], None]) -> None:
     control.input_processors.insert(0, Highlight())
     area.buffer.on_text_changed += forget
     area.buffer.on_cursor_position_changed += forget
+
+
+# The selection whose drag is held, per app: popups run beside the main app.
+_held: "weakref.WeakKeyDictionary[object, Selection]" = weakref.WeakKeyDictionary()
+_DRAG_EVENTS = (MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP)
+
+
+def _to_window(window: Window, event: MouseEvent):
+    """Hand a screen-position ``event`` to ``window``'s control, clamped to what it drew.
+
+    Above the window is its first drawn row's start, below it the last row's
+    end, and past either side that row's nearest character: where a terminal's
+    own selection would stop.
+    """
+    info = window.render_info
+    if info is None or not info.visible_line_to_row_col:
+        return NotImplemented
+    # Content (row, column) to screen (y, x), as the window drew it last.
+    cells = {yx: rowcol for rowcol, yx in info._rowcol_to_yx.items()}
+    top, left = info._y_offset, info._x_offset
+    bottom = top + len(info.visible_line_to_row_col) - 1
+    right = left + info.window_width - 1
+    y, x = event.position.y, event.position.x
+    if y < top:
+        y, x = top, left
+    elif y > bottom:
+        y, x = bottom, right
+    # A wide character's right half, or a short row's end, draws no cell.
+    for x in range(min(max(x, left), right), left - 1, -1):
+        if (y, x) in cells:
+            row, column = cells[y, x]
+            break
+    else:
+        return NotImplemented
+    return window.content.mouse_handler(
+        MouseEvent(Point(column, row), event.event_type, event.button, event.modifiers)
+    )
+
+
+def drag_capture() -> KeyBindings:
+    """Mouse reports that send a held drag's moves and release to its own pane.
+
+    The report is still decoded by prompt_toolkit's own binding; only the
+    handler it looks up changes, for the length of that one report.
+    """
+    decode = next(
+        binding.handler
+        for binding in load_mouse_bindings().bindings
+        if binding.keys == (Keys.Vt100MouseEvent,)
+    )
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.Vt100MouseEvent)
+    def _(event):
+        held = _held.get(event.app)
+        if held is None or not held.pressed or held.window is None:
+            _held.pop(event.app, None)
+            return decode(event)
+        renderer = event.app.renderer
+        drawn = renderer.mouse_handlers
+
+        def route(mouse_event: MouseEvent):
+            if mouse_event.event_type in _DRAG_EVENTS:
+                return _to_window(held.window, mouse_event)
+            if mouse_event.event_type == MouseEventType.MOUSE_DOWN:
+                # The drag's release was never seen: this press starts anew.
+                held.pressed = False
+            position = mouse_event.position
+            return drawn.mouse_handlers[position.y][position.x](mouse_event)
+
+        captured = MouseHandlers()
+        captured.mouse_handlers = defaultdict(lambda: defaultdict(lambda: route))
+        renderer.mouse_handlers = captured
+        try:
+            return decode(event)
+        finally:
+            if renderer.mouse_handlers is captured:
+                renderer.mouse_handlers = drawn
+
+    return bindings

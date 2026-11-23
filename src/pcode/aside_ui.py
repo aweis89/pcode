@@ -587,9 +587,10 @@ class AsideBrowser:
         """The selected thread's questions, oldest first; empty when there is none."""
         return next((thread for thread in self.threads if thread[0].thread == self.selected), [])
 
-    def select(self, force: bool = False) -> None:
+    def select(self, force: bool = False) -> bool:
+        """Show the thread under the list's cursor; whether the pane was redrawn."""
         if self._refreshing:
-            return
+            return False
         row_index = self.list.document.cursor_position_row
         if row_index < len(self.threads):
             self.selected = self.threads[row_index][0].thread
@@ -606,7 +607,7 @@ class AsideBrowser:
             ),
         )
         if state == self._rendered and not force:
-            return
+            return False
         switched = self._rendered is None or state[0] != self._rendered[0]
         grew = not switched and len(state[1]) > len(self._rendered[1])
         self._rendered = state
@@ -619,6 +620,7 @@ class AsideBrowser:
             # A streaming repaint must not yank the reader away from where
             # they scrolled; one reading the tail keeps following it.
             self.detail.follow(blocks)
+        return True
 
     def follow_up(self, question: str) -> None:
         """Ask `question` in the selected thread; `ValueError` says why not."""
@@ -746,16 +748,22 @@ class AsideBrowser:
         async def follow():
             # Poll rather than subscribe: the records are plain data, and a
             # timer keeps elapsed times and the running count moving too.
+            # An idle tick draws nothing: every frame is output, and the
+            # terminal restarts the editor cursor's blink on any output.
+            was_running = False
             while True:
                 await asyncio.sleep(REFRESH_SECONDS)
+                running = bool(self.asides.running)
                 if [aside.id for aside in self.asides.items] != self._ids:
                     self.refresh()
-                elif self.asides.running:
+                elif running or was_running:
                     # List rows carry elapsed time and state; keep them moving,
-                    # repainting the answer only when it changed.
+                    # repainting the answer only when it changed. Once more
+                    # after the last one ends, for its row's final state.
                     self.refresh(force=False)
-                else:
-                    self.select()
+                elif not self.select():
+                    continue
+                was_running = running
                 self.app.invalidate()
 
         async def spin():

@@ -293,3 +293,92 @@ def test_a_read_only_text_area_copies_and_shows_its_drag_selection():
     assert copy.call_args.args[0] == "abc123"
     assert notices == ["Copied 6 characters"]
     assert drawn == ["abc123"]
+
+
+def _drive(layout, *reports: str) -> None:
+    """Send SGR mouse reports through a real popup app around ``layout``."""
+    from pcode.popup_ui import popup_container
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app = Application(
+                layout=Layout(popup_container(layout)),
+                full_screen=True,
+                mouse_support=True,
+                input=pipe,
+                output=DummyOutput(),
+            )
+            task = asyncio.create_task(app.run_async())
+            try:
+                await asyncio.sleep(0.05)
+                for report in reports:
+                    pipe.send_text(report)
+                    await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
+            finally:
+                app.exit()
+                await task
+
+    asyncio.run(run())
+
+
+def test_a_drag_released_on_a_blank_row_stops_there_not_at_the_top():
+    """Rich draws a paragraph gap with no cells; the window would map it to (0, 0)."""
+    pane = RichPane(color_system=None)
+    pane.set([Markdown("first line\n\nthird line")])
+    handle, cursors = pane.selection.handle, []
+
+    def spy(event):
+        result = handle(event)
+        cursors.append(pane.selection.cursor)
+        return result
+
+    pane.selection.handle = spy
+    with patch("pcode.text_selection.copy_to_clipboard", return_value=(True, False)) as copy:
+        # 1-based: press on "third", drag up onto the blank row 2 and let go there.
+        _drive(pane.window, "\x1b[<0;3;3M", "\x1b[<32;5;2M", "\x1b[<0;5;2m")
+    # The move used to land on (0, 0), so a release missed after it copied
+    # from the top of the pane.
+    assert cursors == [(2, 2), (1, 0), (1, 0)]
+    assert copy.call_args.args[0] == "thi"
+
+
+def test_a_drag_released_past_the_pane_is_captured_and_copies_at_once():
+    """Moves and the release over the pane beside it still belong to the drag."""
+    words = "alpha beta gamma delta"
+    pane = RichPane(color_system=None)
+    pane.set([Text(words)])
+    layout = VSplit([Frame(pane), Window(FormattedTextControl("NEIGHBOUR"), width=12)])
+    with patch("pcode.text_selection.copy_to_clipboard", return_value=(True, False)) as copy:
+        # Press on "alpha" (column 2, past the border), release over the neighbour.
+        _drive(layout, "\x1b[<0;2;2M", "\x1b[<32;75;2M", "\x1b[<0;75;2m")
+    copy.assert_called_once()
+    assert copy.call_args.args[0] == words
+    assert not pane.selection.pressed
+
+
+def test_a_plain_click_asks_for_no_redraw():
+    """Any output restarts the terminal's cursor blink, so a no-op click draws nothing."""
+    pane = _pane(Text("alpha beta"))
+    assert pane.selection.handle(_event(MouseEventType.MOUSE_DOWN, 0, 2)) is NotImplemented
+    assert pane.selection.handle(_event(MouseEventType.MOUSE_MOVE, 0, 4)) is None
+    assert pane.selection.handle(_event(MouseEventType.MOUSE_MOVE, 0, 4)) is NotImplemented
+    with patch("pcode.popup_ui.copy_selected", return_value="Copied"):
+        assert pane.selection.handle(_event(MouseEventType.MOUSE_UP, 0, 4)) is None
+    # Pressing again hides the old selection: that one is drawn.
+    assert pane.selection.handle(_event(MouseEventType.MOUSE_DOWN, 0, 0)) is None
+    assert (
+        pane.selection.handle(_event(MouseEventType.MOUSE_UP, 0, 0, MouseButton.NONE))
+        is NotImplemented
+    )
+
+
+def test_streaming_that_rewrites_the_dragged_rows_keeps_the_drag():
+    pane = _pane(Text("alpha beta\ngamma delta"))
+    with patch("pcode.popup_ui.copy_selected", return_value="Copied") as copy:
+        pane.selection.handle(_event(MouseEventType.MOUSE_DOWN, 1, 0))
+        pane.selection.handle(_event(MouseEventType.MOUSE_MOVE, 1, 4))
+        pane.follow([Text("alpha")])
+        assert pane.selection.pressed and pane.selection.anchor == (0, 0)
+        pane.selection.handle(_event(MouseEventType.MOUSE_UP, 0, 4, MouseButton.NONE))
+    copy.assert_called_once_with("alpha")

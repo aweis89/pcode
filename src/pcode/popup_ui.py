@@ -56,6 +56,7 @@ from pcode.text_selection import (
     Row,
     Selection,
     copy_selected,
+    drag_capture,
     highlight,
     marked_rendering,
     unmark,
@@ -183,7 +184,8 @@ def popup_container(body, shortcuts: PrefixKeys | None = None):
     """
     if shortcuts is not None:
         body = FloatContainer(body, floats=[Float(shortcut_hint(shortcuts), bottom=1, right=2)])
-    return HSplit([body], style="class:popup")
+    # Bindings here apply wherever focus is, since everything is inside.
+    return HSplit([body], style="class:popup", key_bindings=drag_capture())
 
 
 def shortcut_hint(shortcuts: PrefixKeys):
@@ -614,21 +616,30 @@ class RichPane:
         # so a fixed row 0 would snap keyboard scrolling straight back to the top.
         self.control = Control()
         self.window = Window(self.control, wrap_lines=False, right_margins=[SlimScrollbarMargin()])
+        self.selection.window = self.window
 
     def follow(self, renderables: list) -> None:
         """Replace streaming content: stay on the tail if the reader was there, else hold."""
         info = self.window.render_info
         offset = self.window.vertical_scroll
         tailing = info is not None and offset >= max(0, info.content_height - info.window_height)
-        # Streaming mostly appends, so a selection (even mid-drag) survives as
-        # long as every row up to its last one is unchanged.
+        # Streaming mostly appends, so a selection survives as long as every
+        # row up to its last one is unchanged. A drag in progress always does,
+        # held inside the new rows: dropping it would lose the release.
         selection = self.selection
         held = selection.anchor, selection.cursor, selection.active, selection.pressed
         marked = [position[0] for position in held[:2] if position is not None]
         before = self.rows(self._width)[: max(marked) + 1] if marked and self._width else None
         self.set(renderables, highlight=self.highlight)
-        if before and self.rows(self._width)[: len(before)] == before:
+        rows = self.rows(self._width) if self._width else []
+        if before and rows[: len(before)] == before:
             selection.anchor, selection.cursor, selection.active, selection.pressed = held
+        elif held[3] and rows:
+            last = len(rows) - 1
+            selection.anchor, selection.cursor = (
+                (min(row, last), column) for row, column in held[:2]
+            )
+            selection.active, selection.pressed = held[2], True
         if info is not None:
             rows = len(self.lines(info.window_width))
             self.window.vertical_scroll = max(0, rows - info.window_height) if tailing else offset
@@ -697,7 +708,10 @@ class RichPane:
             lines, rows = [], []
             for line in split_lines(self.fragments(width)):
                 line, row = unmark(line)
-                lines.append(line)
+                # A blank row still draws a cell, as BufferControl's do: the
+                # window maps a click to a position only where a cell is, and
+                # sends one on a cell-less row to the top of the pane.
+                lines.append(line if row.text else [("", " ")])
                 rows.append(row)
             if self.highlight:
                 lines = [mark_matches(line, self.highlight) for line in lines]
