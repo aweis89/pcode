@@ -42,6 +42,8 @@ POPUP_PROTOCOL = 1
 PICK_PROTOCOL = 2
 # This or later also draws the editor's completion menu (`native_completions`).
 COMPLETE_PROTOCOL = 3
+# This or later also draws a popup's key hints natively below it (`popup_hints`).
+HINTS_PROTOCOL = 4
 # This or later also shows the editor's brief confirmations natively (`toast`).
 TOAST_PROTOCOL = 5
 # Characters of a toast's text; the terminal cuts it again.

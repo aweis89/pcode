@@ -6,14 +6,18 @@ import pytest
 from rich.console import Console
 
 from pcode.btw_tail import CLEAR, Tail, main
+from pcode.popup_hints import hints_apc
 from pcode.ui import Activity, Transcript
 
 
-def tail(thread="t1") -> tuple[Tail, StringIO]:
+def tail(thread="t1", *, native_hints=True) -> tuple[Tail, StringIO]:
     out = StringIO()
     console = Console(file=out, width=60, color_system=None, force_terminal=True)
     transcript = Transcript(console, activity=Activity(), detected_theme="dark")
-    return Tail(thread, console, transcript), out
+    view = Tail(thread, console, transcript)
+    # As a terminal that draws the drawer's key footer says (`PCODE_NATIVE_HINTS`).
+    view.native_hints = native_hints
+    return view, out
 
 
 def state(**fields) -> dict:
@@ -44,6 +48,26 @@ def test_a_thread_streams_in_block_by_block_and_redraws_when_written_text_change
     assert "The session host stopped." in notify(view, out, "host_closed")
 
 
+def test_the_drawer_footer_lists_the_editor_keys_and_is_sent_only_when_it_changes():
+    view, out = tail()
+    one = notify(view, out, "asides", [state(status="answered")])
+    assert one.endswith(hints_apc(view.footer()).decode())
+    labels = [hint.label for hint in view.footer()]
+    assert labels == ["Reply in editor", "Close"], "one thread: nothing to go to next"
+    again = notify(view, out, "aside_changed", state(answer="More.", status="answered"))
+    assert "pcode;hints" not in again
+    two = notify(view, out, "asides", [state(status="answered"), state(id="b2", thread="t2")])
+    assert "pcode;hints" in two
+    assert [hint.label for hint in view.footer()] == ["Reply in editor", "Next thread", "Close"]
+
+
+def test_without_a_drawn_footer_the_keys_stay_under_the_heading():
+    view, out = tail(native_hints=False)
+    drawn = notify(view, out, "asides", [state(status="answered")])
+    assert "pcode;hints" not in drawn
+    assert "Esc back to it" in drawn
+
+
 def test_only_a_host_id_is_taken():
     with pytest.raises(SystemExit):
         main(["../../etc", "t1"])
@@ -54,6 +78,10 @@ def test_host_text_reaches_the_drawer_without_controls_and_the_status_keeps_to_o
     hostile = "why?\x1b]52;c;aGk=\x1b\\\x1b_pcode;focus\x1b\\"
     long_activity = "Searching the web for something rather long indeed " * 3
     drawn = notify(view, out, "asides", [state(question=hostile, activity=long_activity)])
+    # The drawer's footer is pcode's own sequence, sent after the frame.
+    footer = hints_apc(view.footer()).decode()
+    assert drawn.endswith(footer)
+    drawn = drawn.removesuffix(footer)
     assert "\x1b]" not in drawn and "\x1b_" not in drawn, "controls are stripped to text"
     status = drawn.rsplit("\n", 1)[-1]
     assert "Searching" in status and "…" in status, "the last row is the whole status"

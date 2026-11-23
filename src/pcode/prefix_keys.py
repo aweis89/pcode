@@ -472,13 +472,17 @@ class PrefixKeys:
 
     def summary(self) -> str:
         """The single help affordance, never a list of individual bindings."""
+        return " ".join(self.help_hint())
+
+    def help_hint(self) -> tuple[str, str]:
+        """(key, label) of the help affordance: Ctrl+/ Keys, or Ctrl+P … while a leader waits."""
         leader = self.leader
         if self.pending:
             leader = self._pending_leader or leader
         elif self.vi_leader and self.vi_leader_enabled():
             leader = self.vi_leader
         key = _leader_label(leader) if leader else HELP_LABEL
-        return f"{compact_label(key)} …" if self.pending else f"{key} Keys"
+        return (compact_label(key), "…") if self.pending else (key, "Keys")
 
     def hint_rows(self) -> list[tuple[str, str]]:
         """The which-key list: (key, what it does). ``hint_footer`` says how to leave."""

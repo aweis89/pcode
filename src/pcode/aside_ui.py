@@ -41,6 +41,7 @@ from pcode.frame import Frame, ScrollingTextArea
 from pcode.links import Link, extract_links, link_editor_command, open_link, remember_link
 from pcode.links_ui import LinkPicker
 from pcode.markdown import Markdown
+from pcode.popup_hints import popup_bar
 from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
     PopupCommand,
@@ -372,7 +373,15 @@ class AsideBrowser:
                 body,
                 status_row,
                 *([self.input] if self.input else []),
-                Label(shortcuts.summary),
+                popup_bar(
+                    shortcuts,
+                    "btw",
+                    state={
+                        "picking": lambda: self.picker is not None,
+                        "typing": self.editing,
+                        "listing": self.listing,
+                    },
+                ),
             ]
         )
         picker = Frame(

@@ -19,6 +19,7 @@ from pcode import glyphs
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspector_ui import code_block, format_command
 from pcode.jobs import Job, JobRegistry, format_duration
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     RichPane,
     bind_list_paging,
@@ -207,7 +208,7 @@ class JobBrowser:
             [
                 Label(header),
                 body,
-                Label(shortcuts.summary),
+                popup_bar(shortcuts, "jobs"),
             ]
         )
         self.app = Application(

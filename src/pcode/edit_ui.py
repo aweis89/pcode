@@ -32,6 +32,7 @@ from pcode.edits import edit_text, patch_text
 from pcode.frame import FRAME_COLUMNS, Frame, ScrollingTextArea
 from pcode.git_diff import Review
 from pcode.links import editor_command
+from pcode.popup_hints import popup_bar
 from pcode.popup_surface import terminal_fds
 from pcode.popup_ui import (
     SearchDebounce,
@@ -498,7 +499,7 @@ class DiffBrowser:
                     title="Files",
                     height=lambda: list_pane_height(len(self.changes())),
                 ),
-                Label(shortcuts.summary),
+                popup_bar(shortcuts, "edits", state={"noting": noting}),
             ]
         )
         self.app = Application(

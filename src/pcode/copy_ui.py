@@ -18,12 +18,12 @@ from prompt_toolkit.filters import Always
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.widgets import Label
 from rich.console import Group
 from rich.markdown import BlockQuote, CodeBlock
 
 from pcode.frame import Dialog, ScrollingTextArea
 from pcode.markdown import Markdown
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     bind_list_paging,
     marked,
@@ -322,7 +322,7 @@ def snippet_dialog(choices: list[Snippet], *, input=None, output=None, style=Non
     shortcuts.set_help(picker.help)
     dialog = Dialog(
         title="Copy",
-        body=HSplit([picker.container, Label(shortcuts.summary)], padding=1),
+        body=HSplit([picker.container, popup_bar(shortcuts, "copy", gap=True)]),
     )
     app = Application(
         layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.list),

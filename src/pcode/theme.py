@@ -116,6 +116,13 @@ def native_completion_supported() -> bool:
     return _popup_protocol is not None and _popup_protocol >= drawer.COMPLETE_PROTOCOL
 
 
+def native_hints_supported() -> bool:
+    """Whether that terminal also draws an overlay popup's key hints (`popup_hints`)."""
+    from pcode import drawer
+
+    return _popup_protocol is not None and _popup_protocol >= drawer.HINTS_PROTOCOL
+
+
 def native_toast_supported() -> bool:
     """Whether that terminal also shows brief confirmations as toasts (`drawer.toast`)."""
     from pcode import drawer

@@ -20,6 +20,7 @@ from rich.theme import Theme
 from pcode.diagnostics import strip_controls
 from pcode.frame import Dialog, Frame, ScrollingTextArea
 from pcode.markdown import Markdown
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     EllipsisProcessor,
     RichPane,
@@ -241,7 +242,7 @@ class SessionBrowser:
                 header,
                 self.query,
                 body,
-                Label(shortcuts.summary),
+                popup_bar(shortcuts, "resume"),
             ]
         )
         self.app = Application(
@@ -658,11 +659,17 @@ def session_info_dialog(
         title="Session",
         body=HSplit(
             [
-                Label(lambda: notice or "/resume switches session", dont_extend_height=True),
-                body,
-                Label(shortcuts.summary),
-            ],
-            padding=1,
+                HSplit(
+                    [
+                        Label(
+                            lambda: notice or "/resume switches session", dont_extend_height=True
+                        ),
+                        body,
+                    ],
+                    padding=1,
+                ),
+                popup_bar(shortcuts, "session", gap=True),
+            ]
         ),
     )
     return Application(

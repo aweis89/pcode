@@ -26,6 +26,7 @@ from pcode.edits import patch_text
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspection import InspectedCall, ToolArchive
 from pcode.markdown import Markdown
+from pcode.popup_hints import popup_bar
 from pcode.popup_ui import (
     RichPane,
     SearchDebounce,
@@ -304,7 +305,7 @@ class ToolInspector:
                 header,
                 self.query,
                 body,
-                Label(shortcuts.summary),
+                popup_bar(shortcuts, "tools"),
             ]
         )
         self.app = Application(

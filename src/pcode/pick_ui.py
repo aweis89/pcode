@@ -29,6 +29,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Label, TextArea
 
 from pcode.frame import Dialog
+from pcode.popup_hints import Hint, HintBar, hints, native_hints, shortcut_hints
 from pcode.popup_ui import SearchDebounce, fuzzy_match, popup_container, popup_mouse, popup_style
 from pcode.prefix_keys import PrefixKeys
 
@@ -88,6 +89,30 @@ class Picked:
     id: str | None
     action: str | None = None
     query: str = ""
+
+
+def action_hints(
+    actions: Sequence[PickAction],
+    label: Callable[[str], str],
+    *,
+    available: Callable[[str], bool] = lambda _key: True,
+    deletable: bool = True,
+) -> list[Hint]:
+    """The pick list's actions as hints, pressed as `label` says (Ctrl+R, or Cmd+R natively).
+
+    Only those `available` now; Delete only while `deletable` (the query is empty).
+    """
+    found = []
+    for action in actions:
+        if available(action.key):
+            found.append(Hint(label(action.key), action.label))
+        if action.delete and deletable:
+            found.append(Hint("Delete", action.label))
+    return found
+
+
+def native_action_label(key: str) -> str:
+    return f"Cmd+{key.upper()}"
 
 
 def key_hints(text: str, label: Callable[[str], str]) -> str:
@@ -229,6 +254,11 @@ def payload(
         "query": query,
         "match": match,
         "custom": custom,
+        "hints": native_hints(
+            hints(
+                "pick", label=native_action_label, extra=action_hints(actions, native_action_label)
+            )
+        ),
         "items": [
             {
                 "id": item.id,
@@ -398,19 +428,23 @@ class PickList:
                         title=title,
                         body=HSplit(
                             [
-                                ConditionalContainer(
-                                    Label(header, dont_extend_height=True),
-                                    filter=Condition(lambda: bool(header)),
+                                HSplit(
+                                    [
+                                        ConditionalContainer(
+                                            Label(header, dont_extend_height=True),
+                                            filter=Condition(lambda: bool(header)),
+                                        ),
+                                        self.search,
+                                        self.rows,
+                                        ConditionalContainer(
+                                            Label(lambda: self.status, dont_extend_height=True),
+                                            filter=Condition(lambda: bool(self.status)),
+                                        ),
+                                    ],
+                                    padding=1,
                                 ),
-                                self.search,
-                                self.rows,
-                                ConditionalContainer(
-                                    Label(lambda: self.status, dont_extend_height=True),
-                                    filter=Condition(lambda: bool(self.status)),
-                                ),
-                                Label(shortcuts.summary, dont_extend_height=True),
-                            ],
-                            padding=1,
+                                HintBar(self.hints, gap=True),
+                            ]
                         ),
                     ),
                     shortcuts,
@@ -497,6 +531,16 @@ class PickList:
 
     def _all_lines(self) -> list[str]:
         return [f"› {self.line(item, self._guides[id(item)])}" for item in self.items]
+
+    def hints(self) -> list[Hint]:
+        working = {shortcut.key for shortcut in self.shortcuts.available()}
+        extra = action_hints(
+            self.actions,
+            self.shortcuts.label,
+            available=working.__contains__,
+            deletable=not self.search.text,
+        )
+        return shortcut_hints(self.shortcuts, "pick", extra=extra)
 
     def fragments(self):
         if not self.matches:
