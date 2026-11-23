@@ -19,6 +19,7 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from rich.theme import Theme
 
+from pcode import glyphs
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.markdown import Markdown
 from pcode.popup_ui import (
@@ -99,7 +100,7 @@ def report_index(blocks: list) -> int | None:
 
 def tool_line(event) -> Text:
     if isinstance(event, ToolSummary):
-        icon, style = ("✗", "red") if event.failed else ("✓", "dim")
+        icon, style = (glyphs.icon("fail"), "red") if event.failed else (glyphs.icon("ok"), "dim")
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
     else:
         icon, style, elapsed = "⟳", "bold", ""

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
+from pcode import glyphs
 from pcode.code_mode import SANDBOXED_TOOLS
 from pcode.diagnostics import strip_controls
 
@@ -146,7 +147,7 @@ def tool_summary_lines(
     elapsed = f" · {elapsed_seconds:.1f}s" if elapsed_seconds is not None else ""
     # The marker alone reports failure: a summary line keeps one style so a
     # failed call does not shout louder than the diagnostic that follows it.
-    marker = "✗" if failed else "✓"
+    marker = glyphs.icon("fail") if failed else glyphs.icon("ok")
     preview = " · " + command_preview(command) if command else ""
     lines = [Text(f"{marker} {label(name)}{detail}{elapsed}{preview}", style="pcode.thinking")]
     for line in lines:

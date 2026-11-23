@@ -191,6 +191,7 @@ def isolated_preferences(monkeypatch, tmp_path, request):
     monkeypatch.setattr("pcode.terminal_color._tmux_rgb", lambda pane: False)
     monkeypatch.setattr("pcode.terminal_color._setting", "auto")
     monkeypatch.setattr("pcode.glyphs._active", False)
+    monkeypatch.setattr("pcode.glyphs._nerd", False)
     # The CLI fixes the project overlay root once per process; tests that run
     # main() would otherwise leak this checkout's .pcode/preferences.json into
     # every later test.

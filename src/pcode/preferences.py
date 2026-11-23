@@ -658,14 +658,14 @@ SETTINGS = {
     "tool_glyphs": Setting(
         "auto",
         ("auto", "on", "off"),
-        description="Symbols on the tool row; off spells out verbs but shell's $ "
+        description="Symbols on the tool row; off spells out verbs except shell's $ "
         "(auto: off on the Linux console or with ASCII glyphs)",
     ),
     "glyphs": Setting(
         "auto",
-        ("auto", "unicode", "ascii"),
-        description="Draw marks, borders and spinners as Unicode or plain ASCII (auto: ASCII "
-        "on the Linux console, a non-UTF-8 locale, or a terminal drawing them two cells wide)",
+        ("auto", "nerd", "unicode", "ascii"),
+        description="Draw icons, marks, borders and spinners as Nerd Fonts, Unicode, or ASCII "
+        "(auto: Nerd Fonts in Ghostty, ASCII on Linux console/non-UTF-8/wide, else Unicode)",
     ),
     "color_depth": Setting(
         "auto",

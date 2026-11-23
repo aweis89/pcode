@@ -636,23 +636,36 @@ TOOL_GLYPHS = {
     **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "⌕"),
     **dict.fromkeys(("Edit file", "Write file"), "✎"),
     **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "⎘"),
-    "Wait for job": "⧖",
+}
+_TOOL_ICON_SLOTS = {
+    **dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "shell"),
+    **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "search"),
+    **dict.fromkeys(("Edit file", "Write file"), "edit"),
+    **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "read"),
 }
 
 
 def tool_glyphs_on(setting: str) -> bool:
     """Whether the `tool_glyphs` setting (`auto`, `on`, `off`) draws the symbols.
 
-    Almost no monospace font has `⌕`, `⎘` or `⧖`: the terminal draws
-    them from a fallback font, which on macOS and most desktops looks fine
-    and on the Linux console is a box, so `auto` leaves them off where
-    `TERM` says it is that console (tmux on it says otherwise). A terminal
-    cannot say which fonts it has, so anywhere else a missing symbol is the
-    user's to turn off.
+    Almost no monospace font has `⌕` or `⎘`: outside Nerd Font mode the
+    terminal draws them from a fallback font, which on macOS and most desktops
+    looks fine and on the Linux console is a box, so `auto` leaves them off
+    where `TERM` says it is that console (tmux on it says otherwise). A
+    terminal cannot say which fonts it has, so anywhere else a missing symbol
+    is the user's to turn off.
     """
     if setting == "auto":
         return os.environ.get("TERM") != "linux" and not glyphs.active()
     return setting == "on"
+
+
+def _tool_glyph(label: str, setting: str) -> str | None:
+    if not tool_glyphs_on(setting):
+        return PLAIN_TOOL_GLYPHS.get(label)
+    if slot := _TOOL_ICON_SLOTS.get(label):
+        return glyphs.icon(slot)
+    return None
 
 
 def status_parts(status: str) -> tuple[str, str]:
@@ -1139,7 +1152,7 @@ class Activity:
             thought = self.shown_thought()
         if not thought or width < 3:
             return []
-        lead = f"{THOUGHT_ICON} "
+        lead = f"{glyphs.icon('thought')} "
         return [
             # lstrip: a cut row in a very narrow pane can open on the space
             # its ellipsis was set after.
@@ -1570,7 +1583,7 @@ class Activity:
         say it for this call.
         """
         label, detail = call_parts(call)
-        glyph = (TOOL_GLYPHS if tool_glyphs_on(self.tool_glyphs) else PLAIN_TOOL_GLYPHS).get(label)
+        glyph = _tool_glyph(label, self.tool_glyphs)
         if glyph:
             text = detail or label
         elif detail and call is line.call and line.phase == label:
@@ -1584,9 +1597,9 @@ class Activity:
         if call.settled is None:
             mark = spinner if isinstance(spinner, tuple) else ("class:activity.tool", spinner)
         elif call.failed:
-            mark = ("class:activity.tool.failed", "✗")
+            mark = ("class:activity.tool.failed", glyphs.icon("fail"))
         else:
-            mark = ("class:activity.tool.done", TOOL_DONE_MARK)
+            mark = ("class:activity.tool.done", glyphs.icon("tool_done"))
         # A wide spinner (`dots12`) would push running rows' text past
         # settled ones'; pad the settled mark's column to its width.
         spinner_width = cell_len(spinner[1] if isinstance(spinner, tuple) else spinner)
@@ -4213,8 +4226,9 @@ class PromptLayout:
         label = []
         outcome = self.activity.turn_outcome
         name = self.session_name()
-        if mark := TURN_MARKS.get(outcome):
-            label.append((f"class:session.{outcome}", mark))
+        turn_slots = {"done": "ok", "cancelled": "turn_cancelled", "failed": "fail"}
+        if slot := turn_slots.get(outcome):
+            label.append((f"class:session.{outcome}", glyphs.icon(slot)))
         elif name and leads:
             label.append(("class:session.unknown", UNKNOWN_TURN_MARK))
         if name:
@@ -4726,7 +4740,11 @@ def create_prompt(
 
 def tally(succeeded: int, failed: int) -> str:
     """`✓ 2 ✗ 1`, dropping a zero side, so each mark only ever counts its own outcome."""
-    return " ".join(f"{mark} {count}" for mark, count in (("✓", succeeded), ("✗", failed)) if count)
+    return " ".join(
+        f"{mark} {count}"
+        for mark, count in ((glyphs.icon("ok"), succeeded), (glyphs.icon("fail"), failed))
+        if count
+    )
 
 
 def tool_count(name: str, count: int, failed: int) -> str:
@@ -5390,9 +5408,10 @@ class Transcript:
     def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
         """The compact rows a settled call leaves in scrollback."""
         if event.name not in COMMAND_TOOLS and not event.command:
+            mark = glyphs.icon("fail") if event.failed else glyphs.icon("ok")
             return [
                 Text.assemble(
-                    (f"{'✗' if event.failed else '✓'} {label(event.name)}  ", "pcode.thinking"),
+                    (f"{mark} {label(event.name)}  ", "pcode.thinking"),
                     (plain(event.detail, limit=None), "pcode.thinking"),
                     (
                         f"  {event.elapsed_seconds:.1f}s"

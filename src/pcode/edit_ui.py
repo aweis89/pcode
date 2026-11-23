@@ -25,6 +25,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout
 from prompt_toolkit.widgets import Label, TextArea
 
+from pcode import glyphs
 from pcode.delta import Delta
 from pcode.edit_transcript import DiffLexer, text_fragments
 from pcode.edits import edit_text, patch_text
@@ -195,7 +196,7 @@ def lay_out(
     def add_notes(anchor: Anchor) -> None:
         for number, note in enumerate(notes):
             if targets.get(number) == anchor:
-                text = f"  ✎ {note.text}"
+                text = f"  {glyphs.icon('edit')} {note.text}"
                 add(text, Row(rows[-1].change, note.line, anchor, note), [(NOTE_STYLE, text)])
 
     for change in changes:

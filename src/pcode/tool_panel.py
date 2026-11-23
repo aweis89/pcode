@@ -6,6 +6,7 @@ from time import monotonic
 
 from rich.text import Text
 
+from pcode import glyphs
 from pcode.runtime import EditCompleted, ToolStarted, ToolSummary
 from pcode.tool_display import JOB_HANDLE_TOOLS, PLAN_TOOLS, command_preview, label, plain
 
@@ -135,16 +136,17 @@ class ToolCall:
             state = plain(event.activity) or "Starting"
         name = event.agent[:1].upper() + event.agent[1:] or label(event.name)
         clock = "" if elapsed is None else f"{elapsed:.1f}s"
+        agent = glyphs.icon("agent")
         if event.purpose:
             # Sessions saved before delegates recorded their agent had only workers.
             default = event.agent in ("", DEFAULT_AGENT)
             # Its own ` · ` would end the bold head partway through.
             purpose = plain(event.purpose.replace(" · ", " – "), PURPOSE_CELLS)
             head = purpose if default else f"{name}: {purpose}"
-            parts = (f"{AGENT_ICON} {head}", clock, state)
+            parts = (f"{agent} {head}", clock, state)
         else:
             task = event.task or plain(event.detail, limit=None)
-            parts = (f"{AGENT_ICON} {name}", clock, state, task)
+            parts = (f"{agent} {name}", clock, state, task)
         return " · ".join(part for part in parts if part)
 
 
@@ -327,7 +329,7 @@ def plan_row(item: dict, active_icon: str, hue: int | None = None) -> tuple[str,
     """A task row, styled by its status, and by its sub-agent's hue when `hue` is set."""
     status = item["status"] if item["status"] in (*PLAN_ICONS, "in_progress") else "pending"
     style = f"class:plan.{status}" + ("" if hue is None else f",agent.hue.{hue}")
-    icon = active_icon if status == "in_progress" else PLAN_ICONS[status]
+    icon = active_icon if status == "in_progress" else glyphs.icon(status)
     return style, f"{icon} {plain(item['content'], limit=None)}"
 
 

@@ -15,6 +15,7 @@ from prompt_toolkit.widgets import Label
 from rich.text import Text
 from rich.theme import Theme
 
+from pcode import glyphs
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspector_ui import code_block, format_command
 from pcode.jobs import Job, JobRegistry, format_duration
@@ -41,7 +42,7 @@ LOG_BYTES = 128 * 1024
 def icon(job: Job) -> str:
     if job.running:
         return "⟳"
-    return "✗" if job.stopped or job.exit_code != 0 else "✓"
+    return glyphs.icon("fail") if job.stopped or job.exit_code != 0 else glyphs.icon("ok")
 
 
 def ordered(registry: JobRegistry) -> list[Job]:

@@ -96,7 +96,9 @@ Linux console, under a locale naming a charset other than UTF-8, and in a
 terminal it measures drawing `─` two cells wide when it starts (a CJK locale, or
 iTerm2's *Treat ambiguous-width characters as double width*). Under tmux that
 measures tmux's own widths rather than the terminal's, so set `glyphs ascii`
-there yourself. `glyphs unicode` keeps the symbols regardless.
+there yourself. `glyphs unicode` keeps standard Unicode symbols regardless, and
+`glyphs nerd` forces Nerd Font icons (used automatically in Ghostty, which embeds
+them) when you have a Nerd Font configured in another terminal or tmux.
 
 **Colors look blotchy, or the editor box has lines instead of shading.** pcode
 uses 24-bit color when the terminal says so (`COLORTERM=truecolor`), when it is

@@ -21,6 +21,43 @@ from rich.cells import cell_len
 
 CODEC = "pcode-ascii"
 
+# Canonical UI icons in standard Unicode and in Nerd Fonts (Codicons 16x16 UI
+# set, plus Octicons' skip and cpu). Every Nerd Font codepoint here is 1 cell
+# wide and bundled in Ghostty's embedded SymbolsNerdFontMono-Regular.
+ICONS: dict[str, str] = {
+    "shell": "$",
+    "search": "⌕",
+    "edit": "✎",
+    "read": "⎘",
+    "thought": "❝",
+    "agent": "»",
+    "pending": "○",
+    "completed": "✔",
+    "cancelled": "–",
+    "blocked": "!",
+    "ok": "✓",
+    "fail": "✗",
+    "tool_done": "√",
+    "turn_cancelled": "⊘",
+}
+
+NERD_ICONS: dict[str, str] = {
+    "shell": "\uea85",  # cod-terminal
+    "search": "\uea6d",  # cod-search
+    "edit": "\uea73",  # cod-edit
+    "read": "\uea7b",  # cod-file
+    "thought": "\uec1e",  # cod-sparkle
+    "agent": "\uf4bc",  # oct-cpu
+    "pending": "\ueabc",  # cod-circle-outline
+    "completed": "\ueba4",  # cod-pass
+    "cancelled": "\uf4b7",  # oct-skip
+    "blocked": "\uea6c",  # cod-warning
+    "ok": "\ueab2",  # cod-check
+    "fail": "\uea76",  # cod-close
+    "tool_done": "\ueab2",  # cod-check
+    "turn_cancelled": "\uf4b7",  # oct-skip
+}
+
 # Symbols outside the ranges `_by_name` sorts out.
 _SYMBOLS = {
     "✓": "v",
@@ -52,6 +89,19 @@ _SYMBOLS = {
     "’": "'",
     "“": '"',
     "”": '"',
+    # Nerd Font icon stand-ins, should any pass through ASCII encoding.
+    "\uea85": "$",
+    "\uea6d": "?",
+    "\uea73": "#",
+    "\uea7b": "=",
+    "\uec1e": '"',
+    "\uf4bc": ">",
+    "\ueabc": "o",
+    "\ueba4": "v",
+    "\uf4b7": "-",
+    "\uea6c": "!",
+    "\ueab2": "v",
+    "\uea76": "x",
 }
 
 # Unicode blocks drawn from by name: box drawing, block elements, geometric
@@ -149,11 +199,22 @@ def _search(name: str) -> codecs.CodecInfo | None:
 codecs.register(_search)
 
 _active = False
+_nerd = False
 
 
 def active() -> bool:
     """Whether stdout is drawing ASCII stand-ins."""
     return _active
+
+
+def nerd() -> bool:
+    """Whether UI icons are drawn with Nerd Font codepoints."""
+    return _nerd
+
+
+def icon(name: str) -> str:
+    """Return the active 1-cell icon for `name` (Nerd Font when enabled, else Unicode)."""
+    return NERD_ICONS[name] if _nerd else ICONS[name]
 
 
 def legacy_locale(env: Mapping[str, str]) -> bool:
@@ -171,17 +232,47 @@ def legacy_locale(env: Mapping[str, str]) -> bool:
 
 
 def wanted(setting: str, env: Mapping[str, str] | None = None, wide: bool | None = None) -> bool:
-    """Whether the `glyphs` setting (`auto`, `unicode`, `ascii`) asks for ASCII.
+    """Whether the `glyphs` setting (`auto`, `nerd`, `unicode`, `ascii`) asks for ASCII.
 
     `wide` is the startup probe's answer: the terminal drew a box-drawing
     line two cells wide, which shifts every row that holds one.
     """
-    if setting in ("ascii", "unicode"):
+    if setting in ("ascii", "unicode", "nerd"):
         return setting == "ascii"
     env = os.environ if env is None else env
     # The Linux console's fonts lack most of these symbols. Other bare `TERM`s
     # (`vt100`, `ansi`) are as often a Unicode terminal misreporting itself.
     return env.get("TERM", "") == "linux" or legacy_locale(env) or bool(wide)
+
+
+def wanted_nerd(
+    setting: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    ascii_on: bool = False,
+) -> bool:
+    """Whether `glyphs` asks for Nerd Font icons.
+
+    `auto` turns them on only in terminals known to embed Nerd Fonts out of the
+    box (Ghostty / Ghostty Smooth, outside tmux so attaching from another
+    terminal does not draw missing-glyph boxes). Users with a local Nerd Font
+    in another terminal or tmux can set `glyphs nerd`.
+    """
+    if ascii_on or setting in ("ascii", "unicode"):
+        return False
+    if setting == "nerd":
+        return True
+    env = os.environ if env is None else env
+    if env.get("TMUX"):
+        return False
+    return env.get("TERM") == "xterm-ghostty" or env.get("TERM_PROGRAM") == "ghostty"
+
+
+def apply_nerd(on: bool) -> bool:
+    """Enable or disable Nerd Font UI icons; ASCII mode always wins."""
+    global _nerd
+    _nerd = bool(on) and not _active
+    return _nerd
 
 
 def apply(on: bool, stream=None) -> bool:

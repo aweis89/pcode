@@ -17,7 +17,8 @@ from rich.table import Table
 
 from pcode import glyphs, terminal_color, theme
 from pcode.startup_input import TerminalReplyParser
-from pcode.ui import status_spinner, tool_glyphs_on
+from pcode.tool_panel import plan_row
+from pcode.ui import TOOL_GLYPHS, _tool_glyph, status_spinner, tally, tool_glyphs_on
 
 
 @pytest.mark.parametrize(
@@ -100,11 +101,63 @@ def test_every_stand_in_is_one_ascii_cell():
         ("auto", {}, True, True),
         ("auto", {}, False, False),
         ("unicode", {"TERM": "linux"}, True, False),
+        ("nerd", {"TERM": "linux"}, True, False),
         ("ascii", {}, None, True),
     ],
 )
 def test_when_ascii_is_wanted(setting, env, wide, expected):
     assert glyphs.wanted(setting, env, wide) is expected
+
+
+@pytest.mark.parametrize(
+    "setting, env, ascii_on, expected",
+    [
+        ("auto", {"TERM": "xterm-ghostty"}, False, True),
+        ("auto", {"TERM_PROGRAM": "ghostty"}, False, True),
+        ("auto", {"TERM": "xterm-ghostty", "TMUX": "/tmp/s,1,0"}, False, False),
+        ("auto", {"TERM_PROGRAM": "iTerm.app"}, False, False),
+        ("auto", {"TERM": "xterm-ghostty"}, True, False),
+        ("nerd", {"TERM": "xterm-256color"}, False, True),
+        ("nerd", {"TERM": "xterm-ghostty"}, True, False),
+        ("unicode", {"TERM": "xterm-ghostty"}, False, False),
+        ("ascii", {"TERM": "xterm-ghostty"}, False, False),
+    ],
+)
+def test_when_nerd_is_wanted(setting, env, ascii_on, expected):
+    assert glyphs.wanted_nerd(setting, env, ascii_on=ascii_on) is expected
+
+
+def test_nerd_icons_are_single_cell_and_active_when_enabled():
+    assert set(glyphs.NERD_ICONS) == set(glyphs.ICONS)
+    for name, char in glyphs.NERD_ICONS.items():
+        assert cell_len(char) == 1, f"{name} is not 1 cell wide"
+        assert len(glyphs.to_ascii(char)) == 1 and glyphs.to_ascii(char).isascii()
+
+    # Wait for job no longer carries a redundant hourglass beside the spinner.
+    assert "Wait for job" not in TOOL_GLYPHS
+    assert _tool_glyph("Wait for job", "auto") is None
+
+    assert not glyphs.nerd()
+    assert _tool_glyph("Search code", "auto") == "⌕"
+    assert plan_row({"status": "cancelled", "content": "Drop it"}, "⠋")[1] == "– Drop it"
+    assert tally(2, 1) == "✓ 2 ✗ 1"
+
+    assert glyphs.apply_nerd(True)
+    assert glyphs.nerd()
+    assert _tool_glyph("Search code", "auto") == glyphs.NERD_ICONS["search"]
+    assert _tool_glyph("Run shell", "auto") == glyphs.NERD_ICONS["shell"]
+    assert _tool_glyph("Run shell", "off") == "$"
+    assert _tool_glyph("Wait for job", "auto") is None
+    assert (
+        plan_row({"status": "cancelled", "content": "Drop it"}, "⠋")[1]
+        == f"{glyphs.NERD_ICONS['cancelled']} Drop it"
+    )
+    assert tally(2, 1) == f"{glyphs.NERD_ICONS['ok']} 2 {glyphs.NERD_ICONS['fail']} 1"
+
+    # ASCII mode always wins over Nerd Fonts.
+    glyphs._active = True
+    assert not glyphs.apply_nerd(True)
+    assert not glyphs.nerd()
 
 
 def test_ascii_mode_reencodes_the_terminal_stream(monkeypatch):
