@@ -190,8 +190,8 @@ Provider behavior:
 Errors and failed-tool diagnostics look like warnings, in red: a bar down the
 left edge, the headline (or a title such as *Agent failed*) in red, and the rest
 muted. Their text stays literal, even if it contains Markdown or backticks. Each
-error shows at most **20 wrapped body lines** by default; a longer log keeps its
-tail and shows a truncation marker.
+error shows at most **20 wrapped lines** under its headline by default; a longer
+log keeps its tail and shows a truncation marker.
 
 ```sh
 pcode config set error_scrollback_lines 40  # Positive integer; default 20

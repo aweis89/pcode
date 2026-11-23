@@ -28,6 +28,7 @@ _HEADLINE = re.compile(r"(.*?)(?:[ \t\r]*\n|(?<=[.!?])[ \t]+(?![a-z]))(.*)", re.
 # A closing period after a word is punctuation; `..`, `…` or a bare `.` path is
 # part of the message.
 _FULL_STOP = re.compile(r"(?<=[\w)\]'\"`])\.$")
+_BLANK_LEADING_LINES = re.compile(r"\A(?:[ \t\r]*\n)+")
 
 
 def split_headline(text: str) -> tuple[str, str]:
@@ -63,8 +64,8 @@ class WarningNotice:
     def parts(self) -> tuple[str, str]:
         return split_headline(self.text)
 
-    def bound(self, console: Console, options: ConsoleOptions, lines: list) -> list:
-        return lines
+    def bound(self, console: Console, options: ConsoleOptions, head: list, body: list) -> list:
+        return head + body
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         bar = console.get_style(self.style, default="none")
@@ -72,11 +73,9 @@ class WarningNotice:
         headline, detail = self.parts()
         prefix = f"{WARNING_BAR} " if options.max_width > 2 else ""
         inner = options.update(width=max(1, options.max_width - len(prefix)))
-        lines = console.render_lines(Text(headline or self.fallback, style=bar), inner, pad=False)
-        if detail:
-            body = console.render_lines(Text(detail, style=muted), inner, pad=False)
-            lines += self.bound(console, inner, body)
-        for line in lines:
+        head = console.render_lines(Text(headline or self.fallback, style=bar), inner, pad=False)
+        body = console.render_lines(Text(detail, style=muted), inner, pad=False) if detail else []
+        for line in self.bound(console, inner, head, body):
             yield Segment(prefix, bar)
             yield from line
             yield Segment.line()
@@ -89,7 +88,8 @@ class ErrorNotice(WarningNotice):
     A plain error leads with its own first sentence, like a warning. A titled
     one (`Agent failed`, `Run shell failed`) leads with the title and keeps the
     whole message as detail. Long detail (a traceback, a command's stderr)
-    keeps its last `max_lines` rows, where the cause usually is.
+    keeps its last `max_lines` rows, where the cause usually is; a headline
+    with no sentence break (a provider's JSON body) keeps its first.
     """
 
     title: str = "Error"
@@ -100,15 +100,22 @@ class ErrorNotice(WarningNotice):
     def parts(self) -> tuple[str, str]:
         if self.title == "Error":
             return super().parts()
-        return self.title, self.text.strip("\n")
+        # Drop blank edge lines, but not the first line's own indentation.
+        return self.title, _BLANK_LEADING_LINES.sub("", self.text).rstrip()
 
-    def bound(self, console: Console, options: ConsoleOptions, lines: list) -> list:
-        if self.max_lines is None or len(lines) <= self.max_lines:
-            return lines
+    def bound(self, console: Console, options: ConsoleOptions, head: list, body: list) -> list:
+        if self.max_lines is None:
+            return head + body
+        if len(head) > self.max_lines:
+            head = head[: self.max_lines]
+            cut = Segment.adjust_line_length(head[-1], max(0, options.max_width - 1), pad=False)
+            head[-1] = [*cut, Segment("…", console.get_style(self.style, default="none"))]
+        if len(body) <= self.max_lines:
+            return head + body
         marker = Text("… earlier error output truncated", style="pcode.muted")
         marker.truncate(options.max_width, overflow="ellipsis")
-        tail = lines[-(self.max_lines - 1) :] if self.max_lines > 1 else []
-        return console.render_lines(marker, options, pad=False) + tail
+        tail = body[-(self.max_lines - 1) :] if self.max_lines > 1 else []
+        return head + console.render_lines(marker, options, pad=False) + tail
 
 
 @dataclass(frozen=True)

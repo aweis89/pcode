@@ -306,3 +306,22 @@ def test_error_block_handles_narrow_panes(width):
     assert all(len(line) <= width for line in lines)
     # The headline can wrap; the body stays bounded.
     assert len(lines) <= len("Agent failed") + 3
+
+
+def test_untitled_error_headline_without_a_sentence_break_is_bounded_too():
+    from pcode.preferences import save_preferences
+
+    save_preferences(error_scrollback_lines="3")
+    stream = StringIO()
+    Transcript(Console(file=stream, width=40, color_system=None)).error('{"body": "' + "x" * 300)
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 3
+    assert lines[-1].endswith("…") and all(len(line) <= 40 for line in lines)
+
+
+def test_titled_error_drops_blank_edge_lines_and_keeps_indentation():
+    stream = StringIO()
+    Transcript(Console(file=stream, color_system=None)).error(
+        "  \n\n    indented\n\n  \n", title="Agent failed"
+    )
+    assert stream.getvalue().splitlines() == ["▎ Agent failed", "▎     indented"]
