@@ -288,6 +288,8 @@ def _named_toolset() -> type:
             transport = mcp_transport(self.wrapped)
             if hasattr(transport, "failed_status"):
                 transport.failed_status = None
+            if isinstance(getattr(transport, "log_file", None), Path):
+                _rotate(transport.log_file)
             try:
                 return await super().__aenter__()
             except Exception as error:
@@ -298,6 +300,8 @@ def _named_toolset() -> type:
                     status = None
                 challenge = getattr(transport, "oauth_challenge", False)
                 message = _connect_failure(self.server, self.config, status, challenge, error)
+                if self.config is not None and self.config.command:
+                    message += f" Its output is in {stderr_log_path(self.server)}."
                 raise MCPConnectError(self.server, message) from error
 
         async def call_tool(self, name, tool_args, ctx, tool):
@@ -320,6 +324,27 @@ def _named_toolset() -> type:
     return NamedServer
 
 
+STDERR_LOG_MAX_BYTES = 1_000_000
+"""Past this size a server's log is renamed to `<name>.log.1`, replacing the previous one."""
+
+
+def stderr_log_path(name: str) -> Path:
+    """Where a stdio server's stderr goes, beside the library log."""
+    from pcode.library_log import library_log_path
+
+    return library_log_path().with_name("mcp") / f"{name}.log"
+
+
+def _rotate(path: Path) -> None:
+    """Make sure the log's directory exists and the log stays bounded."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.stat().st_size > STDERR_LOG_MAX_BYTES:
+            path.replace(path.with_name(f"{path.name}.1"))
+    except OSError:
+        pass
+
+
 def build_toolset(name: str, raw: Any, *, interactive: bool = True):
     """Construct only the selected server. Connections are owned by each agent run.
 
@@ -339,6 +364,8 @@ def build_toolset(name: str, raw: Any, *, interactive: bool = True):
                 cwd=config.cwd,
                 # FastMCP otherwise keeps subprocesses alive after toolset exit.
                 keep_alive=False,
+                # The default is sys.stderr: the terminal the UI is drawing on.
+                log_file=stderr_log_path(name),
             )
             # FastMCP's five-second handshake deadline counts the server's own
             # startup, which a `uvx`/`npx` launch beside other servers can exceed.

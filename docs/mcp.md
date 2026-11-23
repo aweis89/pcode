@@ -255,6 +255,10 @@ editing it, disable and enable the server again.
   pcode prints a warning naming it (details go to the session's `errors.log`),
   and the model is told it failed to connect this turn. It stays enabled and is
   retried next turn; `/mcp disable NAME` stops that.
+- A local server's stderr goes to `~/.local/state/pcode/mcp/NAME.log`, not the
+  terminal. When a `uvx` or `npx` server fails to start, look there first: a
+  failed package download shows up in it. If a proxy blocks the package index,
+  `"args": ["--offline", ...]` makes `uvx` run the copy it already cached.
 - `/mcp disable NAME` removes its tools from later requests, including the rest
   of a running turn. To reload a server after changing its configuration or
   environment, disable and enable it again.
