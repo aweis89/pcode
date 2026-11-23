@@ -5,10 +5,13 @@ import re
 from markdown_it import MarkdownIt
 from markdown_it.common.normalize_url import validateLink as _default_validate_link
 from rich.console import Console, ConsoleOptions, JustifyMethod, RenderResult
-from rich.markdown import CodeBlock
+from rich.markdown import CodeBlock, HorizontalRule
 from rich.markdown import Markdown as RichMarkdown
+from rich.rule import Rule
 from rich.style import Style
+from rich.text import Text
 
+from pcode.block import RULE
 from pcode.row_marks import row_mark
 from pcode.smooth_scroll import MARK_BLOCK
 
@@ -33,10 +36,28 @@ class _BlockCodeBlock(CodeBlock):
         yield from super().__rich_console__(console, options)
 
 
+class _SolidHorizontalRule(HorizontalRule):
+    """A ``---`` rule drawn with pcode's box-drawing `RULE`, not Rich's ASCII ``-``.
+
+    An ASCII hyphen sits centred in its cell, so a row of them reads as dashed;
+    box-drawing characters fill the cell and join into the same solid line
+    pcode's own block separators use.
+    """
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield Rule(style=console.get_style("markdown.hr", default="none"), characters=RULE)
+        yield Text()
+
+
 class Markdown(RichMarkdown):
     """Rich Markdown that accepts ``file://`` URLs alongside ``http(s)://``."""
 
-    elements = {**RichMarkdown.elements, "fence": _BlockCodeBlock, "code_block": _BlockCodeBlock}
+    elements = {
+        **RichMarkdown.elements,
+        "fence": _BlockCodeBlock,
+        "code_block": _BlockCodeBlock,
+        "hr": _SolidHorizontalRule,
+    }
 
     def __init__(
         self,

@@ -10,6 +10,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.markdown import Markdown
 
+from pcode.block import RULE
 from pcode.runtime import ToolSummary
 from pcode.transcript_log import TranscriptLog
 from pcode.transcript_notice import ErrorNotice
@@ -343,7 +344,7 @@ def test_typed_mode_rolls_code_and_rules_by_row_behind_the_prose_they_follow(mon
             assert "CODE" not in shown(output) and "---" not in shown(output)
         text = transcript.console.file.getvalue()
         assert text.index("Intro line.") < text.index("CODE_0") < text.index("CODE_1")
-        assert text.index("CODE_1") < text.index("-" * 80)
+        assert text.index("CODE_1") < text.index(RULE * 80)
         # The prose row finishes on the first frame, which still has its
         # one-row budget for code; each later row waits a frame of its own.
         assert len(handoffs) == 3
