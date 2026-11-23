@@ -48,7 +48,7 @@ NERD_ICONS: dict[str, str] = {
     "read": "\uea7b",  # cod-file
     "thought": "\uec1e",  # cod-sparkle
     "agent": "\uf4bc",  # oct-cpu
-    "pending": "\ueabc",  # cod-circle-outline
+    "pending": "\ueb0c",  # cod-issues: same box as cod-pass, unlike cod-circle
     "completed": "\ueba4",  # cod-pass
     "cancelled": "\uf4b7",  # oct-skip
     "blocked": "\uea6c",  # cod-warning
@@ -99,7 +99,7 @@ _SYMBOLS = {
     "\uea7b": "=",
     "\uec1e": '"',
     "\uf4bc": ">",
-    "\ueabc": "o",
+    "\ueb0c": "o",
     "\ueba4": "v",
     "\uf4b7": "-",
     "\uea6c": "!",
