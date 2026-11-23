@@ -18,7 +18,8 @@ then newline-delimited JSON (UTF-8) for as long as both last:
     pcode -> terminal   the menu to show, replacing the last one:
                         {"seq": int, "items": [{"text": str, "meta": str}],
                          "selected": int|null, "offset": int, "total": int,
-                         "dx": int, "dy": int, "style": {...}}
+                         "dx": int, "dy": int, "x": int, "y": int,
+                         "style": {...}}
                         or `{"hide": true}`
     terminal -> pcode   a row was clicked: {"accept": int, "seq": int}
 
@@ -31,9 +32,15 @@ a native pick list (`pick_ui.native_style`). A click on a list that has since
 changed (its `seq` is not the last sent) is ignored.
 
 Either side closing the socket ends it; the terminal hides the list on EOF.
-pcode then draws the menu in the grid again, and tries once more the next time
-it has a menu to show. A terminal that does not connect in time, or stops
-reading, ends it for the session.
+pcode then draws the menu in the grid again, and reconnects on its next
+render. A connection that lasted a while does not count against `ATTEMPTS`
+(a stray `pcode;complete` APC in other output replaces it), but one that ends
+quickly does. A terminal that does not connect in time, or stops reading,
+ends it for the session.
+
+The message also carries the cursor's cell in pcode's screen (`x`, `y`), so a
+prompt that moved with an unchanged menu is still sent, and the terminal
+places the list again.
 """
 
 import asyncio
@@ -41,6 +48,7 @@ import json
 import logging
 import secrets
 import socket
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
@@ -60,6 +68,8 @@ _BACKLOG = 1 << 20
 _REPLY_LIMIT = 1 << 12
 # Connections tried per session before the grid menu is kept for good.
 ATTEMPTS = 3
+# Seconds a connection must last not to count against `ATTEMPTS`.
+_LASTED = 5.0
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +85,7 @@ def menu_message(
     *,
     dx: int,
     dy: int,
+    cursor: tuple[int, int] = (0, 0),
     style: dict[str, str],
 ) -> dict[str, Any]:
     """The menu as the terminal is sent it, without its `seq`."""
@@ -92,6 +103,8 @@ def menu_message(
         "total": len(completions),
         "dx": dx,
         "dy": dy,
+        "x": cursor[0],
+        "y": cursor[1],
         "style": style,
     }
 
@@ -101,16 +114,21 @@ def window_offset(offset: int, selected: int | None, total: int) -> int:
     if total <= WINDOW:
         return 0
     if selected is None:
-        return 0 if offset + WINDOW > total else offset
+        return 0  # A fresh or refiltered list shows its top.
     if offset <= selected < offset + WINDOW and offset + WINDOW <= total:
         return offset
     return max(0, min(selected - WINDOW // 2, total - WINDOW))
 
 
-def start_column(document, completion) -> int:
-    """Cells from the cursor back to where `completion` starts, as zero or less."""
-    before = document.text_before_cursor
-    word = before[max(0, len(before) + completion.start_position) :]
+def start_column(state, document) -> int:
+    """Cells from the cursor back to where the completed word starts, as zero or less.
+
+    Measured from the menu's original document: a selected completion is
+    already in `document`, but the text before the word never changes.
+    """
+    completion = state.current_completion or state.completions[0]
+    start = state.original_document.cursor_position + completion.start_position
+    word = document.text_before_cursor[max(0, start) :]
     return -get_cwidth(word.rsplit("\n", 1)[-1])
 
 
@@ -206,7 +224,10 @@ class NativeCompletions:
             reader = await self._open()
             if reader is None:
                 return
+            opened = time.monotonic()
             await self._read(reader)
+            if time.monotonic() - opened > _LASTED:
+                self.attempts -= 1
         except asyncio.CancelledError:
             self._drop()
             raise
@@ -226,6 +247,7 @@ class NativeCompletions:
             self.attempts = ATTEMPTS
             return None
         loop = asyncio.get_running_loop()
+        writer: asyncio.StreamWriter | None = None
         try:
             server.bind(str(address))
             server.listen(1)
@@ -244,6 +266,8 @@ class NativeCompletions:
             # A terminal that never connects will not later: the grid it is.
             log.warning("Native completion list unavailable: %s", error or type(error).__name__)
             self.attempts = ATTEMPTS
+            if writer is not None:
+                writer.transport.abort()
             return None
         finally:
             # Found once; nothing else may connect.

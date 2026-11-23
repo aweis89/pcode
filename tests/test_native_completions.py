@@ -204,7 +204,8 @@ def test_the_window_follows_the_selection():
     assert window_offset(0, WINDOW, 1000) == WINDOW - WINDOW // 2
     assert window_offset(300, 350, 1000) == 300
     assert window_offset(300, 999, 1000) == 1000 - WINDOW
-    # The list shrank under the window.
+    # Refiltered (nothing selected): back to the top, wherever it was.
+    assert window_offset(300, None, 1000) == 0
     assert window_offset(900, None, 300) == 0
 
     menu = menu_message(completions(*map(str, range(1000))), 450, 400, **MENU)
@@ -214,11 +215,22 @@ def test_the_window_follows_the_selection():
 
 
 def test_the_list_starts_where_the_word_does():
-    document = Document("look at @src/pcode/ui", len("look at @src/pcode/ui"))
-    assert start_column(document, Completion("@src/pcode/ui.py", start_position=-13)) == -13
+    document = Document("look at @src/pcode/ui")
+    state = CompletionState(document, [Completion("@src/pcode/ui.py", start_position=-13)])
+    assert start_column(state, document) == -13
     # Wide characters take two cells; the line before a newline is not counted.
-    document = Document("one\n@日本", len("one\n@日本"))
-    assert start_column(document, Completion("@日本語", start_position=-10)) == -5
+    document = Document("one\n@日本")
+    state = CompletionState(document, [Completion("@日本語", start_position=-3)])
+    assert start_column(state, document) == -5
+
+
+def test_the_list_stays_put_as_the_selection_fills_in_the_word():
+    original = Document("hi /he")
+    state = CompletionState(
+        original, [Completion("/help", -3), Completion("/history-long", -3)], complete_index=1
+    )
+    # The selected completion is in the buffer by now.
+    assert start_column(state, Document("hi /history-long")) == -13
 
 
 # The editor's side: what `PromptLayout` sends after a render.
@@ -307,9 +319,13 @@ def test_a_click_takes_the_completion_as_enter_would():
     prompt, _ = prompt_layout()
     buffer = prompt.session.default_buffer
     buffer.document = Document("/mo")
-    buffer.complete_state = CompletionState(
-        buffer.document, [Completion("/model", -3), Completion("/mode", -3)]
-    )
+    shown = [Completion("/model", -3), Completion("/mode", -3)]
+    # A list the terminal never showed (it changed since): the click is ignored.
+    buffer.complete_state = CompletionState(buffer.document, list(shown))
+    prompt.native_completions = shown
+    prompt.accept_native_completion(1)
+    assert buffer.text == "/mo"
+    buffer.complete_state = CompletionState(buffer.document, shown)
     prompt.accept_native_completion(1)
     assert buffer.text == "/mode"
     assert buffer.complete_state is None

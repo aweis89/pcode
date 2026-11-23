@@ -3424,6 +3424,8 @@ class PromptLayout:
         # The terminal's own completion list, where it draws one (Ghostty Smooth).
         self.native = self._native_completions()
         self.native_style: tuple[object, dict[str, str]] | None = None
+        # The completions the terminal's list last showed.
+        self.native_completions: list | None = None
         self.frame: Container | None = None  # set by `editor_frame()`
         self.menu = CompletionsMenu(
             max_height=20,
@@ -4674,28 +4676,32 @@ class PromptLayout:
             return
         buffer = self.session.default_buffer
         state = buffer.complete_state
-        dy = None
+        place = None
         if state is not None and state.completions and app.layout.has_focus(buffer):
-            dy = self._native_rows_above(app)
-        if state is None or dy is None or app.is_done:
+            place = self._native_place(app)
+        if state is None or place is None or app.is_done:
+            self.native_completions = None
             native.hide()
             return
+        cursor, dy = place
         selected = state.complete_index
         native.offset = window_offset(native.offset, selected, len(state.completions))
-        completion = state.current_completion or state.completions[0]
+        # A click is taken only on this list: a newer one may have other rows.
+        self.native_completions = state.completions
         native.show(
             menu_message(
                 state.completions,
                 selected,
                 native.offset,
-                dx=start_column(buffer.document, completion),
+                dx=start_column(state, buffer.document),
                 dy=dy,
+                cursor=(cursor.x, cursor.y),
                 style=self._native_style(app),
             )
         )
 
-    def _native_rows_above(self, app) -> int | None:
-        """Rows from the editor box's top to the cursor's, or None while the editor isn't drawn."""
+    def _native_place(self, app):
+        """The cursor, and rows from the editor box's top to it; None if the editor isn't drawn."""
         screen = app.renderer._last_screen
         cursor = screen.cursor_positions.get(self.editor) if screen is not None else None
         if cursor is None:
@@ -4706,7 +4712,7 @@ class PromptLayout:
             for window in (walk(self.frame) if self.frame is not None else ())
             if window in positions
         ]
-        return max(0, cursor.y - min(tops)) if tops else 0
+        return cursor, (max(0, cursor.y - min(tops)) if tops else 0)
 
     def _native_style(self, app) -> dict[str, str]:
         from pcode.pick_ui import native_style
@@ -4720,7 +4726,11 @@ class PromptLayout:
         """A row of the terminal's list was clicked: take it, as Enter on it would."""
         buffer = self.session.default_buffer
         state = buffer.complete_state
-        if state is None or not 0 <= index < len(state.completions):
+        if (
+            state is None
+            or state.completions is not self.native_completions
+            or not 0 <= index < len(state.completions)
+        ):
             return
         buffer.go_to_completion(index)
         buffer.complete_state = None
