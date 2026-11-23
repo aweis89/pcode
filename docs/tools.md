@@ -532,9 +532,11 @@ tab rather than guessing. pcode closes its tab on `/browser off` and never quits
 your browser. **This is the higher-risk mode: the model can act as every account
 that browser is signed in to.**
 
-Attaching needs remote debugging on. The first `/browser attach` opens
-`chrome://inspect/#remote-debugging` in Chrome for you to flip the switch; then
-run it again. (Starting Chrome with `--remote-debugging-port` works too.) For
+Attaching needs remote debugging on. The first `/browser attach` opens the
+remote-debugging page (`chrome://inspect/#remote-debugging`, or
+`edge://inspect/#remote-debugging` in Edge) in the browser you have running for
+you to flip the switch; then run it again. With several browsers listening, it
+joins the one that turned debugging on most recently. (Starting Chrome with `--remote-debugging-port` works too.) For
 Edge, turn on remote debugging in Edge first, since the setup shortcut always
 opens Chrome. pcode finds the browser through the standard Chrome, Chromium, and
 Edge profile directories on macOS and Linux. To override that, set

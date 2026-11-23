@@ -92,51 +92,144 @@ def _chrome_profile_dirs() -> list[Path]:
     ]
 
 
+def _listening(port: int) -> bool:
+    """Whether something accepts connections on the loopback `port`."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def _read_port_file(file: Path) -> tuple[int, str] | None:
+    try:
+        port, path = file.read_text().split()[:2]
+        return int(port), path
+    except OSError, ValueError:
+        return None
+
+
 def running_chrome_url() -> str | None:
     """The CDP endpoint of a user's Chromium-based browser with remote debugging on.
 
     `PCODE_BROWSER_CDP_URL` wins. Otherwise Chrome writes `DevToolsActivePort`
     (port, then the browser websocket path) into its profile when started with
     `--remote-debugging-port` or when `chrome://inspect/#remote-debugging` is
-    toggled on; `PCODE_BROWSER_PORT_FILE` names that file elsewhere.
+    toggled on; `PCODE_BROWSER_PORT_FILE` names that file elsewhere and is
+    trusted as given.
+
+    A browser that crashed or was killed leaves its file behind, so discovered
+    files only count while their port is listening; otherwise a dead Chrome
+    file shadows a live Edge one forever. Of several live browsers, the one
+    whose file is newest (most recently started or toggled) wins.
     """
     configured = os.environ.get("PCODE_BROWSER_CDP_URL", "").strip()
     if configured:
         return configured
     named = os.environ.get("PCODE_BROWSER_PORT_FILE", "").strip()
-    files = [Path(named)] if named else [d / "DevToolsActivePort" for d in _chrome_profile_dirs()]
-    for file in files:
-        try:
-            port, path = file.read_text().split()[:2]
-        except OSError, ValueError:
+    if named:
+        found = _read_port_file(Path(named))
+        return f"ws://127.0.0.1:{found[0]}{found[1]}" if found else None
+    live: list[tuple[float, int, str]] = []
+    for file in (d / "DevToolsActivePort" for d in _chrome_profile_dirs()):
+        found = _read_port_file(file)
+        if found is None or not _listening(found[0]):
             continue
-        return f"ws://127.0.0.1:{int(port)}{path}"
-    return None
+        try:
+            mtime = file.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        live.append((mtime, *found))
+    if not live:
+        return None
+    _, port, path = max(live, key=lambda entry: entry[0])
+    return f"ws://127.0.0.1:{port}{path}"
 
 
 REMOTE_DEBUGGING_PAGE = "chrome://inspect/#remote-debugging"
+EDGE_REMOTE_DEBUGGING_PAGE = "edge://inspect/#remote-debugging"
+# (name, executable, its remote-debugging page) for the browsers attach can join.
+DEBUGGING_BROWSERS = (
+    (
+        "Microsoft Edge",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        EDGE_REMOTE_DEBUGGING_PAGE,
+    ),
+    (
+        "Google Chrome",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        REMOTE_DEBUGGING_PAGE,
+    ),
+    ("Chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium", REMOTE_DEBUGGING_PAGE),
+    ("Microsoft Edge", "microsoft-edge", EDGE_REMOTE_DEBUGGING_PAGE),
+    ("Microsoft Edge", "microsoft-edge-stable", EDGE_REMOTE_DEBUGGING_PAGE),
+    ("Google Chrome", "google-chrome", REMOTE_DEBUGGING_PAGE),
+    ("Google Chrome", "google-chrome-stable", REMOTE_DEBUGGING_PAGE),
+    ("Chromium", "chromium", REMOTE_DEBUGGING_PAGE),
+    ("Chromium", "chromium-browser", REMOTE_DEBUGGING_PAGE),
+)
 
 
-def show_remote_debugging_toggle() -> bool:
-    """Open Chrome's remote-debugging switch in the user's own Chrome; False if none is installed.
+def _installed(executable: str) -> bool:
+    return Path(executable).is_file() if "/" in executable else shutil.which(executable) is not None
 
-    Chrome forwards a URL given to a second invocation to the running instance,
-    or starts one on the default profile, so this lands in the everyday browser
-    either way. On macOS that goes through `open -a`: a cold start from the
-    binary itself drops a `chrome://` URL on the floor. Detached: the process
-    is not ours to wait on.
-    """
-    executable = chrome_executable()
-    if executable is None:
+
+def _running(executable: str) -> bool:
+    """Whether a process named like `executable` runs (`pgrep -x`; 15-char name limit)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", Path(executable).name[:15]],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except OSError, subprocess.SubprocessError:
         return False
-    command = [executable, REMOTE_DEBUGGING_PAGE]
+    return result.returncode == 0
+
+
+def debugging_browser() -> tuple[str, str, str] | None:
+    """The user's browser whose remote-debugging switch to show: (name, executable, page).
+
+    `PCODE_BROWSER_CHROME` wins. Otherwise a browser that is already running
+    (the one the user is in), else the first installed one.
+    """
+    configured = os.environ.get("PCODE_BROWSER_CHROME", "").strip()
+    if configured:
+        if not _installed(configured):
+            return None
+        if "edge" in Path(configured).name.lower():
+            return ("Microsoft Edge", configured, EDGE_REMOTE_DEBUGGING_PAGE)
+        return ("Chrome", configured, REMOTE_DEBUGGING_PAGE)
+    installed = [entry for entry in DEBUGGING_BROWSERS if _installed(entry[1])]
+    for entry in installed:
+        if _running(entry[1]):
+            return entry
+    return installed[0] if installed else None
+
+
+def show_remote_debugging_toggle() -> str | None:
+    """Open the remote-debugging switch in the user's own browser; its name, or None if none.
+
+    Chromium browsers forward a URL given to a second invocation to the running
+    instance, or start one on the default profile, so this lands in the
+    everyday browser either way. On macOS that goes through `open -a`: a cold
+    start from the binary itself drops a `chrome://` URL on the floor.
+    Detached: the process is not ours to wait on.
+    """
+    found = debugging_browser()
+    if found is None:
+        return None
+    name, executable, page = found
+    command = [executable, page]
     if sys.platform == "darwin" and ".app/Contents/MacOS/" in executable:
         bundle = Path(executable)
         while bundle.suffix != ".app":
             bundle = bundle.parent
-        command = ["open", "-a", str(bundle), REMOTE_DEBUGGING_PAGE]
+        command = ["open", "-a", str(bundle), page]
     _detach(command)
-    return True
+    return name
 
 
 def _detach(command: list[str]) -> None:
@@ -640,7 +733,8 @@ class BrowserState:
                     raise ValueError(
                         "No running Chrome, Chromium, or Edge with remote debugging found. "
                         "Enable remote debugging in your browser "
-                        "(chrome://inspect/#remote-debugging in Chrome), "
+                        "(chrome://inspect/#remote-debugging in Chrome, "
+                        "edge://inspect/#remote-debugging in Edge), "
                         "or set PCODE_BROWSER_CDP_URL."
                     )
             elif chrome_executable():

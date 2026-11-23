@@ -5,6 +5,8 @@ around it, and a fake page stands in for the launched browser.
 """
 
 import asyncio
+import os
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -530,10 +532,83 @@ def test_attach_reads_chromes_port_file(fresh_state, monkeypatch, tmp_path):
 )
 def test_attach_discovers_browser_profiles(tmp_path, monkeypatch, profile):
     monkeypatch.setattr(browser_state.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(browser_state, "_listening", lambda port: True)
     directory = tmp_path / profile
     directory.mkdir(parents=True)
     (directory / "DevToolsActivePort").write_text("9333\n/devtools/browser/abc\n")
     assert browser_state.running_chrome_url() == "ws://127.0.0.1:9333/devtools/browser/abc"
+
+
+def _port_file(home, profile, port, path, mtime):
+    directory = home / profile
+    directory.mkdir(parents=True)
+    file = directory / "DevToolsActivePort"
+    file.write_text(f"{port}\n{path}\n")
+    os.utime(file, (mtime, mtime))
+
+
+def test_attach_skips_a_stale_port_file_for_a_live_one(tmp_path, monkeypatch):
+    # A Chrome that quit without cleaning up must not shadow a running Edge.
+    monkeypatch.setattr(browser_state.Path, "home", lambda: tmp_path)
+    _port_file(tmp_path, "Library/Application Support/Google/Chrome", 9333, "/chrome", 2000)
+    _port_file(tmp_path, "Library/Application Support/Microsoft Edge", 9444, "/edge", 1000)
+    monkeypatch.setattr(browser_state, "_listening", lambda port: port == 9444)
+    assert browser_state.running_chrome_url() == "ws://127.0.0.1:9444/edge"
+    monkeypatch.setattr(browser_state, "_listening", lambda port: False)
+    assert browser_state.running_chrome_url() is None
+
+
+def test_attach_prefers_the_newest_live_browser(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser_state.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(browser_state, "_listening", lambda port: True)
+    _port_file(tmp_path, "Library/Application Support/Google/Chrome", 9333, "/chrome", 1000)
+    _port_file(tmp_path, "Library/Application Support/Microsoft Edge", 9444, "/edge", 2000)
+    assert browser_state.running_chrome_url() == "ws://127.0.0.1:9444/edge"
+
+
+def test_listening_probes_the_port():
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        assert browser_state._listening(port)
+    assert not browser_state._listening(port)
+
+
+def test_debugging_switch_opens_in_the_running_browser(tmp_path, monkeypatch):
+    monkeypatch.delenv("PCODE_BROWSER_CHROME", raising=False)
+    apps = {}
+    for name in ("Microsoft Edge", "Google Chrome"):
+        app = tmp_path / f"{name}.app" / "Contents" / "MacOS"
+        app.mkdir(parents=True)
+        (app / name).touch()
+        apps[name] = str(app / name)
+    edge_page, chrome_page = (
+        "edge://inspect/#remote-debugging",
+        "chrome://inspect/#remote-debugging",
+    )
+    monkeypatch.setattr(
+        browser_state,
+        "DEBUGGING_BROWSERS",
+        (
+            ("Google Chrome", apps["Google Chrome"], chrome_page),
+            ("Microsoft Edge", apps["Microsoft Edge"], edge_page),
+        ),
+    )
+    monkeypatch.setattr(browser_state.sys, "platform", "darwin")
+    launched = []
+    monkeypatch.setattr(browser_state, "_detach", launched.append)
+    monkeypatch.setattr(browser_state, "_running", lambda executable: "Edge" in executable)
+    assert browser_state.show_remote_debugging_toggle() == "Microsoft Edge"
+    assert launched[-1] == ["open", "-a", str(tmp_path / "Microsoft Edge.app"), edge_page]
+    # Nothing running: the first installed browser.
+    monkeypatch.setattr(browser_state, "_running", lambda executable: False)
+    assert browser_state.show_remote_debugging_toggle() == "Google Chrome"
+    assert launched[-1][-1] == chrome_page
+    # An Edge named in PCODE_BROWSER_CHROME gets Edge's page.
+    monkeypatch.setenv("PCODE_BROWSER_CHROME", apps["Microsoft Edge"])
+    assert browser_state.show_remote_debugging_toggle() == "Microsoft Edge"
+    assert launched[-1][-1] == edge_page
 
 
 def test_explicit_endpoint_and_port_file_override_discovery(tmp_path, monkeypatch):

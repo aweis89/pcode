@@ -25,7 +25,7 @@ import asyncio
 from pathlib import Path
 
 from pcode import sandbox
-from pcode.browser import REMOTE_DEBUGGING_PAGE, STATE, TAB_MARK, show_remote_debugging_toggle
+from pcode.browser import STATE, TAB_MARK, show_remote_debugging_toggle
 
 DELEGATE_INSTRUCTIONS = (
     "A `browser` sub-agent shares the same browser window and login. Delegate to it "
@@ -329,9 +329,9 @@ def setup(pcode) -> None:
                 STATE.open()
             except ValueError:
                 STATE.attach = False
-                if show_remote_debugging_toggle():
+                if name := show_remote_debugging_toggle():
                     pcode.ui.notify(
-                        f"Opened {REMOTE_DEBUGGING_PAGE} in your Chrome. Turn the switch on, "
+                        f"Opened the remote debugging page in {name}. Turn the switch on, "
                         "then run /browser attach again."
                     )
                     return
