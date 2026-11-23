@@ -4719,20 +4719,31 @@ class PromptLayout:
         return self.transcript is not None and native_toast_supported() and overlay_popups()
 
     def sync_native_toast(self, app) -> None:
-        """Show the terminal each new notice once, as a toast over the editor."""
-        from pcode.drawer import toast
+        """Show the terminal each new notice once, as a toast over the editor.
+
+        A notice cleared before it expires (a job's progress) hides the toast.
+        """
+        from pcode.drawer import hide_toast, toast
 
         activity = self.activity
-        if not self.native_toasts or app.is_done or not activity.notice_shown:
+        if not self.native_toasts or app.is_done:
+            return
+        if not activity.notice_shown:
+            sent, self.toast_sent = self.toast_sent, None
+            if sent is not None and monotonic() < sent[1]:
+                app.output.write_raw(hide_toast())
+                app.output.flush()
             return
         notice = (activity.notice, activity.notice_expires)
         if notice == self.toast_sent:
             return
-        self.toast_sent = notice
+        # Placed above the editor's box: wait for a render that draws it.
         place = self._native_place(app)
+        if place is None:
+            return
+        self.toast_sent = notice
         seconds = activity.notice_expires - monotonic()
-        rows = place[1] if place else 0
-        app.output.write_raw(toast(activity.notice, rows_above=rows, seconds=seconds))
+        app.output.write_raw(toast(activity.notice, rows_above=place[1], seconds=seconds))
         app.output.flush()
 
     def _native_place(self, app):
