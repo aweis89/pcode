@@ -5,6 +5,7 @@ import os
 import pty
 import select
 import sys
+from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit import PromptSession
@@ -14,7 +15,7 @@ from prompt_toolkit.output import DummyOutput
 from pcode import glyphs, kitty_spinner, theme
 from pcode.kitty_spinner import PLACEHOLDER, SLOTS, KittySpinners
 from pcode.startup_input import TerminalReplyParser
-from pcode.tool_panel import panel_fragments
+from pcode.tool_panel import panel_fragments, plan_row
 from pcode.ui import PALETTES, Activity, PromptLayout, StatusLine, status_spinner
 
 OK_REPLY = b"\x1b_Gi=31;OK\x1b\\"
@@ -225,6 +226,27 @@ def test_wide_styles_stay_single_cell_on_tool_and_accent_slots():
         assert specs["accent"].cols == 1
         assert ks.fragment("tool") == ("class:kitty.spinner.tool", PLACEHOLDER)
         assert ks.fragment("accent") == ("class:kitty.spinner.accent", PLACEHOLDER)
+        # Only `dual` has an inset task shape; other styles keep tasks on `accent`.
+        assert "task" not in specs
+
+
+def test_inset_spinners_leave_their_right_edge_clear():
+    """An inset image's right cell is the gap before its row's text."""
+    rgb = (0x88, 0xC0, 0xD0)
+    for style in ("dual", "gyro", "helix"):
+        spec = kitty_spinner.SlotSpec(style, 2, rgb, rgb, inset=True)
+        style_spec = kitty_spinner.STYLES[style]
+        width = 2 * kitty_spinner.CELL_W
+        drawn: set[int] = set()
+        for frame in range(0, style_spec.frames, 7):
+            raw = kitty_spinner._render_frame(spec, frame)
+            assert len(raw) == width * kitty_spinner.CELL_H * 4
+            columns = {(i // 4) % width for i in range(3, len(raw), 4) if raw[i] > 8}
+            # Every frame stays clear of the right third of the second cell.
+            assert max(columns) < width - 10, (style, frame)
+            drawn |= columns
+        # And it turns over the first cell, where other rows' 1-cell icons sit.
+        assert min(drawn) < kitty_spinner.CELL_W // 2, style
 
 
 def test_kitty_spinners_upload_sync_recolor_and_close():
@@ -248,13 +270,19 @@ def test_kitty_spinners_upload_sync_recolor_and_close():
         assert ks.ready is False
         assert ks.active_for("status") is False
 
-        # Slot lineup: 2x1 helix status, 2x1 gyro startup, 1x1 gyro aside, 1x1 dual tool/accent.
+        # Slot lineup: 2x1 helix status, 2x1 gyro startup, inset 2x1 gyro aside,
+        # 1x1 dual tool/accent, and inset 2x1 dual task.
         dark_specs = ks._slot_specs(PALETTES["dark"], PALETTES["dark"])
         assert (dark_specs["status"].style, dark_specs["status"].cols) == ("helix", 2)
         assert (dark_specs["startup"].style, dark_specs["startup"].cols) == ("gyro", 2)
-        assert (dark_specs["aside"].style, dark_specs["aside"].cols) == ("gyro", 1)
+        assert (dark_specs["aside"].style, dark_specs["aside"].cols) == ("gyro", 2)
         assert (dark_specs["tool"].style, dark_specs["tool"].cols) == ("dual", 1)
         assert (dark_specs["accent"].style, dark_specs["accent"].cols) == ("dual", 1)
+        assert (dark_specs["task"].style, dark_specs["task"].cols) == ("dual", 2)
+        # Sub-agents turn with an inset copy of the main agent's spinner.
+        assert (dark_specs["agent"].style, dark_specs["agent"].cols) == ("helix", 2)
+        assert all(dark_specs[slot].inset for slot in ("aside", "task", "agent"))
+        assert not dark_specs["startup"].inset
         assert dark_specs["status"].is_light is False
         light_specs = ks._slot_specs(PALETTES["light"], PALETTES["light"])
         assert light_specs["status"].is_light is True
@@ -304,7 +332,8 @@ def test_kitty_spinners_upload_sync_recolor_and_close():
         assert ks.active_for("startup") is True
         assert ks.slot_cols("status") == 2
         assert ks.slot_cols("startup") == 2
-        assert ks.slot_cols("aside") == 1
+        assert ks.slot_cols("aside") == 2
+        assert ks.slot_cols("task") == 2
         assert ks.slot_cols("tool") == 1
         assert ks.slot_cols("accent") == 1
         assert flushes == 2
@@ -379,9 +408,15 @@ def test_fragments_and_layout_with_kitty_spinners_and_fallback():
     assert cell_len(p2) == 2
     assert layout.status_spinner_mark() == ("class:kitty.spinner.status", p2)
     assert layout.tool_spinner_mark() == ("class:kitty.spinner.tool", PLACEHOLDER)
-    assert layout.aside_spinner_mark() == ("class:kitty.spinner.aside", PLACEHOLDER)
+    assert layout.aside_spinner_mark() == ("class:kitty.spinner.aside", p2)
     assert layout.wait_spinner_mark() == ("class:kitty.spinner.accent", PLACEHOLDER)
+    assert layout.plan_spinner_icon() == kitty_spinner.INSET_ICON == p2
+    # Sub-agents are agents too: they turn with the main agent's spinner.
+    assert layout.agent_spinner_icon() == p2
+    # Without an inset task slot, the task falls back to the 1x1 accent one.
+    ks._uploaded_slots = set(SLOTS) - {"task"}
     assert layout.plan_spinner_icon() == PLACEHOLDER
+    ks._uploaded_slots = set(SLOTS)
     assert layout.startup_spinner_mark(0.0) == ("class:kitty.spinner.startup", p2)
     assert layout.refresh_interval() == 0.5
 
@@ -391,6 +426,9 @@ def test_fragments_and_layout_with_kitty_spinners_and_fallback():
     ks_narrow._uploaded_slots = set(SLOTS)
     assert ks_narrow.fragment("status") == ("class:kitty.spinner.status", PLACEHOLDER)
     assert ks_narrow.fragment("startup") == ("class:kitty.spinner.startup", p2)
+    # A 1x1 main spinner gives sub-agents a 1x1 copy, which keeps its gap.
+    narrow_agent = ks_narrow._slot_specs(PALETTES["dark"], PALETTES["dark"])["agent"]
+    assert (narrow_agent.cols, narrow_agent.inset) == (1, False)
 
     # StatusLine preserves the dedicated Kitty style class on the 2-cell placeholder only
     # and keeps exact width math.
@@ -430,6 +468,44 @@ def test_fragments_and_layout_with_kitty_spinners_and_fallback():
     assert ("class:kitty.spinner.accent", PLACEHOLDER) in plan_frags
     narrow_frags = panel_fragments([("class:plan.in_progress", f"{PLACEHOLDER} Build feature")], 2)
     assert narrow_frags[0] == ("class:kitty.spinner.accent", PLACEHOLDER)
+
+    # The inset task spinner is its own gap, so the text starts where a
+    # 1-cell icon's would, and it shows whole or not at all.
+    inset_row = plan_row({"status": "in_progress", "content": "Build feature"}, p2)
+    assert inset_row[1] == f"{p2}Build feature"
+    done_row = plan_row({"status": "completed", "content": "Build feature"}, p2)
+    assert cell_len(inset_row[1]) == cell_len(done_row[1])
+    assert panel_fragments([inset_row], 40) == [
+        ("class:kitty.spinner.task", p2),
+        ("class:plan.in_progress", "Build feature"),
+    ]
+    assert panel_fragments([inset_row], 2) == [("class:kitty.spinner.task", p2)]
+    for cols in (1, 2, 3, 40):
+        clipped = panel_fragments([inset_row], cols)
+        assert sum(cell_len(text) for _, text in clipped) <= cols
+        assert all(text == p2 for style, text in clipped if style.startswith("class:kitty"))
+
+    # A sub-agent row's spinner gets its inset image, its head stays bold.
+    agent_frags = panel_fragments(
+        [("class:plan.agent,agent.hue.0", f"├─ {p2}reviewing · 5.5s · Thinking")], 60
+    )
+    assert agent_frags[:3] == [
+        ("class:plan.tree", "├─ "),
+        ("class:kitty.spinner.agent", p2),
+        ("class:plan.agent,agent.hue.0 bold", "reviewing"),
+    ]
+
+    # The /btw row's inset spinner is its gap too, keeping `btw` in the
+    # column where the tool rows' text starts.
+    activity.asides.append(
+        SimpleNamespace(running=True, question="why?", label="", activity="", elapsed=3.0)
+    )
+    aside = activity.aside_rows(layout.aside_spinner_mark(), 40)[0]
+    assert aside[0] == ("class:kitty.spinner.aside", p2)
+    assert aside[1][1].startswith("btw · why?")
+    narrow_aside = activity.aside_rows(("class:kitty.spinner.aside", PLACEHOLDER), 40)[0]
+    assert narrow_aside[1][1].startswith(" btw")
+    activity.asides.clear()
 
     # Wait row keeps the placeholder on its own fragment.
     activity.begin_wait("Connecting")

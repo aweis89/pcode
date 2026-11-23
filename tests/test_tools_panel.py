@@ -316,3 +316,30 @@ def test_running_tool_calls_leave_the_whole_budget_to_the_tasks(budget):
     assert len(text) == min(budget, 5)
     assert "⟳ Task 8" in text
     assert not any("Read file" in line for line in text)
+
+
+def test_inset_agent_spinner_keeps_the_sub_agents_text_in_place():
+    """The main agent's spinner stands in for `»` without moving the text."""
+    from pcode.kitty_spinner import INSET_ICON, PLACEHOLDER
+
+    history = ToolHistory()
+    history.record(
+        ToolStarted("delegate_task", "", "one", agent="worker", purpose="reviewing the fix")
+    )
+    plan = [{"status": "in_progress", "content": "Ship it"}]
+
+    def agent_text(agent_icon):
+        rows = task_panel_rows(plan, history, 5, INSET_ICON, agent_icon=agent_icon)
+        style, line = rows[-1]
+        assert style.startswith("class:plan.agent")
+        start = line.index("reviewing")
+        return cell_len(line[:start]), line
+
+    plain_column, _ = agent_text(None)
+    inset_column, inset_line = agent_text(INSET_ICON)
+    assert INSET_ICON in inset_line
+    assert inset_column == plain_column
+    # A 1x1 main spinner keeps the space after it, like `»`.
+    assert agent_text(PLACEHOLDER)[0] == plain_column
+    fragments = panel_fragments([("class:plan.agent,agent.hue.0", inset_line)], 60)
+    assert ("class:kitty.spinner.agent", INSET_ICON) in fragments
