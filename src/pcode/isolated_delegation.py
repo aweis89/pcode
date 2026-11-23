@@ -272,14 +272,16 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         check then runs unchanged. A delegate restricted to some keys is left
         for that check to refuse, without resolving anything.
         """
-        if key is None:
-            return None
+        sub_agent = self._agents.get(agent_name)
+        # A name as configured (on /subagents, or a restricted delegate's own
+        # list) wins over qualifying it, which could turn it into another key.
+        if key is None or key in self._models or key in (getattr(sub_agent, "models", None) or ()):
+            return key
         from pcode.models import qualify_model
 
         session = getattr(ctx, "model", None)
         # Reads the catalog and preferences from disk.
         key = await asyncio.to_thread(qualify_model, key, session)
-        sub_agent = self._agents.get(agent_name)
         if key in self._models or sub_agent is None or sub_agent.models:
             return key
         from pydantic_ai_harness.sub_agents import ModelOption
@@ -407,6 +409,8 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             workspace_mode == "auto" and agent_name == "worker" and isolation_enabled()
         )
         handle = current_worker()
+        if handle is not None and model:
+            handle.model = model  # As run, not as typed.
         if handle is not None and handle.resume_from is not None:
             # A resumed worker carries on in the workspace it worked in: shared.
             isolated = False

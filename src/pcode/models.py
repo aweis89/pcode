@@ -242,20 +242,24 @@ def provider_models(provider: str) -> list[str]:
     """The catalog's names under `provider`, without the prefix; [] when it has no catalog."""
     prefix = f"{provider}:"
     return [
-        name.removeprefix(prefix)
-        for name in sorted(model_catalog({provider}), key=model_sort_key)
-        if name.startswith(prefix)
+        name.removeprefix(prefix) for name in model_catalog({provider}) if name.startswith(prefix)
     ]
+
+
+# Catalog-less providers whose ids are whatever the server hosts (`llama3:8b`).
+LOCAL_PROVIDERS = frozenset({"ollama", "vllm"})
 
 
 def qualify_model(name: str, session=None) -> str:
     """`name` with the session's provider when it was given bare, else as given.
 
     A name that names its provider is never rewritten. A bare one becomes
-    `<session provider>:<name>` when the catalog lists it there, when it is
-    the session's own model, or when that provider has no catalog and takes
-    any id (openrouter, ollama...). Anything
-    else comes back unchanged for the usual inference to try. Reads no
+    `<session provider>:<name>` when the catalog lists it there or it is the
+    session's own model. A provider without a catalog takes it when the id
+    could only be its own: any id on a local server (ollama, vllm), or a
+    gateway's `vendor/model` id (openrouter, together...), which inference
+    could not route anyway. Anything else, such as `claude-sonnet-4-5` on an
+    openrouter session, comes back unchanged for the usual inference. Reads no
     credentials, so it is safe before a model is resolved. `session` is the
     session's model, as for `session_provider`.
     """
@@ -269,7 +273,9 @@ def qualify_model(name: str, session=None) -> str:
     if qualified in (session, getattr(session, "model_id", None)):
         return qualified
     known = provider_models(provider)
-    return qualified if not known or name in known else name
+    if known:
+        return qualified if name in known else name
+    return qualified if provider in LOCAL_PROVIDERS or "/" in name else name
 
 
 def model_sort_key(name: str):

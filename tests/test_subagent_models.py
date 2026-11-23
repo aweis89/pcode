@@ -383,3 +383,51 @@ def test_a_bare_delegation_model_resolves_under_the_sessions_provider(tmp_path, 
     asyncio.run(run())
     assert resolved == ["claude:claude-fable-5-2"]
     assert seen["returned"] == ["[worker w1]\nfrom fable"]
+
+
+def test_a_bare_menu_key_is_used_as_configured(tmp_path, monkeypatch):
+    """A bare /subagents name keeps its menu entry rather than being qualified past it."""
+    seen = {}
+
+    async def child(messages, info):
+        yield "from fable"
+
+    resolve = fake_side_model({"claude-fable-5-2": FunctionModel(stream_function=child)})
+    resolved = []
+
+    def counting(name, effort="", session=None):
+        resolved.append(name)
+        return resolve(name, effort)
+
+    monkeypatch.setattr(agent_module, "side_model", counting)
+
+    async def parent(messages, info):
+        if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+            seen["returned"] = [
+                p.content for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
+            ]
+            yield "done"
+            return
+        yield {
+            0: DeltaToolCall(
+                name="delegate_task",
+                json_args=json.dumps(
+                    {"agent_name": "worker", "task": "Review", "model": "claude-fable-5-2"}
+                ),
+                tool_call_id="call",
+            )
+        }
+
+    save_preferences(subagent_models="claude-fable-5-2")
+    session = FunctionModel(stream_function=parent, model_name="claude-opus-5-5")
+    session._system = "claude"
+    runtime = AgentRuntime(Agent(session, capabilities=[create_coder(tmp_path)]))
+
+    async def run():
+        async for _ in runtime.stream("Ask fable"):
+            pass
+
+    asyncio.run(run())
+    # Resolved once, for the menu, and never again under `claude:`.
+    assert resolved == ["claude-fable-5-2"]
+    assert seen["returned"] == ["[worker w1]\nfrom fable"]

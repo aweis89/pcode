@@ -355,3 +355,15 @@ def test_a_bare_name_the_session_provider_lacks_is_left_for_inference():
     # No session, or one on a provider pcode does not know: nothing to qualify with.
     assert qualify_model("claude-fable-5-2") == "claude-fable-5-2"
     assert qualify_model("claude-fable-5-2", Mock(system="function")) == "claude-fable-5-2"
+
+
+def test_a_catalog_less_provider_takes_only_ids_that_could_be_its_own():
+    from pcode.models import qualify_model
+
+    session = "openrouter:openai/gpt-5"
+    assert qualify_model("anthropic/claude-sonnet-4-5", session) == (
+        "openrouter:anthropic/claude-sonnet-4-5"
+    )
+    # Not an OpenRouter id: left for inference rather than sent there to fail.
+    assert qualify_model("claude-sonnet-4-5", session) == "claude-sonnet-4-5"
+    assert qualify_model("gpt-5", "vllm:qwen3") == "vllm:gpt-5"
