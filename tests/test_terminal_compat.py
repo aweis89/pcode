@@ -269,6 +269,15 @@ def test_ascii_spinners_stay_distinct(monkeypatch):
     assert model.frames != tool.frames
 
 
+def test_nerd_spinners_share_the_task_icons_circle(monkeypatch):
+    monkeypatch.setattr(glyphs, "_nerd", True)
+    model, tool = status_spinner(), status_spinner("tool_spinner")
+    assert model.frames == [chr(0xF0A9E + i) for i in range(8)]  # md-circle_slice_1..8
+    assert tool.frames == [chr(0xEE06 + i) for i in range(6)]  # extra-progress_spinner_1..6
+    monkeypatch.setattr(glyphs, "_nerd", False)
+    assert status_spinner().frames != model.frames
+
+
 @pytest.mark.parametrize("columns, wide", [((1, 2), False), ((5, 7), True), (None, None)])
 def test_the_width_probe(monkeypatch, columns, wide):
     master, slave = pty.openpty()
