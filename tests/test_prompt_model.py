@@ -43,15 +43,19 @@ class Recorder(AbstractCapability):
         ("$openai:gpt-5+high fix it", SideTarget("openai:gpt-5", "high"), "fix it"),
         ("+low what changed?", SideTarget(effort="low"), "what changed?"),
         ("$openai:gpt-5", SideTarget("openai:gpt-5"), ""),
+        ("fix it $openai:gpt-5", SideTarget("openai:gpt-5"), "fix it"),
+        ("fix +high it", SideTarget(effort="high"), "fix it"),
+        # One prompt runs one turn: a second target stays as typed.
+        ("$openai:gpt-5 fix +low it", SideTarget("openai:gpt-5"), "fix +low it"),
     ],
 )
-def test_a_leading_target_is_split_off_the_prompt(text, target, rest):
+def test_a_target_anywhere_is_split_off_the_prompt(text, target, rest):
     assert prompt_target(text) == (target, rest)
 
 
 @pytest.mark.parametrize(
     "text",
-    ["$HOME is unset", "+1 to that", "$:x hi", "$openai: hi", "plain $openai:gpt-5 later", ""],
+    ["$HOME is unset", "+1 to that", "$:x hi", "$openai: hi", "$opus bare", "a+high", ""],
 )
 def test_anything_less_than_an_unmistakable_target_is_prompt_text(text):
     assert prompt_target(text) == (None, text)
@@ -164,10 +168,11 @@ def test_a_prompts_leading_dollar_completes_like_btw():
 
     assert texts("$oth") == ["$q:other"]
     assert texts("+hi") == ["$q:other"]
-    # Once the prompt itself starts, `$` is text.
+    assert texts("fix $oth") == ["$q:other"]
+    # Only the word being typed completes.
     assert texts("$q:other fix") == []
-    assert texts("fix $oth") == []
-    assert asked == ["$oth", "+hi"]
+    assert texts("!echo $oth") == []
+    assert asked == ["$oth", "+hi", "fix $oth"]
 
 
 def app_with(runtime) -> PreviewApp:

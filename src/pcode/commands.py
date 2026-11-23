@@ -119,14 +119,16 @@ class SlashCompleter(Completer):
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):
         text = document.text_before_cursor
-        if "\n" in document.text or document.text_after_cursor:
-            return
-        if text.startswith(("$", "+")) and not any(char.isspace() for char in text):
-            # A prompt's leading `$MODEL` or `+EFFORT` picks its model the way
-            # /btw's does, so it completes from the same catalog.
-            btw = self.registry.find("/btw")
-            if btw is not None and btw.argument_completer is not None:
+        btw = self.registry.find("/btw")
+        if btw is not None and btw.argument_completer is not None and _names_targets(btw, text):
+            after = document.text_after_cursor
+            if not after or after[0].isspace():
+                # A `$MODEL` or `+EFFORT` word anywhere in a prompt or /btw
+                # picks its model, so each completes from /btw's catalog,
+                # which reads only the word being typed.
                 yield from btw.argument_completer(text)
+                return
+        if "\n" in document.text or document.text_after_cursor:
             return
         if not text.startswith("/"):
             return
@@ -162,3 +164,18 @@ class SlashCompleter(Completer):
                         start_position=-len(prefix),
                         display_meta=described.get(argument, ""),
                     )
+
+
+def _names_targets(btw: Command, text: str) -> bool:
+    """Whether `text` ends in a `$`/`+` word that picks a model: in a prompt or /btw.
+
+    Not in a `!command`, whose `$` is the shell's, or another slash command.
+    """
+    from pcode.aside import typed_word
+    from pcode.shell_mode import SHELL_PREFIX
+
+    if typed_word(text) is None or text.lstrip().startswith(SHELL_PREFIX):
+        return False
+    if not text.startswith("/"):
+        return True
+    return text.split(maxsplit=1)[0] in (btw.name, *btw.aliases)

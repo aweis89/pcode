@@ -42,8 +42,8 @@ pcode emails you a launcher message. Then:
 | `/status` as the whole text | That session's state (in a fresh email: every session's) |
 | `/stop` as the whole text, replying to a session | Its running turn and anything queued are cancelled; the session stays open |
 
-A task is sent to the model as you wrote it, so a leading `$provider:model` or
-`+effort` word picks the model or effort for that turn, as at the terminal.
+A task is sent to the model as you wrote it, so a `$provider:model` or
+`+effort` word anywhere in it picks the model or effort for that turn, as at the terminal.
 
 You get one email when a turn finishes, with the reply, how it ended, the
 worktree and branch, and a `git diff --stat`. A turn that runs longer than 20

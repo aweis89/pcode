@@ -37,6 +37,11 @@ MODEL_MARK = "$"
 EFFORT_MARK = "+"
 # How every provider prefix is spelled (`openai-codex`, `google-gla`).
 PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_-]*")
+# A model id starts with a letter or digit and holds a letter, so `8080` in
+# `$host:8080` or `/usr/bin` in `$path:/usr/bin` is no model.
+MODEL_NAME = re.compile(r"(?=\S*[A-Za-z])[A-Za-z0-9]\S*")
+# A `$` or `+` that starts a whitespace-separated word may name a target.
+TARGET_WORD = re.compile(r"(?<!\S)[$+]\S*")
 ASIDE_MODEL_USAGE = (
     f"Usage: /btw [$PROVIDER:MODEL[+EFFORT] | +EFFORT ...] QUESTION (EFFORT: {'|'.join(EFFORTS)})"
 )
@@ -151,33 +156,63 @@ def split_effort(word: str) -> tuple[str, str]:
     return word, ""
 
 
-def _target(word: str) -> SideTarget:
+def word_target(word: str) -> SideTarget | None:
+    """The target `word` names, or None when it reads as anything else.
+
+    Only an unmistakable word counts, since one can sit anywhere in a
+    question: a model with its provider (`$openai:gpt-5`, never `$HOME`,
+    `$PATH:/usr/bin` or `$host:8080`, whose "provider" or "model" no real one
+    is named like) or a real effort level (`+high`, never `+1`). A bare model
+    name (`$opus`) is text too; the picker turns one into the full id.
+    """
     if word.startswith(EFFORT_MARK):
         effort = word.removeprefix(EFFORT_MARK)
-        if effort not in EFFORTS:
-            raise ValueError(f"Unknown effort `{word}`. {ASIDE_MODEL_USAGE}")
-        return SideTarget(effort=effort)
+        return SideTarget(effort=effort) if effort in EFFORTS else None
+    if not word.startswith(MODEL_MARK):
+        return None
     model, effort = split_effort(word.removeprefix(MODEL_MARK))
-    if not model:
-        raise ValueError(f"A model name must follow `{MODEL_MARK}`. {ASIDE_MODEL_USAGE}")
-    return SideTarget(model, effort)
+    provider, colon, name = model.partition(":")
+    if colon and PROVIDER_NAME.fullmatch(provider) and MODEL_NAME.fullmatch(name):
+        return SideTarget(model, effort)
+    return None
+
+
+def _split_targets(text: str, limit: int | None = None) -> tuple[list[SideTarget], str]:
+    """Take up to `limit` target words out of `text`, wherever they are.
+
+    Each goes with the spaces after it (or before it, ending a line), so the
+    text around it reads as typed; line breaks are kept.
+    """
+    found: list[SideTarget] = []
+    spans: list[tuple[int, int]] = []
+    for match in TARGET_WORD.finditer(text):
+        target = word_target(match.group())
+        if target is None:
+            continue
+        if limit is not None and len(found) == limit:
+            break
+        start, end = match.span()
+        after = len(text) - len(text[end:].lstrip(" \t"))
+        if after > end and after < len(text) and text[after] != "\n":
+            end = after
+        else:
+            start = len(text[:start].rstrip(" \t"))
+        spans.append((start, end))
+        found.append(target)
+    for start, end in reversed(spans):
+        text = text[:start] + text[end:]
+    return found, text.strip()
 
 
 def parse_models(argument: str) -> tuple[list[SideTarget], str]:
-    """Split `$model[+effort] [+effort ...] question` into targets and the question.
+    """Split `/btw` arguments into the targets they name and the question.
 
-    Only leading `$` and `+` words name targets, so either one inside the
-    question is text. Repeated targets collapse to one, in the order first
-    given; the same model at two efforts is two targets.
+    A target word may sit anywhere (`/btw why is this slow? $openai:gpt-5`);
+    see `word_target` for what counts. Repeated targets collapse to one, in
+    the order first given; the same model at two efforts is two targets.
     """
-    models: list[SideTarget] = []
-    rest = argument.strip()
-    while rest.startswith((MODEL_MARK, EFFORT_MARK)):
-        word, *tail = rest.split(maxsplit=1)
-        rest = tail[0] if tail else ""
-        target = _target(word)
-        if target not in models:
-            models.append(target)
+    found, rest = _split_targets(argument)
+    models = list(dict.fromkeys(found))
     if models and not rest:
         raise ValueError(f"No question after the model. {ASIDE_MODEL_USAGE}")
     if len(models) > ASIDE_MODEL_LIMIT:
@@ -188,54 +223,40 @@ def parse_models(argument: str) -> tuple[list[SideTarget], str]:
 
 
 def prompt_target(text: str) -> tuple[SideTarget | None, str]:
-    """Split a leading `$PROVIDER:MODEL[+EFFORT]` or `+EFFORT` word off a prompt.
+    """Split the first `$PROVIDER:MODEL[+EFFORT]` or `+EFFORT` word off a prompt.
 
-    A prompt is free text, so unlike `/btw` nothing here is refused: a word
-    only names a target when it reads as one unmistakably, a model with its
-    provider (`$openai:gpt-5`, never `$HOME` or `$PATH:/usr/bin`, whose
-    uppercase "provider" no provider is named like) or a real effort level
-    (`+high`, never `+1`), and anything else leaves the prompt as typed. One
-    word only, since one prompt runs one turn.
+    As in `/btw` the word may sit anywhere and only an unmistakable one counts
+    (see `word_target`). One word only, since one prompt runs one turn; a
+    second stays in the prompt as typed.
     """
-    word, *tail = text.lstrip().split(maxsplit=1) or [""]
-    rest = tail[0] if tail else ""
-    if word.startswith(EFFORT_MARK):
-        effort = word.removeprefix(EFFORT_MARK)
-        return (SideTarget(effort=effort), rest) if effort in EFFORTS else (None, text)
-    if word.startswith(MODEL_MARK):
-        model, effort = split_effort(word.removeprefix(MODEL_MARK))
-        provider, colon, name = model.partition(":")
-        if colon and PROVIDER_NAME.fullmatch(provider) and name:
-            return SideTarget(model, effort), rest
-    return None, text
+    found, rest = _split_targets(text, limit=1)
+    return (found[0], rest) if found else (None, text)
 
 
-def _leading_word(argument: str) -> str | None:
-    """The word being typed, while every word so far is a `$` or `+` target."""
+def typed_word(argument: str) -> str | None:
+    """The `$` or `+` word being typed at the end of `argument`, if any."""
     if not argument or argument[-1].isspace():
         return None
-    words = argument.split()
-    if not all(word.startswith((MODEL_MARK, EFFORT_MARK)) for word in words):
-        return None
-    return words[-1]
+    word = argument.split()[-1]
+    return word if word.startswith((MODEL_MARK, EFFORT_MARK)) else None
 
 
 def model_fragment(argument: str) -> str | None:
-    """The partial model name being typed in `/btw` arguments, if any.
+    """The partial model name being typed after a `$`, if any.
 
-    Only a word in the leading run of `$` and `+` words completes as a model;
-    once the question has started, a `$` is ordinary text. A word already
-    carrying `+` is choosing an effort instead; see `effort_fragment`.
+    Any word may be one, wherever it sits; the picker only offers models, so
+    a `$HOME` simply finds nothing. A word already carrying `+` is choosing
+    an effort instead; see `effort_fragment`.
     """
-    word = _leading_word(argument)
+    word = typed_word(argument)
     if word is None or not word.startswith(MODEL_MARK) or EFFORT_MARK in word:
         return None
     return word.removeprefix(MODEL_MARK)
 
 
 def effort_fragment(argument: str) -> str | None:
-    """The partial effort being typed after `+` in a leading `/btw` word, if any."""
-    word = _leading_word(argument)
+    """The partial effort being typed after the `+` in a `$` or `+` word, if any."""
+    word = typed_word(argument)
     if word is None or EFFORT_MARK not in word:
         return None
     return word.rpartition(EFFORT_MARK)[2]

@@ -4009,7 +4009,7 @@ class SessionController:
         """Ask `question` as a follow-up in a side question's thread.
 
         It continues from the thread's newest answer, on the model and effort
-        that answered it unless the question starts with a `$MODEL[+EFFORT]`
+        that answered it unless the question holds a `$MODEL[+EFFORT]`
         or `+EFFORT` of its own, as `/btw` does; see `AgentRuntime.aside`.
         Raises `ValueError` when there is nothing to continue yet, or the
         target is unusable, which the viewer shows as is.

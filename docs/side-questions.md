@@ -178,7 +178,7 @@ order, opening on the newest question. Each follow-up:
 - **runs where the thread began:** the same model, effort and conversation id,
   even if `/model` or `/effort` has changed the conversation's since. A thread
   started with `$MODEL` or `+LEVEL` keeps them; a `/btw` that fanned out to
-  several models is one thread per model. A follow-up can start with one
+  several models is one thread per model. A follow-up can hold one
   `$MODEL[+LEVEL]` or `+LEVEL` word of its own, read as in `/btw`, to switch
   models: `$MODEL` moves the thread to that model, and a bare `+LEVEL` keeps
   the thread's model at another effort. The next follow-up stays where this one
@@ -287,18 +287,20 @@ totals: the request really happened, so `/status` counts it.
 
 ## Choosing the model
 
-Leading `$` words pick the model a side question runs on; the rest of the line
-is the question.
+`$PROVIDER:MODEL` words pick the model a side question runs on, wherever they
+sit in the line; the rest of it is the question.
 
 ```text
 ❯ /btw $anthropic:claude-sonnet-5 is this migration safe?
-❯ /btw $claude:claude-opus-5-5 $openai-codex:gpt-6-astra second opinions on the plan?
+❯ /btw second opinions on the plan? $claude:claude-opus-5-5 $openai-codex:gpt-6-astra
 ```
 
-Typing `$` in a `/btw` line completes model names from the same catalog as the
+Only the full id with its provider counts, so `$HOME`, `$PATH:/usr/bin`,
+`$host:8080` or a bare `$opus` in a question stay ordinary text. Typing `$`
+anywhere in a `/btw` line completes model names from the same catalog as the
 `/model` picker, matching any part of the name (`$opus` finds
-`anthropic:claude-opus-…`). It works for each `$` word in the leading run; once
-the question starts, `$` is ordinary text. A normal prompt can start with one
+`anthropic:claude-opus-…`), and picking one writes the full id; a `$` that
+matches no model just shows no list. A normal prompt can hold one
 `$PROVIDER:MODEL[+LEVEL]` or `+LEVEL` word to
 [pick its model](commands.md#slash-commands) for that turn alone, and `$`
 completes there too.
@@ -342,13 +344,13 @@ that model alone.
 
 The same model at two efforts is two side questions; labels show the effort
 (`gpt-5 · high`, or just `low` on the conversation's model) so their answers
-stay apart. The effort is only read from the leading words, and only from the
-last `+` in a model word when a real level follows, so model ids that contain
-`+` still work. An unknown level fails the command, and so does an effort on a
-model `/effort` cannot set (it supports OpenAI/Codex models, the Anthropic
-and Claude Code models whose profile has effort control, Gemini models that
-think, and Antigravity models that offer a thinking level). Typing `+` in the
-leading words completes the levels.
+stay apart. The effort is only read from a word of its own or the last `+` in
+a model word, and only when a real level follows, so model ids that contain
+`+` still work and an unknown level (`+1`) is ordinary text. An effort on a
+model `/effort` cannot set fails the command (it supports OpenAI/Codex models,
+the Anthropic and Claude Code models whose profile has effort control, Gemini
+models that think, and Antigravity models that offer a thinking level). Typing
+`+` anywhere in the line completes the levels.
 
 ## Which context it sees
 

@@ -37,22 +37,33 @@ def targets(*models):
     return [SideTarget(model) for model in models]
 
 
-def test_leading_dollar_words_select_models_and_the_rest_is_the_question():
+def test_dollar_words_anywhere_select_models_and_the_rest_is_the_question():
     assert parse_models("why?") == ([], "why?")
     assert parse_models("  $a:x   is  this right? ") == (targets("a:x"), "is  this right?")
     assert parse_models("$a:x $b:y $a:x second opinions?") == (
         targets("a:x", "b:y"),
         "second opinions?",
     )
-    # Only leading words name models; a `$` later on is part of the question.
-    assert parse_models("$a:x costs $5?") == (targets("a:x"), "costs $5?")
-    assert parse_models("what does $HOME hold?") == ([], "what does $HOME hold?")
+    # A target may sit anywhere; the question reads as typed without it.
+    assert parse_models("is this right? $a:x") == (targets("a:x"), "is this right?")
+    assert parse_models("is $a:x this $b:y right?") == (targets("a:x", "b:y"), "is this right?")
+    assert parse_models("first line $a:x\nsecond") == (targets("a:x"), "first line\nsecond")
+    # Only an unmistakable model counts; anything else is part of the question.
+    for text in (
+        "costs $5?",
+        "what does $HOME hold?",
+        "is $PATH:/usr/bin right?",
+        "on $host:8080?",
+        "is $opus bare?",
+        "$ why?",
+        "$a: why?",
+        "is c$a:x glued?",
+    ):
+        assert parse_models(text) == ([], text)
     with pytest.raises(ValueError, match="No question after the model"):
         parse_models("$a:x")
     with pytest.raises(ValueError, match="No question after the model"):
         parse_models("$a:x $b:y  ")
-    with pytest.raises(ValueError, match="model name must follow"):
-        parse_models("$ why?")
     models = " ".join(f"$p:m{index}" for index in range(ASIDE_MODEL_LIMIT))
     assert len(parse_models(f"{models} q")[0]) == ASIDE_MODEL_LIMIT
     # Duplicates collapse before the cap is counted.
@@ -77,14 +88,14 @@ def test_plus_words_pick_an_effort_for_the_question():
         SideTarget("openrouter:meta/llama+3:8b", "medium")
     ]
     assert parse_models("$openrouter:meta/llama+3:8b q")[0] == targets("openrouter:meta/llama+3:8b")
-    # Once the question starts, `+` is text.
-    assert parse_models("is c+high or c+low better? +low") == (
+    # A `+` glued to a word, or that is no effort level, is text.
+    assert parse_models("is c+high or c+low better? +1") == (
         [],
-        "is c+high or c+low better? +low",
+        "is c+high or c+low better? +1",
     )
-    assert parse_models("+high does 1 +low == 2?") == (
+    assert parse_models("does 1 + 1 == 2? +high") == (
         [SideTarget(effort="high")],
-        "does 1 +low == 2?",
+        "does 1 + 1 == 2?",
     )
     # A repeated target collapses; one model at two efforts is two questions.
     assert parse_models("+low +low $a:x+high $a:x+high $a:x $a:x+low q")[0] == [
@@ -93,10 +104,8 @@ def test_plus_words_pick_an_effort_for_the_question():
         SideTarget("a:x"),
         SideTarget("a:x", "low"),
     ]
-    with pytest.raises(ValueError, match="Unknown effort `\\+max`"):
-        parse_models("+max q")
-    with pytest.raises(ValueError, match="Unknown effort `\\+`"):
-        parse_models("+ q")
+    assert parse_models("+max q") == ([], "+max q")
+    assert parse_models("+ q") == ([], "+ q")
     with pytest.raises(ValueError, match="No question after the model"):
         parse_models("+low")
     with pytest.raises(ValueError, match="No question after the model"):
@@ -132,7 +141,7 @@ def test_labels_carry_the_effort():
     }
 
 
-def test_dollar_completes_models_only_among_leading_btw_words(monkeypatch):
+def test_dollar_completes_models_anywhere_in_btw_or_a_prompt(monkeypatch):
     app = PreviewApp(console=Console(file=StringIO()))
     monkeypatch.setattr(
         app.controller, "model_suggestions", lambda: ["anthropic:claude-opus", "openai-codex:gpt-6"]
@@ -149,22 +158,26 @@ def test_dollar_completes_models_only_among_leading_btw_words(monkeypatch):
     assert complete("/btw $opus") == [("$anthropic:claude-opus", -5)]
     # Later model words complete too.
     assert complete("/btw $anthropic:claude-opus $gpt") == [("$openai-codex:gpt-6", -4)]
-    # Once the question starts, `$` is text.
-    assert complete("/btw why $") == []
+    # Later in the question too.
+    assert complete("/btw why $gpt") == [("$openai-codex:gpt-6", -4)]
+    assert complete("/btw why\nnow $gpt") == [("$openai-codex:gpt-6", -4)]
+    # Only while the word is being typed.
     assert complete("/btw $opus ") == []
     assert complete("/btw why") == []
-    # A prompt's own leading word picks its model, so it completes too.
+    # A `$` that matches no model offers nothing.
+    assert complete("/btw why $HOME") == []
+    # A prompt's words pick its model, so they complete too.
     assert complete("$opus") == [("$anthropic:claude-opus", -5)]
+    assert complete("fix $opus") == [("$anthropic:claude-opus", -5)]
     assert complete("$opus fix") == []
-    # Nowhere else: not later in a prompt, shell mode, or another command.
-    assert complete("fix $opus") == []
+    # Not in shell mode or another command.
     assert complete("!echo $opus") == []
     assert complete("/compact $opus") == []
     assert model_fragment("$a $b") == "b"
     assert model_fragment("") is None
 
 
-def test_plus_completes_effort_levels_among_leading_btw_words(monkeypatch):
+def test_plus_completes_effort_levels_anywhere_in_btw(monkeypatch):
     app = PreviewApp(console=Console(file=StringIO()))
     monkeypatch.setattr(app.controller, "model_suggestions", lambda: ["anthropic:claude-opus"])
     completer = SlashCompleter(app.registry)
@@ -183,12 +196,13 @@ def test_plus_completes_effort_levels_among_leading_btw_words(monkeypatch):
     assert complete("/btw +low $anthropic:claude-opus +me") == [("medium", -2)]
     # A `$` word after an effort still completes as a model.
     assert complete("/btw +low $opus") == [("$anthropic:claude-opus", -5)]
-    # Once the question starts, `+` is text.
-    assert complete("/btw why +") == []
+    assert complete("/btw why +") == levels
     assert complete("/btw +low ") == []
+    assert complete("/btw is c+") == []
     assert model_fragment("$a+hi") is None
     assert effort_fragment("$a:x/y+hi") == "hi"
-    assert effort_fragment("why +") is None
+    assert effort_fragment("why +") == ""
+    assert effort_fragment("why c+") is None
 
 
 def test_model_suggestions_come_from_the_model_picker_catalog(monkeypatch):

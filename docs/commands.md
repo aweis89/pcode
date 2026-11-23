@@ -50,12 +50,12 @@ since the editor keeps the keyboard, and clicking a row accepts it.
   and its requests use the new login once you finish in the browser. Ctrl+C (or Ctrl+D)
   stops the turn first, and the waiting sign-in only when nothing else is running.
 - `/model`: searchable model picker for configured providers. Keeps the conversation;
-  chosen mid-run, the running turn's next request already uses it. To switch for one prompt only, start
-  it with `$PROVIDER:MODEL` (optionally `+EFFORT`, as in `$openai:gpt-5+high fix this`)
+  chosen mid-run, the running turn's next request already uses it. To switch for one prompt only, put
+  a `$PROVIDER:MODEL` word anywhere in it (optionally `+EFFORT`, as in `fix this $openai:gpt-5+high`)
   or a bare `+EFFORT` word; that turn runs there and the next prompt is back on the
-  conversation's model. `$` completes model names as it does in `/btw`. A `$` word
-  without a lowercase `provider:` part (`$HOME`) or an unknown `+` level is ordinary
-  text. Another model starts without the conversation's prompt cache, and automatic
+  conversation's model. Only the first such word counts. `$` completes model names as
+  it does in `/btw`. A `$` word without a full `provider:model` id (`$HOME`, `$opus`)
+  or an unknown `+` level is ordinary text. Another model starts without the conversation's prompt cache, and automatic
   compaction is skipped for its turn, since that model's window and summarizer would
   decide what the conversation keeps. Such a prompt never steers a running turn; it
   queues as its own. `/continue` of it asks the conversation's model.
@@ -201,8 +201,8 @@ since the editor keeps the keyboard, and clicking a row accepts it.
   `btw_auto_open`), or with bare `/btw` or **Ctrl+Q** at any time; in Ghostty Smooth, a hosted session [opens threads in a drawer](side-questions.md#threads-in-a-drawer)
   instead. You can send a [follow-up](side-questions.md#following-up) to
   the thread, or [keep it](side-questions.md#keeping-a-thread) in the conversation.
-  `/btw $PROVIDER:MODEL [$PROVIDER:MODEL ...] QUESTION` asks other models
-  instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
+  `$PROVIDER:MODEL` words anywhere in the question (`/btw $openai:gpt-5 QUESTION`) ask
+  other models instead, one side question each ([choosing the model](side-questions.md#choosing-the-model)).
   A `+EFFORT` suffix (`$openai:gpt-5+high`), or a bare `+EFFORT` word for the
   conversation's model, sets that question's reasoning effort from the `/effort` levels.
 - `/agents`: follow delegated agents live in a popup: each agent's worker id, plan

@@ -50,6 +50,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 from pcode import glyphs, kitty_spinner, smooth_scroll
+from pcode.aside import typed_word
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
 from pcode.commands import CommandRegistry, SlashCompleter
@@ -3185,12 +3186,15 @@ def prompt_prefix(text: str) -> str:
 
 
 def _completes_while_typing() -> bool:
-    text = get_app().current_buffer.text
+    document = get_app().current_buffer.document
+    text = document.text
+    before = document.text_before_cursor
     return (
         (text.startswith("/") and "\n" not in text)
-        # A leading `$MODEL` or `+EFFORT` while it is still the only word.
-        or (text.startswith(("$", "+")) and not any(char.isspace() for char in text))
-        or reference_fragment(get_app().current_buffer.document.text_before_cursor) is not None
+        # A `$MODEL` or `+EFFORT` word anywhere outside a `!command`; one
+        # that matches nothing (`$HOME`) just shows no menu.
+        or (not text.lstrip().startswith(SHELL_PREFIX) and typed_word(before) is not None)
+        or reference_fragment(before) is not None
     )
 
 
