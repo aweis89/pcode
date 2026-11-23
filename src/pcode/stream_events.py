@@ -268,6 +268,8 @@ class EventTranslator:
                     run_id=self.run_id,
                     outcome="interrupted",
                     parent_call_id=child.parent_call_id,
+                    command=child.command,
+                    purpose=child.purpose,
                 )
                 del self.child_tools[call_id]
 

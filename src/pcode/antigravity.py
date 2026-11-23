@@ -1721,7 +1721,7 @@ def _tool_args(update: dict) -> dict:
     # tool rows read lower-case ones.
     args = {k[:1].lower() + k[1:]: v for k, v in args.items()}
     for key in ("commandLine", "command_line"):
-        if key in args and "command" not in args:
+        if args.get(key) and not args.get("command"):
             args["command"] = args[key]
             break
     if update.get("title") and "title" not in args:
