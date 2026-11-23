@@ -366,6 +366,24 @@ def test_whole_response_copies_soft_wrapped_prose_joined_as_it_renders():
     )
 
 
+@pytest.mark.parametrize(
+    ("response", "copied"),
+    [
+        # A table's rows are not a paragraph's wrapped lines.
+        ("Intro\n| a | b |\n|---|---|\n| 1 | 2 |\n", "Intro\n| a | b |\n|---|---|\n| 1 | 2 |"),
+        ("> | a |\n> |---|\n> | 1 |\n", "> | a |\n> |---|\n> | 1 |"),
+        # A nested marker indented under a list item inside a quote is stripped.
+        ("> - > a\n>   > b\n", "> - > a b"),
+        # An escaped backslash is text, not a hard break.
+        ("ends \\\\\nnext\n", "ends \\\\ next"),
+        # A line separator markdown-it does not count must not shift its maps.
+        ("one\u2028two\nthree\n\nfour\nfive\n", "one\u2028two three\n\nfour five"),
+    ],
+)
+def test_whole_response_unwrap_edge_cases(response, copied):
+    assert snippets(response)[0].text == copied
+
+
 def test_reader_mode_copy_key_chooses_a_response_whatever_the_draft():
     from pcode.commands import CommandRegistry
     from pcode.ui import create_prompt

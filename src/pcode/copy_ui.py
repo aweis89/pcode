@@ -35,6 +35,12 @@ from pcode.prefix_keys import PrefixKeys
 
 _QUOTE_MARKER = re.compile(r"^[ \t]*> ?")
 _ROW_WIDTH = 80
+# Tables as the transcript renders them (`pcode.markdown`), so a table's rows
+# are never mistaken for a paragraph's soft-wrapped lines.
+_PARSER = MarkdownIt("commonmark").enable("table")
+# The line breaks markdown-it counts in its token maps; `str.splitlines` also
+# splits on form feeds and U+2028, which would shift every map after one.
+_LINE_BREAK = re.compile(r"\r\n?|\n")
 
 
 @dataclass(frozen=True)
@@ -96,7 +102,8 @@ def _unquote(lines: list[str]) -> str:
     ).strip("\n")
 
 
-_HARD_BREAK = re.compile(r"(  |\\)$")
+# Two trailing spaces, or a backslash that is not itself escaped.
+_HARD_BREAK = re.compile(r"(  |(?<!\\)(?:\\\\)*\\)$")
 
 
 def _unwrap(markdown: str) -> str:
@@ -108,10 +115,10 @@ def _unwrap(markdown: str) -> str:
     Hard breaks, blank lines, and code keep their lines. A paragraph inside a
     quote is joined too, its continuation lines losing their `>` markers.
     """
-    lines = markdown.splitlines()
+    lines = _LINE_BREAK.split(markdown.rstrip("\r\n"))
     depth = 0
     joined: dict[int, tuple[int, int]] = {}  # paragraph's first line -> its end, quote depth
-    for token in MarkdownIt("commonmark").parse(markdown):
+    for token in _PARSER.parse(markdown):
         if token.type == "blockquote_open":
             depth += 1
         elif token.type == "blockquote_close":
@@ -122,7 +129,7 @@ def _unwrap(markdown: str) -> str:
     index = 0
     while index < len(lines):
         end, depth = joined.get(index, (index + 1, 0))
-        markers = re.compile(rf"^[ \t]*(?:> ?){{0,{depth}}}")
+        markers = re.compile(rf"^(?:[ \t]*> ?){{0,{depth}}}")
         paragraph = lines[index:end]
         line = paragraph[0]
         for following in paragraph[1:]:
@@ -141,9 +148,9 @@ def snippets(markdown: str) -> list[Snippet]:
     if not markdown.strip():
         return []
     found = [Snippet("response", _unwrap(markdown))]
-    lines = markdown.splitlines()
+    lines = _LINE_BREAK.split(markdown)
     depth = 0
-    for token in MarkdownIt("commonmark").parse(markdown):
+    for token in _PARSER.parse(markdown):
         if token.type == "blockquote_open":
             if depth == 0 and token.map:
                 start, end = token.map
