@@ -572,14 +572,47 @@ class SideModel:
     settings: dict | None
 
 
-def side_model(name: str, effort: str = "") -> SideModel:
+def side_model(name: str, effort: str = "", session=None) -> SideModel:
     """Resolve `name` now, failing with a clear message rather than on first request.
+
+    A bare name (no `provider:`) is tried under the provider of `session`, the
+    session's model as a name or model object, before the usual inference;
+    when neither works, the error lists what that provider does offer. See
+    `pcode.models.qualify_model`.
 
     The settings are the ones the model would get as the conversation's model:
     its defaults plus its own saved /effort, or `effort` when one was asked
     for. None of the conversation model's settings carry over, since they
     belong to another model or provider.
     """
+    from pcode.models import has_provider, qualify_model
+
+    name = qualify_model(name, session)
+    try:
+        return _side_model(name, effort)
+    except ValueError as error:
+        if has_provider(name):
+            raise
+        offered = _offered_under(session)
+        if not offered:
+            raise
+        raise ValueError(f"{str(error).rstrip('.')}. {offered}") from error
+
+
+def _offered_under(session) -> str:
+    """What a bare name could have been under the session's provider, or ""."""
+    from pcode.models import provider_models, session_provider
+
+    provider = session_provider(session)
+    if not provider:
+        return ""
+    names = provider_models(provider)
+    if not names:
+        return ""
+    return f"Models under {provider}: {', '.join(names)} (or pass provider:model)."
+
+
+def _side_model(name: str, effort: str) -> SideModel:
     from pydantic_ai.exceptions import UserError
     from pydantic_ai.models import infer_model
 
@@ -619,14 +652,14 @@ def side_model(name: str, effort: str = "") -> SideModel:
     )
 
 
-def worker_model(name: str) -> SideModel:
-    """`side_model`, for a model that runs a worker.
+def worker_model(name: str, session=None) -> SideModel:
+    """`side_model`, for a model that runs a worker; `session` as there.
 
     An `antigravity:` worker gets a fresh isolated `agy` session per worker in
     `WorkspaceSubAgentToolset._run_delegation` so concurrent workers never share
     one process or deadlock the parent's session.
     """
-    return side_model(name)
+    return side_model(name, session=session)
 
 
 def subagent_menu(names: Sequence[str]) -> tuple[dict[str, ModelOption], list[str]]:

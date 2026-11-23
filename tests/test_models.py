@@ -326,3 +326,32 @@ def test_recently_used_providers_lead_the_catalog_and_its_filtered_matches():
     # A filter matching the same model under both providers offers claude's first.
     shown = [item.id for item in model_items(models) if matches(item, ["opus"])]
     assert shown[0].startswith("claude:")
+
+
+def test_a_bare_name_resolves_under_the_sessions_provider():
+    from pcode.models import qualify_model
+
+    assert qualify_model("claude-fable-5-2", "claude:claude-opus-5-5") == "claude:claude-fable-5-2"
+    # The session's own model qualifies even when the catalog does not list it.
+    assert qualify_model("claude-next", "claude:claude-next") == "claude:claude-next"
+    # A provider without a catalog takes any id, `:` and all.
+    assert qualify_model("llama3:8b", "ollama:qwen3") == "ollama:llama3:8b"
+    # A model object names its provider by its `system`.
+    session = Mock(system="claude", model_id="claude:claude-opus-5-5")
+    assert qualify_model("claude-fable-5-2", session) == "claude:claude-fable-5-2"
+
+
+def test_an_explicit_provider_is_never_rewritten():
+    from pcode.models import qualify_model
+
+    for name in ("anthropic:claude-fable-5-2", "openai:gpt-5", "claude:claude-opus-5-5"):
+        assert qualify_model(name, "claude:claude-opus-5-5") == name
+
+
+def test_a_bare_name_the_session_provider_lacks_is_left_for_inference():
+    from pcode.models import qualify_model
+
+    assert qualify_model("gpt-5", "claude:claude-opus-5-5") == "gpt-5"
+    # No session, or one on a provider pcode does not know: nothing to qualify with.
+    assert qualify_model("claude-fable-5-2") == "claude-fable-5-2"
+    assert qualify_model("claude-fable-5-2", Mock(system="function")) == "claude-fable-5-2"

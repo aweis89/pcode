@@ -412,7 +412,8 @@ def setup(pcode) -> None:
         Args:
             target: Running host ID or saved session ID (or unique prefix).
             question: The question to ask the session.
-            model: Optional model override (e.g. `anthropic:claude-sonnet-4-6+low`).
+            model: Optional model override (e.g. `anthropic:claude-sonnet-4-6+low`); a
+                bare name resolves against the target session's provider first.
         """
         if _in_worker(ctx):
             raise ToolFailed("ask_host is only available to the parent session, not workers.")

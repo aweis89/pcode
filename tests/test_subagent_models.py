@@ -23,7 +23,7 @@ from pcode.preferences import save_preferences, subagent_models
 def fake_side_model(models):
     """A `side_model` stand-in resolving only the names in `models`."""
 
-    def resolve(name, effort=""):
+    def resolve(name, effort="", session=None):
         if name not in models:
             raise ValueError(f"Cannot use {name}: no credentials")
         return SideModel(name, models[name], {"temperature": 0.5})
@@ -102,7 +102,7 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
 
 
 def test_a_worker_without_delegation_resolves_no_models(tmp_path, monkeypatch):
-    def refuse(name, effort=""):
+    def refuse(name, effort="", session=None):
         raise AssertionError("an isolated child resolved the menu")
 
     monkeypatch.setattr(agent_module, "side_model", refuse)
@@ -135,7 +135,7 @@ def test_a_delegation_runs_on_a_model_off_the_menu(tmp_path, monkeypatch):
     resolve = fake_side_model({"other:big": FunctionModel(stream_function=child)})
     resolved = []
 
-    def counting(name, effort=""):
+    def counting(name, effort="", session=None):
         resolved.append(name)
         return resolve(name, effort)
 
@@ -337,3 +337,49 @@ def test_model_names_complete_for_every_word(monkeypatch):
     ]
     # `off` stands alone.
     assert complete("/subagents off ") == []
+
+
+def test_a_bare_delegation_model_resolves_under_the_sessions_provider(tmp_path, monkeypatch):
+    """On a `claude:` session, `claude-fable-5-2` is `claude:`, never `anthropic:`."""
+    seen = {}
+
+    async def child(messages, info):
+        yield "from fable"
+
+    resolve = fake_side_model({"claude:claude-fable-5-2": FunctionModel(stream_function=child)})
+    resolved = []
+
+    def counting(name, effort="", session=None):
+        resolved.append(name)
+        return resolve(name, effort)
+
+    monkeypatch.setattr(agent_module, "side_model", counting)
+
+    async def parent(messages, info):
+        if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+            seen["returned"] = [
+                p.content for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
+            ]
+            yield "done"
+            return
+        yield {
+            0: DeltaToolCall(
+                name="delegate_task",
+                json_args=json.dumps(
+                    {"agent_name": "worker", "task": "Review", "model": "claude-fable-5-2"}
+                ),
+                tool_call_id="call",
+            )
+        }
+
+    session = FunctionModel(stream_function=parent, model_name="claude-opus-5-5")
+    session._system = "claude"
+    runtime = AgentRuntime(Agent(session, capabilities=[create_coder(tmp_path)]))
+
+    async def run():
+        async for _ in runtime.stream("Ask fable"):
+            pass
+
+    asyncio.run(run())
+    assert resolved == ["claude:claude-fable-5-2"]
+    assert seen["returned"] == ["[worker w1]\nfrom fable"]

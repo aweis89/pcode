@@ -335,7 +335,9 @@ def test_an_effort_reaches_the_request_on_the_conversations_model_and_another(
     monkeypatch.setattr(
         agent_module,
         "side_model",
-        lambda name, effort="": SideModel(name, other, {"openai_reasoning_effort": effort}),
+        lambda name, effort="", session=None: SideModel(
+            name, other, {"openai_reasoning_effort": effort}
+        ),
     )
     app = PreviewApp(
         model="anthropic:claude-opus-4-5", runtime=runtime, console=Console(file=StringIO())
@@ -453,7 +455,9 @@ def fan_out_app(monkeypatch, runtime):
     monkeypatch.setattr(
         agent,
         "side_model",
-        lambda name, effort="": SideModel(name, object(), {"effort": effort} if effort else None),
+        lambda name, effort="", session=None: SideModel(
+            name, object(), {"effort": effort} if effort else None
+        ),
     )
     output = StringIO()
     app = PreviewApp(
@@ -514,7 +518,7 @@ def test_the_conversations_model_named_explicitly_is_the_default_path(monkeypatc
 def test_an_unusable_model_fails_the_command_before_anything_starts(monkeypatch):
     from pcode import agent
 
-    def refuse(name, effort=""):
+    def refuse(name, effort="", session=None):
         if name == "bad:model":
             raise ValueError(f"Cannot use {name}: Unknown model")
         return SideModel(name, object(), None)
@@ -570,3 +574,44 @@ def test_the_model_labels_running_rows_and_the_viewer():
     assert row([quick]).startswith("[other \u00b7 low] fast?")
     browser = AsideBrowser(asides, selected=quick.id, output=None, input=None)
     assert "on q:other at low effort" in browser.detail.text(80)
+
+
+def test_an_unknown_bare_name_lists_the_sessions_provider_models():
+    with pytest.raises(ValueError) as raised:
+        side_model("claude-nope", session="claude:claude-opus-5-5")
+    message = str(raised.value)
+    assert message.startswith("Cannot use claude-nope:")
+    assert "Models under claude: " in message and "claude-fable-5-2" in message
+    # An explicit provider fails as before, without the list.
+    with pytest.raises(ValueError) as raised:
+        side_model("openai-chat:gpt-nope", session="claude:claude-opus-5-5")
+    assert "Models under" not in str(raised.value)
+
+
+def test_btw_puts_a_bare_model_under_the_sessions_provider(monkeypatch):
+    from pcode import agent
+
+    asked = []
+
+    def resolve(name, effort="", session=None):
+        asked.append((name, session))
+        return SideModel(name, object(), None)
+
+    monkeypatch.setattr(agent, "side_model", resolve)
+    app = PreviewApp(
+        model="claude:claude-opus-5-5", runtime=FanOutRuntime(), console=Console(file=StringIO())
+    )
+    controller = app.controller
+    assert controller.qualified(SideTarget("claude-fable-5-2", "high")) == SideTarget(
+        "claude:claude-fable-5-2", "high"
+    )
+    assert controller.qualified(SideTarget("anthropic:claude-fable-5-2")).model == (
+        "anthropic:claude-fable-5-2"
+    )
+    # Naming the conversation's own model bare takes its own, cache-sharing path.
+    assert (
+        asyncio.run(controller.target_options(controller.qualified(SideTarget("claude-opus-5-5"))))
+        == {}
+    )
+    asyncio.run(controller.target_options(SideTarget("claude:claude-fable-5-2")))
+    assert asked == [("claude:claude-fable-5-2", "claude:claude-opus-5-5")]
