@@ -79,6 +79,15 @@ def test_a_run_of_one_keeps_the_calls_own_line():
     view.settle_tools()
     assert stream.getvalue().startswith("✓ Edit file  f1.py → edited")
 
+    view, stream = grouped()
+    view.tool_result(
+        ToolSummary(
+            "run_command", "make test", call_id="s1", command="make test", elapsed_seconds=1.7
+        )
+    )
+    view.settle_tools()
+    assert stream.getvalue().splitlines() == ["✓ Run shell · 1.7s · make test"]
+
 
 def test_a_failure_folds_into_the_run_and_splits_its_tools_count():
     view, stream = grouped()

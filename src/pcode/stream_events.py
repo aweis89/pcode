@@ -268,6 +268,8 @@ class EventTranslator:
                     run_id=self.run_id,
                     outcome="interrupted",
                     parent_call_id=child.parent_call_id,
+                    command=child.command,
+                    purpose=child.purpose,
                 )
                 del self.child_tools[call_id]
 
@@ -398,15 +400,19 @@ class EventTranslator:
         name, args, started = self.tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
         provider = part.provider_name or ""
         detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
+        projected = native_result_projection(part.content, provider)
         yield ToolSummary(
             name,
             detail,
             failed=failed,
             call_id=part.tool_call_id,
-            result=capture(native_result_projection(part.content, provider)),
+            result=capture(projected),
             run_id=self.run_id,
             outcome=part.outcome if not failed else "error",
             elapsed_seconds=max(0, monotonic() - started),
+            command=invocation(name, args),
+            purpose=stated_purpose(args),
+            error=command_error(projected) if failed and name in COMMAND_TOOLS else "",
         )
         yield self.activity()
 
@@ -457,6 +463,9 @@ class EventTranslator:
             arguments=capture(raw),
             run_id=self.run_id,
             started_at=started_at,
+            command=invocation(part.tool_name, args),
+            purpose=stated_purpose(args),
+            execution=execution_mode(part.tool_name, args),
             agent=agent,
             task=task,
         )

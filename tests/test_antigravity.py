@@ -3401,8 +3401,27 @@ def test_antigravity_tool_started_emits_while_tool_is_still_running(
     summaries = [e for e in seen if isinstance(e, ToolSummary) and e.call_id == "gate-1"]
     assert len(starts) == 1
     assert starts[0].detail == "pytest"
+    assert starts[0].command == "pytest"
     assert len(summaries) == 1
+    assert summaries[0].command == "pytest"
     assert summaries[0].elapsed_seconds >= 0.02
+
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.ui import Transcript
+
+    stream = StringIO()
+    transcript = Transcript(
+        Console(file=stream, width=80, color_system=None),
+        preferences={"group_tools": "on"},
+    )
+    transcript.tool_result(summaries[0])
+    transcript.settle_tools()
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("✓ Run shell · ") and lines[0].endswith(" · pytest")
 
 
 def test_antigravity_parallel_tools_both_report_running_before_completion(
@@ -3464,10 +3483,12 @@ def test_antigravity_late_raw_input_updates_running_tool_without_duplicating(
     summaries = [e for e in seen if isinstance(e, ToolSummary) and e.call_id == "late-1"]
     # Initial start on title-only `tool_call`, then restated once `rawInput` arrives.
     assert [e.detail for e in starts] == ["command unavailable", "make test"]
+    assert [e.command for e in starts] == ["", "make test"]
     assert starts[0].started_at == starts[1].started_at
     assert "Run tests" in starts[1].arguments
     assert len(summaries) == 1
     assert summaries[0].detail == "make test"
+    assert summaries[0].command == "make test"
     assert summaries[0].elapsed_seconds >= 0.02
     # Text streamed around the late update and tool return must all settle into messages.
     from pcode.runtime import Message
@@ -3817,3 +3838,76 @@ def test_subagent_wait_gives_up_after_its_limit(fake_agy, tmp_path, monkeypatch)
     result, elapsed = run(go())
     assert "Waiting for the code review subagent." in result.output
     assert elapsed >= 0.2
+
+
+def test_tool_args_normalizes_command_line_variants():
+    from pcode.antigravity import _tool_args
+
+    assert _tool_args({"rawInput": {"CommandLine": "git status"}})["command"] == "git status"
+    assert _tool_args({"rawInput": {"command_line": "make test"}})["command"] == "make test"
+    assert (
+        _tool_args({"rawInput": {"CommandLine": "", "command_line": "pytest -q"}})["command"]
+        == "pytest -q"
+    )
+
+
+def test_native_failed_command_and_interrupted_child_preserve_command():
+    from types import SimpleNamespace
+
+    from pydantic_ai.messages import NativeToolCallPart, NativeToolReturnPart
+
+    from pcode.runtime import ToolStarted, ToolSummary
+    from pcode.stream_events import EventTranslator
+
+    translator = EventTranslator(
+        runtime=None,  # type: ignore[arg-type]
+        context=SimpleNamespace(run_id="r1"),  # type: ignore[arg-type]
+        plan_items=[],
+        plan_preview=None,
+        edit_preview=None,
+    )
+    call = NativeToolCallPart(
+        "run_command",
+        {"command": "pytest -q", "purpose": "tests"},
+        tool_call_id="c1",
+        provider_name="antigravity",
+    )
+    started = [e for e in translator.on_native_tool_call(call) if isinstance(e, ToolStarted)]
+    assert len(started) == 1
+    assert started[0].command == "pytest -q"
+    assert started[0].purpose == "tests"
+    assert started[0].execution == "foreground"
+
+    ret = NativeToolReturnPart(
+        "run_command",
+        "[stderr]\nboom\n[exit code: 1]",
+        tool_call_id="c1",
+        provider_name="antigravity",
+        outcome="failed",
+    )
+    summaries = [e for e in translator.on_native_tool_return(ret) if isinstance(e, ToolSummary)]
+    assert len(summaries) == 1
+    assert summaries[0].failed is True
+    assert summaries[0].command == "pytest -q"
+    assert summaries[0].purpose == "tests"
+    assert summaries[0].error == "boom"
+
+    # Interrupted child shell call under a delegate keeps its command and purpose.
+    translator.child_tools["d1:s1"] = ToolStarted(
+        "run_command",
+        "make test",
+        "d1:s1",
+        parent_call_id="d1",
+        command="make test",
+        purpose="suite",
+    )
+    interrupted = [
+        e
+        for e in translator.on_delegation_end(
+            SimpleNamespace(tool_call_id="d1", outcome="timed_out")  # type: ignore[arg-type]
+        )
+        if isinstance(e, ToolSummary)
+    ]
+    assert len(interrupted) == 1
+    assert interrupted[0].command == "make test"
+    assert interrupted[0].purpose == "suite"

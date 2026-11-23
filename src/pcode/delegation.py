@@ -284,6 +284,9 @@ async def stream_child_activity(_ctx, events):
                 run_id=parent.run_id or "",
                 started_at=datetime.now(timezone.utc).isoformat(),
                 parent_call_id=parent_id,
+                command=invocation(part.tool_name, args),
+                purpose=stated_purpose(args),
+                execution=execution_mode(part.tool_name, args),
                 agent=agent,
                 task=task,
             )
@@ -293,13 +296,17 @@ async def stream_child_activity(_ctx, events):
             name, args, started = tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
             provider = part.provider_name or ""
             detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)
+            projected = native_result_projection(part.content, provider)
             child = ToolSummary(
                 name,
                 detail,
                 failed=failed,
                 call_id=f"{parent_id}:{part.tool_call_id}",
                 elapsed_seconds=max(0, monotonic() - started),
-                result=capture(native_result_projection(part.content, provider)),
+                command=invocation(name, args),
+                purpose=stated_purpose(args),
+                error=command_error(projected) if failed and name in COMMAND_TOOLS else "",
+                result=capture(projected),
                 run_id=parent.run_id or "",
                 outcome=part.outcome if not failed else "error",
                 parent_call_id=parent_id,

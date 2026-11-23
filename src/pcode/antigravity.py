@@ -1720,8 +1720,10 @@ def _tool_args(update: dict) -> dict:
     # Antigravity capitalizes argument names (`Path`, `CommandLine`); pcode's
     # tool rows read lower-case ones.
     args = {k[:1].lower() + k[1:]: v for k, v in args.items()}
-    if "commandLine" in args and "command" not in args:
-        args["command"] = args["commandLine"]
+    for key in ("commandLine", "command_line"):
+        if args.get(key) and not args.get("command"):
+            args["command"] = args[key]
+            break
     if update.get("title") and "title" not in args:
         args["title"] = update["title"]
     return args
