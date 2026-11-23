@@ -317,9 +317,10 @@ class ToolHistory:
         remaining = count - len(delegates)
         nodes = []
         for parent in delegates:
-            # `»` stands in for a task icon: with a task's icon in front, a
-            # sub-agent would read as one of the parent's tasks. Its hue,
-            # shared with its plan rows, tells parallel sub-agents apart.
+            # `»` (or the main agent's spinner, under Kitty) stands in for a
+            # task icon: with a task's icon in front, a sub-agent would read as
+            # one of the parent's tasks. Its hue, on the head and shared with
+            # its plan rows, tells parallel sub-agents apart.
             node = _PanelNode(
                 (f"class:plan.agent,agent.hue.{parent.hue}", parent.line(agent_icon=agent_icon))
             )
@@ -388,13 +389,13 @@ def panel_fragments(lines: list, width: int):
     which passes through.
     """
     fragments = []
+    width = max(1, width)
     for index, row in enumerate(lines):
         if isinstance(row, list):
             fragments.append(("", "\n" if index else ""))
             fragments.extend(row)
             continue
         style, line = row
-        width = max(1, width)
         # `plain` would blank a spinner's placeholder cells and strand their
         # diacritics, so only the text after one is cleaned. Only that text
         # is clipped too: a spinner shows whole, or not at all.

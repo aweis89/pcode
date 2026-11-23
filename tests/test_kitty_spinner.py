@@ -242,8 +242,11 @@ def test_inset_spinners_leave_their_right_edge_clear():
             raw = kitty_spinner._render_frame(spec, frame)
             assert len(raw) == width * kitty_spinner.CELL_H * 4
             columns = {(i // 4) % width for i in range(3, len(raw), 4) if raw[i] > 8}
-            # Every frame stays clear of the right third of the second cell.
+            # Every frame stays clear of the right third of the second cell,
+            # and is never cut off by the box's left edge.
             assert max(columns) < width - 10, (style, frame)
+            left_edge = max(raw[y * width * 4 + 3] for y in range(kitty_spinner.CELL_H))
+            assert left_edge <= 8, (style, frame, left_edge)
             drawn |= columns
         # And it turns over the first cell, where other rows' 1-cell icons sit.
         assert min(drawn) < kitty_spinner.CELL_W // 2, style

@@ -79,7 +79,7 @@ STYLES: dict[str, StyleSpec] = {
 SMOOTH_NAMES: tuple[str, ...] = tuple(STYLES)
 DEFAULT_STYLE: dict[str, str] = {"spinner": "helix", "tool_spinner": "dual"}
 
-# High 24-bit image IDs ("pc\x01".."pc\x05") so they never collide with user
+# High 24-bit image IDs ("pc\x01".."pc\x07") so they never collide with user
 # images displayed in the same terminal.
 SLOTS: dict[str, int] = {
     "status": 0x706301,
@@ -153,7 +153,9 @@ def placeholder_text(cols: int = 1) -> str:
 # one cell. That leaves room for a spinner as tall as `✔`, which 1x1 is not.
 INSET_ICON = placeholder_text(2)
 # An inset image's centre, in pixels from its left edge.
-INSET_CX = 20.5
+INSET_CX = 21.5
+# Styles with an inset 2x1 shape.
+INSET_STYLES = frozenset({"dual", "gyro", "helix"})
 
 
 def smooth_style_for(setting: str, configured: str, default: str) -> str | None:
@@ -470,7 +472,7 @@ def _render_helix(
     if cols >= 2 and inset:
         # Four pairs, as far apart as five, in the room an inset leaves.
         cv.cx = INSET_CX
-        n_pairs, span, amp, phase_step, r_back, r_span = 4, 1.15, 0.84, 0.98, 0.16, 0.135
+        n_pairs, span, amp, phase_step, r_back, r_span = 4, 1.0, 0.84, 0.98, 0.16, 0.135
     elif cols >= 2:
         n_pairs, span, amp, phase_step, r_back, r_span = 5, 1.54, 0.84, 0.78, 0.16, 0.135
     else:
@@ -869,7 +871,8 @@ def _kitty_chunks(params: str, raw: bytes, *, cont: str = "q=2") -> str:
     return "".join(out)
 
 
-@lru_cache(maxsize=10)
+# Room for every slot under both palettes, so switching back re-renders nothing.
+@lru_cache(maxsize=2 * len(SLOTS))
 def _encode_slot(img_id: int, spec: SlotSpec) -> str:
     style_spec = STYLES[spec.style]
     cols = spec.cols
@@ -991,7 +994,8 @@ class KittySpinners:
             slots["startup"] = SlotSpec("gyro", 2, heading_rgb, accent_rgb, is_light)
             # Sub-agents are agents too, so they turn with the main agent's
             # spinner: inset when it is a 2x1 one, to keep their text in place.
-            wide = style_cols(self.status_style) >= 2
+            # A wide style with no inset shape gets the 1x1 copy instead.
+            wide = style_cols(self.status_style) >= 2 and self.status_style in INSET_STYLES
             slots["agent"] = SlotSpec(
                 self.status_style, 2 if wide else 1, heading_rgb, accent_rgb, is_light, wide
             )
