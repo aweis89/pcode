@@ -11,7 +11,7 @@ from rich.markdown import Markdown
 
 from pcode.runtime import ToolSummary
 from pcode.transcript_log import TranscriptLog
-from pcode.transcript_notice import TranscriptNotice
+from pcode.transcript_notice import ErrorNotice
 from pcode.ui import CursorSafeOutput, Handoff, TerminalOutput, Transcript
 
 
@@ -67,7 +67,7 @@ def test_failure_has_exactly_one_representation_and_uses_command_visibility():
     assert project(transcript).count("FULL_RESULT") == 1
 
 
-def test_replay_rebuilds_markdown_theme_and_notice_line_limits():
+def test_replay_rebuilds_markdown_theme_and_error_line_limits():
     transcript = view()
     transcript.print(Markdown("```python\nprint(1)\n```", code_theme=transcript.code_theme))
     transcript.error("\n".join(str(i) for i in range(50)))
@@ -75,8 +75,7 @@ def test_replay_rebuilds_markdown_theme_and_notice_line_limits():
     transcript.error_scrollback_lines = 3
     renderables = [obj for objects, _, _ in transcript.replay() for obj in objects]
     assert renderables[0].code_theme == transcript.code_theme
-    notice = next(obj for obj in renderables if isinstance(obj, TranscriptNotice))
-    assert notice.code_theme == transcript.code_theme
+    notice = next(obj for obj in renderables if isinstance(obj, ErrorNotice))
     assert notice.max_lines == 3
 
 

@@ -124,7 +124,7 @@ from pcode.tool_panel import (
     task_panel_rows,
 )
 from pcode.transcript_log import RetainedMarkdown, TranscriptLog, recorded
-from pcode.transcript_notice import Note, TranscriptNotice, WarningNotice
+from pcode.transcript_notice import CancelledNotice, ErrorNotice, Note, WarningNotice
 from pcode.word_wrap import WordWrapProcessor
 from pcode.workers import Workers
 
@@ -4871,7 +4871,7 @@ class Transcript:
             else replace(obj, code_theme=self.code_theme, delta=self.delta, dedent=self.diff_dedent)
             if isinstance(obj, EditTranscript)
             else replace(obj, code_theme=self.code_theme)
-            if isinstance(obj, (TranscriptNotice, CommandTranscript))
+            if isinstance(obj, CommandTranscript)
             else obj
             for obj in objects
         )
@@ -5283,9 +5283,7 @@ class Transcript:
 
     @recorded
     def error(self, text: str, *, title: str = "Error") -> None:
-        self.print(
-            TranscriptNotice(text, "error", title, self.error_scrollback_lines, self.code_theme)
-        )
+        self.print(ErrorNotice(text, title, self.error_scrollback_lines))
 
     def streams_command(self, event: Event) -> bool:
         """Report whether this settled tool will be mirrored into scrollback.
@@ -5396,7 +5394,7 @@ class Transcript:
     @recorded
     def cancelled(self) -> None:
         self.settle_orphans()
-        self.print(TranscriptNotice("", "cancelled", "Run cancelled"))
+        self.print(CancelledNotice())
 
     @recorded
     def user(self, text: str) -> None:

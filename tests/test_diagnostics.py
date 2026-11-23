@@ -219,7 +219,7 @@ def test_failed_slash_command_blames_the_command_not_the_provider(tmp_path, monk
         assert "popup_mouse" in (saved.directory / "errors.log").read_text()
     finally:
         saved.close()
-    assert "/diffs failed (KeyError)." in shown
+    assert "/diffs failed (KeyError)" in shown
     assert "Check the model string" not in shown
     assert "source changed since this session started" in shown
     # Notes print once rather than replaying.

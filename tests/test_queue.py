@@ -122,7 +122,7 @@ def test_edit_and_queue_during_generation(outcome):
         if outcome == "cancel":
             assert "! Run cancelled" in printed
         elif outcome == "failure":
-            assert "✗ Agent failed" in printed
+            assert "▎ Agent failed" in printed
         else:
             assert printed.count("second answer") == 1
 

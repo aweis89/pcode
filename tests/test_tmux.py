@@ -1068,7 +1068,7 @@ def test_detached_tasks_have_their_own_frame_and_nested_tools(pane):
     # tool rows (`tool_max_lines`), so count one that has left them.
     assert history.count("file_10.py") == 1
     assert history.count("INSPECTABLE ERROR") == 1
-    assert "✗ Read file failed" in history
+    assert "▎ Read file failed" in history
 
     pane("send-keys", "-t", "preview:0.0", "-l", "keep draft")
     for width, height in ((40, 20), (100, 32), (40, 14)):
@@ -1195,7 +1195,7 @@ def test_failure_is_reported_in_scrollback_and_clears_the_status_row(pane, relea
     pane("send-keys", "-t", "preview:0.0", "Enter")
     capture(pane, "COMMITTED LINE", running=True)
     release()
-    failed = capture(pane, "✗ Agent failed")
+    failed = capture(pane, "▎ Agent failed")
     assert input_rows(failed) == 1
     assert "Run failed" in failed
     # The turn is over, so no spinner row survives above the editor.

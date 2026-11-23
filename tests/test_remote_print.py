@@ -417,7 +417,7 @@ def test_an_error_elsewhere_during_the_turn_is_shown_but_does_not_fail_it(tmp_pa
             host.view.error("Unknown model 'nope'.")
             script.release("hang on")
             assert await asyncio.wait_for(sending, 10)
-            assert "Unknown model 'nope'." in printed.err.getvalue()
+            assert "Unknown model 'nope'" in printed.err.getvalue()
         finally:
             await stop_host(host)
 

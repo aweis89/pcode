@@ -187,8 +187,9 @@ Provider behavior:
 
 ## Error logs in scrollback
 
-Errors and failed-tool diagnostics appear as code blocks in the active code
-theme. Their text stays literal, even if it contains Markdown or backticks. Each
+Errors and failed-tool diagnostics look like warnings, in red: a bar down the
+left edge, the headline (or a title such as *Agent failed*) in red, and the rest
+muted. Their text stays literal, even if it contains Markdown or backticks. Each
 error shows at most **20 wrapped body lines** by default; a longer log keeps its
 tail and shows a truncation marker.
 

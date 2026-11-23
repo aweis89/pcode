@@ -2,14 +2,13 @@
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar
 
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.segment import Segment
 from rich.text import Text
 
 from pcode import glyphs
-from pcode.markdown import Markdown
 
 # What marks a line as pcode's own rather than the model's. A different shade
 # alone is not enough: a three-line `/mcp` listing between two replies reads as
@@ -57,26 +56,59 @@ class WarningNotice:
     """
 
     text: str
+    # The bar and headline's style; an error is the same block in red.
+    style: ClassVar[str] = "pcode.warning"
+    fallback: ClassVar[str] = "Warning"
+
+    def parts(self) -> tuple[str, str]:
+        return split_headline(self.text)
+
+    def bound(self, console: Console, options: ConsoleOptions, lines: list) -> list:
+        return lines
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        bar = console.get_style("pcode.warning", default="none")
+        bar = console.get_style(self.style, default="none")
         muted = console.get_style("pcode.muted", default="none")
-        headline, detail = split_headline(self.text)
-        # Styled as spans, not as the Text's base style, which would also
-        # embolden the detail.
-        body = Text()
-        body.append(headline or "Warning", style=bar)
-        if detail:
-            body.append("\n")
-            body.append(detail, style=muted)
+        headline, detail = self.parts()
         prefix = f"{WARNING_BAR} " if options.max_width > 2 else ""
-        lines = console.render_lines(
-            body, options.update(width=max(1, options.max_width - len(prefix))), pad=False
-        )
+        inner = options.update(width=max(1, options.max_width - len(prefix)))
+        lines = console.render_lines(Text(headline or self.fallback, style=bar), inner, pad=False)
+        if detail:
+            body = console.render_lines(Text(detail, style=muted), inner, pad=False)
+            lines += self.bound(console, inner, body)
         for line in lines:
             yield Segment(prefix, bar)
             yield from line
             yield Segment.line()
+
+
+@dataclass(frozen=True)
+class ErrorNotice(WarningNotice):
+    """An error: the warning's bar block, in red.
+
+    A plain error leads with its own first sentence, like a warning. A titled
+    one (`Agent failed`, `Run shell failed`) leads with the title and keeps the
+    whole message as detail. Long detail (a traceback, a command's stderr)
+    keeps its last `max_lines` rows, where the cause usually is.
+    """
+
+    title: str = "Error"
+    max_lines: int | None = None
+    style: ClassVar[str] = "pcode.error"
+    fallback: ClassVar[str] = "Error"
+
+    def parts(self) -> tuple[str, str]:
+        if self.title == "Error":
+            return super().parts()
+        return self.title, self.text.strip("\n")
+
+    def bound(self, console: Console, options: ConsoleOptions, lines: list) -> list:
+        if self.max_lines is None or len(lines) <= self.max_lines:
+            return lines
+        marker = Text("… earlier error output truncated", style="pcode.muted")
+        marker.truncate(options.max_width, overflow="ellipsis")
+        tail = lines[-(self.max_lines - 1) :] if self.max_lines > 1 else []
+        return console.render_lines(marker, options, pad=False) + tail
 
 
 @dataclass(frozen=True)
@@ -111,56 +143,8 @@ class Note:
 
 
 @dataclass(frozen=True)
-class TranscriptNotice:
-    text: str
-    kind: Literal["error", "cancelled"]
-    title: str
-    max_lines: int | None = None
-    code_theme: str = "monokai"
-
-    def _code_block(self, text: str) -> Markdown:
-        # Logs may themselves contain fences. A longer fence keeps everything
-        # literal, including Markdown headings, links, and embedded backticks.
-        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-        fence = "`" * max(3, longest + 1)
-        return Markdown(f"{fence}text\n{text}\n{fence}", code_theme=self.code_theme)
+class CancelledNotice:
+    """The one-line mark left where a cancelled run stopped."""
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        symbol = glyphs.icon("fail") if self.kind == "error" else glyphs.icon("blocked")
-        style = "pcode.error" if self.kind == "error" else "pcode.warning"
-        yield Text(f"{symbol} {self.title}", style=style)
-        if not self.text:
-            return
-        # Logged code-block backgrounds start at the terminal edge; keep Rich
-        # padding and the log's own indentation inside the block unchanged.
-        logged = self.kind == "error"
-        indent = "  " if not logged and options.max_width > 2 else ""
-        body_options = options.update(width=max(1, options.max_width - len(indent)))
-        # Rich's Markdown code blocks have one padding row/column on each side.
-        # Fall back to literal text only when the pane cannot fit that padding.
-        fenced = logged and body_options.max_width > 2
-        body = self._code_block(self.text) if fenced else Text(self.text)
-        lines = console.render_lines(body, body_options, pad=False)
-        top, bottom = (lines[:1], lines[-1:]) if fenced else ([], [])
-        if fenced:
-            lines = lines[1:-1]
-        if self.max_lines is not None and len(lines) > self.max_lines:
-            # Bound wrapped content rows, including the omission marker, while
-            # preserving the code block's padding and the final failure details.
-            kind = "error " if self.kind == "error" else ""
-            marker = Text(f"… earlier {kind}output truncated", style="pcode.muted")
-            marker.truncate(
-                max(1, body_options.max_width - (2 if fenced else 0)), overflow="ellipsis"
-            )
-            if fenced:
-                marker_lines = console.render_lines(
-                    self._code_block(marker.plain), body_options, pad=False
-                )[1:-1]
-            else:
-                marker_lines = console.render_lines(marker, body_options, pad=False)
-            tail = lines[-(self.max_lines - 1) :] if self.max_lines > 1 else []
-            lines = marker_lines + tail
-        for line in top + lines + bottom:
-            yield Segment(indent)
-            yield from line
-            yield Segment.line()
+        yield Text(f"{glyphs.icon('blocked')} Run cancelled", style="pcode.warning")

@@ -29,7 +29,7 @@ def test_notices_are_literal_compact_and_readable_without_color(theme, syntax):
     transcript.cancelled()
     transcript.note("Ordinary notice")
     assert "\n".join(line.rstrip() for line in stream.getvalue().splitlines()) + "\n" == (
-        "✗ Agent failed\n\n [red]**literal**[/red]\n Connection reset\n\n"
+        "▎ Agent failed\n▎ [red]**literal**[/red]\n▎ Connection reset\n"
         "▎ Context window nearly full\n"
         "! Run cancelled\n· Ordinary notice\n"
     )
@@ -151,7 +151,7 @@ def test_exceptional_tool_completion_flushes_prose_before_queued_diagnostic():
         assert stream.getvalue() == ""  # Uses the terminal handoff, not console.print.
         await output.flush()
         text = stream.getvalue()
-        failure = text.index("✗ Read file failed")
+        failure = text.index("▎ Read file failed")
         assert text.index("Before failure") < failure < text.index("After failure")
         assert text.count("Not found") == 1
 

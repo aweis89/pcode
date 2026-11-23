@@ -16,9 +16,6 @@ from pcode.sessions import SavedSession
 from pcode.tool_display import command_error
 from pcode.ui import Transcript
 
-# Painted code blocks belong to a Pygments style, not the default terminal colors.
-PALETTE_SYNTAX = {"syntax_dark": "gruvbox-dark", "syntax_light": "gruvbox-light"}
-
 
 @pytest.mark.parametrize(
     "content,expected",
@@ -174,20 +171,22 @@ def test_error_scrollback_limits_wrapped_rows_and_keeps_tail(limit):
     save_preferences(error_scrollback_lines=str(limit))
     stream = StringIO()
     transcript = Transcript(Console(file=stream, width=45, color_system=None))
-    transcript.error("prefix " * 400 + "\nfinal cause")
+    transcript.error("prefix " * 400 + "\nfinal cause", title="Agent failed")
     lines = stream.getvalue().splitlines()
-    assert lines[0] == "✗ Error"
-    assert len(lines) == limit + 3  # Heading and code-block padding.
-    assert "truncated" in lines[2]
+    assert lines[0] == "▎ Agent failed"
+    assert all(line.startswith("▎ ") for line in lines)
+    assert len(lines) == limit + 1  # The headline, then the bounded detail.
+    assert "truncated" in lines[1]
     if limit > 1:
-        assert lines[-2].strip() == "final cause"
+        assert lines[-1] == "▎ final cause"
 
 
 def test_default_error_scrollback_limit():
     stream = StringIO()
     Transcript(Console(file=stream)).error("\n".join(str(i) for i in range(60)))
-    assert len(stream.getvalue().splitlines()) == 23
-    assert stream.getvalue().splitlines()[-2].strip() == "59"
+    # The first line is the headline; the remaining 59 are bounded to 20.
+    assert len(stream.getvalue().splitlines()) == 21
+    assert stream.getvalue().splitlines()[-1].strip() == "▎ 59"
 
 
 @pytest.mark.parametrize("name", ["read_file", "write_plan", "edit_file"])
@@ -274,65 +273,36 @@ def test_legacy_error_visibility_is_ignored_and_hidden_commands_keep_events():
     assert "Run cancelled" in stream.getvalue()
 
 
-def test_error_body_uses_markdown_code_block_without_interpreting_markup():
+def test_error_is_a_red_bar_block_with_a_muted_literal_body():
     stream = StringIO()
-    transcript = Transcript(
-        Console(file=stream, force_terminal=True, color_system="truecolor"),
-        preferences=PALETTE_SYNTAX,
-    )
-    transcript.error("[bold]literal[/bold] code=123 False")
-    body = stream.getvalue().splitlines()[2]
-    assert "[bold]" in Text.from_ansi(body).plain
-    assert "[/bold]" in Text.from_ansi(body).plain
-    assert "\x1b[" in body
+    transcript = Transcript(Console(file=stream, force_terminal=True, color_system="truecolor"))
+    transcript.error("[bold]literal[/bold] failed. Run it again\n    indented")
+    rows = [Text.from_ansi(row) for row in stream.getvalue().splitlines()]
+    assert [row.plain for row in rows] == [
+        "▎ [bold]literal[/bold] failed",
+        "▎ Run it again",
+        "▎     indented",
+    ]
 
+    def colour(row, at):
+        # Standard colour 1 is red, the error bar and headline.
+        return row.get_style_at_offset(transcript.console, at).color.number
 
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_error_code_block_matches_markdown_theme_and_preserves_fences(theme):
-    from rich.markdown import Markdown
-
-    text = "```python\nprint('oops')\n```\n````\n# literal heading\n[link](https://example.com)"
-    stream = StringIO()
-    transcript = Transcript(
-        Console(file=stream, width=90, force_terminal=True, color_system="truecolor"),
-        theme=theme,
-    )
-    transcript.error(text)
-    output = Text.from_ansi(stream.getvalue()).plain.splitlines()
-    assert [line[1:].rstrip() for line in output[2:-1]] == text.splitlines()
-    # Compare the actual styled block with the same Markdown path used for model output.
-    expected = StringIO()
-    Console(file=expected, width=90, force_terminal=True, color_system="truecolor").print(
-        Markdown("`````text\n" + text + "\n`````", code_theme=transcript.code_theme)
-    )
-    assert "\n".join(stream.getvalue().splitlines()[1:]) == (expected.getvalue().rstrip("\n"))
+    assert all(colour(row, 0) == 1 for row in rows)
+    assert colour(rows[0], 2) == 1
+    assert colour(rows[1], 2) != 1
 
 
 @pytest.mark.parametrize("width", [1, 2, 3, 4, 5, 10, 30])
-def test_error_code_block_handles_narrow_panes(width):
+def test_error_block_handles_narrow_panes(width):
     from pcode.preferences import save_preferences
 
     save_preferences(error_scrollback_lines="3")
     stream = StringIO()
-    Transcript(Console(file=stream, width=width, color_system=None)).error("long log " * 100)
+    Transcript(Console(file=stream, width=width, color_system=None)).error(
+        "long log " * 100, title="Agent failed"
+    )
     lines = stream.getvalue().splitlines()
     assert all(len(line) <= width for line in lines)
-    # The heading can wrap; the body remains bounded plus optional padding.
-    assert len(lines) <= len("✗ Error") + 3 + 2
-
-
-def test_error_code_block_background_starts_at_left_edge_and_keeps_inner_indent():
-    stream = StringIO()
-    transcript = Transcript(
-        Console(file=stream, width=40, force_terminal=True, color_system="truecolor"),
-        preferences=PALETTE_SYNTAX,
-    )
-    transcript.error("unindented\n    indented")
-    rows = stream.getvalue().splitlines()[1:]
-    for row in rows:
-        styled = Text.from_ansi(row)
-        # Includes the padding rows: the first column belongs to the code block.
-        assert styled.get_style_at_offset(transcript.console, 0).bgcolor is not None
-        assert len(styled.plain) == 40
-    assert Text.from_ansi(rows[1]).plain.rstrip() == " unindented"
-    assert Text.from_ansi(rows[2]).plain.rstrip() == "     indented"
+    # The headline can wrap; the body stays bounded.
+    assert len(lines) <= len("Agent failed") + 3
