@@ -2340,14 +2340,15 @@ class SessionController:
     def persist_defaults(self, **updates: str) -> bool:
         try:
             save_preferences(**updates)
-            if updates.get("model"):
-                from pcode.preferences import record_recent_provider
-
-                # The /model list puts recently used providers first.
-                record_recent_provider(updates["model"])
         except OSError, ValueError:
             self.view.warning("Could not save defaults; this selection applies only here.")
             return False
+        if updates.get("model"):
+            from pcode.preferences import record_recent_provider
+
+            # Best effort: it only orders the /model list, recently used first.
+            with suppress(OSError, ValueError):
+                record_recent_provider(updates["model"])
         return True
 
     def forget_defaults(self, *keys: str) -> bool:
@@ -2617,7 +2618,8 @@ class SessionController:
         """Complete the word being typed in `/subagents` from the /model catalog.
 
         Names already typed are not offered again, and `off` only as the first word.
-        Only the newest version of each family is offered; older names still work.
+        Only the newest version of each family (and the session's model) is
+        offered; older names still work.
         """
         from prompt_toolkit.completion import Completion
 
@@ -2632,7 +2634,7 @@ class SessionController:
                 "off", start_position=-len(fragment), display_meta="Only the session's model"
             )
         needle = fragment.casefold()
-        for model in latest_models(self.model_suggestions()):
+        for model in latest_models(self.model_suggestions(), keep=self.model):
             if model not in words and needle in model.casefold():
                 yield Completion(model, start_position=-len(fragment))
 

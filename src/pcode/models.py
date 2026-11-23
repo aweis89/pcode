@@ -227,34 +227,49 @@ def model_sort_key(name: str):
     return provider, parts
 
 
-# A date snapshot: `-2024-08-06` or a run of six or more digits (`-20250514`).
-_DATE = re.compile(r"[-_.]\d{4}-\d{2}-\d{2}(?=$|[-_./])|(?<![a-z\d])\d{6,}(?![a-z\d])")
+# A `-2024-08-06` date; other snapshot suffixes are caught per segment below.
+_ISO_DATE = re.compile(r"[-_.]\d{4}-\d{2}-\d{2}(?=$|[-_./])")
+# Numbers after these are preview dates (`preview-09-2025`), not versions.
+_DATED_TAGS = {"preview", "exp"}
 
 
-def _family_and_version(name: str) -> tuple[tuple, tuple[int, ...]]:
-    """`claude-opus-4-5` -> family (provider, claude, opus), version (4, 5).
+def _family_and_version(name: str) -> tuple[tuple, tuple[int, ...], bool]:
+    """`claude-opus-4-5` -> family (provider, claude, opus), version (4, 5), not a snapshot.
 
     Only standalone numbers are versions: `ministral-14b` and `gpt-4o` keep their
     digits as part of the name, since those are sizes or variants, not releases.
+    Snapshot dates (`-20250514`, `-2411`, `-2024-08-06`, `preview-05-20`) are
+    neither, so a snapshot ties with its alias on version.
     """
     provider, _, model = name.casefold().partition(":")
-    segments = re.split(r"[-_./]", _DATE.sub("", model))
-    family = tuple(part for part in segments if part and not part.isdigit() and part != "latest")
-    version = tuple(int(part) for part in segments if part.isdigit())
-    return (provider, *family), version
+    undated = _ISO_DATE.sub("", model)
+    snapshot = undated != model
+    family, version, dated = [], [], False
+    for part in re.split(r"[-_./]", undated):
+        if part.isdigit():
+            # No release number runs to four digits; a snapshot date does.
+            if not dated and len(part) < 4:
+                version.append(int(part))
+            else:
+                snapshot = True
+        elif part and part != "latest":
+            family.append(part)
+            dated = dated or part in _DATED_TAGS
+    return (provider, *family), tuple(version), snapshot
 
 
-def latest_models(names: list[str]) -> list[str]:
+def latest_models(names: list[str], keep: str | None = None) -> list[str]:
     """The newest version of each model family in `names`, in their original order.
 
     `claude-opus-5-5` drops `claude-opus-4-8` and dated snapshots of either; an
-    undated alias beats a snapshot of the same version.
+    undated alias beats a snapshot of the same version. `keep` (such as the
+    session's own model) stays even when it is not the newest.
     """
-    best: dict[tuple, tuple[tuple[int, ...], int, str]] = {}
+    best: dict[tuple, tuple] = {}
     for name in names:
-        family, version = _family_and_version(name)
-        candidate = (version, -len(name), name)
-        if family not in best or candidate[:2] > best[family][:2]:
+        family, version, snapshot = _family_and_version(name)
+        candidate = (version, not snapshot, -len(name), name)
+        if family not in best or candidate[:3] > best[family][:3]:
             best[family] = candidate
-    keep = {entry[2] for entry in best.values()}
-    return [name for name in names if name in keep]
+    chosen = {entry[-1] for entry in best.values()} | {keep}
+    return [name for name in names if name in chosen]

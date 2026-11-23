@@ -670,7 +670,7 @@ def test_antigravity_can_delegate_to_a_worker_on_another_provider(
     assert "run_in_background" in tool["inputSchema"]["properties"]
     schema = tool["inputSchema"]
     assert schema["properties"]["model"]["description"] == (
-        "Optional model to run the sub-agent on, as provider:model, one of: "
+        "Optional model to run the sub-agent on, as provider:model, such as: "
         "claude:fable, openai-codex:gpt. Omit it to use the session's current model "
         "(antigravity:fake-neon)."
     )

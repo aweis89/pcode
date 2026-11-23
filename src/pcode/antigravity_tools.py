@@ -748,9 +748,12 @@ def offered_models() -> list[str]:
 
     Older versions still work when named; they are just not suggested.
     """
-    from pcode.models import active_providers, latest_models, model_catalog
+    from pcode.models import active_providers, latest_models, model_catalog, model_sort_key
 
-    return latest_models(model_catalog(active_providers(None)))
+    # Not the picker's recency order: that follows every session's /model, and
+    # a reordered tool description would break the prompt cache.
+    catalog = sorted(model_catalog(active_providers(None)), key=model_sort_key)
+    return latest_models(catalog)
 
 
 def _session_model(ctx: RunContext[Any] | None) -> str:
@@ -796,7 +799,7 @@ def _delegation_schema(schema: dict, ctx: RunContext[Any] | None = None) -> dict
         "type": "string",
         "description": (
             "Optional model to run the sub-agent on, as provider:model"
-            + (f", one of: {offered}." if offered else ".")
+            + (f", such as: {offered}." if offered else ".")
             + default_note
         ),
     }

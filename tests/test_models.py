@@ -226,6 +226,25 @@ def test_latest_models_keeps_newest_of_each_family_in_order():
     ]
 
 
+def test_latest_models_reads_snapshot_dates_as_ties_not_versions():
+    names = [
+        "mistral:mistral-large-latest",
+        "mistral:mistral-large-2411",
+        "google-gla:gemini-2.5-flash-preview",
+        "google-gla:gemini-2.5-flash-preview-09-2025",
+        "google-gla:gemini-2.5-flash-preview-05-20",
+    ]
+    assert latest_models(names) == [
+        "mistral:mistral-large-latest",
+        "google-gla:gemini-2.5-flash-preview",
+    ]
+
+
+def test_latest_models_keeps_the_given_model():
+    names = ["anthropic:claude-opus-5-5", "anthropic:claude-opus-4-8"]
+    assert latest_models(names, keep="anthropic:claude-opus-4-8") == names
+
+
 def test_current_model_does_not_override_version_order():
     current = "anthropic:claude-opus-4-8"
     models = model_catalog({"anthropic"}, current)
