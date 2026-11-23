@@ -1,7 +1,8 @@
 # Reader mode plan
 
-Status: phases 1 and 2 built in the fork (`ghostty-smooth` commits `9c5ca8751`,
-`be9f810b9` and `cf836a3f0`, branch `pcode-smooth`); first feedback applied. Builds on the terminal-side glide in
+Status: all five phases built, not yet judged by eye. Fork (`ghostty-smooth`,
+branch `pcode-smooth`): `9c5ca8751`, `be9f810b9`, `cf836a3f0`, `06e21e48a`.
+pcode: `0432dc90`. Builds on the terminal-side glide in
 [ghostty-app-plan.md](ghostty-app-plan.md) (protocol 9, `smooth_scroll.py`).
 
 ## Goal
@@ -62,19 +63,25 @@ pcode tracks no reader state and handles no reader keys.
 
 ## Protocol 10
 
-Additions to the `ESC _ smooth;... ESC \` family. Names are provisional.
+Additions to the `ESC _ smooth;... ESC \` family, as built. The query reply is
+`smooth;ok;10`; pcode glides on 9 or 10 and only marks on 10.
 
-- `smooth;mark;KIND`: tag the cursor's row. Kinds: turn, code, diff.
-- `smooth;park;KIND`: when the newest mark of that kind reaches the top of the
-  screen, pin the viewport there and stop following output. The terminal
-  picks the moment, since only it knows the viewport.
-- `smooth;follow`: scroll to the bottom and leave the reader table. For pcode
-  to call when it needs the user at the editor.
+- `smooth;mark;K`: tag the cursor's row, 1 turn (the submitted prompt's first
+  row), 2 block (a code block or file-edit diff). Stored in a 2-bit
+  `Row.smooth_mark`, so it moves with the row; reflow keeps it on the first
+  line only. pcode writes it just before the row's text, replay included.
+- `smooth;park`: arms a park bound to the next turn mark. When that row is
+  above the active area's top while the viewport follows the bottom, the
+  renderer pins the viewport there (`State.parkIfDue`) and the surface enters
+  the reader table. A keystroke or leaving the bottom drops it. pcode sends it
+  just before the turn mark of a prompt from `begin_turn`, when `reader_park`
+  is on.
+- No `follow` verb: nothing needed it.
 
-Everything else is Ghostty actions bound in the key table, with no escape
-sequence: the existing `scroll_page_fractional`, `scroll_page_lines` and
-scroll to top or bottom, plus new `jump_to_mark:KIND,±1`, `cruise` and
-`cruise_speed:±1`.
+Actions bound in the table: the existing scroll actions (now glided), plus
+`smooth_hold:±1`, `smooth_cruise`, `smooth_cruise_speed:±N`,
+`smooth_jump_turn:±1`, `smooth_jump_block:±1`. `y` sends F20 (`csi:34~`),
+which pcode binds to its response and snippet copy chooser.
 
 ## Phases
 
@@ -111,28 +118,38 @@ scroll to top or bottom, plus new `jump_to_mark:KIND,±1`, `cruise` and
   `smooth_cruise_speed:±N` changes it by factors of 1.25, kept between cruises.
 - Stops at the live bottom. Other scroll keys add to the motion while it runs.
 
-### 3. Marks and jumps
+### 3. Marks and jumps: built
 
-- Fork: `mark`, `jump_to_mark`, protocol bumped to 10.
-- pcode: emit marks in `_enqueue()` where rows are split, only when the
-  terminal answered 10.
-- Keys: `[`/`]` for turns (`[` lands on the current request first), `{`/`}`
-  for code blocks and diffs.
+- `[`/`]` for turns (`[` lands on the current request first; past the newest
+  turn is the bottom), `{`/`}` for blocks. Jumps count from where a glide is
+  headed, so repeated presses step on.
+- pcode finds marked rows with a zero-width sentinel (U+2061..U+2064) that
+  `TaskPrompt`, pcode's `Markdown` code blocks and `EditTranscript` emit only
+  inside `TerminalOutput._render` (`row_marks.py`); `_enqueue` strips it
+  into `QueuedRow.mark` before anything reads the row. Not a Rich control
+  segment: the render console writes to a `StringIO` without
+  `force_terminal`, so Rich drops control text.
+- Marks need the startup probe, which only runs with `smooth_scroll auto`.
 
-### 4. Park
+### 4. Park: built
 
-- Fork: `park` and `follow`.
-- pcode: a setting that sends `park` when a turn starts.
+- `reader_park` (default on). Steering and shell-mode prompts are marked but
+  never park.
 
-### 5. Copy
+### 5. Copy: built
 
-- pcode: `y` copies the code block or response from message history, not
-  from terminal cells.
+- `y` leaves the table, returns to the bottom and opens pcode's copy chooser
+  for the last turn's response and snippets (from message history, not
+  terminal cells).
 
 ## To check in a spike
 
-- **Feel.** Spring stiffness (400), the 96-row jump cap and the default cruise
-  speed are guesses; tune by eye.
+- **Feel.** Spring stiffness (160), the 96-row jump cap, hold speed (12 rows/s)
+  and the default cruise speed (2 rows/s) are guesses; tune by eye.
+- **Park and pcode's conveyor.** Parking leaves the active area, where
+  pcode's region glide stops drawing, so a batch mid-glide pops into place.
+- **Reader mode without the glide.** Marks and park depend on the probe that
+  `smooth_scroll auto` runs.
 - **Synchronized output.** The glide steps in the renderer's frame update,
   which is skipped during synchronized output. The step after one is capped at
   50 ms, so a long pcode frame pauses the glide rather than leaping it.
