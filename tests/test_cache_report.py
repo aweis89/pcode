@@ -289,9 +289,7 @@ def test_selectors_read_real_session_layout(tmp_path, selector):
     assert cache_report.main([selector, "--root", str(tmp_path)]) == 0
 
 
-def _write_antigravity_session(
-    root: Path, identity: str, responses: list[ModelResponse]
-) -> Path:
+def _write_antigravity_session(root: Path, identity: str, responses: list[ModelResponse]) -> Path:
     directory = root / identity
     directory.mkdir(parents=True)
     write_info(directory, identity, model="antigravity:gemini-4-neon")
