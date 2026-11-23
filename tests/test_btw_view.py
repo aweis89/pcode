@@ -573,10 +573,11 @@ def test_btw_prompt_prefix_and_word_wrap_width_follow_open_thread():
     asyncio.run(check())
 
 
-def test_btw_header_and_busy_strip_render_and_size_correctly():
+def test_btw_header_and_busy_strip_render_and_size_correctly(monkeypatch):
     from prompt_toolkit.formatted_text import fragment_list_to_text
     from prompt_toolkit.input import create_pipe_input
 
+    from pcode import theme
     from pcode.commands import CommandRegistry
     from pcode.runtime import EditPreview
     from pcode.ui import PromptLayout, create_prompt
@@ -613,14 +614,18 @@ def test_btw_header_and_busy_strip_render_and_size_correctly():
             assert "btw 1/2" in heading_text
             assert "second?" in heading_text
             assert "haiku" in heading_text
-            # Its keys are the drawer's footer, not the editor's heading.
-            assert "Esc" not in heading_text
+            assert "Esc back" in heading_text
 
-            # Long questions truncate with ellipsis while preserving the model.
+            # Long questions truncate with ellipsis while preserving model and Esc back.
             second.question = "why does this very long side question keep going and going forever?"
             narrow_label = fragment_list_to_text(layout.btw_label(50))
             assert "…" in narrow_label
             assert "haiku" in narrow_label
+            assert "Esc back" in narrow_label
+            # A terminal that draws the drawer's key footer shows the keys there instead.
+            monkeypatch.setattr(theme, "_popup_protocol", 4)
+            assert "Esc back" not in fragment_list_to_text(layout.btw_label(80))
+            monkeypatch.setattr(theme, "_popup_protocol", None)
 
             # `preview_layout()` with `startup_animating` and `btw_active` must not recurse.
             app.activity.startup_label = "Starting"
@@ -637,7 +642,7 @@ def test_btw_header_and_busy_strip_render_and_size_correctly():
             assert layout.btw_bar_height() == 1
             assert layout.frame_height() == idle_height + 1
             bar_text = fragment_list_to_text(layout.btw_bar_fragments())
-            assert "btw 1/2" in bar_text and "Esc" not in bar_text
+            assert "btw 1/2" in bar_text and "Esc back" in bar_text
 
     asyncio.run(check())
 

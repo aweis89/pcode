@@ -47,8 +47,10 @@ class SecretPrompt:
         if detail:
             body.append(Label(detail, dont_extend_height=True))
         body.append(self.field)
-        body.append(popup_bar(shortcuts, "secret"))
-        dialog = Dialog(title=title, body=HSplit(body, padding=1))
+        dialog = Dialog(
+            title=title,
+            body=HSplit([HSplit(body, padding=1), popup_bar(shortcuts, "secret", gap=True)]),
+        )
         self.app = Application(
             layout=Layout(popup_container(dialog, shortcuts), focused_element=self.field),
             key_bindings=shortcuts.key_bindings(keys),

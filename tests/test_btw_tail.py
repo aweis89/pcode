@@ -10,11 +10,14 @@ from pcode.popup_hints import hints_apc
 from pcode.ui import Activity, Transcript
 
 
-def tail(thread="t1") -> tuple[Tail, StringIO]:
+def tail(thread="t1", *, native_hints=True) -> tuple[Tail, StringIO]:
     out = StringIO()
     console = Console(file=out, width=60, color_system=None, force_terminal=True)
     transcript = Transcript(console, activity=Activity(), detected_theme="dark")
-    return Tail(thread, console, transcript), out
+    view = Tail(thread, console, transcript)
+    # As a terminal that draws the drawer's key footer says (`PCODE_NATIVE_HINTS`).
+    view.native_hints = native_hints
+    return view, out
 
 
 def state(**fields) -> dict:
@@ -50,12 +53,19 @@ def test_the_drawer_footer_lists_the_editor_keys_and_is_sent_only_when_it_change
     one = notify(view, out, "asides", [state(status="answered")])
     assert one.endswith(hints_apc(view.footer()).decode())
     labels = [hint.label for hint in view.footer()]
-    assert labels == ["Reply", "Close"], "one thread: nothing to go to next"
+    assert labels == ["Reply in editor", "Close"], "one thread: nothing to go to next"
     again = notify(view, out, "aside_changed", state(answer="More.", status="answered"))
     assert "pcode;hints" not in again
     two = notify(view, out, "asides", [state(status="answered"), state(id="b2", thread="t2")])
     assert "pcode;hints" in two
-    assert [hint.label for hint in view.footer()] == ["Reply", "Next thread", "Close"]
+    assert [hint.label for hint in view.footer()] == ["Reply in editor", "Next thread", "Close"]
+
+
+def test_without_a_drawn_footer_the_keys_stay_under_the_heading():
+    view, out = tail(native_hints=False)
+    drawn = notify(view, out, "asides", [state(status="answered")])
+    assert "pcode;hints" not in drawn
+    assert "Esc back to it" in drawn
 
 
 def test_only_a_host_id_is_taken():

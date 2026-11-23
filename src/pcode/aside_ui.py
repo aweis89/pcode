@@ -378,6 +378,7 @@ class AsideBrowser:
                     "btw",
                     state={
                         "picking": lambda: self.picker is not None,
+                        "typing": self.editing,
                         "listing": self.listing,
                     },
                 ),

@@ -4358,12 +4358,14 @@ class PromptLayout:
         return int(self.startup_border_active(attached=attached))
 
     def btw_label(self, width: int) -> list[tuple[str, str]]:
-        """The open `/btw` thread badge, question excerpt and model.
+        """The open `/btw` thread badge, question excerpt, model, and escape hint.
 
-        Its keys are the drawer's footer (`popup_hints`), not repeated here.
+        A terminal that draws the drawer's key footer (`popup_hints`) shows
+        the keys there instead.
         """
         from pcode.btw_view import current, position
         from pcode.conversation_tree import excerpt
+        from pcode.theme import native_hints_supported
         from pcode.tool_display import literal
 
         thread = current(self.activity)
@@ -4375,6 +4377,8 @@ class PromptLayout:
         tail: list[tuple[str, str]] = []
         if newest.label:
             tail.append(("class:btw.hint", f" · {plain(newest.label, limit=40)}"))
+        if not native_hints_supported():
+            tail.append(("class:btw.hint", " · Esc back"))
         tail_width = sum(cell_len(text) for _, text in tail)
         q_budget = width - cell_len(badge) - tail_width - 1
         raw_question = excerpt(literal(first.question))

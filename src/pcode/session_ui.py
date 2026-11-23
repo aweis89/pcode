@@ -659,11 +659,17 @@ def session_info_dialog(
         title="Session",
         body=HSplit(
             [
-                Label(lambda: notice or "/resume switches session", dont_extend_height=True),
-                body,
-                popup_bar(shortcuts, "session"),
-            ],
-            padding=1,
+                HSplit(
+                    [
+                        Label(
+                            lambda: notice or "/resume switches session", dont_extend_height=True
+                        ),
+                        body,
+                    ],
+                    padding=1,
+                ),
+                popup_bar(shortcuts, "session", gap=True),
+            ]
         ),
     )
     return Application(

@@ -322,7 +322,7 @@ def snippet_dialog(choices: list[Snippet], *, input=None, output=None, style=Non
     shortcuts.set_help(picker.help)
     dialog = Dialog(
         title="Copy",
-        body=HSplit([picker.container, popup_bar(shortcuts, "copy")], padding=1),
+        body=HSplit([picker.container, popup_bar(shortcuts, "copy", gap=True)]),
     )
     app = Application(
         layout=Layout(popup_container(dialog, shortcuts), focused_element=picker.list),

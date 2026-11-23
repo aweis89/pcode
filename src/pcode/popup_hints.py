@@ -30,9 +30,14 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
-from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.formatted_text import StyleAndTextTuples
-from prompt_toolkit.layout import AnyContainer, DynamicContainer, FormattedTextControl, Window
+from prompt_toolkit.layout import (
+    AnyContainer,
+    DynamicContainer,
+    FormattedTextControl,
+    HSplit,
+    Window,
+)
 from prompt_toolkit.utils import get_cwidth
 
 if TYPE_CHECKING:
@@ -109,11 +114,13 @@ POPUPS: dict[str, tuple[Entry, ...]] = {
     "pick": (enter("Choose"), esc("Cancel")),
     # /btw in its own viewer (`aside_ui`).
     "btw": (
-        # Its link picker, while open over it.
+        # Its link picker, while open over it; its follow-up editor, while typing.
         enter("Open link", when="picking"),
+        enter("Send", when="typing"),
         enter("Open", when="listing"),
         shortcut("r", "Reply"),
         shortcut("y", "Copy"),
+        shortcut("o", "Links"),
         shortcut("t", "Merge"),
         shortcut("k", "Stop"),
         tab("Switch pane"),
@@ -122,7 +129,7 @@ POPUPS: dict[str, tuple[Entry, ...]] = {
     ),
     # /btw in Ghostty Smooth's drawer, answered from pcode's editor (`btw_tail`).
     "btw_drawer": (
-        enter("Reply"),
+        enter("Reply in editor"),
         shortcut("\\", "Next thread", when="others"),
         esc("Close"),
     ),
@@ -177,13 +184,13 @@ POPUPS: dict[str, tuple[Entry, ...]] = {
     "resume": (
         enter("Resume"),
         shortcut("f", "Search"),
-        shortcut("r", "Prompts only"),
+        shortcut("r", "Prompts/all"),
         shortcut("g", "All workspaces"),
         shortcut("x", "Delete"),
         esc("Close"),
     ),
     "session": (esc("Close"),),
-    "secret": (enter("Save"), esc("Cancel")),
+    "secret": (enter("Submit"), esc("Cancel")),
 }
 
 
@@ -345,21 +352,36 @@ def _drawn_natively() -> bool:
     return drawn_in_overlay() and theme.native_hints_supported()
 
 
-class HintBar:
-    """A popup's last row: its hints, or on a native overlay the terminal's footer.
-
-    `found` is read each render, so the bar follows the popup's state.
-    """
+class _FittedHints(FormattedTextControl):
+    """The hints cut to the width the bar is given, not the terminal's."""
 
     def __init__(self, found: Callable[[], Sequence[Hint]]) -> None:
         self.found = found
+        self._width = 80
+        super().__init__(lambda: fragments(fit(self.found(), self._width)))
 
-        def text() -> StyleAndTextTuples:
-            app = get_app_or_none()
-            width = app.output.get_size().columns if app is not None else 80
-            return fragments(fit(self.found(), max(1, width - 2)))
+    def preferred_width(self, max_available_width: int) -> int:
+        # Only what must stay: a bar never widens its popup for optional hints.
+        return min(max_available_width, bar_width([h for h in self.found() if h.kept]))
 
-        bar = Window(FormattedTextControl(text), height=1, dont_extend_height=True)
+    def create_content(self, width: int, height: int | None):
+        self._width = width
+        return super().create_content(width, height)
+
+
+class HintBar:
+    """A popup's last row: its hints, or on a native overlay the terminal's footer.
+
+    `found` is read each render, so the bar follows the popup's state. With
+    `gap` it keeps a blank row above itself, which it drops with itself on a
+    native overlay: for a dialog whose rows are spaced apart (`padding=1`),
+    where the bar goes after the spaced rows rather than among them.
+    """
+
+    def __init__(self, found: Callable[[], Sequence[Hint]], *, gap: bool = False) -> None:
+        self.found = found
+        line = Window(_FittedHints(lambda: self.found()), height=1, dont_extend_height=True)
+        bar = HSplit([Window(height=1), line]) if gap else line
         handed_over = Window(height=0)
 
         def current() -> AnyContainer:
@@ -377,6 +399,6 @@ class HintBar:
         return self.container
 
 
-def popup_bar(shortcuts: "PrefixKeys", kind: str, **options) -> HintBar:
+def popup_bar(shortcuts: "PrefixKeys", kind: str, *, gap: bool = False, **options) -> HintBar:
     """The `HintBar` of a popup with `shortcuts`, listing `kind`'s hints."""
-    return HintBar(lambda: shortcut_hints(shortcuts, kind, **options))
+    return HintBar(lambda: shortcut_hints(shortcuts, kind, **options), gap=gap)

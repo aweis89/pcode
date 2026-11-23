@@ -185,3 +185,30 @@ def test_the_registry_only_names_known_roles_and_keys():
         for entry in entries:
             assert entry.label and entry.key, kind
             assert len(popup_hints.native_keycap(entry.key)) <= popup_hints.KEY_MAX, kind
+
+
+def test_the_bar_fits_the_width_it_is_given_not_the_terminals():
+    found = [
+        Hint("Enter", "Resume", Role.PRIMARY),
+        Hint("Ctrl+F", "Search"),
+        Hint("Ctrl+G", "All workspaces"),
+        Hint("Esc", "Close", Role.LEAVE),
+    ]
+    app = Application(layout=Layout(Window()), input=DummyInput(), output=DummyOutput())
+    screen = Screen()
+    with set_app(app):
+        to_container(HintBar(lambda: found)).write_to_screen(
+            screen, MouseHandlers(), WritePosition(0, 0, 30, 1), "", False, None
+        )
+    row = "".join(screen.data_buffer[0][column].char for column in range(30)).rstrip()
+    # The terminal (80 columns) has room for all; the bar's 30 do not.
+    assert row == "Enter Resume  Esc Close"
+
+
+def test_an_oversized_hint_list_is_trimmed_to_what_the_terminal_keeps(monkeypatch):
+    # The per-hint caps keep a full list near 3 KiB at worst; this is the backstop.
+    found = [Hint(f"Ctrl+{chr(65 + n)}", "Label") for n in range(12)]
+    monkeypatch.setattr(popup_hints, "APC_MAX", 200)
+    apc = hints_apc(found)
+    assert len(apc) <= 200
+    assert 0 < len(decoded(apc)) < 12

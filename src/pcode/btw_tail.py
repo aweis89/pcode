@@ -8,7 +8,8 @@ colors. Settled blocks come out paced as the conversation's do (`paced_scrollbac
 rolled in by row, or prose typed out). A width change draws the thread again
 at the new width, whole; the only key it reads is Esc (or `q`), which gives
 the keyboard back to pcode's pane. The keys that answer the thread there go in
-the drawer's footer (`pcode;hints;…`, `popup_hints`).
+the drawer's footer (`pcode;hints;…`, `popup_hints`) when the terminal says it
+draws one (`NATIVE_HINTS` in the environment), else in a line under the heading.
 """
 
 import asyncio
@@ -26,7 +27,7 @@ from pcode.conversation_tree import excerpt
 from pcode.drawer import FOCUS, OBSERVER_VERSION, valid_host
 from pcode.host_protocol import LINE_LIMIT, dumps, read_message, socket_path
 from pcode.popup_hints import Hint, hints, hints_apc
-from pcode.prefix_keys import shortcut_label
+from pcode.prefix_keys import configured_prefix, shortcut_label
 from pcode.tool_display import literal, plain
 from pcode.ui import ESCAPES, Pacer, QueuedRow, split_rows, typed_prose
 
@@ -47,6 +48,8 @@ RECONNECT_SECONDS = 2.0
 # What a host on the web drawer's observer version answers.
 OLD_HOST = "Unsupported drawer version."
 RESTART = "This session host's pcode predates this drawer: run /restart in pcode."
+# Set to 1 by a terminal that draws the drawer's key footer (popup protocol 4).
+NATIVE_HINTS = "PCODE_NATIVE_HINTS"
 
 
 class Tail:
@@ -67,6 +70,9 @@ class Tail:
         self.note = ""
         # The footer last sent to the drawer (`footer`); None before the first.
         self._footer: list[Hint] | None = None
+        self.native_hints = os.environ.get(NATIVE_HINTS) == "1"
+        # Read once: the preferences need not be read again at every notification.
+        self._prefix = configured_prefix()
         # Pacing needs a loop to time its frames; without one, text lands at once.
         self.loop = loop
         self.paced = loop is not None and transcript.paced_scrollback != "off"
@@ -118,9 +124,15 @@ class Tail:
     def footer(self) -> list[Hint]:
         """The keys pcode's editor answers this thread with, as the drawer's footer shows them."""
         threads = {aside.thread for aside in self.asides}
-        return hints("btw_drawer", label=shortcut_label, state={"others": lambda: len(threads) > 1})
+        return hints(
+            "btw_drawer",
+            label=lambda key: shortcut_label(key, self._prefix),
+            state={"others": lambda: len(threads) > 1},
+        )
 
     def _send_footer(self) -> None:
+        if not self.native_hints:
+            return
         footer = self.footer()
         if footer != self._footer:
             self._footer = footer
@@ -225,7 +237,10 @@ class Tail:
             (f" {question}", "pcode.btw"),
             (f" · {label}" if label else "", "pcode.muted"),
         )
-        return [entry(title), entry()]
+        if self.native_hints:
+            return [entry(title), entry()]
+        keys = Text("Reply in pcode's editor · Esc back to it", style="pcode.muted")
+        return [entry(title), entry(keys), entry()]
 
 
 def _typed_part(text: str, count: int) -> str:
