@@ -179,7 +179,8 @@ def test_a_popup_runs_on_the_overlay_and_gives_it_back(terminal):
 
     assert asyncio.run(main()) == "picked"
     assert b"\x1b_pcode;ready\x1b\\" in terminal.screen
-    assert terminal.screen.rstrip().endswith(b"\x1b_pcode;done\x1b\\")
+    # The last write is still crossing the pty to the drain thread.
+    asyncio.run(_wait_for(lambda: terminal.screen.rstrip().endswith(b"\x1b_pcode;done\x1b\\")))
     assert terminal_fds() == {}
     assert [key.key for key in editor.read_keys()] == ["x", Keys.CPRResponse]
     # The socket and entry are gone once found.
