@@ -341,7 +341,7 @@ def test_typed_mode_rolls_code_and_rules_by_row_behind_the_prose_they_follow(mon
         while output.rows or output.pending:
             await output.flush()
             # Code and rules never show up half-typed in the live row.
-            assert "CODE" not in shown(output) and "---" not in shown(output)
+            assert "CODE" not in shown(output) and RULE not in shown(output)
         text = transcript.console.file.getvalue()
         assert text.index("Intro line.") < text.index("CODE_0") < text.index("CODE_1")
         assert text.index("CODE_1") < text.index(RULE * 80)
