@@ -5099,7 +5099,9 @@ def create_prompt(
             # prompt_toolkit erases on a resize and paints on a later pass,
             # leaving the cursor parked at the top in between. Full screen
             # needs no erase: repaint whole, at once, as one frame.
-            if not app._is_running:
+            if not app._is_running or app.output.get_size() == app.renderer._last_size:
+                # Only pcode's own pane resized (the card growing): the dock's
+                # grid is fixed, and already shows the right frame.
                 return
             # Home and clear first: `reset` assumes the cursor is at the top
             # left, and a paint from wherever it really is doubles the layout.

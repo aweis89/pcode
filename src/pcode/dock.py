@@ -141,12 +141,14 @@ class Dock:
 
     def layout_size(self, size: Size) -> Size:
         """The size the layout budgets its rows against: the dock's width, the
-        whole pane's height (pcode's own rows and the dock's together)."""
+        whole pane's height (pcode's own rows and the card's shown rows), but
+        never more than the dock's grid, which the terminal keeps at a fixed
+        height and only shows the bottom of."""
         try:
             pane = os.get_terminal_size(sys.stdout.fileno()).lines
         except OSError:
             return size
-        return Size(rows=pane + size.rows, columns=size.columns)
+        return Size(rows=min(size.rows, pane + self._rows), columns=size.columns)
 
     def report_rows(self, app: Application) -> None:
         """Ask the terminal for as many rows as the layout wants, after each render."""
