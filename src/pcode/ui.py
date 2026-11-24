@@ -5093,6 +5093,21 @@ def create_prompt(
             mouse_support=False,
             cpr_not_supported_callback=session.app.cpr_not_supported_callback,
         )
+        app = session.app
+
+        def repaint_docked() -> None:
+            # prompt_toolkit erases on a resize and paints on a later pass,
+            # leaving the cursor parked at the top in between. Full screen
+            # needs no erase: repaint whole, at once, as one frame.
+            if not app._is_running:
+                return
+            app.output.write_raw(SYNC_START)
+            app.renderer.reset(leave_alternate_screen=False)
+            app._redraw()
+            app.output.write_raw(SYNC_END)
+            app.output.flush()
+
+        app._on_resize = repaint_docked
     elif transcript is None or not transcript.replays_on_resize:
         install_reflow_renderer(session.app)
     elif smooth_scroll.worth_asking():
@@ -5558,8 +5573,12 @@ class Transcript:
             return None
         else:
             background = self.palette.surface
-        if dock.active() is not None:
-            return background, background
+        if (docked := dock.active()) is not None:
+            # SPIKE: one raised surface: the dock's own background (`Dock.tint`)
+            # and every box in it share the lifted shade.
+            lifted = frame_shade(background, theme)
+            docked.tint = lifted
+            return lifted, lifted
         return frame_shade(background, theme), header_shade(background, theme)
 
     @property

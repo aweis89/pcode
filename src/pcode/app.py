@@ -3249,6 +3249,9 @@ class PreviewApp:
             terminal = session.app.output.fileno()
         except NotImplementedError, OSError, ValueError:
             terminal = None
+        if docked is not None:
+            # SPIKE: title, progress and session id belong to the pane, not the dock.
+            terminal = sys.stdout.fileno()
         if terminal is not None:
             mode = load_preferences().get("terminal_progress", "auto")
             self._progress = TabProgress(self.activity, terminal, mode)
@@ -3268,8 +3271,10 @@ class PreviewApp:
             if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
                 items.append(drawer.PaneSession(self.active_session_id, terminal))
             self._reconciler = Reconciler(items)
+            # SPIKE: not while docked: the dock's background is pcode's own tint
+            # (`Dock.tint`), and reading it back would lift it again each time.
             self._appearance = AppearanceWatch(
-                terminal, active=lambda: self.transcript.theme == "auto"
+                terminal, active=lambda: self.transcript.theme == "auto" and docked is None
             )
 
         async def watch_branch():

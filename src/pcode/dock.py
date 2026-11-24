@@ -71,6 +71,10 @@ class Dock:
         self.app: Application | None = None
         self._rows = 0
         self._termios = None
+        # The dock's background, `#rrggbb`: a shade lifted off the pane's
+        # (`Transcript.frame_shades` sets it), sent before the next frame.
+        self.tint: str | None = None
+        self._sent_tint: str | None = None
 
     # The editor's application, once it runs.
 
@@ -156,6 +160,12 @@ class Dock:
             size = self.layout_size(app.output.get_size())
             wanted = root.preferred_height(size.columns, size.rows).preferred
         wanted = max(1, min(MAX_ROWS, wanted))
+        if self.tint != self._sent_tint and self.tint is not None:
+            self._sent_tint = self.tint
+            # OSC 11: the dock terminal's default background, its padding included.
+            app.output.write_raw(f"\x1b]11;{self.tint}\x1b\\")
+            app.output.flush()
+            app.invalidate()
         if wanted != self._rows:
             self._rows = wanted
             app.output.write_raw(_apc(f"dock-rows;{wanted}"))
