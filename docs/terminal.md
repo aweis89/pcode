@@ -98,7 +98,8 @@ iTerm2's *Treat ambiguous-width characters as double width*). Under tmux that
 measures tmux's own widths rather than the terminal's, so set `glyphs ascii`
 there yourself. `glyphs unicode` keeps standard Unicode symbols regardless, and
 `glyphs nerd` forces Nerd Font icons (used automatically in Ghostty, which embeds
-them) when you have a Nerd Font configured in another terminal or tmux.
+them) when you have a Nerd Font configured in another terminal or tmux; see
+[Nerd Font icons in iTerm2](#nerd-font-icons) for a worked setup.
 
 **Colors look blotchy, or the editor box has lines instead of shading.** pcode
 uses 24-bit color when the terminal says so (`COLORTERM=truecolor`), when it is
@@ -151,6 +152,32 @@ In a Dynamic Profile the progress bar keys are `"Progress Bar Height"` and
 
 iTerm2's own *status bar* (Profiles > Session > Status bar enabled) is a
 separate feature; pcode doesn't write to it.
+
+### Nerd Font icons
+
+pcode only uses Nerd Font icons in iTerm2 when you ask for them, since it
+can't tell which font a profile draws with. You don't have to give up your
+text font. iTerm2 can draw just the icons from a symbols-only Nerd Font:
+
+1. Install the font: `brew install --cask font-symbols-only-nerd-font`.
+2. In **Settings > Profiles > Text**, turn on **Use a different font for
+   non-ASCII text** and pick **Symbols Nerd Font Mono** at the same size as
+   your regular font. The Mono variant keeps each icon to one cell, so it
+   doesn't spill into the next column.
+3. Check it in a new tab. Each of these should draw as an icon, not `?` or an
+   empty box:
+
+    ```sh
+    printf '\uea85 \uea6d \uea73 \uea7b \uec1e \uf4bc \ueba4 \ueab2 \uea76 \U000f0a9e\n'
+    ```
+
+4. Run `pcode config set glyphs nerd`, then restart pcode (it reads `glyphs`
+   at launch).
+
+If only some of them draw, macOS is borrowing those few from another
+installed font, and the non-ASCII font isn't in use. In a Dynamic Profile the
+same settings are `"Use Non-ASCII Font": true` and `"Non Ascii Font":
+"SymbolsNFM 16"` (the font's PostScript name and point size).
 
 ## tmux
 
