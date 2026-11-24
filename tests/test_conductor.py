@@ -23,7 +23,7 @@ from pcode import remote_profile
 from pcode.agent import create_agent
 from pcode.aside_guard import AsideGuard
 from pcode.ext import BUNDLED_DIR, Extension, ExtensionUI, load_extension
-from pcode.host import SessionHost
+from pcode.host import SessionHost, _Client, _Owner
 from pcode.host_protocol import HostEntry, remember_stopped, write_entry
 from pcode.live import AgentRuntime
 from pcode.remote import request_host
@@ -445,7 +445,7 @@ def test_conductor_inspect_ask_send_wait_and_stop(tmp_path):
 
                     # send_to_host (wait=False) + wait_for_hosts
                     queued = await tools["send_to_host"](ctx, "h-run", "Do the thing", wait=False)
-                    assert queued["status"] == "queued"
+                    assert queued["status"] == "sent"
                     assert queued["attached"] == 0
 
                     # Unknown selector in wait_for_hosts raises ModelRetry (not fake "stopped").
@@ -528,7 +528,7 @@ def test_conductor_inspect_ask_send_wait_and_stop(tmp_path):
     asyncio.run(run())
 
 
-def test_send_to_host_steers_and_interrupts_running_turn(tmp_path):
+def test_send_to_host_steers_running_turn_and_waits_for_it(tmp_path):
     async def run():
         async with _short_host_dir() as directory:
             gate = asyncio.Event()
@@ -540,62 +540,64 @@ def test_send_to_host_steers_and_interrupts_running_turn(tmp_path):
                 with patch.object(mod, "_current_pid", return_value=-1):
                     ctx = _ctx("parent-99999999")
                     send = tools["send_to_host"]
-
-                    with pytest.raises(ModelRetry, match="wait_for_hosts"):
-                        await send(ctx, "h-steer", "nudge", wait=True, mode="steering")
-                    with pytest.raises(ModelRetry, match="mode"):
-                        await send(ctx, "h-steer", "nudge", mode="sideways")
-                    with pytest.raises(RemoteError, match="mode must be"):
-                        await request_host(entry, "send", "nudge", "sideways")
-
-                    await send(ctx, "h-steer", "long turn")
-                    while not host.controller.turn_running():
-                        await asyncio.sleep(0.02)
-                    steered = await send(ctx, "h-steer", "focus on tests", mode="steering")
-                    assert steered["status"] == "sent"
-                    assert steered["mode"] == "steering"
-                    # Waiting to join the running turn, not queued behind it.
-                    assert host.controller.prompts.steering() == 1
-
-                    gate.set()
-                    done = await tools["wait_for_hosts"](ctx, ["h-steer"], timeout=10.0)
-                    assert done["timed_out"] is False
-                    sent = [
-                        part.content
-                        for message in host.controller.runtime.history
-                        for part in message.parts
-                        if isinstance(getattr(part, "content", None), str)
-                    ]
-                    assert any("focus on tests" in text for text in sent)
-
-                    gate.clear()
-                    await send(ctx, "h-steer", "another long turn")
-                    while not host.controller.turn_running():
-                        await asyncio.sleep(0.02)
                     controller = host.controller
+
+                    with pytest.raises(RemoteError, match="mode must be"):
+                        await request_host(entry, "send", "nudge", "interrupt")
+
+                    sent = await send(ctx, "h-steer", "long turn")
+                    assert sent["status"] == "sent"
+                    while not controller.turn_running():
+                        await asyncio.sleep(0.02)
+
                     submitted = []
-                    real_submit = controller.submit
+                    turns = []
+                    real_submit, real_turn_ended = controller.submit, controller.turn_ended
 
                     def record_submit(text, mode, **kwargs):
-                        submitted.append((text, mode, controller.turn_running()))
+                        submitted.append((mode, controller.turn_running()))
                         real_submit(text, mode, **kwargs)
 
+                    def record_turn_ended(success):
+                        turns.append(success)
+                        real_turn_ended(success)
+
                     controller.submit = record_submit
-                    gated_turn = controller.live_task
-                    task = asyncio.create_task(
-                        send(ctx, "h-steer", "stop and do this", wait=True, mode="interrupt")
+                    controller.turn_ended = record_turn_ended
+
+                    # Sent mid-turn, it joins that turn rather than queueing behind it,
+                    # and wait=True follows the turn it joined to its reply.
+                    waited = asyncio.create_task(
+                        send(ctx, "h-steer", "focus on tests", wait=True, timeout=10)
                     )
                     while not submitted:
                         await asyncio.sleep(0.02)
-                    # It reached the host while the gated turn still ran, and cancelled it.
-                    assert submitted == [("stop and do this", "interrupt", True)]
-                    await asyncio.wait_for(asyncio.wait({gated_turn}), timeout=5.0)
-                    # Ended with its model request still gated: cut short, not finished.
-                    assert gated_turn.result() is False
+                    assert submitted == [("steering", True)]
                     gate.set()
-                    interrupted = await asyncio.wait_for(task, timeout=10.0)
-                    assert interrupted["status"] == "completed"
-                    assert interrupted["reply"] == "ok"
+                    result = await asyncio.wait_for(waited, timeout=10.0)
+                    assert result["status"] == "completed"
+                    assert result["reply"] == "ok"
+                    # Only the gated turn ended: the steering message ran no turn of its own.
+                    assert turns == [True]
+                    controller.submit, controller.turn_ended = real_submit, real_turn_ended
+                    texts = [
+                        part.content
+                        for message in controller.runtime.history
+                        for part in message.parts
+                        if isinstance(getattr(part, "content", None), str)
+                    ]
+                    assert any("focus on tests" in text for text in texts)
+
+                    # A host older than the mode argument still takes the prompt, queued.
+                    def old_send(client, text):
+                        client.become_headless()
+                        controller.submit(text, "queue", owner=_Owner(client))
+
+                    with patch.object(_Client, "send", old_send):
+                        queued = await send(ctx, "h-steer", "old host, no wait")
+                        assert queued["status"] == "sent"
+                        old = await send(ctx, "h-steer", "old host", wait=True, timeout=10)
+                        assert old["status"] == "completed"
 
     asyncio.run(run())
 
@@ -729,7 +731,7 @@ def test_conductor_auto_resumes_real_historical_session(tmp_path):
             try:
                 queued = await tools["send_to_host"](ctx, sid, "Hello?", wait=False)
                 assert queued["resumed"] is True
-                assert queued["status"] == "queued"
+                assert queued["status"] == "sent"
                 assert queued["session_id"] == sid
                 assert Path(queued["workspace"]).resolve() == ws.resolve()
                 assert "env_note" in queued

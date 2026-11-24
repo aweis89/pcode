@@ -195,8 +195,7 @@ async def host_call(
     try:
         return await controller.peer.request(method, text, *args)
     except RemoteError as error:
-        # A host older than the extra arguments refuses them with a TypeError.
-        if error.type_name == "PermissionError" or (args and error.type_name == "TypeError"):
+        if error.type_name == "PermissionError":
             raise HostError(
                 "The session host runs older pcode; /restart it to send it messages headlessly."
             ) from error
@@ -216,11 +215,19 @@ async def submit(
     """Queue `text` behind whatever the host is doing, and wait for its turn to end.
 
     `on_queued` is called once the host holds the message, so a caller that
-    wants to cancel it knows a cancel from then on reaches it. `mode="interrupt"`
-    cancels the running turn instead of waiting for it; the default is sent
-    without a mode so hosts older than the argument still take it.
+    wants to cancel it knows a cancel from then on reaches it. With
+    `mode="steering"` it joins a running turn instead, and waits for that one.
     """
-    await host_call(controller, "send", text, view, *(() if mode == "queue" else (mode,)))
+    if mode == "queue":
+        await host_call(controller, "send", text, view)
+    else:
+        try:
+            await host_call(controller, "send", text, view, mode)
+        except RemoteError as error:
+            if error.type_name != "TypeError":
+                raise
+            # A host older than the mode argument: it can only queue.
+            await host_call(controller, "send", text, view)
     if on_queued is not None:
         on_queued()
     await view.finished.wait()
@@ -440,8 +447,8 @@ async def send(
     on_queued=None,
     mode: str = "queue",
 ) -> TurnResult:
-    """Send `text` as its own turn (queued behind the host's work, or interrupting
-    it with `mode="interrupt"`); wait for it to end."""
+    """Send `text` as its own turn (queued behind the host's work), or with
+    `mode="steering"` into the running one; wait for that turn to end."""
     view = CollectView()
     async with attached(entry, view) as controller:
         if controller.startup_error is not None:

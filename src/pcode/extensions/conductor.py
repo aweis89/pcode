@@ -45,9 +45,8 @@ PARENT_INSTRUCTIONS = (
     "conversation stays concise. Use ask_host for a side question against a session's full "
     "context without mutating its main thread (ask it to inspect/report only if you want no "
     "workspace edits, as side questions still have normal workspace tools), send_to_host "
-    "(with wait=False + wait_for_hosts for parallel fan-out) to send work, "
-    "send_to_host(mode='steering') to course-correct a session mid-turn, and stop_host to "
-    "close finished idle sessions."
+    "(with wait=False + wait_for_hosts for parallel fan-out) to send work or steer a session "
+    "mid-turn, and stop_host to close finished idle sessions."
 )
 
 WORKER_INSTRUCTIONS = (
@@ -59,7 +58,6 @@ PARENT_ONLY_TOOLS = frozenset({"ask_host", "send_to_host", "wait_for_hosts", "st
 
 StateFilter = Literal["all", "working", "idle", "stopped"]
 WaitMode = Literal["all", "any"]
-SendMode = Literal["queue", "steering", "interrupt"]
 
 # Serialize concurrent auto-resumes for the same saved session ID so parallel
 # tool calls (e.g. ask_host + send_to_host) spawn at most one host.
@@ -453,10 +451,11 @@ def setup(pcode) -> None:
         prompt: str,
         wait: bool = False,
         timeout: float = 120.0,
-        mode: SendMode = "queue",
     ) -> dict:
         """Send a prompt to another session host's main conversation.
 
+        If the host is mid-turn, the prompt steers that turn: it joins at the turn's
+        next model request, after any tools in flight. Otherwise it starts a turn.
         Accepts a running host ID or a saved session ID (auto-resuming in its workspace;
         auto-resumed hosts inherit this conductor's environment).
         Use `wait=False` (default) to kick off work in parallel, then `wait_for_hosts`.
@@ -464,14 +463,9 @@ def setup(pcode) -> None:
         Args:
             target: Running host ID or saved session ID (or unique prefix).
             prompt: The prompt to send to the target session.
-            wait: Wait for the turn to finish and return its reply (default False).
-                Not available with `mode='steering'`; use `wait_for_hosts` instead.
+            wait: Wait for the turn it lands in to finish and return its reply
+                (default False).
             timeout: Seconds to wait when `wait=True`, 1-1800.
-            mode: `queue` (default) runs it as a turn after the current one;
-                `steering` injects it into the running turn at its next model
-                request (mid-turn course correction; starts a turn if idle);
-                `interrupt` cancels the running turn and everything queued, then
-                runs this prompt.
         """
         if _in_worker(ctx):
             raise ToolFailed("send_to_host is only available to the parent session, not workers.")
@@ -480,14 +474,6 @@ def setup(pcode) -> None:
             raise ModelRetry("Provide a non-empty prompt.")
         if not 1 <= timeout <= 1800:
             raise ModelRetry("Provide timeout between 1 and 1800 seconds.")
-        if mode not in ("queue", "steering", "interrupt"):
-            raise ModelRetry("Provide mode 'queue', 'steering', or 'interrupt'.")
-        if wait and mode == "steering":
-            # Steering joins someone else's turn, so there is no turn of its own to wait on.
-            raise ModelRetry(
-                "wait=True is not available with mode='steering'; send with wait=False, "
-                "then use wait_for_hosts."
-            )
         my_session = _self_session(ctx)
         entry, resumed = await _ensure_host(target, session_dir=session_dir, my_session=my_session)
 
@@ -499,22 +485,21 @@ def setup(pcode) -> None:
 
         if not wait:
             try:
-                # The default goes without a mode so hosts older than the argument take it.
-                mode_args = () if mode == "queue" else (mode,)
-                await remote.request_host(entry, "send", cleaned, *mode_args, timeout=15.0)
+                try:
+                    await remote.request_host(entry, "send", cleaned, "steering", timeout=15.0)
+                except RemoteError as error:
+                    if error.type_name != "TypeError":
+                        raise
+                    # A host older than the mode argument: it can only queue.
+                    await remote.request_host(entry, "send", cleaned, timeout=15.0)
             except RemoteError as error:
-                if error.type_name == "PermissionError" or (
-                    mode != "queue" and error.type_name == "TypeError"
-                ):
+                if error.type_name == "PermissionError":
                     raise ToolFailed(_older_host_message(entry, "send")) from None
                 raise ToolFailed(f"Host {entry.id} rejected prompt: {error}") from None
             except (HostError, OSError) as error:
                 raise ToolFailed(f"Could not send to host {entry.id}: {error}") from None
             result = {
-                # Steering into an idle host starts a turn, and interrupting one cancels
-                # nothing, so the tool cannot say which happened; it reports the send.
-                "status": "queued" if mode == "queue" else "sent",
-                "mode": mode,
+                "status": "sent",
                 "host_id": entry.id,
                 "session_id": entry.session_id,
                 "workspace": entry.workspace,
@@ -536,7 +521,8 @@ def setup(pcode) -> None:
 
         try:
             turn = await asyncio.wait_for(
-                gateway_send(entry, cleaned, on_queued=mark_queued, mode=mode), timeout=timeout
+                gateway_send(entry, cleaned, on_queued=mark_queued, mode="steering"),
+                timeout=timeout,
             )
         except TimeoutError:
             status = "still_running" if queued else "timed_out_before_queue"

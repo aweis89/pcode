@@ -232,7 +232,8 @@ STARTUP_FAILED = "Agent startup failed; choose another model with /model or rest
 
 class MessageOwner(Protocol):
     """Whoever waits on one queued message (a headless caller): told when its turn
-    starts, or that it never will. Either is said exactly once."""
+    starts, or that it never will. Either is said exactly once. A steering message
+    joining a running turn "starts" there: the rest of that turn is its turn."""
 
     def started(self) -> None: ...
     def dropped(self) -> None: ...
@@ -346,16 +347,19 @@ class PromptQueue:
 
     def take_steering(self, limit: int | None = None) -> list[Steer]:
         """Remove and return the current steering messages, the first `limit` of
-        them if given; everything else keeps its place."""
+        them if given; everything else keeps its place. Their owners are told
+        they started, so a headless sender follows the turn it joined."""
         messages = []
         for item in self._drain():
-            generation, text, mode, _owner, sent_at = item
+            generation, text, mode, owner, sent_at = item
             if (
                 generation == self.generation
                 and mode == "steering"
                 and (limit is None or len(messages) < limit)
             ):
                 messages.append(Steer(text, sent_at))
+                if owner is not None:
+                    owner.started()
                 index = next(
                     i
                     for i, queued in enumerate(
