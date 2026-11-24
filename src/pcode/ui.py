@@ -18,6 +18,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, get_app_or_none
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
@@ -49,7 +50,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode import glyphs, kitty_spinner, smooth_scroll
+from pcode import dock, glyphs, kitty_spinner, smooth_scroll
 from pcode.aside import typed_word
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
@@ -1851,7 +1852,8 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     editor paint after a scrollback write.
     """
     # Offline harnesses pass a bare stand-in for the app; nothing to suspend.
-    if not isinstance(app, Application) or not app._is_running:
+    # SPIKE: a docked editor is on its own terminal; scrollback never covers it.
+    if not isinstance(app, Application) or not app._is_running or dock.active():
         yield Handoff(None)
         return
     # Chain to any handoff already in progress, as in_terminal does.
@@ -2693,7 +2695,7 @@ class TerminalOutput:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
                 if self.pending:
-                    width = max(1, self.app.output.get_size().columns)
+                    width = max(1, self._screen_size().columns)
                     self._enqueue(self._take_pending(), width)
                 if self.gliding:
                     # The terminal paces and reveals the batch itself.
@@ -2711,7 +2713,7 @@ class TerminalOutput:
                     async with suspended_editor(self.app, atomic=True) as handoff:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
-                        width = max(1, self.app.output.get_size().columns)
+                        width = max(1, self._screen_size().columns)
                         rebuilt = keep_place = False
                         marks_before = 0
                         if self._regenerate is not None:
@@ -3184,8 +3186,15 @@ class TerminalOutput:
             self.app.after_render -= self._after_render
             self._declare(None)
 
+    def _screen_size(self):
+        """The transcript's terminal: the editor's, unless the editor is docked (SPIKE)."""
+        if dock.active() is not None:
+            columns, rows = os.get_terminal_size(self.console.file.fileno())
+            return Size(rows=rows, columns=columns)
+        return self.app.output.get_size()
+
     async def _run_frames(self) -> None:
-        size = self.app.output.get_size()
+        size = self._screen_size()
         resized_at = None
         while True:
             # Poll only when resize replay is enabled. Debounce resize storms;
@@ -3203,7 +3212,10 @@ class TerminalOutput:
                     pass
                 # Height changes can scroll pieces of the live preview into
                 # history too; replay must clear those just like width reflow.
-                current = self.app.output.get_size()
+                current = self._screen_size()
+                if dock.active() is not None and current.columns == size.columns:
+                    # SPIKE: the dock growing shortens the pane; only a width change reflows.
+                    current = size
                 if current != size:
                     size, resized_at = current, monotonic()
                 elif resized_at is not None and monotonic() - resized_at >= 0.25:
@@ -4632,13 +4644,14 @@ class PromptLayout:
             shortcut_hint(self.shortcuts),
             self.editor_frame(),
         ]
-        if self.transcript is not None:
+        docked = dock.active() is not None
+        if self.transcript is not None and not docked:
             children[:0] = [self.typing(), self.glide_reserve(), Window()]
         if self.session.bottom_toolbar is not None:
             children.append(self.bottom_toolbar())
         self.root = _MeasuredSplit(
             children,
-            align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
+            align=VerticalAlign.JUSTIFY if self.transcript and not docked else VerticalAlign.BOTTOM,
         )
         return Layout(self.root, focused_element=self.editor)
 
@@ -4709,6 +4722,8 @@ class PromptLayout:
         self.sync_native_toast(app)
         self.replay_after_menu(app)
         self.refill_after_shrink(app)
+        if (docked := dock.active()) is not None:
+            docked.report_rows(app)
 
     # The completion menu, where the terminal draws it (`native_completions`).
 
@@ -4718,6 +4733,9 @@ class PromptLayout:
         from pcode.theme import native_completion_supported
 
         if self.transcript is None or not native_completion_supported() or not overlay_popups():
+            return None
+        if dock.active() is not None:
+            # SPIKE: the list would hang from the dock's cursor, outside the dock's bounds.
             return None
 
         def write_raw(text: str) -> None:
@@ -5049,13 +5067,26 @@ def create_prompt(
         # The app runs for the whole session, redrawn by streaming output and
         # animation; cap that at the paced output's frame rate.
         session.app.min_redraw_interval = 1 / 30
-    install_resize_repaint(session.app)
+    docked = transcript is not None and dock.active() is not None
+    if not docked:
+        install_resize_repaint(session.app)
     session.app.before_render += prompt_layout.before_render
     session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:
         # Allow terminal escape sequences to arrive, without a half-second pause.
         session.app.ttimeoutlen = 0.1
-    if transcript is None or not transcript.replays_on_resize:
+    if docked:
+        # SPIKE: the dock is the editor's alone, so draw it full screen there:
+        # no cursor reports, no rows above it to keep track of.
+        session.app.full_screen = True
+        session.app.renderer = Renderer(
+            session.app._merged_style,
+            session.app.output,
+            full_screen=True,
+            mouse_support=False,
+            cpr_not_supported_callback=session.app.cpr_not_supported_callback,
+        )
+    elif transcript is None or not transcript.replays_on_resize:
         install_reflow_renderer(session.app)
     elif smooth_scroll.worth_asking():
         install_nowrap_editor(session.app)
@@ -5182,6 +5213,9 @@ class Transcript:
             )
             output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
+            if dock.active() is not None:
+                # SPIKE: both draw into the live panel, which is on the dock now.
+                output.gliding = output.typed = False
             output.marks = self.console.is_terminal and marks_supported()
             output.park = output.marks and self.reader_park == "on"
             if self.replays_on_resize:

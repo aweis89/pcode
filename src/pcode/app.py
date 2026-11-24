@@ -3192,8 +3192,14 @@ class PreviewApp:
             load_preferences(),
             supported=self.transcript.console.is_terminal and kitty_graphics_supported(),
         )
+        from pcode import dock
+
+        # SPIKE: the editor on a terminal docked under this one (`PCODE_DOCK=1`).
+        docked = await dock.open_dock() if dock.requested() else None
+        dock_io = {"input": docked.input, "output": docked.output} if docked else {}
         session = create_prompt(
             self.registry,
+            **dock_io,
             activity=self.activity,
             transcript=self.transcript,
             workspace=lambda: self.workspace,
@@ -3333,6 +3339,8 @@ class PreviewApp:
                 # Queued like a typed message: it waits for the backend the same
                 # way, and Ctrl+C clears it the same way.
                 submit(self.initial_prompt)
+            if docked is not None:
+                docked.attach(session.app)
 
         try:
             await session.app.run_async(pre_run=start)
@@ -3341,6 +3349,8 @@ class PreviewApp:
         finally:
             # Whatever is still unsent, without waiting for the next save.
             drafts.save()
+            if docked is not None:
+                docked.close()
             if stalls is not None:
                 stalls.stop()
             if self._progress is not None:
