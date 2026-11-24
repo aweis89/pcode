@@ -205,6 +205,15 @@ async def host_call(
         return None
 
 
+def older_send(error: RemoteError) -> bool:
+    """Whether `send` failed because the host predates its mode argument.
+
+    Only the call's own arity error counts: a TypeError from deeper in a newer
+    host may come after the message was queued, and retrying would send it twice.
+    """
+    return error.type_name == "TypeError" and "positional argument" in str(error)
+
+
 async def submit(
     controller: RemoteController,
     text: str,
@@ -224,7 +233,7 @@ async def submit(
         try:
             await host_call(controller, "send", text, view, mode)
         except RemoteError as error:
-            if error.type_name != "TypeError":
+            if not older_send(error):
                 raise
             # A host older than the mode argument: it can only queue.
             await host_call(controller, "send", text, view)

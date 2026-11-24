@@ -1075,8 +1075,8 @@ class SessionController:
         `steering` joins the running turn at its next request, `queue` waits
         for it to end, `interrupt` cancels it, and `shell` runs a `!command`
         in turn, never as steering: its result rides the next request rather
-        than being spliced into a running one. `owner` hears when it starts,
-        or that it was dropped; a steering message never starts a turn.
+        than being spliced into a running one. `owner` hears when it starts
+        (for steering, when it joins a running turn), or that it was dropped.
         """
         if mode == "steering" and prompt_target(text)[0] is not None:
             # A turn cannot change models mid-request: a prompt naming one gets

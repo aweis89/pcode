@@ -32,6 +32,7 @@ from pydantic_ai.tools import ToolDefinition
 from pcode import remote, remote_profile
 from pcode.aside import ASIDE_TIMEOUT_SECONDS
 from pcode.conversation_ids import base_conversation
+from pcode.gateway import older_send
 from pcode.host_protocol import HostEntry, host_dir, list_stopped
 from pcode.host_protocol import list_hosts as discover_hosts
 from pcode.remote import HostError
@@ -484,14 +485,16 @@ def setup(pcode) -> None:
         )
 
         if not wait:
+            status = "sent"
             try:
                 try:
                     await remote.request_host(entry, "send", cleaned, "steering", timeout=15.0)
                 except RemoteError as error:
-                    if error.type_name != "TypeError":
+                    if not older_send(error):
                         raise
                     # A host older than the mode argument: it can only queue.
                     await remote.request_host(entry, "send", cleaned, timeout=15.0)
+                    status = "queued"
             except RemoteError as error:
                 if error.type_name == "PermissionError":
                     raise ToolFailed(_older_host_message(entry, "send")) from None
@@ -499,7 +502,7 @@ def setup(pcode) -> None:
             except (HostError, OSError) as error:
                 raise ToolFailed(f"Could not send to host {entry.id}: {error}") from None
             result = {
-                "status": "sent",
+                "status": status,
                 "host_id": entry.id,
                 "session_id": entry.session_id,
                 "workspace": entry.workspace,

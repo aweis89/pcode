@@ -595,7 +595,7 @@ def test_send_to_host_steers_running_turn_and_waits_for_it(tmp_path):
 
                     with patch.object(_Client, "send", old_send):
                         queued = await send(ctx, "h-steer", "old host, no wait")
-                        assert queued["status"] == "sent"
+                        assert queued["status"] == "queued"
                         old = await send(ctx, "h-steer", "old host", wait=True, timeout=10)
                         assert old["status"] == "completed"
 
