@@ -442,6 +442,12 @@ SETTINGS = {
         positive_integer=True,
         description="claude: models: minutes a finished Claude Code process is kept warm",
     ),
+    "claude_rate_limit_notices": Setting(
+        "on",
+        ("on", "off"),
+        description="claude: models: notice when plan usage nears or hits a limit, "
+        "and when it resets",
+    ),
     "desktop_notifications": Setting(
         "on",
         ("on", "off"),

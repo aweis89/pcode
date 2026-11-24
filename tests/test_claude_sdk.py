@@ -20,6 +20,8 @@ import anyio
 import pytest
 from claude_agent_sdk.types import (
     AssistantMessage,
+    RateLimitEvent,
+    RateLimitInfo,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -42,6 +44,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestParameters
 
 import pcode.claude_sdk as claude
+from pcode.claude_sdk import rate_limits as claude_rate_limits
 from pcode.claude_sdk import resume as claude_resume
 from pcode.claude_sdk import session as claude_session
 from pcode.claude_sdk import session_pool as claude_pool
@@ -74,6 +77,8 @@ class World:
     ids: itertools.count = field(default_factory=lambda: itertools.count(1))
     # Transcript entries only, so tests can name them; stream events use `ids`.
     uuids: itertools.count = field(default_factory=lambda: itertools.count(1))
+    # Plan usage changes the CLI reports at the start of each turn.
+    rate_limits: list = field(default_factory=list)
 
 
 class FakeCLI:
@@ -172,6 +177,8 @@ class FakeCLI:
 
     async def _run(self, content: list[dict]) -> None:
         self.out.put_nowait(SystemMessage("init", {"session_id": self.session_id}))
+        for info in self.world.rate_limits:
+            self.out.put_nowait(RateLimitEvent(info, self._uuid(), self.session_id))
         while True:
             self.requests.append(content)
             reply = self.world.replies.pop(0)
@@ -450,6 +457,19 @@ def test_tool_rounds_and_turns_share_one_process(world):
     call = next(p for p in first.all_messages()[1].parts if isinstance(p, ToolCallPart))
     assert call.tool_name == "lookup"
     assert first.usage.cache_read_tokens == 1800
+
+
+def test_rate_limit_changes_reach_the_notifier_without_breaking_the_turn(world, monkeypatch):
+    seen: list[str] = []
+    monkeypatch.setattr(claude_rate_limits, "_last", None)
+    monkeypatch.setattr(claude_rate_limits, "_notifier", seen.append)
+    agent, _ = make_agent()
+    world.rate_limits = [
+        RateLimitInfo(status="allowed_warning", rate_limit_type="five_hour", utilization=0.9)
+    ]
+    world.replies = [[("text", "ok")]]
+    assert run(lambda: agent.run("hi")).output == "ok"
+    assert seen == ["Claude: 90% of 5-hour limit used."]
 
 
 def test_process_runs_pcode_prompt_and_tools_only(world):

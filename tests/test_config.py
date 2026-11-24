@@ -58,6 +58,7 @@ def test_defaults_and_path_do_not_create_files():
         "email_max_inputs": "100",
         "claude_idle_processes": "1",
         "claude_idle_minutes": "10",
+        "claude_rate_limit_notices": "on",
         "desktop_notifications": "on",
         # conftest's test defaults; both ship "on".
         "session_naming": "off",

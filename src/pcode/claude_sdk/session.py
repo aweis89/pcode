@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic_ai.exceptions import ModelAPIError
 
+from pcode.claude_sdk import rate_limits
 from pcode.claude_sdk.cli import CLI_ENV
 from pcode.claude_sdk.errors import (
     ClaudeConnectionError,
@@ -461,6 +462,7 @@ class ClaudeSession:
         """Drain the SDK (its buffer holds only 100 messages) and track the turn."""
         from claude_agent_sdk.types import (
             AssistantMessage,
+            RateLimitEvent,
             ResultMessage,
             StreamEvent,
             SystemMessage,
@@ -527,6 +529,12 @@ class ClaudeSession:
                         self._queue.put_nowait(("result", message, None))
                 elif isinstance(message, SystemMessage) and message.subtype == "init":
                     self.cli_session_id = message.data.get("session_id") or self.cli_session_id
+                elif isinstance(message, RateLimitEvent):
+                    # A notice is a courtesy: it must never end the turn.
+                    try:
+                        rate_limits.report(message.rate_limit_info)
+                    except Exception:
+                        logger.warning("Claude rate-limit notice failed", exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception as cause:

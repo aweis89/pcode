@@ -35,6 +35,7 @@ from pcode.aside import (
     prompt_target,
     summary_message,
 )
+from pcode.claude_sdk import rate_limits
 from pcode.commands import Command, CommandRegistry
 from pcode.error_report import error_message
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
@@ -588,6 +589,9 @@ class SessionController:
         self.asides.on_failure = self.record_aside_failure
         self.asides.on_update = lambda aside: self.view.aside_changed(aside)
         self.asides.on_settle = self.aside_settled
+        # Plan usage warnings from `claude:` models; the limits are the
+        # account's, so one controller per process speaks for all of them.
+        rate_limits.set_notifier(self.rate_limit_notice)
         # Journaling settled side questions, one at a time and in the order
         # they settled, so a follow-up's node always lands after its parent's.
         self._side_lock = asyncio.Lock()
@@ -3378,6 +3382,15 @@ class SessionController:
         if session is None:
             return ""
         return session.info.name or session.info.title or ""
+
+    def rate_limit_notice(self, text: str) -> None:
+        """Flash a `claude:` plan-usage change unless `claude_rate_limit_notices` is off."""
+        if not self.running or self.superseded:
+            return
+        setting = SETTINGS["claude_rate_limit_notices"]
+        if load_preferences().get("claude_rate_limit_notices", setting.default) != "on":
+            return
+        self.view.flash(text)
 
     def start_naming(self, prompt: str | None = None) -> None:
         """Ask for a title in the background, once, for a saved session that has none.

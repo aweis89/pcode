@@ -175,6 +175,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `model_providers` | empty | `,`-separated providers `/model` lists; empty shows every provider you're signed in to or have a key for |
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
+| `claude_rate_limit_notices` | `on` | `on` or `off`: a notice when your Claude plan usage nears or hits a limit (5-hour, weekly), and when it resets |
 | `retry_attempts` | `3` | Whole number, automatic retries after a dropped connection or streamed overload; `0` disables. See [retries](sessions.md#retries-and-continue) |
 
 ### Editor and keys
