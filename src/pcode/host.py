@@ -46,6 +46,7 @@ from pcode.host_protocol import (
     write_entry,
 )
 from pcode.jobs import registry as job_registry
+from pcode.preferences import SEND_MODES
 from pcode.rpc import Peer
 from pcode.runtime import CommandOutput, EditPreview, TextDelta, ThinkingDelta
 from pcode.ui import NOTICE_SECONDS, Activity
@@ -184,11 +185,19 @@ class _Client:
 
     # Host calls for a caller with no editor to watch
 
-    def send(self, text: str) -> None:
-        """Queue `text` as a turn of its own; the caller hears when it starts (see `_Owner`)."""
+    def send(self, text: str, mode: str = "queue") -> None:
+        """Send `text` the way `mode` says; the caller hears when a turn of its own starts.
+
+        `queue` waits for the running turn, `interrupt` cancels it, and
+        `steering` joins it at its next model request (or starts a turn if
+        the session is idle). A message absorbed as steering starts no turn,
+        so its owner never hears `message_started` (see `_Owner`).
+        """
+        if mode not in SEND_MODES:
+            raise ValueError(f"mode must be one of {', '.join(SEND_MODES)}, not {mode!r}")
         self.become_headless()
         self.host.active_at = time.monotonic()
-        self.host.controller.submit(text, "queue", owner=_Owner(self))
+        self.host.controller.submit(text, mode, owner=_Owner(self))
 
     async def run(self, text: str) -> bool:
         """`command`, returning once it has run, and whether it did.

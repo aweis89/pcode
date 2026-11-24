@@ -528,6 +528,61 @@ def test_conductor_inspect_ask_send_wait_and_stop(tmp_path):
     asyncio.run(run())
 
 
+def test_send_to_host_steers_and_interrupts_running_turn(tmp_path):
+    async def run():
+        async with _short_host_dir() as directory:
+            gate = asyncio.Event()
+            async with _running_host(
+                tmp_path, directory, host_id="h-steer", reply_text="ok", turn_gate=gate
+            ) as (host, entry):
+                loaded, tools = _load_conductor(tmp_path)
+                mod = _conductor_mod(loaded)
+                with patch.object(mod, "_current_pid", return_value=-1):
+                    ctx = _ctx("parent-99999999")
+                    send = tools["send_to_host"]
+
+                    with pytest.raises(ModelRetry, match="wait_for_hosts"):
+                        await send(ctx, "h-steer", "nudge", wait=True, mode="steering")
+                    with pytest.raises(ModelRetry, match="mode"):
+                        await send(ctx, "h-steer", "nudge", mode="sideways")
+                    with pytest.raises(RemoteError, match="mode must be"):
+                        await request_host(entry, "send", "nudge", "sideways")
+
+                    await send(ctx, "h-steer", "long turn")
+                    while not host.controller.turn_running():
+                        await asyncio.sleep(0.02)
+                    steered = await send(ctx, "h-steer", "focus on tests", mode="steering")
+                    assert steered["status"] == "steered"
+                    # Waiting to join the running turn, not queued behind it.
+                    assert host.controller.prompts.steering() == 1
+
+                    gate.set()
+                    done = await tools["wait_for_hosts"](ctx, ["h-steer"], timeout=10.0)
+                    assert done["timed_out"] is False
+                    sent = [
+                        part.content
+                        for message in host.controller.runtime.history
+                        for part in message.parts
+                        if isinstance(getattr(part, "content", None), str)
+                    ]
+                    assert any("focus on tests" in text for text in sent)
+
+                    gate.clear()
+                    await send(ctx, "h-steer", "another long turn")
+                    while not host.controller.turn_running():
+                        await asyncio.sleep(0.02)
+                    task = asyncio.create_task(
+                        send(ctx, "h-steer", "stop and do this", wait=True, mode="interrupt")
+                    )
+                    await asyncio.sleep(0.2)
+                    gate.set()
+                    interrupted = await asyncio.wait_for(task, timeout=10.0)
+                    assert interrupted["status"] == "completed"
+                    assert interrupted["reply"] == "ok"
+
+    asyncio.run(run())
+
+
 def test_conductor_concurrent_auto_resume_spawns_once(tmp_path):
     async def run():
         async with _short_host_dir() as directory:

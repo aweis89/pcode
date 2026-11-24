@@ -188,10 +188,12 @@ async def attached(entry: HostEntry, view: HeadlessView):
         await controller.detach()
 
 
-async def host_call(controller: RemoteController, method: str, text: str, view: HeadlessView):
+async def host_call(
+    controller: RemoteController, method: str, text: str, view: HeadlessView, *args
+):
     """A call only newer hosts have; None when the host went away (and has said so)."""
     try:
-        return await controller.peer.request(method, text)
+        return await controller.peer.request(method, text, *args)
     except RemoteError as error:
         if error.type_name == "PermissionError":
             raise HostError(
@@ -204,14 +206,20 @@ async def host_call(controller: RemoteController, method: str, text: str, view: 
 
 
 async def submit(
-    controller: RemoteController, text: str, view: HeadlessView, on_queued=None
+    controller: RemoteController,
+    text: str,
+    view: HeadlessView,
+    on_queued=None,
+    mode: str = "queue",
 ) -> None:
     """Queue `text` behind whatever the host is doing, and wait for its turn to end.
 
     `on_queued` is called once the host holds the message, so a caller that
-    wants to cancel it knows a cancel from then on reaches it.
+    wants to cancel it knows a cancel from then on reaches it. `mode="interrupt"`
+    cancels the running turn instead of waiting for it; the default is sent
+    without a mode so hosts older than the argument still take it.
     """
-    await host_call(controller, "send", text, view)
+    await host_call(controller, "send", text, view, *(() if mode == "queue" else (mode,)))
     if on_queued is not None:
         on_queued()
     await view.finished.wait()
@@ -424,14 +432,20 @@ def changes(workspace: str | Path, base: str | None = None) -> ChangeSummary:
 
 
 async def send(
-    entry: HostEntry, text: str, *, base: str | None = None, on_queued=None
+    entry: HostEntry,
+    text: str,
+    *,
+    base: str | None = None,
+    on_queued=None,
+    mode: str = "queue",
 ) -> TurnResult:
-    """Send `text` as its own turn (queued behind the host's work); wait for it to end."""
+    """Send `text` as its own turn (queued behind the host's work, or interrupting
+    it with `mode="interrupt"`); wait for it to end."""
     view = CollectView()
     async with attached(entry, view) as controller:
         if controller.startup_error is not None:
             return TurnResult("", FAILED, [str(controller.startup_error)])
-        await submit(controller, text, view, on_queued)
+        await submit(controller, text, view, on_queued, mode)
         if view.dropped and controller.startup_error is not None:
             view.notes.append(str(controller.startup_error))
     view.settle()
