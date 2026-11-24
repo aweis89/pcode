@@ -5101,7 +5101,9 @@ def create_prompt(
             # needs no erase: repaint whole, at once, as one frame.
             if not app._is_running:
                 return
-            app.output.write_raw(SYNC_START)
+            # Home and clear first: `reset` assumes the cursor is at the top
+            # left, and a paint from wherever it really is doubles the layout.
+            app.output.write_raw(SYNC_START + "\x1b[H\x1b[2J")
             app.renderer.reset(leave_alternate_screen=False)
             app._redraw()
             app.output.write_raw(SYNC_END)
