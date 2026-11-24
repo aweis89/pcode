@@ -32,11 +32,11 @@ pcode's popups as native overlays) along with the CLI:
 
 ```sh
 brew install --cask aweis89/tap/pcode
-brew upgrade --cask aweis89/tap/pcode
-brew uninstall --cask pcode
+brew upgrade --cask aweis89/tap/pcode    # without --cask, upgrades only the CLI
+brew uninstall --cask pcode              # leaves the CLI; `brew uninstall pcode` removes it
 ```
 
-It opens a normal shell; run `pcode` in any project. It installs beside stock
+It needs macOS 13 or later. It opens a normal shell; run `pcode` in any project. It installs beside stock
 Ghostty, reads your Ghostty config, and updates only through Homebrew. The app
 is ad-hoc signed rather than notarized, so the cask clears its quarantine flag
 on install; a copy downloaded by hand is blocked by Gatekeeper.
