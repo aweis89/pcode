@@ -24,6 +24,12 @@ With [Homebrew](https://brew.sh/) (includes `shfmt` and `delta` for richer comma
 brew install aweis89/tap/pcode         # add --HEAD to track master
 ```
 
+On Apple Silicon Macs, add `--cask` to also get **Pcode.app**, a Ghostty build where streamed output glides in smoothly and popups float over the conversation. Open it and run `pcode`:
+
+```sh
+brew install --cask aweis89/tap/pcode  # Pcode.app plus the pcode CLI
+```
+
 Or from [PyPI](https://pypi.org/project/pcode/) with [uv](https://docs.astral.sh/uv/):
 
 ```sh
