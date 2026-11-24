@@ -12,9 +12,13 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes its old run. Everything else gets
+# one run per commit, so a later push to master never cancels an earlier one.
+# The group must differ per commit: with a shared group GitHub keeps a single
+# pending run and drops the rest, even with cancel-in-progress off.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
