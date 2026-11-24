@@ -44,6 +44,52 @@ def test_handoff_suppresses_reset_cursor_until_editor_is_restored(fail):
     assert terminal.shows == 1
 
 
+def test_every_editor_repaint_is_synchronized_without_the_glide():
+    """iTerm2 drew repaints mid-way (cursor hidden, moved to the spinner) otherwise."""
+    import asyncio
+
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.input import create_pipe_input
+    from rich.console import Console
+
+    from pcode.ui import SYNC_END, SYNC_START, TerminalOutput
+
+    class Raw(DummyOutput):
+        def __init__(self):
+            self.raw = []
+
+        def write_raw(self, data):
+            self.raw.append(data)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            terminal = Raw()
+            app = Application(input=pipe, output=terminal)
+            output = TerminalOutput(Console(force_terminal=True, width=80), app)
+            assert not output.gliding
+            task = asyncio.ensure_future(output.run())
+            await asyncio.sleep(0)
+            app.before_render.fire()
+            app.after_render.fire()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            app.before_render.fire()  # Unhooked once the output stops.
+        assert terminal.raw == [SYNC_START, SYNC_END]
+
+    asyncio.run(run())
+
+
+def test_handoff_hide_waits_for_the_synchronized_frame():
+    """Flushed alone, the hide reached the terminal ahead of the frame."""
+    terminal = RecordingOutput()
+    flushes = []
+    terminal.flush = lambda: flushes.append(terminal.visible)
+    with CursorSafeOutput(terminal).hidden_cursor():
+        assert not terminal.visible
+        assert flushes == []
+    assert flushes == [True]
+
+
 def test_handoff_respects_renderer_request_to_keep_cursor_hidden():
     terminal = RecordingOutput()
     output = CursorSafeOutput(terminal)

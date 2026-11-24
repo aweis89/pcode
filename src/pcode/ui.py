@@ -1764,8 +1764,11 @@ class CursorSafeOutput:
     @contextmanager
     def hidden_cursor(self):
         self._hidden += 1
+        # Not flushed: the hide goes out inside the handoff's synchronized
+        # frame (its erase flushes). Flushed on its own, it reached the
+        # terminal ahead of the frame, possibly a cursor report round trip
+        # early, and iTerm2 blinked the cursor out on every row written.
         self.output.hide_cursor()
-        self.output.flush()
         try:
             yield
         finally:
@@ -2903,9 +2906,14 @@ class TerminalOutput:
     def _before_render(self, app) -> None:
         """Hold the terminal's frame for the repaint and what `_after_render` adds.
 
-        A region declaration, or a glide for a scroll the repaint caused, must
-        land in the same frame as the repaint, or the terminal draws the
-        moved rows unglided for a frame first.
+        Every repaint hides the cursor, moves it to the rows that changed (the
+        spinner, the typing row) and back, then shows it again. Unsynchronized,
+        a terminal such as iTerm2 can draw a frame mid-sequence, so the cursor
+        visibly blinks and jumps on every spinner tick and typed step.
+
+        Gliding, a region declaration or a glide for a scroll the repaint
+        caused must also land in the same frame as the repaint, or the
+        terminal draws the moved rows unglided for a frame first.
         """
         app.output.write_raw(SYNC_START)
 
@@ -2916,7 +2924,8 @@ class TerminalOutput:
         the reserved row under it, the region's hidden bottom row.
         """
         try:
-            self._track_layout(app)
+            if self.gliding:
+                self._track_layout(app)
         finally:
             app.output.write_raw(SYNC_END)
             app.output.flush()
@@ -3172,7 +3181,7 @@ class TerminalOutput:
         self._glide_panel_region(app, first_row, last_row, grown)
 
     async def run(self) -> None:
-        if not self.gliding or not isinstance(self.app, Application):
+        if not isinstance(self.app, Application):
             await self._run_frames()
             return
         self.app.before_render += self._before_render
