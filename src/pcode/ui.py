@@ -2410,10 +2410,23 @@ class TerminalOutput:
         self._park_entry = None
         # The turn ended: once its last rows are written, end its park.
         self._park_off = False
+        # Whether the pending replay keeps a reader's place (`regenerate`), and
+        # the marks written since the screen was last cleared, to tell the
+        # terminal how many a replay adds (`smooth_scroll.replay_end`).
+        self._same_content = False
+        self._marks_written = 0
 
-    def regenerate(self, replay) -> None:
+    def regenerate(self, replay, *, same_content: bool = False) -> None:
+        """Clear the screen and write `replay()` on the next flush.
+
+        `same_content` says the replay rewrites what is there at another
+        size (a resize), so a reader scrolled back can be kept at their
+        place. A display toggle or a restored session moves the marks that
+        place is found by.
+        """
         # Coalesce requests. Snapshot only inside the handoff so arrivals during
         # the CPR await are included exactly once, including queued writes.
+        self._same_content = same_content and (self._regenerate is None or self._same_content)
         self._regenerate = replay
         self.changed.set()
 
@@ -2699,7 +2712,8 @@ class TerminalOutput:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
                         width = max(1, self.app.output.get_size().columns)
-                        rebuilt = False
+                        rebuilt = keep_place = False
+                        marks_before = 0
                         if self._regenerate is not None:
                             rebuilt = True
                             if self.gliding:
@@ -2719,7 +2733,10 @@ class TerminalOutput:
                             # exit will request fresh CPR and restore the draft.
                             # With marks, the terminal keeps a reader scrolled
                             # back where they were (`REPLAY_BEGIN`).
-                            begin = smooth_scroll.REPLAY_BEGIN if self.marks else ""
+                            keep_place = self.marks and self._same_content
+                            self._same_content = False
+                            marks_before, self._marks_written = self._marks_written, 0
+                            begin = smooth_scroll.REPLAY_BEGIN if keep_place else ""
                             self.app.output.write_raw(begin + "\x1b[H\x1b[2J\x1b[3J")
                             self.app.output.flush()
                             handoff.top_row = 1
@@ -2736,8 +2753,13 @@ class TerminalOutput:
                         self._typed = typed
                         counter = RowCounter(self.console.file)
                         written = "".join(self._row_text(row) for row in chunk)
-                        if rebuilt and self.marks:
-                            written += smooth_scroll.REPLAY_END
+                        if self.marks:
+                            self._marks_written += sum(row.mark is not None for row in chunk)
+                        if rebuilt and keep_place:
+                            # Rows that were still queued are on screen for the
+                            # first time, their marks with them.
+                            added = max(0, self._marks_written - marks_before)
+                            written += smooth_scroll.replay_end(added)
                         if self._park_off and not self.rows and not self.pending:
                             written += smooth_scroll.PARK_OFF
                             self._park_off = False
@@ -3185,7 +3207,7 @@ class TerminalOutput:
                 if current != size:
                     size, resized_at = current, monotonic()
                 elif resized_at is not None and monotonic() - resized_at >= 0.25:
-                    self.regenerate(self.resize_replay)
+                    self.regenerate(self.resize_replay, same_content=True)
                     resized_at = None
             await asyncio.sleep(1 / 30)
             await self.flush()

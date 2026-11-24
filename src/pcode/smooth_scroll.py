@@ -70,9 +70,18 @@ PARK_OFF = "\x1b_smooth;park;off\x1b\\"
 # Around a replay that clears the scrollback and writes it again (a resize):
 # the terminal notes where a reader scrolled back is, between which marks,
 # and scrolls back there once the rows and their marks are written again.
-# A build without it ignores both.
+# A build without it ignores both. Only for a replay of the same content:
+# one that changes which rows are marked would be found in the wrong place.
 REPLAY_BEGIN = "\x1b_smooth;replay;begin\x1b\\"
-REPLAY_END = "\x1b_smooth;replay;end\x1b\\"
+
+
+def replay_end(added: int) -> str:
+    """End a replay that wrote `added` marks the screen did not have before.
+
+    They are the newest rows, queued and not yet shown when the replay
+    began, and the terminal counts marks from the bottom.
+    """
+    return f"\x1b_smooth;replay;end;{added}\x1b\\"
 
 
 def mark(kind: int) -> str:

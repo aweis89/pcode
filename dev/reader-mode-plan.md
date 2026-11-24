@@ -201,8 +201,9 @@ The keys are a media player's, not a pager's (fork `b5b137905`, `ce7783bb3`):
 - **Resize while reading back: built, not yet seen in a running app.**
   pcode's resize replay clears scrollback (`\x1b[H\x1b[2J\x1b[3J`) and
   rewrites it, which used to leave the viewport at the bottom. pcode now
-  writes `smooth;replay;begin` before the clear and `smooth;replay;end`
-  after the rows, whenever it writes marks. At `begin` a viewport in
+  writes `smooth;replay;begin` before the clear and `smooth;replay;end;N`
+  after the rows, when it writes marks and the replay is a resize
+  (fork `4701a9733`, `3fea6c845`). At `begin` a viewport in
   history becomes an anchor (`ViewportGlide.Anchor`): how many marks of
   any kind lie below its top row, and how far that row is between the
   mark above and the mark below, as a fraction. At `end` the terminal
@@ -214,13 +215,26 @@ The keys are a media player's, not a pager's (fork `b5b137905`, `ce7783bb3`):
   - Fewer marks afterwards than were below the reader: the viewport is
     left where the clear put it. A place now inside the active area is
     the bottom.
+  - Only a resize is bracketed (`regenerate(same_content=True)`). A
+    display toggle (`/edits`, grouped tools, thinking) or a restored
+    session changes which rows are marked, so the count would find an
+    unrelated place; those still land at the bottom.
+  - `N` is the marks the replay shows for the first time: rows still
+    queued when the window was resized are written by the replay, and
+    their marks would shift the count from the bottom. pcode counts the
+    marks it has written since the last clear (`_marks_written`).
+  - The anchor is found walking up from the bottom, stopping at the
+    reader's section. From the top it read every row of cold history,
+    which decompresses it, just before the clear erased it.
   - No protocol version for it. pcode takes a query reply only up to the
     version it knows, so a bump would turn gliding off in every pcode not
     yet updated. A fork build without the verbs logs a warning and
     ignores them.
   - To check by eye: that nothing moves the viewport between the window
     resizing and pcode's `begin` (Ghostty's own reflow keeps a pinned
-    viewport), and how it looks through a drag, which replays many times.
+    viewport), and how it looks through a drag, which replays many times:
+    each one rounds to a whole row, and a section squeezed to one row
+    comes back at its start.
 - **Full-screen popups.** They redraw the conversation afterwards, so the
   reading position is lost. Overlay popups, the normal case in Ghostty
   Smooth, are not affected. Accepted for now.
