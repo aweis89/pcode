@@ -317,14 +317,19 @@ result. It wraps everything below in one installable app.
 
 #### Launch
 
+See [app-launcher-plan.md](app-launcher-plan.md) for the full design of the
+native Swift pre-PTY launcher and per-action surface defaults
+(`default-new-window`, `default-new-tab`, `default-split-right`,
+`default-split-down`). Summary of what is already built vs. planned:
+
 - **Workspace (built, 2026-11-23).** A Finder launch starts in the home
   directory, and pcode wants a project. `pcode --launch shell`
-  (`src/pcode/launch.py`) is the first screen: a picker of the projects with
+  (`src/pcode/launch.py`) is the CLI picker: a list of the projects with
   saved sessions that execs a fresh `pcode` in the chosen one, then a login
-  shell there when it quits. It lives in the CLI, not the app, so the fork
-  carries no Swift for it and it works in any terminal. "Open with PCode" on
-  folders and a `pcode://` URL can come later; both only need to hand a path
-  to the same code.
+  shell there when it quits. It works in any terminal, and its workspace
+  listing and `direnv`/shell-fallback logic will back the native Swift launcher
+  in `Pcode.app`. "Open with Pcode" on folders and a `pcode://` URL can hand a
+  path to the same code.
 - **Environment.** A login shell gives `PATH` but not direnv, whose hook fires
   at a prompt, not under `-c`. `--launch` runs `direnv exec <workspace> pcode`
   when direnv is installed and an `.envrc` applies, or when `DIRENV_DIR` says
@@ -332,10 +337,11 @@ result. It wraps everything below in one installable app.
   `.envrc` makes that fail with direnv's own message rather than starting
   without the variables; with `shell` the login shell still follows. Still to
   test from the app with fish, zsh, and bash.
-- **What a split runs.** `command` (every pane is pcode) or `initial-command`
-  (first pane is pcode, splits are shells). A shell beside the agent is the
-  common want, so start from `initial-command` plus a keybinding that opens a
-  new pcode pane, if Ghostty's keybind actions allow a per-split command.
+- **What a split runs.** Replaced by the per-action defaults in
+  [app-launcher-plan.md](app-launcher-plan.md): new windows and tabs default to
+  the native `launcher`, right and down splits default to `shell` in the active
+  pane's `cwd`, and each can be set to `launcher`, `pcode`, or `shell`
+  independently (plus explicit keybind action arguments).
 - **Attach.** A pane for an existing session is `pcode --attach ID`; sessions
   already survive the window closing because the host owns them.
 - **Missing pcode.** Show install instructions in the pane instead of closing.
