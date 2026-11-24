@@ -24,6 +24,23 @@ brew update && brew upgrade aweis89/tap/pcode   # --fetch-HEAD for a --HEAD inst
 brew uninstall pcode && brew untap aweis89/tap
 ```
 
+### Pcode.app (macOS)
+
+On Apple Silicon Macs, the cask of the same name installs Pcode.app (Ghostty
+Smooth, a Ghostty build that scrolls streamed output in by pixels and draws
+pcode's popups as native overlays) along with the CLI:
+
+```sh
+brew install --cask aweis89/tap/pcode
+brew upgrade --cask aweis89/tap/pcode
+brew uninstall --cask pcode
+```
+
+It opens a normal shell; run `pcode` in any project. It installs beside stock
+Ghostty, reads your Ghostty config, and updates only through Homebrew. The app
+is ad-hoc signed rather than notarized, so the cask clears its quarantine flag
+on install; a copy downloaded by hand is blocked by Gatekeeper.
+
 ### With uv
 
 pcode is on [PyPI](https://pypi.org/project/pcode/), so

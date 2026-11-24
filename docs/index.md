@@ -12,6 +12,7 @@ and every tool call and diff stays inspectable in normal terminal scrollback.
 
 ```sh
 brew install aweis89/tap/pcode         # or: uv tool install --python 3.15 'pcode[claude]'
+brew install --cask aweis89/tap/pcode  # macOS: also Pcode.app, the smooth-scrolling terminal
 pcode -m claude:claude-sonnet-5         # Claude subscription (/login claude)
 pcode -m antigravity:gemini-4-neon      # Antigravity subscription (/login antigravity)
 pcode -m openai-codex:gpt-5.6-luna      # ChatGPT subscription (/login openai-codex)
