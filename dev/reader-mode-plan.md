@@ -126,7 +126,7 @@ which pcode binds to its response and snippet copy chooser.
   `smooth_cruise_speed:±N` changes it by factors of 1.25, kept between cruises.
 - Stops at the live bottom. Other scroll keys add to the motion while it runs.
 
-The keys are a media player's, not a pager's (`feat/cruise-cockpit`):
+The keys are a media player's, not a pager's (fork `b5b137905`, `ce7783bb3`):
 
 - **`Space` is play and pause**, not page down (`f` and `d` still page).
   Pause is what a thumb does to a moving page, so `Space` must never speed
@@ -139,7 +139,9 @@ The keys are a media player's, not a pager's (`feat/cruise-cockpit`):
 - **`h`/`l` and the left/right arrows shift the gear** (`-` and `=`/`+`
   still do). Up and down move the page, so the free axis is the pace, and
   it stays on the home row. Faster while stopped starts the cruise; slower
-  at the minimum (0.5 rows/s) stops it. A held gear key shifts once.
+  than the lowest gear (the last above 0.5 rows/s) stops it. A step past a
+  limit is not taken rather than clamped, so the gears stay put. A held
+  gear key shifts once.
 - **`k` stops a cruise** and scrolls back up ("wait, go back"); `j` adds to
   it while held.
 - Speed changes ease in over about 0.12 s, and a pause carries the speed on
