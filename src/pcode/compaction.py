@@ -231,7 +231,11 @@ def summary_settings(model, window: int | None) -> dict:
     profile = getattr(model, "profile", None) or {}
     if getattr(model, "system", None) in GOOGLE_PROVIDERS and profile.get("supports_thinking"):
         settings["thinking"] = "low"
-    return settings
+    from pcode.stream_timeout import timeout_settings
+
+    # Harness's summary agent has none of pcode's capabilities; without this a
+    # summary that never streams waits out the provider's read timeout.
+    return {**settings, **timeout_settings(model)}
 
 
 async def summarize(messages, *, model, focus=None, usage=None, window=None, parameters=None):

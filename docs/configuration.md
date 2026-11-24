@@ -176,7 +176,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `claude_idle_processes` | `1` | Whole number of finished [`claude:`](providers.md#claude-code-provider) CLI processes each session keeps warm (about 120 MB each beyond the first); `0` stops each when its turn ends. None are kept under memory pressure |
 | `claude_idle_minutes` | `10` | Positive integer, minutes a finished `claude:` CLI process is kept warm |
 | `claude_rate_limit_notices` | `on` | `on` or `off`: a notice when your Claude plan usage nears or hits a limit (5-hour, weekly), and when it resets |
-| `first_event_timeout` | `300` | Whole number of seconds a model request may stream nothing (no text, thinking, or tool call) before it is abandoned and retried under `retry_attempts`; `0` disables. Not applied to `claude:` or `antigravity:` |
+| `first_event_timeout` | `300` | Whole number of seconds a model request may stream nothing (no text, thinking, or tool call) before it is abandoned and retried under `retry_attempts`; `0` disables. Streamed thinking counts, so with `show_thinking off` a high-effort request may need more. Not applied to `claude:` or `antigravity:` |
 | `retry_attempts` | `3` | Whole number, automatic retries after a dropped connection or streamed overload; `0` disables. See [retries](sessions.md#retries-and-continue) |
 
 ### Editor and keys

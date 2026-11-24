@@ -13,6 +13,7 @@ from pcode import stream_timeout
 from pcode.diagnostics import transient
 from pcode.live import AgentRuntime, error_message
 from pcode.stream_timeout import FirstEventTimeout
+from pcode.stream_timeout import first_event_timeout as configured_timeout
 
 
 def test_silent_stream_is_retried_and_the_retry_answers(monkeypatch):
@@ -53,6 +54,24 @@ def test_only_the_first_event_deadline_is_transient():
     assert message == (
         "Request to model 'gemini' timed out after 300 seconds without producing any output."
     )
+
+
+def test_the_preference_defaults_to_five_minutes_and_zero_disables():
+    from pcode.preferences import save_preferences
+
+    assert configured_timeout() == 300.0
+    save_preferences(first_event_timeout="0")
+    assert configured_timeout() == 0.0
+
+
+def test_compaction_summaries_get_the_timeout_too(monkeypatch):
+    from pcode.compaction import summary_settings
+
+    monkeypatch.setattr(stream_timeout, "first_event_timeout", lambda: 300.0)
+    google = SimpleNamespace(system="google", profile={})
+    assert summary_settings(google, None)["first_event_timeout"] == 300.0
+    claude = SimpleNamespace(system="claude", profile={})
+    assert "first_event_timeout" not in summary_settings(claude, None)
 
 
 @dataclass

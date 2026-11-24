@@ -174,6 +174,14 @@ def isolated_claude_notices():
 
 
 @pytest.fixture(autouse=True)
+def no_first_event_timeout(monkeypatch):
+    """Off unless a test turns it on: it would add a key to every request's settings."""
+    from pcode import stream_timeout
+
+    monkeypatch.setattr(stream_timeout, "first_event_timeout", lambda: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def isolated_preferences(monkeypatch, tmp_path, request):
     """Tests must neither consume nor overwrite the user's saved defaults."""
     monkeypatch.delenv("PCODE_CONFIG_DIR", raising=False)

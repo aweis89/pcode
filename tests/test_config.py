@@ -66,6 +66,7 @@ def test_defaults_and_path_do_not_create_files():
         "terminal_progress": "auto",
         "worktree_exit": "ask",
         "retry_attempts": "3",
+        "first_event_timeout": "300",
         "tool_retries": "3",
         "strict_tools": "on",
         "cache_notices": "on",

@@ -483,6 +483,8 @@ SETTINGS = {
     # Without it a Gemini request that never streams waits out the Google
     # provider's 20-minute read timeout. 5 minutes matches Codex's stream idle
     # timeout and Claude Code's event watchdog; shorter cuts off deep thinking.
+    # Streamed thinking counts as output, so with `show_thinking off` a
+    # high-effort request on a long context may need more.
     "first_event_timeout": Setting(
         "300",
         whole_number=True,
