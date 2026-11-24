@@ -674,31 +674,65 @@ def test_park_is_only_for_a_submitted_turn_and_not_replayed(monkeypatch):
     asyncio.run(run())
 
 
-def test_a_replay_is_bracketed_for_the_terminal_only_with_marks(monkeypatch):
-    async def run(marks):
+CLEAR = "\x1b[H\x1b[2J\x1b[3J"
+
+
+def test_a_resize_replay_is_bracketed_for_the_terminal_only_with_marks(monkeypatch):
+    async def run(marks, **regenerate):
         transcript, output, smooth_scroll = marked_output(monkeypatch, marks=marks, park=False)
         output.app.output.write_raw = raw = Mock()
         output.begin_turn("TASK")
         await output.flush(drain=True)
-        assert smooth_scroll.REPLAY_END not in transcript.console.file.getvalue()
+        assert "replay;end" not in transcript.console.file.getvalue()
         transcript.console.file.seek(0)
         transcript.console.file.truncate()
 
-        output.regenerate(transcript.replay)
+        output.regenerate(transcript.replay, **regenerate)
         await output.flush()
         return raw.call_args_list[-1].args[0], transcript.console.file.getvalue(), smooth_scroll
 
-    cleared, written, smooth_scroll = asyncio.run(run(True))
+    cleared, written, smooth_scroll = asyncio.run(run(True, same_content=True))
     # Before the clear, so the terminal still has the reader's place; after
     # the rows, so their marks are there to find it by.
-    assert cleared == smooth_scroll.REPLAY_BEGIN + "\x1b[H\x1b[2J\x1b[3J"
-    assert written.endswith(smooth_scroll.REPLAY_END)
-    assert written.count(smooth_scroll.REPLAY_END) == 1
+    assert cleared == smooth_scroll.REPLAY_BEGIN + CLEAR
+    assert written.endswith(smooth_scroll.replay_end(0))
+    assert written.count("replay;end") == 1
     assert smooth_scroll.mark(smooth_scroll.MARK_TURN) in written
 
-    cleared, written, smooth_scroll = asyncio.run(run(False))
-    assert cleared == "\x1b[H\x1b[2J\x1b[3J"
-    assert smooth_scroll.REPLAY_END not in written
+    # Without marks there is nothing to find the place by.
+    cleared, written, _ = asyncio.run(run(False, same_content=True))
+    assert cleared == CLEAR and "replay;end" not in written
+    # A toggle or a restored session moves the marks: no place to keep.
+    cleared, written, _ = asyncio.run(run(True))
+    assert cleared == CLEAR and "replay;end" not in written
+
+
+def test_a_replay_counts_the_marks_it_shows_for_the_first_time(monkeypatch):
+    async def run():
+        transcript, output, smooth_scroll = marked_output(monkeypatch, park=False)
+        output.app.output.write_raw = Mock()
+        output.begin_turn("FIRST")
+        await output.flush(drain=True)
+        # Queued, not yet on the screen when the window is resized.
+        output.begin_turn("SECOND")
+        output.regenerate(transcript.replay, same_content=True)
+        await output.flush()
+        written = transcript.console.file.getvalue()
+        assert written.endswith(smooth_scroll.replay_end(1))
+
+        # Resized again with nothing new: the same marks as before.
+        output.regenerate(transcript.replay, same_content=True)
+        await output.flush()
+        assert transcript.console.file.getvalue().endswith(smooth_scroll.replay_end(0))
+
+        # A toggle before the flush wins: the content is no longer the same.
+        output.app.output.write_raw = raw = Mock()
+        output.regenerate(transcript.replay, same_content=True)
+        output.regenerate(transcript.replay)
+        await output.flush()
+        raw.assert_called_once_with(CLEAR)
+
+    asyncio.run(run())
 
 
 def test_park_goes_to_the_submitted_prompt_not_a_pending_one(monkeypatch):
