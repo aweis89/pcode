@@ -16,8 +16,9 @@ conversation with the same 120 Hz glide that streamed output has:
   the next one. The turn mark sits on the prompt line, so the request and the
   response under it are one jump.
 - `{` and `}` between code blocks and diffs.
-- `Space`, `d`, `u` to page; `j`, `k` scroll steadily while held.
-- `c` to cruise at a steady reading speed, `=`/`+` and `-` to change it.
+- `f`, `b`, `d`, `u` to page; `j`, `k` scroll steadily while held.
+- `Space` to cruise at a steady reading speed and to pause, `l`/`h` (or the
+  right and left arrows) to go faster and slower.
 
 All single keys: as a sequence (`gg`, `[[`), the first key followed by any
 other types both into pcode.
@@ -105,8 +106,8 @@ which pcode binds to its response and snippet copy chooser.
   if that changed, rather than gliding on from the new place.
 - Default `reader` table, entered with Cmd+R (Ctrl+Shift+R off macOS): `j`/`k`,
   arrows (held: `smooth_hold`, a steady 12 rows/s from press to release, then
-  on to the next whole row, so a tap moves one), `Space`/`f`/`b`, `d`/`u` (and
-  Ctrl), `g`, `G`, `c`, `=`/`+`/`-`, and
+  on to the next whole row, so a tap moves one), `f`/`b`, `d`/`u` (and
+  Ctrl), `g`, `G`, the cruise keys (phase 2), and
   `q`/`Esc`/`i` to leave and go back to the bottom. Shortcuts held with Ctrl,
   Alt or Cmd skip the table's catch_all and reach their usual bindings. Any other
   key leaves the table and still reaches pcode (`unconsumed:catch_all`), which
@@ -124,6 +125,31 @@ which pcode binds to its response and snippet copy chooser.
 - `smooth_cruise` toggles a constant-speed scroll down (default 2 rows/s);
   `smooth_cruise_speed:±N` changes it by factors of 1.25, kept between cruises.
 - Stops at the live bottom. Other scroll keys add to the motion while it runs.
+
+The keys are a media player's, not a pager's (`feat/cruise-cockpit`):
+
+- **`Space` is play and pause**, not page down (`f` and `d` still page).
+  Pause is what a thumb does to a moving page, so `Space` must never speed
+  up: a key that both starts and accelerates makes the reader overshoot
+  the line they wanted to stop on. `c` still works.
+- **Held from a start, `Space` boosts to 3x** until it is let go, then
+  carries on at the kept speed. The boost comes from key repeat, so the
+  press that pauses is instant (no tap-or-hold timer) and holding it never
+  restarts the cruise.
+- **`h`/`l` and the left/right arrows shift the gear** (`-` and `=`/`+`
+  still do). Up and down move the page, so the free axis is the pace, and
+  it stays on the home row. Faster while stopped starts the cruise; slower
+  at the minimum (0.5 rows/s) stops it. A held gear key shifts once.
+- **`k` stops a cruise** and scrolls back up ("wait, go back"); `j` adds to
+  it while held.
+- Speed changes ease in over about 0.12 s, and a pause carries the speed on
+  to the next whole row instead of snapping back to the nearest.
+- The speed starts at `smooth-cruise-speed` (Ghostty config) and a new tab
+  or split inherits the last speed used. Not kept across a restart: set
+  the config for that.
+- Each cruise key shows the state for a moment in the native toast
+  (`▶ 2.5 rows/s`, `▶▶ 7.5 rows/s`, `⏸ 2.5 rows/s`): the core sends itself
+  a `pcode;toast`, so there is no new Swift. macOS only.
 
 ### 3. Marks and jumps: built
 
