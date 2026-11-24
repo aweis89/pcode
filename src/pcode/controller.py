@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
+from pcode import claude_notices
 from pcode.advisor import AdvisorChoice
 from pcode.advisor import adopt as adopt_advisor
 from pcode.advisor import record as record_advisor
@@ -35,7 +36,6 @@ from pcode.aside import (
     prompt_target,
     summary_message,
 )
-from pcode.claude_sdk import rate_limits
 from pcode.commands import Command, CommandRegistry
 from pcode.error_report import error_message
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
@@ -591,7 +591,7 @@ class SessionController:
         self.asides.on_settle = self.aside_settled
         # Plan usage warnings from `claude:` models; the limits are the
         # account's, so one controller per process speaks for all of them.
-        rate_limits.set_notifier(self.rate_limit_notice)
+        claude_notices.set_notifier(self.rate_limit_notice)
         # Journaling settled side questions, one at a time and in the order
         # they settled, so a follow-up's node always lands after its parent's.
         self._side_lock = asyncio.Lock()

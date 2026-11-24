@@ -44,7 +44,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import ModelRequestParameters
 
 import pcode.claude_sdk as claude
-from pcode.claude_sdk import rate_limits as claude_rate_limits
+from pcode import claude_notices
 from pcode.claude_sdk import resume as claude_resume
 from pcode.claude_sdk import session as claude_session
 from pcode.claude_sdk import session_pool as claude_pool
@@ -459,10 +459,9 @@ def test_tool_rounds_and_turns_share_one_process(world):
     assert first.usage.cache_read_tokens == 1800
 
 
-def test_rate_limit_changes_reach_the_notifier_without_breaking_the_turn(world, monkeypatch):
+def test_rate_limit_changes_reach_the_notifier_without_breaking_the_turn(world):
     seen: list[str] = []
-    monkeypatch.setattr(claude_rate_limits, "_last", None)
-    monkeypatch.setattr(claude_rate_limits, "_notifier", seen.append)
+    claude_notices.set_notifier(seen.append)
     agent, _ = make_agent()
     world.rate_limits = [
         RateLimitInfo(status="allowed_warning", rate_limit_type="five_hour", utilization=0.9)

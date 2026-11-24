@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic_ai.exceptions import ModelAPIError
 
-from pcode.claude_sdk import rate_limits
+from pcode import claude_notices
 from pcode.claude_sdk.cli import CLI_ENV
 from pcode.claude_sdk.errors import (
     ClaudeConnectionError,
@@ -532,7 +532,7 @@ class ClaudeSession:
                 elif isinstance(message, RateLimitEvent):
                     # A notice is a courtesy: it must never end the turn.
                     try:
-                        rate_limits.report(message.rate_limit_info)
+                        claude_notices.report(message.rate_limit_info)
                     except Exception:
                         logger.warning("Claude rate-limit notice failed", exc_info=True)
         except asyncio.CancelledError:

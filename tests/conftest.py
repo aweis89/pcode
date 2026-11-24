@@ -164,6 +164,16 @@ def reap_leaked_tmux_servers():
 
 
 @pytest.fixture(autouse=True)
+def isolated_claude_notices():
+    """Every SessionController registers a notifier; none may outlive its test."""
+    from pcode import claude_notices
+
+    claude_notices.reset()
+    yield
+    claude_notices.reset()
+
+
+@pytest.fixture(autouse=True)
 def isolated_preferences(monkeypatch, tmp_path, request):
     """Tests must neither consume nor overwrite the user's saved defaults."""
     monkeypatch.delenv("PCODE_CONFIG_DIR", raising=False)
