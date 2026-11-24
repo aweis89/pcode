@@ -356,7 +356,8 @@ def test_resize_replay_debounces_width_and_height_changes(monkeypatch, width_cha
         replays = []
         output.resize_replay = lambda: None
         output.app.output.get_size = lambda: current
-        output.regenerate = lambda replay: replays.append((clock, replay))
+        # A resize rewrites the same content, so a reader's place is kept.
+        output.regenerate = lambda replay, *, same_content: replays.append((clock, replay))
 
         async def wait():
             # Each poll times out after 0.1s with whatever size is current.
