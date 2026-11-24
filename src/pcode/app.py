@@ -3525,7 +3525,9 @@ def _profile_capture(args) -> tuple[Path, bool, bool] | None:
     """
     from pcode.profiling import PROFILE_MODES, new_capture
 
-    if args.no_profile:
+    if args.no_profile or args.launch:
+        # The picker execs away, so a capture of it would never be finished;
+        # the pcode it starts makes its own.
         return None
     if args.profile is None:
         mode = load_preferences().get("profile", SETTINGS["profile"].default)
@@ -3773,7 +3775,10 @@ def _select_project_root(argv: list[str]) -> None:
     """Point preferences at `-C DIR` (else the cwd) ahead of full argument parsing."""
     from pcode.preferences import set_project_root
 
-    root = Path.cwd()
+    try:
+        root = Path.cwd()
+    except OSError:  # started in a directory that has since been deleted
+        root = Path.home()
     for index, arg in enumerate(argv):
         if arg in ("-C", "--workspace") and index + 1 < len(argv):
             root = Path(argv[index + 1])
@@ -4161,11 +4166,15 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             args.json,
             args.kill_hosts,
             args.restart_hosts,
+            args.profile is not None,
+            args.profile_cpu,
+            args.profile_memory,
         )
         if any(refused):
             parser.error(
                 "--launch picks the workspace and session itself; it only takes "
-                "--model, --host, --worktree, --no-save and --session-dir"
+                "--model, --theme, --host/--no-host, --worktree/--no-worktree, "
+                "--no-save and --session-dir"
             )
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             parser.error("--launch needs a terminal")
@@ -4178,6 +4187,10 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             always += ["--session-dir", str(args.session_dir.resolve())]
         if args.host is not None:
             always.append("--host" if args.host else "--no-host")
+        # Only an explicit --theme: its default is this directory's preference,
+        # and the chosen project's own preference should win over that.
+        if any(arg == "--theme" or arg.startswith("--theme=") for arg in sys.argv[1:]):
+            always += ["--theme", args.theme]
         if args.model:
             fresh += ["--model", args.model]
         if args.worktree:

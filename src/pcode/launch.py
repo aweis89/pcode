@@ -32,8 +32,11 @@ _DOWN = {"\x1b[B", "\x1bOB", "j", "\x0e"}
 _QUIT = {"q", "\x1b", "\x03", "\x04"}
 # One key per match: a CSI or SS3 sequence, else a single character.
 _KEY = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1bO.|.", re.DOTALL)
-# How long a lone Esc waits for the rest of an arrow key split across reads.
-_ESCAPE_WAIT = 0.05
+# How long an unfinished escape sequence waits for the rest of it, in total:
+# what ncurses' ESCDELAY and vim's ttimeoutlen allow, for ssh and slow ptys.
+_ESCAPE_WAIT = 0.1
+# A read that ends partway into a CSI or SS3 sequence.
+_UNFINISHED = re.compile(r"\x1b(\[[0-?]*[ -/]*|O)?\Z")
 
 
 @dataclass(frozen=True)
@@ -161,7 +164,13 @@ def render(
     message: str = "",
 ) -> list[str]:
     """The screen as plain lines; the selected row is marked with `›`."""
-    keys = ["enter new session", "c continue", "o open folder"] if rows else ["enter open folder"]
+    if not rows:
+        keys = ["enter open folder"]
+    else:
+        keys = ["enter new session"]
+        if rows[selected].latest:
+            keys.append("c continue")
+        keys.append("o open folder")
     if then == "shell":
         keys.append("s shell")
     keys.append("q quit")
@@ -267,12 +276,24 @@ def command(
     return ["/bin/sh", "-c", 'trap : INT; "$@"; trap - INT; exec "$0" -l', shell, *run]
 
 
-def read_keys(fd: int) -> list[str]:
-    data = os.read(fd, 64)
+def read_keys(fd: int, wait: float = _ESCAPE_WAIT) -> list[str]:
+    """The keys available now, finishing an escape sequence split across reads.
+
+    A bare Esc is only told from the start of an arrow by waiting: if nothing
+    more arrives within `wait`, it is Esc.
+    """
+    data = os.read(fd, 4096)
     if not data:
         return ["q"]  # the terminal went away
-    if data.endswith(b"\x1b") and select.select([fd], [], [], _ESCAPE_WAIT)[0]:
-        data += os.read(fd, 64)
+    deadline = time.monotonic() + wait
+    while _UNFINISHED.search(data.decode(errors="replace")):
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([fd], [], [], left)[0]:
+            break
+        more = os.read(fd, 4096)
+        if not more:
+            break
+        data += more
     return split_keys(data.decode(errors="replace"))
 
 
@@ -438,12 +459,25 @@ def launch(
         if then != "shell":
             return 0
         choice = Choice("shell", cwd)
-    argv = command(choice, then, shell=_login_shell(), always=always, fresh=fresh)
+    shell = _login_shell()
+    argv = command(choice, then, shell=shell, always=always, fresh=fresh)
     try:
-        os.chdir(choice.path)
-        os.environ["PWD"] = str(choice.path)  # getcwd is right; an inherited PWD is not
-        sys.stdout.flush()
-        os.execvp(argv[0], argv)
+        _exec_in(choice.path, argv)
     except OSError as error:
         print(f"pcode: cannot start in {choice.path}: {error.strerror}", file=sys.stderr)
+    if then != "shell":
         return 2
+    # The window must not close and take the message with it.
+    for place in (choice.path, home, Path("/")):
+        try:
+            _exec_in(place, [shell, "-l"])
+        except OSError:
+            continue
+    return 2
+
+
+def _exec_in(path: Path, argv: Sequence[str]) -> None:
+    os.chdir(path)
+    os.environ["PWD"] = str(path)  # getcwd is right; an inherited PWD is not
+    sys.stdout.flush()
+    os.execvp(argv[0], list(argv))

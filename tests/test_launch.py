@@ -16,6 +16,7 @@ from pcode.launch import (
     command,
     describe,
     parse_folder,
+    read_keys,
     render,
     split_keys,
     step,
@@ -115,6 +116,10 @@ def test_render_marks_selection_and_scrolls(tmp_path):
     narrow = render(rows, 0, width=20, height=8, home=tmp_path, now=0)
     assert all(len(line) <= 20 for line in narrow)
     assert "s shell" in render(rows, 0, width=80, height=8, home=tmp_path, now=0, then="shell")[-1]
+    # `c` is offered only on a row with a session to continue.
+    assert "c continue" not in lines[-2]
+    named = [Workspace(tmp_path, sessions=1, latest="abc")]
+    assert "c continue" in render(named, 0, width=80, height=8, home=tmp_path, now=0)[-1]
     long = [Workspace(tmp_path / ("deep/" * 30) / "project", sessions=2)]
     (line,) = [
         line
@@ -241,6 +246,7 @@ def test_shell_follows_a_pcode_killed_by_ctrl_c(tmp_path):
 @pytest.mark.parametrize(
     "extra",
     [
+        ["--profile"],
         ["shell", "hello"],
         ["-C", "."],
         ["-c"],
@@ -282,6 +288,83 @@ def test_launch_forwards_session_options(monkeypatch, tmp_path):
         "always": ["--session-dir", str(tmp_path.resolve()), "--host"],
         "fresh": ["--model", "x:y", "--worktree", "--no-save"],
     }
+    monkeypatch.setattr(sys, "argv", ["pcode", "--launch", "--theme=light"])
+    with pytest.raises(SystemExit):
+        main()
+    assert seen["always"] == ["--theme", "light"]  # only when asked for, never the default
+
+
+def _feed(chunks):
+    """A pipe whose writer sends `(delay, bytes)` chunks from a thread."""
+    import threading
+
+    read_end, write_end = os.pipe()
+
+    def send():
+        try:
+            for delay, data in chunks:
+                time.sleep(delay)
+                os.write(write_end, data)
+        except BrokenPipeError:
+            pass  # the test already has what it needed
+        finally:
+            os.close(write_end)
+
+    threading.Thread(target=send, daemon=True).start()
+    return read_end
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [(0, b"\x1b"), (0.03, b"[B")],
+        [(0, b"\x1b["), (0.03, b"B")],
+        [(0, b"\x1b[1;5"), (0.03, b"B")],
+        [(0, b"\x1b[B" * 43)],  # more than one small read's worth
+    ],
+)
+def test_read_keys_finishes_a_split_escape_sequence(chunks):
+    fd = _feed(chunks)
+    try:
+        keys = read_keys(fd, wait=2.0)
+        while len("".join(keys)) < sum(len(data) for _, data in chunks):
+            keys += read_keys(fd, wait=2.0)
+    finally:
+        os.close(fd)
+    assert "\x1b" not in keys and all(key.startswith("\x1b[") for key in keys)
+
+
+def test_read_keys_takes_a_lone_escape_once_nothing_follows():
+    fd = _feed([(0, b"\x1b"), (1.0, b"x")])
+    try:
+        start = time.monotonic()
+        assert read_keys(fd, wait=0.1) == ["\x1b"]
+        assert time.monotonic() - start < 0.8
+    finally:
+        os.close(fd)
+
+
+def test_launch_keeps_the_promised_shell_when_the_start_fails(monkeypatch, tmp_path):
+    import pcode.launch as launch_module
+
+    calls = []
+
+    def exec_in(path, argv):
+        calls.append((path, argv[-1]))
+        if argv[-1] != "-l":
+            raise FileNotFoundError(2, "No such file or directory")
+        raise SystemExit(0)  # stands in for the exec that never returns
+
+    monkeypatch.setattr(launch_module, "_exec_in", exec_in)
+    monkeypatch.setattr(launch_module, "pick", lambda *a, **k: Choice("new", tmp_path))
+    monkeypatch.setattr("pcode.cli.restore_stdin", lambda: None)
+    monkeypatch.setenv("PCODE_HOST_DIR", str(tmp_path / "hosts"))
+    with pytest.raises(SystemExit):
+        launch_module.launch("shell", tmp_path / "sessions")
+    assert calls[-1] == (tmp_path, "-l")
+    calls.clear()
+    assert launch_module.launch("exit", tmp_path / "sessions") == 2
+    assert len(calls) == 1  # no shell was promised
 
 
 def _read_until(fd, marker, timeout=20.0):
@@ -383,9 +466,7 @@ def test_launch_picker_starts_a_shell_in_the_chosen_workspace(picker, tmp_path):
     screen = picker()
     shown = screen.read(b"q quit")
     assert "first" in shown and "second" in shown and "1 session" in shown
-    # An arrow key split across two writes is still an arrow, not Esc (quit).
-    screen.write(b"\x1b")
-    screen.write(b"[B")
+    screen.write(b"\x1b[B")
     screen.read(b"q quit")
     screen.write(b"s")
     assert f"shell in {(tmp_path / 'second').resolve()} -l <done>" in screen.read(b"<done>")
