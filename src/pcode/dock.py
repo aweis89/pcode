@@ -31,6 +31,7 @@ import termios
 from contextlib import suppress
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.output.vt100 import Vt100_Output
@@ -134,10 +135,26 @@ class Dock:
         if RESIZED in data and self.app is not None and self.app.is_running:
             self.app._on_resize()
 
+    def layout_size(self, size: Size) -> Size:
+        """The size the layout budgets its rows against: the dock's width, the
+        whole pane's height (pcode's own rows and the dock's together)."""
+        try:
+            pane = os.get_terminal_size(sys.stdout.fileno()).lines
+        except OSError:
+            return size
+        return Size(rows=pane + size.rows, columns=size.columns)
+
     def report_rows(self, app: Application) -> None:
         """Ask the terminal for as many rows as the layout wants, after each render."""
-        size = app.output.get_size()
-        wanted = app.layout.container.preferred_height(size.columns, MAX_ROWS).preferred
+        root = app.layout.container
+        # The height the frame just drawn was measured at (`_MeasuredSplit`);
+        # its rows were budgeted against the whole pane (`layout_size`).
+        measured = getattr(root, "_measured", None)
+        if measured is not None:
+            wanted = measured[2]
+        else:
+            size = self.layout_size(app.output.get_size())
+            wanted = root.preferred_height(size.columns, size.rows).preferred
         wanted = max(1, min(MAX_ROWS, wanted))
         if wanted != self._rows:
             self._rows = wanted

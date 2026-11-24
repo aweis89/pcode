@@ -2739,8 +2739,14 @@ class TerminalOutput:
                             self._same_content = False
                             marks_before, self._marks_written = self._marks_written, 0
                             begin = smooth_scroll.REPLAY_BEGIN if keep_place else ""
-                            self.app.output.write_raw(begin + "\x1b[H\x1b[2J\x1b[3J")
-                            self.app.output.flush()
+                            clear = begin + "\x1b[H\x1b[2J\x1b[3J"
+                            if dock.active() is not None:
+                                # SPIKE: the transcript's terminal, not the editor's dock.
+                                self.console.file.write(clear)
+                                self.console.file.flush()
+                            else:
+                                self.app.output.write_raw(clear)
+                                self.app.output.flush()
                             handoff.top_row = 1
                             self._enqueue(pending, width, replay=True)
                             # A rebuilt screen lands whole; pacing is for new output.
@@ -3516,6 +3522,10 @@ class PromptLayout:
         if cache is not None and (size := cache.get("size")) is not None:
             return size
         size = self.session.app.output.get_size()
+        if (docked := dock.active()) is not None:
+            # SPIKE: budget rows against the whole pane, not the dock's current
+            # height, or the dock never asks for more than it has.
+            size = docked.layout_size(size)
         # Every layout read comes through here, so the activity panel's size rule
         # follows a resize or split before anything is measured against it.
         self.activity.fit_screen(size.columns, size.rows)
@@ -4734,9 +4744,6 @@ class PromptLayout:
 
         if self.transcript is None or not native_completion_supported() or not overlay_popups():
             return None
-        if dock.active() is not None:
-            # SPIKE: the list would hang from the dock's cursor, outside the dock's bounds.
-            return None
 
         def write_raw(text: str) -> None:
             output = self.session.app.output
@@ -4878,7 +4885,7 @@ class PromptLayout:
         the whole screen, so wait until it has held for `REFILL_DELAY`.
         """
         transcript = self.transcript
-        if transcript is None or not transcript.replays_on_resize:
+        if transcript is None or not transcript.replays_on_resize or dock.active() is not None:
             return
         # The menu's own replay covers its close, at once. Mid-turn, the next
         # write fills the gap anyway; a rebuild then would only repaint the
