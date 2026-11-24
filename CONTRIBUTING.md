@@ -6,7 +6,7 @@ larger, open an issue first so we can agree on the shape before you build it.
 ## Setup
 
 ```sh
-git clone https://github.com/cruxwell/pcode.git
+git clone https://github.com/aweis89/pcode.git
 cd pcode
 make run         # run from source without installing (needs uv)
 ```

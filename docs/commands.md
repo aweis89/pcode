@@ -573,7 +573,7 @@ status row, like yours, rather than in the tree. Its plan is
 separate from yours: never saved and never merged into your plan, and it leaves
 with the delegate. The built-in worker always plans; an extension's delegate can
 opt in (see
-[Sub-agents](https://github.com/cruxwell/pcode/blob/master/src/pcode/extension_guide.md#sub-agents)
+[Sub-agents](https://github.com/aweis89/pcode/blob/master/src/pcode/extension_guide.md#sub-agents)
 in the extension guide).
 
 ```text

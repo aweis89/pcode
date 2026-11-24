@@ -99,7 +99,7 @@ def upgrade_command(prefix: str | None = None, executable: str | None = None) ->
     """How this install upgrades, judged by where its environment lives."""
     parts = Path(prefix or sys.prefix).parts
     if "Cellar" in parts:
-        return "brew update && brew upgrade cruxwell/pcode/pcode"
+        return "brew update && brew upgrade aweis89/tap/pcode"
     if "tools" in parts and "uv" in parts:
         return "uv tool upgrade pcode"
     if "pipx" in parts:

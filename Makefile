@@ -114,18 +114,17 @@ release: ## Tag origin's master as the next release and push it (BUMP=minor|majo
 	@sh scripts/release.sh
 
 brew-stats: ## Homebrew downloads per release and in total (installs plus upgrades, not unique users)
-	@gh api --paginate repos/cruxwell/pcode/releases \
+	@gh api --paginate repos/aweis89/pcode/releases \
 		--jq '.[] | .tag_name as $$tag | .assets[] | select(.name | endswith("-src.tar.gz")) | "\($$tag)\t\(.download_count)"' \
 		| awk -F'\t' '{ print; total += $$2 } END { print "total\t" total + 0 }'
 
 brew-install: ## Alternative: install the latest release via Homebrew (ARGS=--HEAD for master)
-	brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-	brew install $(ARGS) cruxwell/pcode/pcode
+	brew install $(ARGS) aweis89/tap/pcode
 
 brew-update: ## Upgrade the Homebrew build (ARGS=--fetch-HEAD for a HEAD install)
 	brew update
-	brew upgrade $(ARGS) cruxwell/pcode/pcode
+	brew upgrade $(ARGS) aweis89/tap/pcode
 
 brew-uninstall: ## Remove the Homebrew build and tap
 	brew uninstall pcode
-	brew untap cruxwell/pcode
+	brew untap aweis89/tap

@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation
-    url: https://cruxwell.github.io/pcode/
+    url: https://aweis89.github.io/pcode/
     about: Install, providers, configuration and commands.
   - name: Report a security vulnerability
-    url: https://github.com/cruxwell/pcode/security/advisories/new
+    url: https://github.com/aweis89/pcode/security/advisories/new
     about: Please report security issues privately, not as a public issue.

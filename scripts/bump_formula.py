@@ -1,7 +1,9 @@
-"""Point Formula/pcode.rb's stable release at a tag.
+"""Point the tap's Formula/pcode.rb stable release at a tag.
 
-    python scripts/bump_formula.py v0.1.1            # downloads the release's tarball
-    python scripts/bump_formula.py v0.1.1 <sha256>   # hash already known
+    python scripts/bump_formula.py <formula> v0.1.1            # downloads the release's tarball
+    python scripts/bump_formula.py <formula> v0.1.1 <sha256>   # hash already known
+
+<formula> is Formula/pcode.rb in a checkout of aweis89/homebrew-tap.
 
 Sets `url` and `sha256` to the source tarball the publish workflow attaches to
 the tag's GitHub Release (a release asset, so its downloads are counted, which
@@ -17,8 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-FORMULA = Path(__file__).resolve().parent.parent / "Formula" / "pcode.rb"
-TARBALL = "https://github.com/cruxwell/pcode/releases/download/{tag}/pcode-{version}-src.tar.gz"
+TARBALL = "https://github.com/aweis89/pcode/releases/download/{tag}/pcode-{version}-src.tar.gz"
 
 
 def tarball_sha256(url: str) -> str:
@@ -44,23 +45,24 @@ def bump(text: str, url: str, sha256: str) -> str:
     if count == 0:
         text, count = re.subn(r"(?m)^(  head )", lambda m: stable + m.group(1), text, count=1)
     if count != 1:
-        raise SystemExit(f"{FORMULA}: no `url`/`sha256` pair or `head` line to update")
+        raise SystemExit("formula: no `url`/`sha256` pair or `head` line to update")
     return text
 
 
 def main(argv: list[str]) -> None:
-    if len(argv) not in (1, 2) or not re.fullmatch(r"v\d+(\.\d+)*\S*", argv[0]):
+    if len(argv) not in (2, 3) or not re.fullmatch(r"v\d+(\.\d+)*\S*", argv[1]):
         raise SystemExit(__doc__)
-    text = FORMULA.read_text()
+    formula, argv = Path(argv[0]), argv[1:]
+    text = formula.read_text()
     current = release(text)
     wanted = tuple(int(part) for part in re.findall(r"\d+", argv[0]))
     if current is not None and wanted < current:
-        print(f"{FORMULA.name}: already at {'.'.join(map(str, current))}; {argv[0]} is older")
+        print(f"{formula.name}: already at {'.'.join(map(str, current))}; {argv[0]} is older")
         return
     url = TARBALL.format(tag=argv[0], version=argv[0].removeprefix("v"))
     sha256 = argv[1] if len(argv) == 2 else tarball_sha256(url)
-    FORMULA.write_text(bump(text, url, sha256))
-    print(f"{FORMULA.name}: {url} {sha256}")
+    formula.write_text(bump(text, url, sha256))
+    print(f"{formula.name}: {url} {sha256}")
 
 
 if __name__ == "__main__":

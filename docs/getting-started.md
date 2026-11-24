@@ -8,12 +8,10 @@ CI tests both on Linux and macOS.
 With [Homebrew](https://brew.sh/):
 
 ```sh
-brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-brew install cruxwell/pcode/pcode
+brew install aweis89/tap/pcode
 ```
 
-The repository doubles as its own tap, which is why the URL is needed. That
-installs the latest release; add `--HEAD` to track `master` instead. Homebrew
+That installs the latest release; add `--HEAD` to track `master` instead. Homebrew
 installs pcode and its dependencies into a private environment without touching
 your global Python, and adds `shfmt` for nicer command formatting in `/tools`
 and [delta](https://dandavison.github.io/delta/) for
@@ -22,8 +20,8 @@ and [delta](https://dandavison.github.io/delta/) for
 To update or remove it:
 
 ```sh
-brew update && brew upgrade cruxwell/pcode/pcode   # --fetch-HEAD for a --HEAD install
-brew uninstall pcode && brew untap cruxwell/pcode
+brew update && brew upgrade aweis89/tap/pcode   # --fetch-HEAD for a --HEAD install
+brew uninstall pcode && brew untap aweis89/tap
 ```
 
 ### With uv

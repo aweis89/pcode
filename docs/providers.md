@@ -236,7 +236,7 @@ models are left out of `/model`, and naming one tells you what to install.
 
 pcode keeps one Claude Code process per conversation and runs every tool itself.
 A tool round does not start a new process.
-[Anthropic provider options](https://github.com/cruxwell/pcode/blob/master/dev/anthropic-providers.md#direct-sdk-provider)
+[Anthropic provider options](https://github.com/aweis89/pcode/blob/master/dev/anthropic-providers.md#direct-sdk-provider)
 has the design and measurements.
 
 ### Signing in

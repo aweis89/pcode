@@ -11,8 +11,7 @@ can be rewound and forked (in the style of
 and every tool call and diff stays inspectable in normal terminal scrollback.
 
 ```sh
-brew tap cruxwell/pcode https://github.com/cruxwell/pcode.git
-brew install cruxwell/pcode/pcode       # or: uv tool install --python 3.15 'pcode[claude]'
+brew install aweis89/tap/pcode         # or: uv tool install --python 3.15 'pcode[claude]'
 pcode -m claude:claude-sonnet-5         # Claude subscription (/login claude)
 pcode -m antigravity:gemini-4-neon      # Antigravity subscription (/login antigravity)
 pcode -m openai-codex:gpt-5.6-luna      # ChatGPT subscription (/login openai-codex)
@@ -286,4 +285,4 @@ custom [keybindings](keybindings.md), and per-repository settings. See
   [context, limits and caching](context.md), [the transcript](transcript.md).
 
 Working on pcode itself? The contributor notes live in
-[`dev/`](https://github.com/cruxwell/pcode/tree/master/dev) in the repository.
+[`dev/`](https://github.com/aweis89/pcode/tree/master/dev) in the repository.

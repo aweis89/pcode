@@ -13,10 +13,11 @@ That tag is the whole release. `.github/workflows/publish.yml` then:
 3. creates the GitHub Release with generated notes (`--prerelease` for tags
    like `v0.2.0rc1`), with the sdist, wheel and `pcode-X.Y.Z-src.tar.gz`
    (a `git archive` of the tag, which unlike the sdist includes `uv.lock`);
-4. for a plain `vX.Y.Z` tag, runs `scripts/bump_formula.py` and commits the
-   new `url`/`sha256` to `Formula/pcode.rb` on `master`, pointing at that
-   `-src.tar.gz` asset, so `brew upgrade` sees the release. Pre-release tags
-   leave the formula alone.
+4. for a plain `vX.Y.Z` tag, runs `scripts/bump_formula.py` and pushes the
+   new `url`/`sha256` to `Formula/pcode.rb` in
+   [aweis89/homebrew-tap](https://github.com/aweis89/homebrew-tap) (`main`),
+   pointing at that `-src.tar.gz` asset, so `brew upgrade` sees the release.
+   Pre-release tags leave the formula alone.
 
 ## Counting Homebrew installs
 
@@ -42,18 +43,22 @@ git metadata (a GitHub tarball, say) needs the same variable or fails.
 ## Traps
 
 - Homebrew refuses formulae from untrusted taps, but `brew install` with the
-  fully qualified `cruxwell/pcode/pcode` trusts that formula itself. Keep every
+  fully qualified `aweis89/tap/pcode` trusts that formula itself. Keep every
   install and upgrade line in the docs fully qualified, or users hit a
   `brew trust` error instead.
-- Test a formula change by tapping this checkout (`brew tap cruxwell/pcode-test
-  $PWD`) and installing both ways. A HEAD test needs the tap's `head` pointed at
+- Test a formula change by tapping a homebrew-tap checkout
+  (`brew tap aweis89/tap-test $PWD`) and installing both ways. A HEAD test needs the tap's `head` pointed at
   the local branch with `using: :git`. The v0.1.0 tarball has a static version,
   so a stable install never exercises the pretend-version path; only HEAD does.
 
-- The formula commit is pushed with the workflow's `GITHUB_TOKEN`, which does
-  not trigger other workflows, so `ci` never runs on it. It needs `master` to
-  accept that push; branch protection that blocks it breaks step 4 only, and
-  `python3 scripts/bump_formula.py vX.Y.Z` plus a commit fixes it by hand.
+- The formula commit is pushed to the tap with the `HOMEBREW_TAP_DEPLOY_KEY`
+  secret, whose public half is a write deploy key on the tap (`GITHUB_TOKEN`
+  cannot push to another repo). If step 4 fails, run
+  `python3 scripts/bump_formula.py <tap>/Formula/pcode.rb vX.Y.Z` and commit
+  in the tap by hand.
+- The repo was `cruxwell/pcode` from v0.1.0 to v0.1.11 and doubled as its own
+  tap. `tap_migrations.json` at the root moves those users' `cruxwell/pcode`
+  tap installs to `aweis89/tap` on `brew update`; keep it.
 - A failed run leaves the tag in place. If nothing reached PyPI, fix the
   cause, delete the tag (`git push origin :refs/tags/vX.Y.Z` and
   `git tag -d vX.Y.Z`) and release again. Once an upload succeeded the version
@@ -64,7 +69,8 @@ git metadata (a GitHub tarball, say) needs the same variable or fails.
 
 ## One-time setup (done)
 
-The PyPI project lists `cruxwell/pcode`, workflow `publish.yml`, environment
+The PyPI project lists `aweis89/pcode` (re-added after the move from
+`cruxwell`; PyPI pins the owner, so a transfer breaks publishing), workflow `publish.yml`, environment
 `pypi` as its trusted publisher, and the `pypi` environment exists on GitHub.
 Adding a required reviewer to that environment makes every upload wait for a
 click.
