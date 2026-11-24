@@ -3653,6 +3653,16 @@ def main() -> None:
     )
     parser.add_argument("--hosts", action="store_true", help="List running session hosts and exit")
     parser.add_argument(
+        "--launch",
+        nargs="?",
+        const="exit",
+        choices=("exit", "shell"),
+        metavar="THEN",
+        help="Pick a workspace from those with saved sessions and start pcode there; "
+        "THEN is what follows when it quits: exit (default) or a login shell in that "
+        "workspace, for a terminal app's launch command",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="With --hosts: one JSON array, for scripts and plugins"
     )
     host_kinds = ("all", "stale", "idle")
@@ -4136,6 +4146,14 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.email_setup is not None or args.email_listen:
         _email(args, parser)
         return
+    if args.launch:
+        if args.prompt or args.print or args.resume or args.workspace or args.attach is not None:
+            parser.error("--launch picks the workspace and session itself; pass it alone")
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            parser.error("--launch needs a terminal")
+        from pcode.launch import launch
+
+        sys.exit(launch(args.launch, args.session_dir))
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")
     if args.fork and not args.resume:

@@ -102,6 +102,42 @@ Conversations save automatically once you send the first prompt.
 `pcode --continue` resumes the latest one in this directory, and `/resume`
 browses them all.
 
+## Pick a workspace with `--launch`
+
+`pcode --launch` lists the projects you have sessions in, newest first, with
+how many sessions each has and how many are running in the background. It's for
+the moments you aren't in a project yet, such as a terminal window that just
+opened in your home directory.
+
+```text
+pcode
+
+› ~/p/pcode     12 sessions · 2 running · 5m ago
+  ~/p/website   3 sessions · 2d ago
+
+enter new session  c continue  o open folder  q quit
+```
+
+- **Enter** starts a new session in the selected project.
+- **`c`** continues its latest session, attaching if that one is running in a
+  [background host](sessions.md#background-sessions).
+- **`o`** asks for any other folder.
+
+The current directory is listed first unless it's your home directory.
+Sessions from a git worktree count toward their repository. If direnv is
+installed and an `.envrc` applies to the project, pcode starts through
+`direnv exec`, so the project's variables are there even though no shell
+prompt ever loaded them.
+
+To make it what a terminal opens with, use `pcode --launch shell` as the
+terminal's launch command. That adds **`s`** for a plain shell in the selected
+project, and leaves you in a login shell there when pcode quits instead of
+closing the window. In Ghostty:
+
+```ini
+initial-command = /bin/zsh -lc 'pcode --launch shell'
+```
+
 ## Recommended: a worktree per session
 
 If you'll run more than one session on a repository, give each its own git
