@@ -47,8 +47,8 @@ git metadata (a GitHub tarball, say) needs the same variable or fails.
   install and upgrade line in the docs fully qualified, or users hit a
   `brew trust` error instead.
 - Test a formula change by tapping a homebrew-tap checkout
-  (`brew tap aweis89/tap-test $PWD`) and installing both ways. A HEAD test needs the tap's `head` pointed at
-  the local branch with `using: :git`. The v0.1.0 tarball has a static version,
+  (`brew tap aweis89/tap-test $PWD`) and installing both ways. A HEAD test
+  needs the tap's `head` pointed at the local branch with `using: :git`. The v0.1.0 tarball has a static version,
   so a stable install never exercises the pretend-version path; only HEAD does.
 
 - The formula commit is pushed to the tap with the `HOMEBREW_TAP_DEPLOY_KEY`
