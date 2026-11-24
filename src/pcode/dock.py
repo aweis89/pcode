@@ -28,6 +28,7 @@ import secrets
 import socket
 import sys
 import termios
+import time
 from contextlib import suppress
 
 from prompt_toolkit.application import Application
@@ -67,6 +68,17 @@ class Dock:
         self.input = Vt100Input(self._stdin)
         # Writes `pcode;ready` ahead of the first frame, so the card is never shown empty.
         self.writer = popup_surface._OverlayWriter(fd)
+        if trace := os.environ.get("PCODE_DOCK_TRACE"):
+            # Everything drawn on the dock, appended with a timestamp per write.
+            self._trace = open(trace, "a", encoding="utf-8")  # noqa: SIM115
+            write = self.writer.write
+
+            def traced(text: str) -> int:
+                self._trace.write(f"\n@{time.monotonic():.3f} {text!r}")
+                self._trace.flush()
+                return write(text)
+
+            self.writer.write = traced
         self.output = Vt100_Output.from_pty(self.writer, term=os.environ.get("TERM"))
         self.app: Application | None = None
         self._rows = 0
