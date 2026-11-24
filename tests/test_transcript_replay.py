@@ -674,6 +674,33 @@ def test_park_is_only_for_a_submitted_turn_and_not_replayed(monkeypatch):
     asyncio.run(run())
 
 
+def test_a_replay_is_bracketed_for_the_terminal_only_with_marks(monkeypatch):
+    async def run(marks):
+        transcript, output, smooth_scroll = marked_output(monkeypatch, marks=marks, park=False)
+        output.app.output.write_raw = raw = Mock()
+        output.begin_turn("TASK")
+        await output.flush(drain=True)
+        assert smooth_scroll.REPLAY_END not in transcript.console.file.getvalue()
+        transcript.console.file.seek(0)
+        transcript.console.file.truncate()
+
+        output.regenerate(transcript.replay)
+        await output.flush()
+        return raw.call_args_list[-1].args[0], transcript.console.file.getvalue(), smooth_scroll
+
+    cleared, written, smooth_scroll = asyncio.run(run(True))
+    # Before the clear, so the terminal still has the reader's place; after
+    # the rows, so their marks are there to find it by.
+    assert cleared == smooth_scroll.REPLAY_BEGIN + "\x1b[H\x1b[2J\x1b[3J"
+    assert written.endswith(smooth_scroll.REPLAY_END)
+    assert written.count(smooth_scroll.REPLAY_END) == 1
+    assert smooth_scroll.mark(smooth_scroll.MARK_TURN) in written
+
+    cleared, written, smooth_scroll = asyncio.run(run(False))
+    assert cleared == "\x1b[H\x1b[2J\x1b[3J"
+    assert smooth_scroll.REPLAY_END not in written
+
+
 def test_park_goes_to_the_submitted_prompt_not_a_pending_one(monkeypatch):
     async def run():
         transcript, output, smooth_scroll = marked_output(monkeypatch)

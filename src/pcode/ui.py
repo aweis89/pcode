@@ -2717,7 +2717,10 @@ class TerminalOutput:
                             # The handoff has erased the editor. Clear the
                             # normal-screen history and home before replay; its
                             # exit will request fresh CPR and restore the draft.
-                            self.app.output.write_raw("\x1b[H\x1b[2J\x1b[3J")
+                            # With marks, the terminal keeps a reader scrolled
+                            # back where they were (`REPLAY_BEGIN`).
+                            begin = smooth_scroll.REPLAY_BEGIN if self.marks else ""
+                            self.app.output.write_raw(begin + "\x1b[H\x1b[2J\x1b[3J")
                             self.app.output.flush()
                             handoff.top_row = 1
                             self._enqueue(pending, width, replay=True)
@@ -2733,6 +2736,8 @@ class TerminalOutput:
                         self._typed = typed
                         counter = RowCounter(self.console.file)
                         written = "".join(self._row_text(row) for row in chunk)
+                        if rebuilt and self.marks:
+                            written += smooth_scroll.REPLAY_END
                         if self._park_off and not self.rows and not self.pending:
                             written += smooth_scroll.PARK_OFF
                             self._park_off = False

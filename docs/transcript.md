@@ -396,7 +396,8 @@ diffs, `g` and `G` to the top and bottom, and `y` to copy a response or
 snippet. `Space` starts and pauses a steady scroll at reading speed, and
 holding it down runs three times as fast until you let go. `l` or the right
 arrow speeds it up, `h` or the left arrow slows it down, and `k` stops it and
-goes back up. pcode asks the terminal at launch whether it can mark rows, so the
+goes back up. Resizing the window while you are scrolled back keeps you at
+the same place in the conversation. pcode asks the terminal at launch whether it can mark rows, so the
 jumps work in any Ghostty Smooth build with reader mode. With `reader_park` on (it's off by default), the screen stops
 following a new answer once your prompt reaches the top, so the answer's
 start stays in view, and you read on from there in reader mode.

@@ -67,6 +67,12 @@ PARK = "\x1b_smooth;park\x1b\\"
 # The turn's rows are all written: a park that never came due is dropped, so
 # later output cannot park at an old prompt.
 PARK_OFF = "\x1b_smooth;park;off\x1b\\"
+# Around a replay that clears the scrollback and writes it again (a resize):
+# the terminal notes where a reader scrolled back is, between which marks,
+# and scrolls back there once the rows and their marks are written again.
+# A build without it ignores both.
+REPLAY_BEGIN = "\x1b_smooth;replay;begin\x1b\\"
+REPLAY_END = "\x1b_smooth;replay;end\x1b\\"
 
 
 def mark(kind: int) -> str:

@@ -198,10 +198,29 @@ The keys are a media player's, not a pager's (fork `b5b137905`, `ce7783bb3`):
 - **The seam at the bottom.** Cruising down is a viewport glide until the
   viewport becomes active again, where the region conveyor takes over. That
   handoff has to look continuous, including when a batch glide is in flight.
-- **Resize while reading back.** pcode's resize replay clears scrollback
-  (`\x1b[H\x1b[2J\x1b[3J`) and rewrites it. Marks are re-emitted but the
-  viewport lands at the bottom. Either accept that or have the terminal
-  remember which mark it was at and pin again.
+- **Resize while reading back: built, not yet seen in a running app.**
+  pcode's resize replay clears scrollback (`\x1b[H\x1b[2J\x1b[3J`) and
+  rewrites it, which used to leave the viewport at the bottom. pcode now
+  writes `smooth;replay;begin` before the clear and `smooth;replay;end`
+  after the rows, whenever it writes marks. At `begin` a viewport in
+  history becomes an anchor (`ViewportGlide.Anchor`): how many marks of
+  any kind lie below its top row, and how far that row is between the
+  mark above and the mark below, as a fraction. At `end` the terminal
+  finds the same two marks and scrolls to the same fraction between them.
+  - A fraction, not a row offset: the rows wrap differently the second
+    time, so a section of 40 rows may come back as 25.
+  - Counted from the bottom, so scrollback evicted off the top does not
+    shift it.
+  - Fewer marks afterwards than were below the reader: the viewport is
+    left where the clear put it. A place now inside the active area is
+    the bottom.
+  - No protocol version for it. pcode takes a query reply only up to the
+    version it knows, so a bump would turn gliding off in every pcode not
+    yet updated. A fork build without the verbs logs a warning and
+    ignores them.
+  - To check by eye: that nothing moves the viewport between the window
+    resizing and pcode's `begin` (Ghostty's own reflow keeps a pinned
+    viewport), and how it looks through a drag, which replays many times.
 - **Full-screen popups.** They redraw the conversation afterwards, so the
   reading position is lost. Overlay popups, the normal case in Ghostty
   Smooth, are not affected. Accepted for now.
