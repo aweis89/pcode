@@ -97,9 +97,17 @@ terminal it measures drawing `─` two cells wide when it starts (a CJK locale, 
 iTerm2's *Treat ambiguous-width characters as double width*). Under tmux that
 measures tmux's own widths rather than the terminal's, so set `glyphs ascii`
 there yourself. `glyphs unicode` keeps standard Unicode symbols regardless, and
-`glyphs nerd` forces Nerd Font icons (used automatically in Ghostty, which embeds
-them) when you have a Nerd Font configured in another terminal or tmux; see
-[Nerd Font icons in iTerm2](#nerd-font-icons) for a worked setup.
+`glyphs nerd` forces Nerd Font icons when you have a Nerd Font configured in
+another terminal or tmux; see [Nerd Font icons in iTerm2](#nerd-font-icons) for
+a worked setup.
+
+**Icons and spinners in Ghostty and kitty.** Both terminals bundle a Nerd Font
+(kitty since 0.36), so outside tmux `glyphs auto` draws Nerd Font icons there
+with nothing to install. Both also speak the Kitty graphics protocol, which
+pcode uses for smooth, anti-aliased spinners that the terminal animates on its
+own clock (`smooth_spinner`, on by default). Other terminals, iTerm2 included,
+get text spinners instead. On a kitty older than 0.36, where the icons show as
+boxes, set `glyphs unicode`.
 
 **Colors look blotchy, or the editor box has lines instead of shading.** pcode
 uses 24-bit color when the terminal says so (`COLORTERM=truecolor`), when it is
@@ -155,8 +163,9 @@ separate feature; pcode doesn't write to it.
 
 ### Nerd Font icons
 
-pcode only uses Nerd Font icons in iTerm2 when you ask for them, since it
-can't tell which font a profile draws with. You don't have to give up your
+Unlike [Ghostty and kitty](#symbols-and-colors), iTerm2 ships no Nerd Font,
+so pcode only uses Nerd Font icons there when you ask for them; it can't tell
+which font a profile draws with. You don't have to give up your
 text font. iTerm2 can draw just the icons from a symbols-only Nerd Font:
 
 1. Install the font: `brew install --cask font-symbols-only-nerd-font`.

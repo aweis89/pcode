@@ -681,7 +681,8 @@ SETTINGS = {
         "auto",
         ("auto", "nerd", "unicode", "ascii"),
         description="Draw icons, marks, borders and spinners as Nerd Fonts, Unicode, or ASCII "
-        "(auto: Nerd Fonts in Ghostty, ASCII on Linux console/non-UTF-8/wide, else Unicode)",
+        "(auto: Nerd Fonts in Ghostty and kitty, ASCII on Linux console/non-UTF-8/wide, "
+        "else Unicode)",
     ),
     "color_depth": Setting(
         "auto",

@@ -267,8 +267,8 @@ def wanted_nerd(
     """Whether `glyphs` asks for Nerd Font icons.
 
     `auto` turns them on only in terminals known to embed Nerd Fonts out of the
-    box (Ghostty / Ghostty Smooth, outside tmux so attaching from another
-    terminal does not draw missing-glyph boxes). Users with a local Nerd Font
+    box (Ghostty / Ghostty Smooth, and kitty since 0.36), outside tmux so
+    attaching from another terminal does not draw missing-glyph boxes. Users with a local Nerd Font
     in another terminal or tmux can set `glyphs nerd`.
     """
     if ascii_on or setting in ("ascii", "unicode"):
@@ -278,7 +278,9 @@ def wanted_nerd(
     env = os.environ if env is None else env
     if env.get("TMUX") or env.get("STY"):
         return False
-    return env.get("TERM") == "xterm-ghostty" or env.get("TERM_PROGRAM") == "ghostty"
+    if env.get("TERM") == "xterm-ghostty" or env.get("TERM_PROGRAM") == "ghostty":
+        return True
+    return env.get("TERM") == "xterm-kitty" or bool(env.get("KITTY_WINDOW_ID"))
 
 
 def apply_nerd(on: bool) -> bool:
