@@ -119,20 +119,33 @@ enter new session  c continue  o open folder  q quit
 ```
 
 - **Enter** starts a new session in the selected project.
-- **`c`** continues its latest session, attaching if that one is running in a
+- **`c`** continues the project's newest session, even one that ran in a
+  worktree or subdirectory, attaching if it's running in a
   [background host](sessions.md#background-sessions).
-- **`o`** asks for any other folder.
+- **`o`** asks for any other folder. Tab completes, and a folder dragged in
+  from Finder works too.
 
 The current directory is listed first unless it's your home directory.
-Sessions from a git worktree count toward their repository. If direnv is
-installed and an `.envrc` applies to the project, pcode starts through
-`direnv exec`, so the project's variables are there even though no shell
-prompt ever loaded them.
+Sessions from a git worktree count toward their repository. Sessions that never
+got a prompt aren't counted, and scratch directories under `/tmp` or the system
+temp folder are left out unless you start from one. With no sessions yet, the
+screen says so and **Enter** asks for a folder.
+
+If direnv is installed and an `.envrc` applies to the project, pcode starts
+through `direnv exec`, so the project's variables are there even though no shell
+prompt ever loaded them. It does the same when the shell you launched from has
+another project's variables loaded, so they don't leak across. A blocked
+`.envrc` stops the launch with direnv's message; run `direnv allow` there.
+
+`--model`, `--host`, `--worktree`, `--no-save` and `--session-dir` pass through
+to the session it starts (only `--host` and `--session-dir` when continuing,
+since a session keeps its own model).
 
 To make it what a terminal opens with, use `pcode --launch shell` as the
 terminal's launch command. That adds **`s`** for a plain shell in the selected
-project, and leaves you in a login shell there when pcode quits instead of
-closing the window. In Ghostty:
+project, and leaves you in a login shell there when pcode quits (even by
+Ctrl-C) instead of closing the window. Quitting the picker gives you a shell
+where you started. In Ghostty:
 
 ```ini
 initial-command = /bin/zsh -lc 'pcode --launch shell'

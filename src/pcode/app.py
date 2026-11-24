@@ -4147,13 +4147,46 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         _email(args, parser)
         return
     if args.launch:
-        if args.prompt or args.print or args.resume or args.workspace or args.attach is not None:
-            parser.error("--launch picks the workspace and session itself; pass it alone")
+        refused = (
+            args.prompt,
+            args.print,
+            args.resume,
+            args.workspace,
+            args.attach is not None,
+            args.fork,
+            args.sessions,
+            args.compact,
+            args.theme_preview,
+            args.hosts,
+            args.json,
+            args.kill_hosts,
+            args.restart_hosts,
+        )
+        if any(refused):
+            parser.error(
+                "--launch picks the workspace and session itself; it only takes "
+                "--model, --host, --worktree, --no-save and --session-dir"
+            )
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             parser.error("--launch needs a terminal")
         from pcode.launch import launch
 
-        sys.exit(launch(args.launch, args.session_dir))
+        # Passed on to the pcode it starts: `always` to any session, `fresh`
+        # only to a new one (a continued session keeps its model and workspace).
+        always, fresh = [], []
+        if args.session_dir:
+            always += ["--session-dir", str(args.session_dir.resolve())]
+        if args.host is not None:
+            always.append("--host" if args.host else "--no-host")
+        if args.model:
+            fresh += ["--model", args.model]
+        if args.worktree:
+            fresh.append("--worktree" if args.worktree is True else f"--worktree={args.worktree}")
+        if args.no_worktree:
+            fresh.append("--no-worktree")
+        if args.no_save:
+            fresh.append("--no-save")
+        sys.exit(launch(args.launch, args.session_dir, always=always, fresh=fresh))
     if args.resume and (args.no_save or args.theme_preview):
         parser.error("--continue cannot be combined with --no-save or --theme-preview")
     if args.fork and not args.resume:

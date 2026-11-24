@@ -7,10 +7,14 @@ of the picker (its imports, its project root) carries into the session.
 """
 
 import os
+import re
+import select
+import shlex
 import shutil
 import sys
+import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +30,10 @@ Kind = Literal["new", "continue", "shell"]
 _UP = {"\x1b[A", "\x1bOA", "k", "\x10"}
 _DOWN = {"\x1b[B", "\x1bOB", "j", "\x0e"}
 _QUIT = {"q", "\x1b", "\x03", "\x04"}
+# One key per match: a CSI or SS3 sequence, else a single character.
+_KEY = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1bO.|.", re.DOTALL)
+# How long a lone Esc waits for the rest of an arrow key split across reads.
+_ESCAPE_WAIT = 0.05
 
 
 @dataclass(frozen=True)
@@ -34,12 +42,15 @@ class Workspace:
     sessions: int = 0
     running: int = 0
     updated: float = 0.0
+    # The newest session's ID: what `c` continues, wherever in the project it ran.
+    latest: str = ""
 
 
 @dataclass(frozen=True)
 class Choice:
     kind: Kind
     path: Path
+    session: str = ""
 
 
 def _timestamp(text: str) -> float:
@@ -49,40 +60,72 @@ def _timestamp(text: str) -> float:
         return 0.0
 
 
-def workspaces(sessions: Sequence, hosts: Sequence, *, cwd: Path, home: Path) -> list[Workspace]:
+def temporary_roots() -> list[Path]:
+    """Where scratch directories live; a session there is not a project to return to."""
+    roots = {Path("/tmp"), Path("/var/tmp"), Path("/var/folders"), Path(tempfile.gettempdir())}
+    return sorted({root.resolve() for root in roots} | roots)
+
+
+def workspaces(
+    sessions: Sequence,
+    hosts: Sequence,
+    *,
+    cwd: Path,
+    home: Path,
+    temporary: Sequence[Path] = (),
+) -> list[Workspace]:
     """Projects with saved sessions, most recently used first, after `cwd`.
 
     A session in a linked worktree counts toward its repository, since the
     worktree is usually gone and a new session there starts from the project.
-    Directories that no longer exist are dropped. `cwd` leads so the screen
-    also works as "start here", except at `home`, where nobody means to.
+    Sessions that never had a turn, directories that no longer exist, and
+    anything under a `temporary` root are dropped. `cwd` leads so the screen
+    also works as "start here", except at `home`, which is listed only for the
+    sessions it has.
     """
     found: dict[Path, Workspace] = {}
     project_of: dict[str, Path] = {}
-    for info in sessions:
+    for info in sessions:  # newest first, so a row's first session is its latest
         path = Path(info.project or info.workspace)
         project_of[info.id] = path
+        if not info.turns:
+            continue
         seen = found.get(path, Workspace(path))
         found[path] = Workspace(
-            path, seen.sessions + 1, seen.running, max(seen.updated, _timestamp(info.updated))
+            path,
+            seen.sessions + 1,
+            seen.running,
+            max(seen.updated, _timestamp(info.updated)),
+            seen.latest or info.id,
         )
     for entry in hosts:
+        if entry.session_id not in project_of and not entry.workspace:
+            continue
         path = project_of.get(entry.session_id) or Path(entry.workspace)
         seen = found.get(path, Workspace(path))
         found[path] = Workspace(
-            path, seen.sessions, seen.running + 1, max(seen.updated, entry.updated)
+            path, seen.sessions, seen.running + 1, max(seen.updated, entry.updated), seen.latest
         )
+    lead = cwd != home
     rows = sorted(
-        (row for row in found.values() if row.path != cwd and row.path.is_dir()),
+        (
+            row
+            for row in found.values()
+            if not (lead and row.path == cwd)
+            and row.path.is_dir()
+            and not any(row.path.is_relative_to(root) for root in temporary)
+        ),
         key=lambda row: row.updated,
         reverse=True,
     )
-    if cwd != home:
+    if lead:
         rows.insert(0, found.get(cwd, Workspace(cwd)))
     return rows
 
 
 def short(path: Path, home: Path) -> str:
+    if path == home:
+        return "~"
     try:
         return str(Path("~") / path.relative_to(home))
     except ValueError:
@@ -118,13 +161,17 @@ def render(
     message: str = "",
 ) -> list[str]:
     """The screen as plain lines; the selected row is marked with `›`."""
-    keys = ["enter new session", "c continue", "o open folder"]
+    keys = ["enter new session", "c continue", "o open folder"] if rows else ["enter open folder"]
     if then == "shell":
         keys.append("s shell")
     keys.append("q quit")
     lines = ["pcode", ""]
     if not rows:
-        lines.append("  No workspaces yet. Press o to open a folder.")
+        lines += [
+            "  Welcome. pcode works inside a project folder: it reads, edits and",
+            "  runs things there. Press enter to choose one.",
+        ]
+        lines = [_cut(line, width) for line in lines]
     # A path's tail names the project, so a long one loses its head, and never
     # so much of the line that the session counts are pushed off it.
     limit = max(12, width - 40)
@@ -133,8 +180,9 @@ def render(
         for name in (short(row.path, home) for row in rows)
     ]
     column = max((len(name) for name in names), default=0)
-    # Keep the selection in view: the list scrolls in a window of `room` rows.
-    room = max(1, height - 5)
+    # Keep the selection in view: the list scrolls in a window of `room` rows,
+    # which leaves the title, two blank lines, the keys and a message line.
+    room = max(1, height - 6)
     first = min(max(0, selected - room + 1), max(0, len(rows) - room))
     for index in range(first, min(len(rows), first + room)):
         mark = "›" if index == selected else " "
@@ -146,6 +194,11 @@ def render(
     return lines
 
 
+def split_keys(data: str) -> list[str]:
+    """Keys from one read, which can hold several (typeahead, auto-repeat)."""
+    return _KEY.findall(data)
+
+
 def step(key: str, selected: int, rows: Sequence[Workspace], then: str = "exit"):
     """One keypress: the new selection, and a Choice, "open", "quit" or None."""
     if key in _QUIT:
@@ -153,6 +206,10 @@ def step(key: str, selected: int, rows: Sequence[Workspace], then: str = "exit")
     if key == "o":
         return selected, "open"
     if not rows:
+        if key in ("\r", "\n"):
+            return selected, "open"
+        if key == "s" and then == "shell":
+            return selected, "quit"  # which in this mode is a shell right here
         return selected, None
     if key in _UP:
         return max(0, selected - 1), None
@@ -161,8 +218,8 @@ def step(key: str, selected: int, rows: Sequence[Workspace], then: str = "exit")
     row = rows[selected]
     if key in ("\r", "\n"):
         return selected, Choice("new", row.path)
-    if key == "c" and row.sessions:
-        return selected, Choice("continue", row.path)
+    if key == "c" and row.latest:
+        return selected, Choice("continue", row.path, row.latest)
     if key == "s" and then == "shell":
         return selected, Choice("shell", row.path)
     return selected, None
@@ -177,62 +234,117 @@ def command(
     then: str,
     *,
     shell: str,
-    extra: Sequence[str] = (),
+    always: Sequence[str] = (),
+    fresh: Sequence[str] = (),
     python: str = sys.executable,
     which: Callable[[str], str | None] = shutil.which,
+    environ: Mapping[str, str] = os.environ,
 ) -> list[str]:
     """The argv that replaces this process, run from `choice.path`.
 
+    `always` goes to any pcode started and `fresh` only to a new session. A
+    continued session is named by ID, since "this directory's latest" misses
+    one that ran in a worktree or a subdirectory of the project.
+
     pcode goes through `direnv exec` when an `.envrc` applies: direnv's shell
     hook fires at a prompt, which a terminal's launch command never shows, so
-    the workspace's variables would otherwise be silently missing.
+    the workspace's variables would otherwise be silently missing. Likewise
+    when this process already carries another directory's variables
+    (`DIRENV_DIR`), which `direnv exec` unloads.
     """
     login = [shell, "-l"]
     if choice.kind == "shell":
         return login
-    run = [python, "-m", "pcode.cli", *extra]
-    if choice.kind == "continue":
-        run.append("-c")
-    if which("direnv") and _has_envrc(choice.path):
+    run = [python, "-m", "pcode.cli", *always]
+    run += ["--continue", choice.session] if choice.kind == "continue" else fresh
+    if which("direnv") and (_has_envrc(choice.path) or environ.get("DIRENV_DIR")):
         run = ["direnv", "exec", str(choice.path), *run]
     if then != "shell":
         return run
-    # `$0` is the login shell: whatever pcode's exit status, the pane stays open.
-    return ["/bin/sh", "-c", '"$@"; exec "$0" -l', shell, *run]
+    # `$0` is the login shell, so the pane stays open however pcode ends. The
+    # trap keeps a Ctrl-C that kills pcode from taking this wrapper with it;
+    # a trapped (not ignored) signal is back to its default in pcode itself.
+    return ["/bin/sh", "-c", 'trap : INT; "$@"; trap - INT; exec "$0" -l', shell, *run]
 
 
-def read_key(fd: int) -> str:
-    data = os.read(fd, 32)
-    return data.decode(errors="replace")
+def read_keys(fd: int) -> list[str]:
+    data = os.read(fd, 64)
+    if not data:
+        return ["q"]  # the terminal went away
+    if data.endswith(b"\x1b") and select.select([fd], [], [], _ESCAPE_WAIT)[0]:
+        data += os.read(fd, 64)
+    return split_keys(data.decode(errors="replace"))
 
 
 def _draw(lines: Sequence[str]) -> None:
-    out = ["\x1b[H\x1b[2J"]
+    out = []
     for index, line in enumerate(lines):
         if index == 0:
             line = f"\x1b[1m{line}\x1b[m"
         elif line.startswith("›"):
             line = f"\x1b[7m{line}\x1b[m"
-        out.append(line + "\r\n")
-    sys.stdout.write("".join(out))
+        out.append(line)
+    # No newline after the last line: a full screen would scroll the title off.
+    sys.stdout.write("\x1b[H\x1b[2J" + "\r\n".join(out))
     sys.stdout.flush()
 
 
+def parse_folder(text: str) -> tuple[Path | None, str]:
+    """A typed or dragged-in path as (folder, "") or (None, why not)."""
+    text = text.strip()
+    if not text:
+        return None, ""
+    try:
+        # Finder drops a path shell-quoted (`My\ Folder`); a typed one may
+        # hold bare spaces, which is then several words and taken as written.
+        words = shlex.split(text)
+    except ValueError:
+        words = []
+    path = Path(words[0] if len(words) == 1 else text).expanduser()
+    if not path.is_dir():
+        return None, f"{text} is not a directory."
+    return path.resolve(), ""
+
+
+def _complete_paths() -> None:
+    """Tab completes directories at the folder prompt, where readline exists."""
+    try:
+        import readline
+    except ImportError:
+        return
+
+    def complete(text: str, state: int) -> str | None:
+        base = Path(text).expanduser()
+        parent, stem = (base, "") if text.endswith("/") or not text else (base.parent, base.name)
+        try:
+            names = sorted(
+                entry.name
+                for entry in parent.iterdir()
+                if entry.name.startswith(stem) and entry.is_dir()
+            )
+        except OSError:
+            return None
+        head = text[: len(text) - len(stem)]
+        return f"{head}{names[state]}/" if state < len(names) else None
+
+    readline.set_completer(complete)
+    readline.set_completer_delims("")
+    # macOS ships libedit under the readline name, with its own binding syntax.
+    libedit = "libedit" in (readline.__doc__ or "")
+    readline.parse_and_bind("bind ^I rl_complete" if libedit else "tab: complete")
+
+
 def _ask_folder(restore: Callable[[], None], resume: Callable[[], None]) -> tuple[Path | None, str]:
-    """Read a path on a normal line; (folder, "") or (None, why not)."""
+    """Read a path on a normal line, outside the picker's screen."""
     restore()
     try:
-        text = input("Folder: ").strip()
+        _complete_paths()
+        text = input("Folder (tab completes, empty to go back): ")
     except EOFError, KeyboardInterrupt:
         text = ""
     finally:
         resume()
-    if not text:
-        return None, ""
-    path = Path(text).expanduser()
-    if not path.is_dir():
-        return None, f"{text} is not a directory."
-    return path.resolve(), ""
+    return parse_folder(text)
 
 
 def pick(rows: list[Workspace], then: str, *, home: Path) -> Choice | None:
@@ -269,22 +381,39 @@ def pick(rows: list[Workspace], then: str, *, home: Path) -> Choice | None:
                     message=message,
                 )
             )
-            selected, action = step(read_key(fd), selected, rows, then)
             message = ""
-            if action == "quit":
-                return None
-            if action == "open":
-                folder, message = _ask_folder(restore, resume)
-                if folder is not None:
-                    return Choice("new", folder)
-            elif action is not None:
-                return action
+            for key in read_keys(fd):
+                selected, action = step(key, selected, rows, then)
+                if action == "quit":
+                    return None
+                if action == "open":
+                    folder, message = _ask_folder(restore, resume)
+                    if folder is not None:
+                        return Choice("new", folder)
+                    break  # keys typed before the prompt are not for the list
+                if action is not None:
+                    return action
     finally:
         restore()
 
 
-def launch(then: str, session_dir: Path | None = None) -> int:
-    """Show the picker and replace this process with the choice; 0 when quit."""
+def _login_shell() -> str:
+    shell = os.environ.get("SHELL", "")
+    return shell if shell and os.access(shell, os.X_OK) else "/bin/sh"
+
+
+def launch(
+    then: str,
+    session_dir: Path | None = None,
+    *,
+    always: Sequence[str] = (),
+    fresh: Sequence[str] = (),
+) -> int:
+    """Show the picker and replace this process with the choice.
+
+    Quitting returns 0, except that `then="shell"` promised a shell: the
+    window this is the launch command of would otherwise close.
+    """
     from pcode.cli import restore_stdin
     from pcode.host_protocol import list_hosts
     from pcode.sessions import list_sessions
@@ -293,17 +422,28 @@ def launch(then: str, session_dir: Path | None = None) -> int:
     # starts both need the terminal as it was, and exec skips every cleanup.
     restore_stdin()
     home = Path.home()
-    rows = workspaces(list_sessions(session_dir), list_hosts(), cwd=Path.cwd(), home=home)
+    try:
+        cwd = Path.cwd()
+    except OSError:  # started in a directory that has since been deleted
+        cwd = home
+    # Scratch directories are noise, unless that is where this was started.
+    temporary = temporary_roots()
+    if any(cwd.is_relative_to(root) for root in temporary):
+        temporary = []
+    rows = workspaces(
+        list_sessions(session_dir), list_hosts(), cwd=cwd, home=home, temporary=temporary
+    )
     choice = pick(rows, then, home=home)
     if choice is None:
-        return 0
-    extra = ["--session-dir", str(session_dir.resolve())] if session_dir else []
-    argv = command(choice, then, shell=os.environ.get("SHELL") or "/bin/sh", extra=extra)
+        if then != "shell":
+            return 0
+        choice = Choice("shell", cwd)
+    argv = command(choice, then, shell=_login_shell(), always=always, fresh=fresh)
     try:
         os.chdir(choice.path)
+        os.environ["PWD"] = str(choice.path)  # getcwd is right; an inherited PWD is not
+        sys.stdout.flush()
+        os.execvp(argv[0], argv)
     except OSError as error:
-        print(f"pcode: cannot enter {choice.path}: {error.strerror}", file=sys.stderr)
+        print(f"pcode: cannot start in {choice.path}: {error.strerror}", file=sys.stderr)
         return 2
-    os.environ["PWD"] = str(choice.path)  # getcwd is right; an inherited PWD is not
-    sys.stdout.flush()
-    os.execvp(argv[0], argv)

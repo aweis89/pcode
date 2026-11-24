@@ -327,9 +327,11 @@ result. It wraps everything below in one installable app.
   to the same code.
 - **Environment.** A login shell gives `PATH` but not direnv, whose hook fires
   at a prompt, not under `-c`. `--launch` runs `direnv exec <workspace> pcode`
-  when direnv is installed and an `.envrc` applies. A blocked `.envrc` makes
-  that fail with direnv's own message rather than starting without the
-  variables. Still to test from the app with fish, zsh, and bash.
+  when direnv is installed and an `.envrc` applies, or when `DIRENV_DIR` says
+  the launching shell carries another directory's variables. A blocked
+  `.envrc` makes that fail with direnv's own message rather than starting
+  without the variables; with `shell` the login shell still follows. Still to
+  test from the app with fish, zsh, and bash.
 - **What a split runs.** `command` (every pane is pcode) or `initial-command`
   (first pane is pcode, splits are shells). A shell beside the agent is the
   common want, so start from `initial-command` plus a keybinding that opens a
