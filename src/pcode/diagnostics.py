@@ -98,6 +98,10 @@ def _error_details(error: BaseException, seen: set[int]) -> dict:
     status = getattr(error, "status_code", None)
     if isinstance(status, int):
         result["status"] = status
+    # `ModelRequestTimeout` names which deadline ran out; only one is retryable.
+    setting = getattr(error, "setting", None)
+    if isinstance(setting, str):
+        result["setting"] = setting
     body = getattr(error, "body", None)
     if isinstance(body, dict):
         detail = body.get("error", body)
@@ -157,6 +161,13 @@ def transient(error: BaseException) -> bool:
         if "status" in detail:
             return False
         if detail["type"] in TRANSIENT_TRANSPORT:
+            retryable = True
+        # Nothing was streamed, so resending replays nothing. `request_timeout`
+        # is not retried: it bounds a whole answer, which a resend would repeat.
+        if (
+            detail["type"] == "ModelRequestTimeout"
+            and detail.get("setting") == "first_event_timeout"
+        ):
             retryable = True
         if detail["type"] in {"APIError", "ModelAPIError"}:
             retryable |= (

@@ -480,6 +480,14 @@ SETTINGS = {
         whole_number=True,
         description="Automatic retries after a dropped connection or streamed overload; 0 disables",
     ),
+    # Without it a Gemini request that never streams waits out the Google
+    # provider's 20-minute read timeout. 5 minutes matches Codex's stream idle
+    # timeout and Claude Code's event watchdog; shorter cuts off deep thinking.
+    "first_event_timeout": Setting(
+        "300",
+        whole_number=True,
+        description="Seconds a model request may stream nothing before it is retried; 0 disables",
+    ),
     # Pydantic AI's default of 1 ends the turn on a second malformed call, which a
     # long `replacements` array can hit by itself.
     "tool_retries": Setting(

@@ -48,6 +48,7 @@ from pcode.planning import IdentifiedPlanning
 from pcode.preferences import SETTINGS, load_preferences, subagent_models
 from pcode.repo_context import create_repo_context
 from pcode.shell_tools import JobShell
+from pcode.stream_timeout import FirstEventTimeout
 from pcode.strict_tools import create_strict_tools, provider_strict_off
 from pcode.tool_output_limits import create_tool_output_limits
 from pcode.worker_channel import ChildChannel
@@ -375,6 +376,7 @@ def _delegation(
             # Extension sub-agents have no coder of their own to set it.
             ClaudeWorkspace(workspace, fallback=True),
             ModelOutputLimits(),
+            FirstEventTimeout(),
             ImageGate(),
             *([replace(cache_notices)] if cache_notices else []),
             ProviderCacheSettings(),
@@ -414,6 +416,7 @@ def create_coder(
         IdentifiedPlanning(),
         DelegationReporting(),
         ModelOutputLimits(),
+        FirstEventTimeout(),
         ImageGate(),
         *turn_limits(),
     ]

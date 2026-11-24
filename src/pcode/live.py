@@ -1870,6 +1870,11 @@ def error_message(error: Exception, *, unexpected: str | None = None) -> str:
             "Check provider/proxy connectivity and retry when ready. "
             "See the saved session diagnostics."
         )
+    if "ModelRequestTimeout" in names:
+        from pydantic_ai.exceptions import ModelRequestTimeout
+
+        # Pydantic AI's own message: the model name and the seconds, nothing private.
+        return f"{find_cause(error, ModelRequestTimeout)}."
     if names & {"APITimeoutError", "ConnectTimeout", "ReadTimeout", "WriteTimeout"}:
         return (
             "Provider request timed out. Check provider/proxy connectivity and retry when ready. "
