@@ -23,7 +23,8 @@ CODEC = "pcode-ascii"
 
 # Canonical UI icons in standard Unicode and in Nerd Fonts (Codicons 16x16 UI
 # set, plus Octicons' skip and cpu). Every Nerd Font codepoint here is 1 cell
-# wide and bundled in Ghostty's embedded SymbolsNerdFontMono-Regular.
+# wide and bundled in the Symbols Nerd Font Mono that Ghostty and kitty (0.36+)
+# embed.
 ICONS: dict[str, str] = {
     "shell": "$",
     "search": "⌕",
@@ -267,9 +268,12 @@ def wanted_nerd(
     """Whether `glyphs` asks for Nerd Font icons.
 
     `auto` turns them on only in terminals known to embed Nerd Fonts out of the
-    box (Ghostty / Ghostty Smooth, and kitty since 0.36), outside tmux so
-    attaching from another terminal does not draw missing-glyph boxes. Users with a local Nerd Font
-    in another terminal or tmux can set `glyphs nerd`.
+    box (Ghostty, and kitty since 0.36), outside tmux so attaching from another
+    terminal does not draw missing-glyph boxes. Users with a local Nerd Font in
+    another terminal or tmux can set `glyphs nerd`.
+
+    kitty is trusted by `TERM` alone: `KITTY_WINDOW_ID` is inherited by any
+    terminal launched from a kitty shell (VS Code via `code .`, Alacritty).
     """
     if ascii_on or setting in ("ascii", "unicode"):
         return False
@@ -280,7 +284,7 @@ def wanted_nerd(
         return False
     if env.get("TERM") == "xterm-ghostty" or env.get("TERM_PROGRAM") == "ghostty":
         return True
-    return env.get("TERM") == "xterm-kitty" or bool(env.get("KITTY_WINDOW_ID"))
+    return env.get("TERM") == "xterm-kitty"
 
 
 def apply_nerd(on: bool) -> bool:

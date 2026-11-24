@@ -128,8 +128,10 @@ def test_when_ascii_is_wanted(setting, env, wide, expected):
         ("auto", {"TERM": "xterm-ghostty", "TMUX": "/tmp/s,1,0"}, False, False),
         ("auto", {"TERM_PROGRAM": "ghostty", "STY": "1234.pts-0.host"}, False, False),
         ("auto", {"TERM": "xterm-kitty"}, False, True),
-        ("auto", {"TERM": "xterm-256color", "KITTY_WINDOW_ID": "1"}, False, True),
+        # Inherited by terminals launched from a kitty shell, so not trusted.
+        ("auto", {"TERM_PROGRAM": "vscode", "KITTY_WINDOW_ID": "1"}, False, False),
         ("auto", {"TERM": "xterm-kitty", "TMUX": "/tmp/s,1,0"}, False, False),
+        ("auto", {"TERM": "xterm-kitty", "STY": "1234.pts-0.host"}, False, False),
         ("auto", {"TERM_PROGRAM": "iTerm.app"}, False, False),
         ("auto", {"TERM": "xterm-ghostty"}, True, False),
         ("nerd", {"TERM": "xterm-256color"}, False, True),

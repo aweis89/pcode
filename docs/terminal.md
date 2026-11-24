@@ -105,9 +105,9 @@ a worked setup.
 (kitty since 0.36), so outside tmux `glyphs auto` draws Nerd Font icons there
 with nothing to install. Both also speak the Kitty graphics protocol, which
 pcode uses for smooth, anti-aliased spinners that the terminal animates on its
-own clock (`smooth_spinner`, on by default). Other terminals, iTerm2 included,
-get text spinners instead. On a kitty older than 0.36, where the icons show as
-boxes, set `glyphs unicode`.
+own clock (`smooth_spinner`, on by default outside tmux with 24-bit color).
+Other terminals, iTerm2 included, get text spinners instead. On a kitty older
+than 0.36, where the icons show as boxes, set `glyphs unicode`.
 
 **Colors look blotchy, or the editor box has lines instead of shading.** pcode
 uses 24-bit color when the terminal says so (`COLORTERM=truecolor`), when it is
