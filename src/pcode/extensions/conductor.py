@@ -60,7 +60,6 @@ PARENT_ONLY_TOOLS = frozenset({"ask_host", "send_to_host", "wait_for_hosts", "st
 StateFilter = Literal["all", "working", "idle", "stopped"]
 WaitMode = Literal["all", "any"]
 SendMode = Literal["queue", "steering", "interrupt"]
-SENT_STATUS = {"queue": "queued", "steering": "steered", "interrupt": "interrupted"}
 
 # Serialize concurrent auto-resumes for the same saved session ID so parallel
 # tool calls (e.g. ask_host + send_to_host) spawn at most one host.
@@ -512,7 +511,10 @@ def setup(pcode) -> None:
             except (HostError, OSError) as error:
                 raise ToolFailed(f"Could not send to host {entry.id}: {error}") from None
             result = {
-                "status": SENT_STATUS[mode],
+                # Steering into an idle host starts a turn, and interrupting one cancels
+                # nothing, so the tool cannot say which happened; it reports the send.
+                "status": "queued" if mode == "queue" else "sent",
+                "mode": mode,
                 "host_id": entry.id,
                 "session_id": entry.session_id,
                 "workspace": entry.workspace,

@@ -195,7 +195,8 @@ async def host_call(
     try:
         return await controller.peer.request(method, text, *args)
     except RemoteError as error:
-        if error.type_name == "PermissionError":
+        # A host older than the extra arguments refuses them with a TypeError.
+        if error.type_name == "PermissionError" or (args and error.type_name == "TypeError"):
             raise HostError(
                 "The session host runs older pcode; /restart it to send it messages headlessly."
             ) from error

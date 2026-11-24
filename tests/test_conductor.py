@@ -552,7 +552,8 @@ def test_send_to_host_steers_and_interrupts_running_turn(tmp_path):
                     while not host.controller.turn_running():
                         await asyncio.sleep(0.02)
                     steered = await send(ctx, "h-steer", "focus on tests", mode="steering")
-                    assert steered["status"] == "steered"
+                    assert steered["status"] == "sent"
+                    assert steered["mode"] == "steering"
                     # Waiting to join the running turn, not queued behind it.
                     assert host.controller.prompts.steering() == 1
 
@@ -571,10 +572,26 @@ def test_send_to_host_steers_and_interrupts_running_turn(tmp_path):
                     await send(ctx, "h-steer", "another long turn")
                     while not host.controller.turn_running():
                         await asyncio.sleep(0.02)
+                    controller = host.controller
+                    submitted = []
+                    real_submit = controller.submit
+
+                    def record_submit(text, mode, **kwargs):
+                        submitted.append((text, mode, controller.turn_running()))
+                        real_submit(text, mode, **kwargs)
+
+                    controller.submit = record_submit
+                    gated_turn = controller.live_task
                     task = asyncio.create_task(
                         send(ctx, "h-steer", "stop and do this", wait=True, mode="interrupt")
                     )
-                    await asyncio.sleep(0.2)
+                    while not submitted:
+                        await asyncio.sleep(0.02)
+                    # It reached the host while the gated turn still ran, and cancelled it.
+                    assert submitted == [("stop and do this", "interrupt", True)]
+                    await asyncio.wait_for(asyncio.wait({gated_turn}), timeout=5.0)
+                    # Ended with its model request still gated: cut short, not finished.
+                    assert gated_turn.result() is False
                     gate.set()
                     interrupted = await asyncio.wait_for(task, timeout=10.0)
                     assert interrupted["status"] == "completed"
