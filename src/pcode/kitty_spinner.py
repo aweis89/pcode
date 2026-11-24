@@ -106,7 +106,10 @@ def worth_asking(env: Mapping[str, str] | None = None) -> bool:
 
     Only Ghostty and kitty are asked (outside tmux/screen and with 24-bit color),
     because other terminals either lack virtual placements/animations or may
-    echo unknown APC sequences.
+    echo unknown APC sequences. iTerm2 is not one of them despite claiming
+    Kitty graphics: 3.5/3.6 answer the query `OK` without placeholders, and a
+    3.7 nightly (2026-11) draws the placeholder but never advances its frames,
+    so the spinner sits frozen.
     """
     env = os.environ if env is None else env
     if env.get("TMUX") or env.get("STY"):
