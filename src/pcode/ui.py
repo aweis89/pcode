@@ -4517,7 +4517,7 @@ class PromptLayout:
     def frame_shaded(self) -> bool:
         """Whether the boxes are drawn as shades rather than lines (`frame_style`)."""
         return (
-            self.activity.frame_style == "shaded"
+            (self.activity.frame_style == "shaded" or dock.active() is not None)
             and self.transcript is not None
             and self.transcript.frame_shade() is not None
         )
@@ -5527,7 +5527,10 @@ class Transcript:
 
     def prompt_style(self, task_style: str = "status", frame_style: str = "borders") -> Style:
         """The prompt_toolkit style for the current theme, syntax, task and frame style."""
-        shades = self.frame_shades() if frame_style == "shaded" else None
+        # SPIKE: docked, the card is the frame: the box goes "shaded" in the
+        # terminal's own background, so its lines vanish and its rows stay.
+        shaded = frame_style == "shaded" or dock.active() is not None
+        shades = self.frame_shades() if shaded else None
         return self.chrome_palette.prompt_style(self.menu_palette, task_style, shades)
 
     def frame_shade(self) -> str | None:
@@ -5555,6 +5558,8 @@ class Transcript:
             return None
         else:
             background = self.palette.surface
+        if dock.active() is not None:
+            return background, background
         return frame_shade(background, theme), header_shade(background, theme)
 
     @property
