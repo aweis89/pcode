@@ -994,6 +994,21 @@ final class PCodeRunningSpinnerView: NSView {
         applyColors()
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateBackingScale()
+    }
+
+    private func updateBackingScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        spinnerContainer.contentsScale = scale
+        trackLayer.contentsScale = scale
+        arcLayer.contentsScale = scale
+        CATransaction.commit()
+    }
+
     func startAnimating(color: NSColor) {
         lastAccentColor = color
         applyColors()
@@ -1016,6 +1031,7 @@ final class PCodeRunningSpinnerView: NSView {
     }
 
     private func updatePaths() {
+        updateBackingScale()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         spinnerContainer.frame = bounds
@@ -1322,13 +1338,13 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             iconView.contentTintColor = call.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
         }
 
-        let elapsedWidth: CGFloat = (call.isRunning && call.startedAt != nil) ? 44 : 0
-        let copyWidth: CGFloat = showCopy ? 54 : 0
+        let elapsedWidth: CGFloat = (call.isRunning && call.startedAt != nil) ? 54 : 0
+        let copyWidth: CGFloat = showCopy ? max(64, ceil(copyButton.frame.width)) : 0
         let chevronWidth: CGFloat = canExpand ? 26 : 10
         let rightControlsWidth = chevronWidth + (showCopy ? copyWidth + 4 : 0) + (elapsedWidth > 0 ? elapsedWidth + 4 : 0)
 
         let leftPad: CGFloat = 26
-        let rightPad: CGFloat = isExpanded ? chevronWidth : rightControlsWidth
+        let rightPad: CGFloat = rightControlsWidth
         let topPad: CGFloat = 5
         let bottomPad: CGFloat = 5
         let textWidth = max(1, width - leftPad - rightPad)
@@ -1343,12 +1359,12 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         iconView.frame = iconFrame
         spinnerView.frame = iconFrame
 
-        // Clicking anywhere on a collapsed pill (or the top header row of an expanded card) toggles it,
-        // while keeping the expanded output body free for text selection.
+        // Clicking anywhere on a collapsed pill (or the first header line of an expanded card)
+        // toggles it, while keeping line 2+ (command & output body) free for text selection.
         headerTapButton.isHidden = !canExpand
         if canExpand {
             let tapWidth = max(0, width - rightControlsWidth)
-            let tapHeight = isExpanded ? Self.headerTapHeight : contentHeight
+            let tapHeight = isExpanded ? 18 : contentHeight
             headerTapButton.frame = CGRect(x: 0, y: 0, width: tapWidth, height: tapHeight)
         }
 

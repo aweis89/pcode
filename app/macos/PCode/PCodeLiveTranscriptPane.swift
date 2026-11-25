@@ -130,10 +130,11 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 documentView.setItems([], pinToBottom: true)
                 reducer.reset()
                 for event in welcome.history {
-                    reducer.apply(event, reveal: false)
+                    reducer.apply(event, reveal: false, isLive: false)
                 }
+                reducer.settleHistory()
                 for event in welcome.catchUpCalls {
-                    reducer.apply(event, reveal: false)
+                    reducer.apply(event, reveal: false, isLive: true)
                 }
                 documentView.scrollToBottomAndPin()
                 self.setConnectionState(.connectedHost(hostID: welcome.hostID))
@@ -195,8 +196,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.tailInode = initial.inode
                 self.tailDev = initial.dev
                 for event in initial.events {
-                    reducer.apply(event, reveal: false)
+                    reducer.apply(event, reveal: false, isLive: false)
                 }
+                reducer.settleHistory()
                 documentView.scrollToBottomAndPin()
 
                 // Arm kqueue watcher first, then drain any bytes written during initial load.
@@ -449,8 +451,11 @@ enum PCodeUISurface: Equatable {
 final class PCodeNativeTranscriptMode: ObservableObject {
     static let shared = PCodeNativeTranscriptMode()
     @Published var enabled: Bool = {
-        let raw = ProcessInfo.processInfo.environment["PCODE_NATIVE_TRANSCRIPT"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return raw != "0" && raw != "false" && raw != "off"
+        guard let raw = ProcessInfo.processInfo.environment["PCODE_NATIVE_TRANSCRIPT"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        else { return true }
+        return !["0", "false", "off", "no"].contains(raw)
     }()
 }
 

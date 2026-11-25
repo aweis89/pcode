@@ -93,9 +93,10 @@ struct PCodePeekToolCall: Identifiable {
 
     static func formatDuration(_ elapsed: Double) -> String {
         if elapsed < 10 { return String(format: "%.1fs", elapsed) }
-        if elapsed < 60 { return "\(Int(elapsed.rounded()))s" }
-        let mins = Int(elapsed) / 60
-        let secs = Int(elapsed) % 60
+        if elapsed < 59.5 { return "\(Int(elapsed.rounded()))s" }
+        let totalSecs = Int(elapsed.rounded())
+        let mins = totalSecs / 60
+        let secs = totalSecs % 60
         return "\(mins)m\(secs)s"
     }
 }

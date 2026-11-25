@@ -848,10 +848,11 @@ struct PCodeTranscriptTests {
         #expect(doc.items[childIdx!].depth == 1)
 
         // CommandOutput caps tail lines and upserts onto existing tool call
-        let hugeOutput = (1...80).map { "out_\($0)" }.joined(separator: "\n")
+        let totalLines = PCodeTranscriptEventReducer.maxCommandOutputLines + 20
+        let hugeOutput = (1...totalLines).map { "out_\($0)" }.joined(separator: "\n")
         reducer.apply(.commandOutput(callID: "parent-1", command: "make test", output: hugeOutput), reveal: false)
         if case .tool(let updatedCall, _) = doc.items[parentIdx!].payload {
-            #expect(updatedCall.output.contains("out_80"))
+            #expect(updatedCall.output.contains("out_\(totalLines)"))
             #expect(updatedCall.output.contains("earlier lines omitted"))
         } else {
             Issue.record("Expected updated tool call")
@@ -1196,5 +1197,34 @@ struct PCodeTranscriptTests {
         } else {
             Issue.record("Expected shell_mode_abc to settle in-place")
         }
+
+        // Completed edit_file diff card must NOT be overwritten by settleRunningItems at turnEnded.
+        reducer.apply(.turnStarted(prompt: "Edit file", isSide: false, runID: "r3"), reveal: true)
+        reducer.apply(.toolStarted(callID: "e1", parentCallID: "", name: "edit_file", detail: "foo.py", command: "", purpose: ""), reveal: true)
+        reducer.apply(.editCompleted(callID: "e1", parentCallID: "", path: "foo.py", operation: "edit", patch: "+a\n-b", added: 1, removed: 1, truncated: false), reveal: true)
+        reducer.apply(.toolSummary(callID: "e1", parentCallID: "", name: "edit_file", detail: "foo.py", command: "", failed: false, elapsedSeconds: 0.3, error: "", result: nil, isBackgroundJob: false), reveal: true)
+        reducer.apply(.turnEnded(status: .complete), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-e1"), case .diff(let payload, _) = doc.items[idx].payload {
+            #expect(payload.path == "foo.py")
+            #expect(payload.added == 1)
+            #expect(!payload.isPreview)
+        } else {
+            Issue.record("Expected completed diff card e1 to survive turnEnded")
+        }
+
+        // Clearing EditPreview (empty path) removes the preview card cleanly.
+        reducer.apply(.turnStarted(prompt: "Preview", isSide: false, runID: "r4"), reveal: true)
+        reducer.apply(.editPreview(callID: "edit-preview:0", path: "bar.py", text: "+x", kind: "edit"), reveal: true)
+        #expect(doc.indexOfItem(id: "call-edit-preview:0") != nil)
+        reducer.apply(.editPreview(callID: "edit-preview:0", path: "", text: "", kind: "edit"), reveal: true)
+        #expect(doc.indexOfItem(id: "call-edit-preview:0") == nil)
+
+        // Expanding a running silent shell command auto-collapses when it settles with no output.
+        reducer.apply(.toolStarted(callID: "s1", parentCallID: "", name: "shell", detail: "sleep 1", command: "sleep 1", purpose: ""), reveal: true)
+        let children = (doc.accessibilityChildren() as? [PCodeTranscriptAccessibilityRowElement]) ?? []
+        #expect(children.first { $0.itemID == "call-s1" }?.accessibilityPerformPress() == true)
+        #expect(doc.isItemExpanded(id: "call-s1"))
+        reducer.apply(.toolSummary(callID: "s1", parentCallID: "", name: "shell", detail: "sleep 1", command: "sleep 1", failed: false, elapsedSeconds: 1.0, error: "", result: "", isBackgroundJob: false), reveal: true)
+        #expect(!doc.isItemExpanded(id: "call-s1"))
     }
 }

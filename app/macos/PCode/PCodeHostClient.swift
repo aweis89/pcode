@@ -344,17 +344,26 @@ final class PCodeTranscriptEventReducer {
         pendingChildrenByParent.removeAll()
     }
 
-    func apply(_ event: PCodeHostEvent, reveal: Bool) {
+    /// Settle any dangling running tools or edit previews left over after replaying settled history.
+    func settleHistory() {
         guard let doc = documentView else { return }
+        settleRunningItems(failed: false, in: doc)
+    }
+
+    func apply(_ event: PCodeHostEvent, reveal: Bool, isLive: Bool? = nil) {
+        guard let doc = documentView else { return }
+        let liveClock = isLive ?? reveal
         switch event {
         case .conversationReset:
             reset()
             doc.setItems([], pinToBottom: true)
 
         case .turnStarted(let prompt, let isSide, _):
+            settleRunningItems(failed: false, in: doc)
             activeThinkingID = nil
             activeThinkingText = ""
             activePlanItemID = nil
+            activeShellModeCallID = nil
             lastAuthoritativePlan.removeAll()
             streamedTextInCurrentMessage = false
             turnAlreadyTerminated = false
@@ -433,7 +442,7 @@ final class PCodeTranscriptEventReducer {
                 command: command.isEmpty ? (existing?.command ?? "") : command,
                 output: existing?.output ?? "",
                 isRunning: true,
-                startedAt: existing?.startedAt ?? (reveal ? Date() : nil),
+                startedAt: existing?.startedAt ?? (liveClock ? Date() : nil),
                 isBackgroundJob: existing?.isBackgroundJob ?? false)
             toolCallsByID[callID] = call
             let depth = parentCallID.isEmpty ? 0 : 1
@@ -469,6 +478,7 @@ final class PCodeTranscriptEventReducer {
                     failed: failed,
                     elapsedSeconds: elapsed ?? existingDiff.elapsedSeconds)
                 diffsByCallID[key] = merged
+                toolCallsByID.removeValue(forKey: key)
                 let item = PCodeTranscriptItem(
                     id: itemID,
                     payload: .diff(merged, isExpanded: doc.isItemExpanded(id: itemID)),
@@ -505,7 +515,7 @@ final class PCodeTranscriptEventReducer {
             let depth = toolDepthByID[key] ?? (parentCallID.isEmpty ? 0 : 1)
             let item = PCodeTranscriptItem(
                 id: itemID,
-                payload: .tool(call, isExpanded: doc.isItemExpanded(id: itemID)),
+                payload: .tool(call, isExpanded: call.canExpand && doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: depth)
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
@@ -533,7 +543,7 @@ final class PCodeTranscriptEventReducer {
                 command: command.isEmpty ? (existing?.command ?? "") : command,
                 output: capped,
                 isRunning: stillRunning,
-                startedAt: stillRunning ? (existing?.startedAt ?? (reveal ? Date() : nil)) : nil,
+                startedAt: stillRunning ? (existing?.startedAt ?? (liveClock ? Date() : nil)) : nil,
                 isBackgroundJob: existing?.isBackgroundJob ?? false)
             toolCallsByID[callID] = call
             let depth = toolDepthByID[callID] ?? 0
@@ -546,11 +556,16 @@ final class PCodeTranscriptEventReducer {
             doc.upsertItem(item, reveal: false)
 
         case .editPreview(let callID, let path, let text, let kind):
-            guard kind == "edit", !path.isEmpty else { return }
-            let depth = toolDepthByID[callID] ?? 0
-            let existingTool = toolCallsByID[callID]
-            let existingDiff = diffsByCallID[callID]
             let itemID = "call-\(callID)"
+            if path.isEmpty {
+                diffsByCallID.removeValue(forKey: callID)
+                doc.removeItem(id: itemID)
+                return
+            }
+            guard kind == "edit" else { return }
+            let depth = toolDepthByID[callID] ?? 0
+            let existingTool = toolCallsByID.removeValue(forKey: callID)
+            let existingDiff = diffsByCallID[callID]
             let payload = PCodeDiffPayload(
                 callID: callID,
                 path: path,
@@ -577,7 +592,7 @@ final class PCodeTranscriptEventReducer {
             toolCounter += 1
             let key = callID.isEmpty ? "edit-\(toolCounter)" : callID
             let depth = parentCallID.isEmpty ? (toolDepthByID[key] ?? 0) : 1
-            let existingTool = toolCallsByID[key]
+            let existingTool = toolCallsByID.removeValue(forKey: key)
             let existingDiff = diffsByCallID[key]
             let itemID = "call-\(key)"
             let payload = PCodeDiffPayload(
@@ -613,11 +628,10 @@ final class PCodeTranscriptEventReducer {
         case .turnEnded(let status):
             activeThinkingID = nil
             activeThinkingText = ""
+            activeShellModeCallID = nil
             streamedTextInCurrentMessage = false
-            // Settle any tool calls or edit previews that were still running when the turn ended
-            // (e.g. cancelled or failed turns, or historical replays without a closing ToolSummary).
-            settleRunningItems(failed: status != .complete, in: doc)
-            // Flush any unresolved orphan children before ending the turn.
+            // Flush any unresolved orphan children BEFORE settling running items so flushed
+            // orphans are settled too and cannot overwrite settled items back to `isRunning`.
             if !pendingChildrenByParent.isEmpty {
                 let leftovers = pendingChildrenByParent.values.flatMap { $0 }
                 pendingChildrenByParent.removeAll()
@@ -625,6 +639,9 @@ final class PCodeTranscriptEventReducer {
                     doc.upsertItem(orphan, reveal: reveal)
                 }
             }
+            // Settle any tool calls or edit previews that were still running when the turn ended
+            // (e.g. cancelled or failed turns, or historical replays without a closing ToolSummary).
+            settleRunningItems(failed: status != .complete, in: doc)
             if turnAlreadyTerminated && status == .complete {
                 // `cancelled` was already emitted right before `after_turn`; don't overwrite with `.complete`.
                 return
@@ -637,6 +654,7 @@ final class PCodeTranscriptEventReducer {
         case .user(let text):
             // User `!command` shell mode emits `user` outside a model turn.
             guard text.hasPrefix("!") else { return }
+            activeShellModeCallID = nil
             doc.beginStreamingTurn(prompt: text, isSide: false, forcePin: false, reveal: reveal)
 
         case .shellResult(let command, let output, let failed, let elapsedSeconds):
@@ -664,19 +682,22 @@ final class PCodeTranscriptEventReducer {
             let itemID = "call-\(key)"
             let item = PCodeTranscriptItem(
                 id: itemID,
-                payload: .tool(call, isExpanded: doc.isItemExpanded(id: itemID)),
+                payload: .tool(call, isExpanded: call.canExpand && doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: 0)
             doc.upsertItem(item, reveal: reveal)
             doc.finishStreamingTurn(status: failed ? .failed : .complete, reveal: reveal)
 
         case .dropOutput(let callID):
+            // `drop_output` always fires in `run_shell`'s finally block before `shell_result`;
+            // stop the spinner without prematurely flashing red (a real failure sets `failed`
+            // in `shell_result` or `turnEnded`).
             guard let existing = toolCallsByID[callID], existing.isRunning else { return }
             let settled = PCodePeekToolCall(
                 id: existing.id,
                 name: existing.name,
                 detail: existing.detail,
-                failed: true,
+                failed: existing.failed,
                 elapsedSeconds: existing.elapsedSeconds,
                 command: existing.command,
                 output: existing.output,
@@ -687,7 +708,7 @@ final class PCodeTranscriptEventReducer {
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
                 id: itemID,
-                payload: .tool(settled, isExpanded: doc.isItemExpanded(id: itemID)),
+                payload: .tool(settled, isExpanded: settled.canExpand && doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: toolDepthByID[callID] ?? 0)
             doc.upsertItem(item, reveal: false)
@@ -703,7 +724,7 @@ final class PCodeTranscriptEventReducer {
     }
 
     private func settleRunningItems(failed: Bool, in doc: PCodeTranscriptDocumentView) {
-        for (callID, call) in toolCallsByID where call.isRunning {
+        for (callID, call) in toolCallsByID where call.isRunning && diffsByCallID[callID] == nil {
             let settled = PCodePeekToolCall(
                 id: call.id,
                 name: call.name,
@@ -719,12 +740,18 @@ final class PCodeTranscriptEventReducer {
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
                 id: itemID,
-                payload: .tool(settled, isExpanded: doc.isItemExpanded(id: itemID)),
+                payload: .tool(settled, isExpanded: settled.canExpand && doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: toolDepthByID[callID] ?? 0)
             doc.upsertItem(item, reveal: false)
         }
         for (callID, diff) in diffsByCallID where diff.isPreview {
+            let itemID = "call-\(callID)"
+            if callID.hasPrefix("edit-preview:") {
+                diffsByCallID.removeValue(forKey: callID)
+                doc.removeItem(id: itemID)
+                continue
+            }
             let settled = PCodeDiffPayload(
                 callID: diff.callID,
                 path: diff.path,
@@ -739,7 +766,6 @@ final class PCodeTranscriptEventReducer {
                 failed: diff.failed || failed,
                 elapsedSeconds: diff.elapsedSeconds)
             diffsByCallID[callID] = settled
-            let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
                 id: itemID,
                 payload: .diff(settled, isExpanded: doc.isItemExpanded(id: itemID)),
