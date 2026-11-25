@@ -18,6 +18,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, get_app_or_none
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
+from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus
@@ -5223,6 +5224,10 @@ def create_prompt(
         return [(style, " " * pad + CONTINUATION_PREFIX)]
 
     kwargs.setdefault("color_depth", color_depth())
+    # Block in vi navigation, bar in insert (and emacs), underline in replace.
+    # Every renderer reset (exit, each handoff) sends CSI 0 q, so the
+    # terminal's own shape is back whenever the editor isn't painting.
+    kwargs.setdefault("cursor", ModalCursorShapeConfig())
     output = kwargs.pop("output", None)
     if not isinstance(output, CursorSafeOutput):
         output = CursorSafeOutput(output if output is not None else create_output())
