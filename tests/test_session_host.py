@@ -1559,6 +1559,7 @@ def test_the_app_restart_signal_exits_without_resuming_here_when_the_move_fails(
     asyncio.run(run())
 
 
+@pytest.mark.in_process("exits a session running in this terminal")
 def test_the_app_restart_signal_exits_past_an_open_popup(tmp_path, host_dir):
     async def run():
         output = StringIO()
