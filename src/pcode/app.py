@@ -2193,27 +2193,36 @@ class PreviewApp:
         # meanwhile waits for `controller.start`.
         if interrupted:
             controller.continue_interrupted()
-        self._carry_typed(self.controller, controller)
+        unrun: list[str] = []
+        self._carry_typed(self.controller, controller, unrun)
         where = (
             f"Moved mid-turn; continuing in the background host {identity}"
             if interrupted
             else f"Moved to background session {identity}"
         )
-        await self.adopt_controller(
-            controller,
-            welcome,
-            f"{where}: /detach or closing the terminal now leaves it running",
-            handed_off=True,
-        )
+        try:
+            await self.adopt_controller(
+                controller,
+                welcome,
+                f"{where}: /detach or closing the terminal now leaves it running",
+                handed_off=True,
+                unrun=unrun,
+            )
+        finally:
+            # After the replay, which would redraw it away.
+            if unrun:
+                self.transcript.warning(
+                    "Not run, as this terminal is exiting; run again in the new one if "
+                    "still wanted: " + ", ".join(unrun)
+                )
 
-    def _carry_typed(self, previous: SessionController, controller) -> None:
+    def _carry_typed(self, previous: SessionController, controller, unrun: list[str]) -> None:
         """Send what was typed for `previous` on to the host it moved into, in order.
 
         A command the terminal runs itself queues here, as a hosted terminal's
         always does, unless this process is exiting for an app restart, which
-        would cancel it unrun: it is named instead.
+        would cancel it unrun: it goes in `unrun`, for the caller to name.
         """
-        unrun = []
         for text, mode in previous.take_typed():
             if mode != COMMAND_MODE:
                 controller.submit(text, mode)
@@ -2223,11 +2232,6 @@ class PreviewApp:
                 unrun.append(text)
             else:
                 self._run_in_terminal(text, self._popup_generation)
-        if unrun:
-            self.transcript.warning(
-                "Not run, as this terminal is exiting; run again in the new one if still "
-                "wanted: " + ", ".join(unrun)
-            )
 
     @staticmethod
     def _retire(previous: SessionController) -> None:
@@ -2482,14 +2486,17 @@ class PreviewApp:
         *,
         handed_off: bool = False,
         preserve_welcome: bool = False,
+        unrun: list[str] | None = None,
     ) -> None:
         """Show the host behind `controller` in this terminal, leaving the current session.
 
         A session running in this process ends here (its journal keeps it for
         /resume or `pcode -c`); another host keeps running. `handed_off`: the
         session moved into that host, which has its turn and what was typed
-        for it already (`_hand_to_host`); typed since goes there too.
+        for it already (`_hand_to_host`); typed since goes there too, with
+        terminal commands that will not run collected in `unrun`.
         """
+        unrun = [] if unrun is None else unrun
         previous = self.controller
         if isinstance(previous, SessionController):
             # Handed off: the host now runs that same conversation.
@@ -2507,7 +2514,7 @@ class PreviewApp:
             except BaseException:
                 if handed_off:
                     # Cancelled (a quit) or failed: the host has the session all the same.
-                    self._carry_typed(previous, controller)
+                    self._carry_typed(previous, controller, unrun)
                     self._retire(previous)
                     self.transcript.warning(
                         f"This session carries on in the background host {controller.id}; "
@@ -2523,7 +2530,7 @@ class PreviewApp:
             # No await from here to the swap, so nothing typed falls between.
             if handed_off:
                 # Typed while it was let go: meant for the session, which runs there.
-                self._carry_typed(previous, controller)
+                self._carry_typed(previous, controller, unrun)
             else:
                 previous.clear_queue()  # Says what was dropped, as leaving it always has.
         else:

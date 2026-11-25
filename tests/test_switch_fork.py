@@ -417,8 +417,7 @@ def test_the_handoff_is_not_carried_to_the_host_as_typed(tmp_path):
 
 def test_a_move_carries_what_was_typed_in_the_order_it_was_typed(tmp_path):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
-    output = StringIO()
-    app = PreviewApp(model="m", runtime=Busy(saved), console=Console(file=output))
+    app = app_with(Busy(saved))
     sent, here = [], []
 
     class Host:
@@ -436,20 +435,20 @@ def test_a_move_carries_what_was_typed_in_the_order_it_was_typed(tmp_path):
         controller.command("/help")  # The terminal's own: run here, not in the host.
         controller.submit("second", "steering")
         controller.command("/compact")
-        app._carry_typed(controller, Host())
+        unrun = []
+        app._carry_typed(controller, Host(), unrun)
         assert sent == [
             ("/effort high", "command"),
             ("first", "queue"),
             ("second", "steering"),
             ("/compact", "command"),
         ]
-        assert here == ["/help"]
-        # Exiting for an app restart, which would cancel it unrun: named instead.
+        assert here == ["/help"] and unrun == []
+        # Exiting for an app restart, which would cancel it unrun: for the move to name.
         app.app_restart_requested = True
         controller.command("/help")
-        app._carry_typed(controller, Host())
-        assert here == ["/help"]
-        assert "Not run, as this terminal is exiting" in output.getvalue()
+        app._carry_typed(controller, Host(), unrun)
+        assert here == ["/help"] and unrun == ["/help"]
     finally:
         saved.close()
 

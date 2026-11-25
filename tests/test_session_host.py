@@ -1558,12 +1558,19 @@ def test_the_app_restart_signal_moves_a_local_session_to_a_host_then_exits(tmp_p
 
         async def drive(pipe, seen):
             await hang_with_a_queued_message(app, script, pipe, seen)
+            # A terminal command waiting its turn: the exit would cancel it unrun.
+            app.controller.handoff_idle.clear()
+            app.controller.command("/help")
+            await until(lambda: app.controller.held_commands)
             os.kill(os.getpid(), signal.SIGUSR2)
 
         try:
             spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
             await run_local(app, output, drive, spawn)
             host = hosts[0]
+            shown = " ".join(output.getvalue().replace("▎", "").split())
+            assert "Not run, as this terminal is exiting; run again in the new one" in shown
+            assert "still wanted: /help" in shown
             assert host.carry_received is None and app.detach_requested
             assert "keeps running in the background. Reattach: pcode --attach cccc3333" in (
                 output.getvalue()
