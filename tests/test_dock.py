@@ -6,8 +6,11 @@ from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
+from prompt_toolkit.data_structures import Size
+from rich.console import Console
 
-from pcode import dock
+from pcode import dock, smooth_scroll
+from pcode.ui import SYNC_END, SYNC_START, TerminalOutput
 
 
 class FakePane:
@@ -172,3 +175,106 @@ def test_close_lets_the_pane_scroll_whole_again(docked):
     text = docked.pane.take()
     assert "\x1b7\x1b[r\x1b8" in text
     assert text.endswith(dock._apc("dock-close"))
+
+
+def test_a_stale_reply_after_a_replay_is_dropped(docked):
+    answer(docked, 10)
+    docked.ask_cursor()
+    docked.homed()
+    docked.wrote(2)
+    # Asked before the replay homed the cursor: it says nothing now.
+    answer(docked, 7)
+    assert docked.pane_row == 2
+
+
+def test_growing_with_the_cursor_unknown_drops_the_old_reply_and_asks_again(docked):
+    answer(docked, 24)
+    docked.ask_cursor()
+    docked._rows = 5
+    docked._move_card_edge()
+    docked.pane.take()
+    # The reply to the question asked before the scroll is from before it.
+    answer(docked, 24)
+    assert docked.pane_row is None
+    assert docked.pane.take() == "\x1b[6n"
+    answer(docked, 22)
+    assert docked.pane_row == 22
+    assert docked.pane.take() == ""
+
+
+def test_growing_with_the_cursor_unknown_scrolls_no_further_than_the_last_row_says(docked):
+    answer(docked, 4)
+    docked.ask_cursor()
+    docked.wrote(2)
+    docked.pane.take()
+    docked._rows = 5
+    docked._move_card_edge()
+    # Row 6 is well inside the new region: only its bottom moves.
+    assert docked.pane.take() == "\x1b7\x1b[1;23r\x1b8"
+    assert docked._requery
+
+
+def test_a_reply_below_the_region_sets_it_again(docked):
+    answer(docked, 10)
+    docked.pane.take()
+    # The terminal lost the region (a reset): rows went on to the pane's bottom.
+    answer(docked, 27)
+    assert docked.pane.take() == "\x1b[r\x1b[30;1H" + "\n" * 3 + "\x1b[1;25r\x1b[25;1H"
+    assert docked.pane_row == 24
+
+
+def test_the_layout_budget_is_in_the_dock_rows(docked, monkeypatch):
+    size = Size(rows=41, columns=80)
+    assert docked.layout_size(size).rows == 26  # 28 rows less the card's slack
+    monkeypatch.setattr(docked, "_ratio", lambda: 1.5)
+    rows = docked.layout_size(size).rows
+    assert rows == 16
+    # A card that tall still fits the pane, short of the two rows it keeps.
+    assert dock.reserve_for(rows, 30, 1.5) <= 28
+
+
+@pytest.fixture
+def transcript(docked, monkeypatch):
+    """The transcript's output, writing to the docked pane, gliding."""
+    monkeypatch.setattr("pcode.ui.monotonic", lambda: 5.0)
+    monkeypatch.setattr(dock, "_active", docked)
+    app = SimpleNamespace(output=SimpleNamespace(), invalidate=lambda: None)
+    out = TerminalOutput(Console(force_terminal=True, width=80), app)
+    monkeypatch.setattr(out, "_screen_size", lambda: Size(rows=30, columns=80))
+    out.docked_glide = True
+    docked.glide = out._docked_room
+    return out
+
+
+def test_a_rebuilt_frame_sets_the_region_again_first(docked, transcript):
+    answer(docked, 10)
+    text = transcript._docked_frame(docked, "a\nb\n", [(0, 2, True)], rebuilt=True, glide=False)
+    assert text == "\x1b[1;25r\x1b[1;1Ha\nb\n"
+    assert docked.pane_row == 2
+
+
+def test_the_glide_covers_the_whole_pane_and_scrolls_in_the_region(docked, transcript):
+    answer(docked, 24)
+    text = transcript._docked_frame(docked, "x\n", [(0, 1, True)], rebuilt=False, glide=True)
+    # Declared over all 30 rows, the last (under the card) hidden; the row
+    # scrolled in the 25 above the card.
+    assert text.startswith(SYNC_START + smooth_scroll.declaration(29, 80) + "x\n")
+    flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
+    assert smooth_scroll.advance(1, flags=flags) in text
+    assert text.endswith(SYNC_END)
+    assert docked.pane_row == 24
+
+
+def test_making_room_for_the_card_glides_in_one_frame(docked, transcript):
+    answer(docked, 24)
+    docked.pane.take()
+    docked._rows = 5
+    docked._move_card_edge()
+    scroll = "\x1b[25;1H\n\n\x1b[1;23r\x1b[23;1H"
+    assert docked.pane.take() == (
+        SYNC_START
+        + smooth_scroll.declaration(29, 80)
+        + scroll
+        + smooth_scroll.advance(2)
+        + SYNC_END
+    )

@@ -154,6 +154,9 @@ class Dock:
         # pane's resizes pull rows out of scrollback and back, so after one
         # the row is asked again rather than guessed.
         self.pane_row: int | None = None
+        # While a report is out, the last known row moved on by the rows
+        # written since: a guess, for scrolling no further than needed.
+        self._row_hint: int | None = None
         self._pane_size: tuple[int, int] | None = None
         self._cpr_pending = False
         self._asked_at = 0.0
@@ -255,6 +258,8 @@ class Dock:
             self._region = None
             self.reserve = reserve_for(self._rows or INITIAL_ROWS, size.lines, self._ratio())
             self.ask_cursor()
+            # The resize moved rows in and out of scrollback: no guess holds.
+            self._row_hint = None
         elif self._cpr_pending and time.monotonic() - self._asked_at >= CPR_TIMEOUT:
             self.ask_cursor()
         return size.lines
@@ -325,11 +330,19 @@ class Dock:
             self.pane_row = row - lift
             out += _region(new) + _row(self.pane_row)
         elif new < old:
-            # Where the cursor is isn't known (a report is out): it is inside
-            # the region, so scroll as if it were at its bottom and take it up
-            # as far, which keeps it inside the new one; then ask again.
-            lift = old - new
-            out = "\x1b7" + _row(old - 1) + "\n" * lift + f"\x1b8\x1b[{lift}A"
+            # Where the cursor is isn't known (a report is out), but it is
+            # inside the region. Scroll as far as the last known row, moved on
+            # by the rows written since, says it must go (all the way, as if
+            # at the bottom, without one) and take it up as far; then ask
+            # again. Were the guess short, the reply lands below the region
+            # and `_answered` lifts it.
+            hint = old - 1 if self._row_hint is None else self._row_hint
+            lift = max(0, hint - (new - 1))
+            if self._row_hint is not None:
+                self._row_hint -= lift
+            out = ""
+            if lift:
+                out = "\x1b7" + _row(old - 1) + "\n" * lift + f"\x1b8\x1b[{lift}A"
             out += "\x1b7" + _region(new) + "\x1b8"
         else:
             out = "\x1b7" + _region(new) + "\x1b8"
@@ -339,11 +352,13 @@ class Dock:
             out = SYNC_START + before + out + after + SYNC_END
         sys.stdout.write(out)
         sys.stdout.flush()
-        if lift and row is None:
+        if row is None and new < old:
             self.ask_cursor()
 
     def ask_cursor(self) -> None:
         """Ask the pane for its cursor row; the answer comes in with typing."""
+        if self.pane_row is not None:
+            self._row_hint = self.pane_row
         self.pane_row = None
         if self._cpr_pending:
             if time.monotonic() - self._asked_at < CPR_TIMEOUT:
@@ -381,6 +396,11 @@ class Dock:
         if self._stale_reply:
             self._stale_reply = False
             return
+        if self._region is not None and row > self._region - 1:
+            # Below the region pcode set: the terminal dropped it (a resize
+            # not seen yet, a reset, a child's `ESC[r`), so newlines now
+            # scroll the whole pane, under the card. Set it again from here.
+            self._region = None
         bottom = self._bottom() if self._pane_size else row
         self.pane_row = min(bottom, row + self._written_since_ask)
         if self._pane_size and self._region != self._pane_size[0] - self.reserve:
@@ -401,6 +421,8 @@ class Dock:
             self.pane_row = min(self._bottom(), self.pane_row + rows)
         elif self._cpr_pending:
             self._written_since_ask += rows
+            if self._row_hint is not None:
+                self._row_hint = min(self._bottom(), self._row_hint + rows)
 
     def _bridge_spoke(self) -> None:
         try:
@@ -428,7 +450,9 @@ class Dock:
             pane = os.get_terminal_size(sys.stdout.fileno()).lines
         except OSError:
             return size
-        budget = max(1, pane - math.ceil(CARD_SLACK_ROWS))
+        # In the dock's rows, whose cells may differ from the pane's: no more
+        # than a card the pane fits (`reserve_for` never has to cut it short).
+        budget = max(1, math.floor((pane - 2) / self._ratio() - CARD_SLACK_ROWS))
         return Size(rows=min(size.rows, budget), columns=size.columns)
 
     def report_rows(self, app: Application) -> None:
