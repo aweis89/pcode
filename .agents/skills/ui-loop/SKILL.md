@@ -24,14 +24,18 @@ look at it with `read_file`, then drive the interaction that broke.
 
 ```sh
 # In the Ghostty checkout. Use a separate bundle so the user's Pcode.app is untouched.
+# It prints "installed builds/<APP_NAME>-<rev>.app": launch that path.
 APP_NAME=pcode-mytest BUNDLE_ID=com.pcode.terminal.mytest scripts/install-macos.sh --build
 
 # From the pcode repo. Replaces whatever app was on the socket, waits for a terminal.
 G="python3 -I scripts/gdbg.py"
-$G launch --app <ghostty-checkout>/builds/current --command /tmp/run.sh
+$G launch --app <ghostty-checkout>/builds/pcode-mytest-<rev>.app --command /tmp/run.sh
 $G dump                      # windows, surfaces (id, overlay or pane, grid, frame, focus)
 $G snap /tmp/s.png           # then read_file /tmp/s.png
 ```
+
+Don't launch `builds/current`: every install repoints it, whatever the
+`APP_NAME`, so in a checkout other sessions build in it is whoever built last.
 
 `/tmp/run.sh` is whatever the first terminal should run, for example
 `cd /tmp/demo && exec pcode --no-worktree`, or
@@ -45,7 +49,7 @@ harness takes focus from the user unless you run `activate`.
 | --- | --- |
 | Terminal text (what the user sees) | `text -s ID` (`--scope screen` for scrollback, `selection`) |
 | Wait for a state instead of sleeping | `wait 'regex' -s ID --timeout 10` (`--absent` to wait for it to go) |
-| Keys | `key ctrl+a '\\' enter`, `key cmd+shift+]`, `type 'some text'` |
+| Keys | `key ctrl+a backslash enter`, `key cmd+shift+]`, `type 'some text'` |
 | Click / select | `click --cell COL ROW -s ID`, `drag --from-cell 2 3 --to-cell 30 3 -s ID` (replies with the selection) |
 | Which view takes a click | `hit X Y` (window points from the top-left) |
 | Clips, corner radii, shadows, colors | `layers` (SwiftUI clips via layers, so `views` won't show them) |
@@ -70,10 +74,16 @@ launch. `--json` prints the raw reply.
   missing: blur, vibrancy, backdrop layers and the window's own shadow. For
   those, the user has to look, or grant Screen Recording to the app you run in
   and use `screencapture -l <window number from dump>`.
-- **`record` catches only frames that were presented.** It captures each time a
-  terminal presents a frame, plus on a timer for SwiftUI animation. It sees
-  every frame Ghostty presents, but can miss a SwiftUI frame between timer
-  ticks.
+- **`record` samples; it can miss frames.** It captures when a terminal
+  presents a frame and on a timer (for SwiftUI animation and terminals that
+  appear mid-recording), but each capture renders the whole window on the main
+  thread, so presents that land during a capture are merged or lost, and the
+  capturing slows the app it measures. A flagged flash is real; no flag is not
+  proof of no flash. It stops at 900 frames (`hit_frame_cap` in the reply).
+- **Synthetic mouse events skip AppKit tracking loops.** Terminals don't run
+  one, so clicks and drags on them are faithful. A control that does (buttons,
+  split dividers, scrollers, a right-click menu) may stay pressed or open; check
+  with `snap`, and press `escape` or click elsewhere to clear it.
 - **Keys assume a US layout.** Key codes are US ANSI; characters without a key
   are inserted as text.
 - **The Ghostty build has its own traps.** A release tag on `HEAD` fails the

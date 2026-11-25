@@ -26,6 +26,9 @@ import time
 from pathlib import Path
 
 DEFAULT_SOCKET = Path.home() / ".local/state/pcode/ghostty-debug.sock"
+# A tuple, not `except A, B:`, so the script runs on any python3 (PEP 758 is 3.14+).
+CALL_ERRORS = (OSError, ValueError)
+NOT_LISTENING = (FileNotFoundError, ConnectionRefusedError)
 
 
 def socket_path(args: argparse.Namespace) -> str:
@@ -115,7 +118,7 @@ def launch(args: argparse.Namespace) -> int:
             except ProcessLookupError:
                 break
             time.sleep(0.1)
-    except OSError, ValueError, KeyError:
+    except (*CALL_ERRORS, KeyError):
         pass
     app = Path(args.app).expanduser()
     binary = app / "Contents/MacOS/ghostty" if app.suffix == ".app" or app.is_dir() else app
@@ -134,7 +137,7 @@ def launch(args: argparse.Namespace) -> int:
                 print(f"pid {proc.pid} socket {path}")
                 print_dump(reply)
                 return 0
-        except OSError, ValueError:
+        except CALL_ERRORS:
             pass
         if proc.poll() is not None:
             print(f"app exited with {proc.returncode}; see {args.log}", file=sys.stderr)
@@ -253,6 +256,8 @@ def main() -> int:
         if not request.get("at"):
             request.pop("at", None)
     if args.cmd == "drag":
+        if not (args.coords or (args.from_cell and args.to_cell)):
+            parser.error("drag needs X1 Y1 X2 Y2, or --from-cell and --to-cell")
         if args.coords:
             if len(args.coords) != 4:
                 parser.error("drag takes X1 Y1 X2 Y2")
@@ -283,6 +288,10 @@ def main() -> int:
         value = getattr(args, name, None)
         if value is not None:
             request[name] = value
+    # The app resolves relative paths against its own working directory.
+    for name in ("path", "dir"):
+        if request.get(name):
+            request[name] = os.path.abspath(request[name])
     for flag in ("absent", "crop", "retina", "raw"):
         if getattr(args, flag, False):
             request[flag] = True
@@ -292,7 +301,7 @@ def main() -> int:
     timeout = 60 + float(request.get("seconds", 0)) + float(request.get("timeout", 0))
     try:
         reply = call(socket_path(args), request, timeout=timeout)
-    except FileNotFoundError, ConnectionRefusedError:
+    except NOT_LISTENING:
         print(
             f"nothing listening on {socket_path(args)}; start the app with `launch`",
             file=sys.stderr,
