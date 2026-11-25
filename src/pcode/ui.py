@@ -4084,10 +4084,11 @@ class PromptLayout:
         the layout calculation.
         """
         transcript = self.transcript
-        if transcript is None or self.gliding():
+        if transcript is None or self.gliding() or dock.active() is not None:
             # Gliding, the reserved row below the typing row is the gap. One
             # that came and went with each line would resize the layout
-            # under the glide region and jolt it.
+            # under the glide region and jolt it. Docked, the card is already
+            # separate from scrollback on its own surface.
             return False
         if not transcript.ends_blank:
             return True
@@ -4872,6 +4873,8 @@ class PromptLayout:
             self.preview_body.cache_clear()
 
     def after_render(self, app) -> None:
+        if (docked := dock.active()) is not None:
+            docked.report_rows(app)
         self.render_cache = None
         # A redraw caused by input or application events starts animation again.
         # Idle prompts have no timer; toolkit owns cancellation at app shutdown.
@@ -4885,8 +4888,6 @@ class PromptLayout:
         self.sync_native_toast(app)
         self.replay_after_menu(app)
         self.refill_after_shrink(app)
-        if (docked := dock.active()) is not None:
-            docked.report_rows(app)
 
     # The completion menu, where the terminal draws it (`native_completions`).
 

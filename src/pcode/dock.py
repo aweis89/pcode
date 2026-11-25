@@ -460,7 +460,7 @@ class Dock:
         root = app.layout.container
         # The height the frame just drawn was measured at (`_MeasuredSplit`);
         # its rows were budgeted against the whole pane (`layout_size`).
-        measured = getattr(root, "_measured", None)
+        measured = getattr(root, "drawn", None) or getattr(root, "_measured", None)
         if measured is not None:
             wanted = measured[2]
         else:

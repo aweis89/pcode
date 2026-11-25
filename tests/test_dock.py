@@ -278,3 +278,27 @@ def test_making_room_for_the_card_glides_in_one_frame(docked, transcript):
         + smooth_scroll.advance(2)
         + SYNC_END
     )
+
+
+def test_report_rows_uses_drawn_measurement(docked):
+    answer(docked, 10)
+    docked.pane.take()
+    sent = []
+    app = SimpleNamespace(
+        layout=SimpleNamespace(container=SimpleNamespace(drawn=(80, 30, 4), _measured=None)),
+        output=SimpleNamespace(write_raw=sent.append, flush=lambda: None),
+    )
+    docked.report_rows(app)
+    assert sent == [dock._apc("dock-rows;4")]
+    assert docked._rows == 4
+
+
+def test_status_gap_is_disabled_when_docked(docked, monkeypatch):
+    from pcode.ui import PromptLayout
+
+    layout = PromptLayout.__new__(PromptLayout)
+    layout.transcript = SimpleNamespace(ends_blank=False, output=None)
+    monkeypatch.setattr(dock, "_active", None)
+    assert layout.status_gap() is True
+    monkeypatch.setattr(dock, "_active", docked)
+    assert layout.status_gap() is False
