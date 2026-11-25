@@ -249,6 +249,12 @@ class EventTranslator:
             self.delegates[event.tool_call_id] = start
             yield start
 
+    def _forget_delegate(self, call_id: str) -> None:
+        """Drop `call_id` and any nested descendant delegates from `self.delegates`."""
+        prefix = f"{call_id}:"
+        for cid in [k for k in self.delegates if k == call_id or k.startswith(prefix)]:
+            self.delegates.pop(cid, None)
+
     def on_delegation_end(self, event: DelegationFinishedEvent) -> Iterator[Event]:
         self.delegation_ends[event.tool_call_id] = event
         # Deliberately not added to session totals: a child's *tokens*
@@ -258,8 +264,9 @@ class EventTranslator:
         # budget. Tokens from an interrupted turn are a separate gap.
         # Timeouts/budget stops can leave a child's tool without a
         # result. Settle it before the parent resumes its tool loop.
+        prefix = f"{event.tool_call_id}:"
         for call_id, child in list(self.child_tools.items()):
-            if child.parent_call_id == event.tool_call_id:
+            if child.parent_call_id == event.tool_call_id or call_id.startswith(prefix):
                 yield ToolSummary(
                     child.name,
                     child.detail + " → Interrupted",
@@ -285,7 +292,7 @@ class EventTranslator:
         name, args, started = entry
         if event.tool_call_id in self.tools:
             self.settled_detached.add(event.tool_call_id)
-        self.delegates.pop(event.tool_call_id, None)
+        self._forget_delegate(event.tool_call_id)
         end = self.delegation_ends.pop(event.tool_call_id, None)
         outcome = end.outcome if end is not None else "unknown"
         detail, failed = delegation_detail(args, outcome)
@@ -532,7 +539,7 @@ class EventTranslator:
             detail = target(name, args) + (f" → {status}" if status else "")
             if shell_end.truncated:
                 detail += " · preview capped"
-        self.delegates.pop(event.tool_call_id, None)
+        self._forget_delegate(event.tool_call_id)
         end = self.delegation_ends.pop(event.tool_call_id, None)
         if end is not None:
             outcome = end.outcome

@@ -1873,7 +1873,7 @@ def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(
 ):
     from pydantic_ai.capabilities import Capability
 
-    from pcode.antigravity_tools import DELEGATION_PROMPT_NOTE
+    from pcode.antigravity_tools import DELEGATION_PROMPT_NOTE, WORKER_DELEGATION_PROMPT_NOTE
     from pcode.ext import ExtensionAPI, ExtensionUI
 
     def delegate_task(task: str) -> str:
@@ -1990,7 +1990,8 @@ def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(
     assert len(new_calls) == 1
     meta = new_calls[0]["params"].get("_meta") or {}
     append = meta.get("antigravity", {}).get("systemPrompt", {}).get("append", "")
-    assert DELEGATION_PROMPT_NOTE in append
+    assert WORKER_DELEGATION_PROMPT_NOTE in append
+    assert DELEGATION_PROMPT_NOTE not in append
 
 
 def test_side_btw_bridges_scoped_tools_and_respects_aside_guard(fake_agy, tmp_path):

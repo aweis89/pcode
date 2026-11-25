@@ -116,6 +116,12 @@ INTRO = (
     "Claude or OpenAI). Set `purpose` and pass `run_in_background=True` for parallel or "
     "long-running tasks (over ~2 minutes).\n\n"
 )
+WORKER_INTRO = (
+    "Preferred over `invoke_subagent`: runs a nested pcode sub-agent in this shared workspace, "
+    "streaming its progress live in the user's task panel and `/agents`. Omit `model` to use "
+    "the session's current model, or pass another provider:model. Set `purpose` and pass "
+    "`run_in_background=True` for parallel or long-running tasks (over ~2 minutes).\n\n"
+)
 DELEGATION_PROMPT_NOTE = (
     "Always use `mcp_pcode_delegate_task` (with `mcp_pcode_manage_worker` and "
     "`mcp_pcode_task_worktree`) instead of `invoke_subagent` for sub-agent delegation "
@@ -128,6 +134,12 @@ DELEGATION_PROMPT_NOTE = (
     "worker or one showing 0 tokens is normally mid model call, so check `liveness` in "
     "`mcp_pcode_manage_worker` list and keep waiting (if it says the worker may be "
     "stuck, tell the user)."
+)
+WORKER_DELEGATION_PROMPT_NOTE = (
+    "Always use `mcp_pcode_delegate_task` (with `mcp_pcode_manage_worker`) instead of "
+    "`invoke_subagent` for nested sub-agent delegation (nested sub-agents run in shared mode; "
+    "omit `model` to use the current model, or pass another `provider:model`). Set `purpose` "
+    "and pass `run_in_background=True` for parallel or long-running tasks."
 )
 
 
@@ -423,7 +435,7 @@ def _system_prompt_append(
         if ctx.tool_manager is not None:
             exposed = _exposed_names(ctx, side=side, worker=worker)
             if "delegate_task" in exposed:
-                parts.append(DELEGATION_PROMPT_NOTE)
+                parts.append(WORKER_DELEGATION_PROMPT_NOTE if worker else DELEGATION_PROMPT_NOTE)
             if "advisor" in exposed:
                 for cap_id, capability in (ctx.capabilities or {}).items():
                     if cap_id in ("advisor", "advisor_guidance"):
@@ -645,7 +657,8 @@ class ToolBridge:
             schema = json.loads(json.dumps(definition.parameters_json_schema))
             description = definition.description or ""
             if name == "delegate_task":
-                schema, description = _delegation_schema(schema, ctx), INTRO + description
+                intro = WORKER_INTRO if self._worker else INTRO
+                schema, description = _delegation_schema(schema, ctx), intro + description
             elif name == "navigate" and has_browser:
                 description += BROWSER_NAVIGATE_NOTE
             tools.append({"name": name, "description": description, "inputSchema": schema})

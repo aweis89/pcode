@@ -50,6 +50,12 @@ from pcode.worktree import WorktreeError, describe, setup_scripts
 
 logger = logging.getLogger(__name__)
 _outcome: ContextVar[str | None] = ContextVar("isolated_delegation_outcome", default=None)
+# Per-session runtime capabilities (`StepPersistence`, `TokenAccounting`) attached
+# to the top-level `WorkspaceSubAgents` and inherited by nested workers (shared
+# and isolated) so L2/L3 runs persist steps and count tokens in the session too.
+_inherited_shared: ContextVar[tuple[Any, ...]] = ContextVar(
+    "delegation_inherited_shared", default=()
+)
 
 # Setup hooks run with no model watching and their output discarded, so a hang
 # is invisible until the user gives up. Room for a cold dependency install.
@@ -201,9 +207,22 @@ class WorkspaceSubAgents(SubAgents):
         run = copy(self)
         run.hub = WorkerHub(prefix=prefix)
         run.worker_slots = _worker_slots()
+        if extra := _inherited_shared.get():
+            extra_types = tuple(type(cap) for cap in extra)
+            run.shared_capabilities = [
+                *[c for c in run.shared_capabilities if not isinstance(c, extra_types)],
+                *extra,
+            ]
         run._per_run = True
         run._run_toolset = run._make_toolset()
         return run
+
+    async def wrap_run(self, ctx, *, handler):
+        try:
+            return await super().wrap_run(ctx, handler=handler)
+        finally:
+            if self.nested:
+                self.hub.retire_all()
 
     async def before_model_request(self, ctx, request_context):
         # A worker's question rides the parent's next request, like steering.
@@ -213,6 +232,16 @@ class WorkspaceSubAgents(SubAgents):
         for message in self.hub.take_questions():
             run_request(ctx, request_context).parts.append(UserPromptPart(message))
         return request_context
+
+    def get_toolset(self):
+        # Do not cache `self._toolset` on the top-level instance: `AgentRuntime`
+        # updates `self.shared_capabilities` per turn/session (`/new`, `/resume`)
+        # to attach the active `StepPersistence` and `TokenAccounting`.
+        if self._delegation_off:
+            return None
+        if self._per_run:
+            return lambda _ctx: self._run_toolset
+        return self._make_toolset()
 
     def _make_toolset(self):
         if not self._has_delegates():
@@ -417,6 +446,19 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         )
         token = bind_worker(handle)
         outcome = _outcome.set(None)
+        # Propagate runtime-attached shared capabilities (`StepPersistence`,
+        # `TokenAccounting`) down to nested workers, including dynamically built
+        # isolated workers.
+        from pydantic_ai_harness.step_persistence import StepPersistence
+
+        from pcode.token_accounting import TokenAccounting
+
+        runtime_shared = tuple(
+            cap
+            for cap in self._shared_capabilities
+            if isinstance(cap, (StepPersistence, TokenAccounting))
+        )
+        shared_token = _inherited_shared.set(runtime_shared) if runtime_shared else None
         handle.status = "running"
         handle.started = True
         handle.previous = None
@@ -441,6 +483,8 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             handle.status = "failed" if failed else "done"
             handle.report = report_text(result)
         finally:
+            if shared_token is not None:
+                _inherited_shared.reset(shared_token)
             _outcome.reset(outcome)
             unbind_worker(token)
             handle.resume_from = None

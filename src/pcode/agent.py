@@ -361,7 +361,9 @@ def _delegation(
             async with rebound.for_workspace(child_workspace) as child_extensions:
                 child_coder = create_coder(
                     child_workspace,
-                    subagents=subagents if can_delegate else (),
+                    # Extension subagents may close over the parent checkout;
+                    # isolated workers only delegate to the workspace-bound worker.
+                    subagents=(),
                     extensions=child_extensions if can_delegate else (),
                     delegation=can_delegate,
                     delegation_depth=child_depth,

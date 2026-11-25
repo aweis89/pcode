@@ -295,7 +295,7 @@ class WorkerHub:
                 self._forget(handle, detach=handle.running)
             self._count = self._trimmed_tokens = 0
         self._directory = directory
-        self._count = max(self._count, *(_number(i) for i in self._saved_ids()), 0)
+        self._count = max(self._count, *(_number(i)[0] for i in self._saved_ids()), 0)
 
     def handles(self) -> list[WorkerHandle]:
         return list(self._handles.values())
@@ -472,6 +472,13 @@ class WorkerHub:
             handle.worker_model = None
         self._unmap(handle)
 
+    def retire_all(self) -> None:
+        """Close every live worker model owned by this hub (e.g. when a nested run ends)."""
+        for handle in {*self._handles.values(), *self._by_call.values()}:
+            if handle.worker_model is not None:
+                handle.worker_model.retire()
+                handle.worker_model = None
+
     def _unmap(self, handle: WorkerHandle) -> None:
         self._by_call = {c: h for c, h in self._by_call.items() if h is not handle}
 
@@ -511,9 +518,12 @@ def question_message(handle: WorkerHandle, question: Question) -> str:
     ).replace("\n\n", "\n")
 
 
-def _number(worker_id: str) -> int:
-    match = WORKER_ID.fullmatch(worker_id)
-    return int(match.group(1)) if match else 0
+DOTTED_WORKER_ID = re.compile(r"w(\d+(?:\.\d+)*)")
+
+
+def _number(worker_id: str) -> tuple[int, ...]:
+    match = DOTTED_WORKER_ID.fullmatch(worker_id)
+    return tuple(int(part) for part in match.group(1).split(".")) if match else (0,)
 
 
 def current_worker() -> WorkerHandle | None:

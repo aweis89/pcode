@@ -32,6 +32,8 @@ from pydantic_ai.messages import (
 )
 
 from pcode import retries
+from pcode.antigravity_tools import BridgedToolFinished, BridgedToolStarted
+from pcode.background_delegation import DelegationDelivered, DelegationDetached
 from pcode.cache_warnings import CacheBustEvent
 from pcode.diagnostics import transient
 from pcode.error_report import error_message
@@ -189,6 +191,10 @@ async def stream_child_activity(_ctx, events):
     earlier = reported = worker.tokens if worker is not None else 0
     # The child's calls by id, so its spill-reading rows name what spilled.
     called: dict[str, str] = {}
+    # Nested `delegate_task` calls that detached into the background; settled by
+    # `DelegationDelivered` rather than the immediate receipt `FunctionToolResultEvent`.
+    detached: dict[str, tuple[str, dict, float]] = {}
+    settled_detached: set[str] = set()
     phase = ""
     async for event in events:
         if parent is None:
@@ -198,15 +204,98 @@ async def stream_child_activity(_ctx, events):
             worker.mark_progress()
         if isinstance(event, FileChangeEvent):
             parent_id = parent.tool_call_id or ""
+            child_parent = (
+                f"{parent_id}:{event.change.parent_call_id}"
+                if event.change.parent_call_id
+                else parent_id
+            )
             await parent.emit(
                 FileChangeEvent(
                     change=replace(
                         event.change,
                         call_id=f"{parent_id}:{event.change.call_id}",
-                        parent_call_id=parent_id,
+                        parent_call_id=child_parent,
                     )
                 )
             )
+            continue
+        if isinstance(event, DelegationDetached):
+            if (entry := tools.get(event.tool_call_id)) is not None:
+                detached[event.tool_call_id] = entry
+            continue
+        if isinstance(event, DelegationDelivered):
+            entry = detached.pop(event.tool_call_id, None)
+            if entry is not None:
+                name, args, started = entry
+                if event.tool_call_id in tools:
+                    settled_detached.add(event.tool_call_id)
+                parent_id = parent.tool_call_id or ""
+                detail, failed = result_detail(name, args, event.content, "success")
+                delivered = ToolSummary(
+                    name,
+                    detail,
+                    failed=failed,
+                    call_id=f"{parent_id}:{event.tool_call_id}",
+                    elapsed_seconds=max(0, monotonic() - started),
+                    command=invocation(name, args),
+                    purpose=stated_purpose(args),
+                    result=capture(event.content),
+                    run_id=parent.run_id or "",
+                    outcome="error" if failed else "success",
+                    parent_call_id=parent_id,
+                    execution="background",
+                )
+                await parent.emit(ChildActivity(activity=phase, child=delivered))
+            continue
+        if isinstance(event, BridgedToolStarted):
+            parent_id = parent.tool_call_id or ""
+            tools[event.call_id] = (event.tool_name, event.args, monotonic())
+            called[event.call_id] = event.tool_name
+            agent, task = assignment(event.tool_name, event.args)
+            command, purpose = subject(event.tool_name, event.args, registry())
+            bridged_start = ToolStarted(
+                event.tool_name,
+                target(event.tool_name, event.args, stored_source(event.args, called)),
+                f"{parent_id}:{event.call_id}",
+                arguments=capture(event.args),
+                run_id=parent.run_id or "",
+                started_at=datetime.now(timezone.utc).isoformat(),
+                parent_call_id=parent_id,
+                command=command,
+                purpose=purpose,
+                execution=execution_mode(event.tool_name, event.args),
+                agent=agent,
+                task=task,
+            )
+            await parent.emit(ChildActivity(activity="Working", child=bridged_start))
+            phase = "Working"
+            continue
+        if isinstance(event, BridgedToolFinished):
+            name, args, started = tools.pop(event.call_id, (event.tool_name, {}, monotonic()))
+            if event.call_id in detached or event.call_id in settled_detached:
+                settled_detached.discard(event.call_id)
+                continue
+            parent_id = parent.tool_call_id or ""
+            outcome = "error" if event.failed else "success"
+            detail, failed = result_detail(
+                name, args, event.result, outcome, stored_source(args, called)
+            )
+            bridged_end = ToolSummary(
+                name,
+                detail,
+                failed=event.failed or failed,
+                call_id=f"{parent_id}:{event.call_id}",
+                elapsed_seconds=max(0, monotonic() - started),
+                command=invocation(name, args),
+                purpose=stated_purpose(args),
+                result=capture(event.result),
+                run_id=parent.run_id or "",
+                outcome=outcome,
+                parent_call_id=parent_id,
+            )
+            activity = "Working" if tools else "Waiting for model"
+            await parent.emit(ChildActivity(activity=activity, child=bridged_end))
+            phase = activity
             continue
         if isinstance(event, CacheBustEvent):
             await parent.emit(CacheBustEvent(text=f"Sub-agent: {event.text}"))
@@ -289,6 +378,14 @@ async def stream_child_activity(_ctx, events):
             name, args, started = tools.pop(
                 event.tool_call_id, (event.part.tool_name or "tool", {}, monotonic())
             )
+            if event.tool_call_id in detached or event.tool_call_id in settled_detached:
+                # `DelegationDelivered` settles this detached child once it finishes.
+                settled_detached.discard(event.tool_call_id)
+                activity = "Working" if tools else "Waiting for model"
+                if activity != phase:
+                    await parent.emit(ChildActivity(activity=activity))
+                    phase = activity
+                continue
             outcome = tool_outcome(event.part)
             detail, failed = result_detail(
                 name, args, event.part.content, outcome, stored_source(args, called)
@@ -310,6 +407,9 @@ async def stream_child_activity(_ctx, events):
             activity = "Working" if tools else "Waiting for model"
         elif isinstance(event, PartEndEvent) and isinstance(event.part, NativeToolCallPart):
             part = event.part
+            if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
+                # `BridgedToolStarted` carries the real `delegate_task` call.
+                continue
             try:
                 args = part.args_as_dict()
             except TypeError, ValueError:
@@ -333,6 +433,8 @@ async def stream_child_activity(_ctx, events):
             activity = "Working"
         elif isinstance(event, PartStartEvent) and isinstance(event.part, NativeToolReturnPart):
             part = event.part
+            if part.provider_name == "antigravity" and part.tool_name == "mcp_pcode_delegate_task":
+                continue
             name, args, started = tools.pop(part.tool_call_id, (part.tool_name, {}, monotonic()))
             provider = part.provider_name or ""
             detail, failed = native_result_detail(name, args, part.content, part.outcome, provider)

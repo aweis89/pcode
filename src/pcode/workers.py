@@ -73,6 +73,11 @@ class Worker:
     def running(self) -> bool:
         return self.settled is None
 
+    @property
+    def nested(self) -> bool:
+        """Whether this worker was spawned by another worker rather than the main agent."""
+        return "." in self.worker_id or ":" in self.call_id
+
     def elapsed(self) -> float:
         return (self.settled if self.settled is not None else monotonic()) - self.started
 
@@ -141,6 +146,9 @@ class Workers:
         """Fold one runtime event into the worker it belongs to, if any."""
         if isinstance(event, ToolStarted | ToolSummary) and event.name == DELEGATE:
             self._delegate(event)
+            if event.parent_call_id and (parent := self.get(event.parent_call_id)) is not None:
+                parent.add_tool(event)
+                parent.version += 1
             return
         if isinstance(event, WorkerStatus):
             if worker := self.get(event.call_id):
@@ -184,8 +192,16 @@ class Workers:
             # A restated start carries the worker's current phase.
             worker.activity = event.activity
         elif worker is not None and worker.running:
-            worker.settled = monotonic()
+            now = monotonic()
+            worker.settled = now
             worker.failed = event.failed
+            prefix = f"{event.call_id}:"
+            for child in self.items:
+                if child.running and child.call_id.startswith(prefix):
+                    child.settled = now
+                    child.failed = True
+                    child.ending = "Interrupted"
+                    child.version += 1
         else:
             return
         worker.version += 1
@@ -203,8 +219,8 @@ class Workers:
         return sum(worker.running for worker in self.items)
 
     def waiting(self) -> int:
-        """Workers blocked on an ask_parent question."""
-        return sum(bool(worker.question) for worker in self.items)
+        """Top-level workers blocked on an ask_parent question for the main agent."""
+        return sum(bool(worker.question) and not worker.nested for worker in self.items)
 
     def tokens(self) -> int:
         """Tokens across workers. A continued worker gets a new row whose count

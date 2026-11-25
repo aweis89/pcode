@@ -1035,3 +1035,173 @@ def test_nested_worker_rejects_isolated_workspace_mode(tmp_path):
 
     asyncio.run(run())
     assert any("shared mode" in r for r in retries)
+
+
+def test_nested_worker_background_delegation_and_ask_parent(tmp_path):
+    from pcode.agent import create_coder
+    from pcode.runtime import WorkerStatus
+    from pcode.workers import Workers
+
+    async def model(messages, info):
+        names = {t.name for t in info.function_tools}
+        returned = returns(messages)
+        if "task_worktree" in names:
+            if returned:
+                yield "top done"
+            else:
+                yield {
+                    0: DeltaToolCall(
+                        name="delegate_task",
+                        json_args=json.dumps({"agent_name": "worker", "task": "parent work"}),
+                        tool_call_id="top-1",
+                    )
+                }
+            return
+        # Distinguish L1 from L2 by prompt text.
+        prompt = str(messages[0].parts[-1].content)
+        if "parent work" in prompt:
+            # L1: start L2 in background, answer its question, wait for result.
+            text_parts = [
+                str(p.content)
+                for m in messages
+                for p in getattr(m, "parts", ())
+                if getattr(p, "part_kind", "") == "user-prompt"
+            ]
+            if any("asks: which style?" in t for t in text_parts) and not any(
+                getattr(p, "tool_name", "") == "manage_worker" for p in returned
+            ):
+                yield {
+                    0: DeltaToolCall(
+                        name="manage_worker",
+                        json_args=json.dumps(
+                            {"action": "answer", "worker_id": "w1.1", "text": "concise"}
+                        ),
+                        tool_call_id="ans-1",
+                    )
+                }
+            elif any("concise" in str(t) for t in text_parts):
+                yield "L1 got L2 result"
+            elif not returned:
+                yield {
+                    0: DeltaToolCall(
+                        name="delegate_task",
+                        json_args=json.dumps(
+                            {
+                                "agent_name": "worker",
+                                "task": "review work",
+                                "purpose": "reviewing work",
+                                "run_in_background": True,
+                            }
+                        ),
+                        tool_call_id="sub-1",
+                    )
+                }
+            else:
+                yield "L1 waiting"
+            return
+        # L2: ask_parent, then return answer.
+        if returned:
+            yield f"L2 done with: {returned[-1].content}"
+        else:
+            yield {
+                0: DeltaToolCall(
+                    name="ask_parent",
+                    json_args=json.dumps({"question": "which style?", "fallback": "default"}),
+                    tool_call_id="ask-1",
+                )
+            }
+
+    runtime = AgentRuntime(
+        Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)])
+    )
+    events = asyncio.run(_collect(runtime.stream("Go")))
+    workers = Workers()
+    for event in events:
+        workers.record(event)
+    ids = {e.worker_id for e in events if isinstance(e, WorkerStatus)}
+    assert {"w1", "w1.1"} <= ids
+    w1_1 = next(w for w in workers.items if w.worker_id == "w1.1")
+    assert w1_1.nested
+    assert workers.waiting() == 0
+
+
+async def _collect(stream):
+    return [e async for e in stream]
+
+
+def test_step_persistence_and_token_accounting_reach_nested_workers(tmp_path):
+    from pcode.agent import create_coder
+    from pcode.sessions import SavedSession
+
+    session = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    try:
+        calls = 0
+
+        async def model(messages, info):
+            nonlocal calls
+            names = {t.name for t in info.function_tools}
+            if returns(messages):
+                yield "done"
+                return
+            calls += 1
+            if calls <= 2 and "delegate_task" in names:
+                yield {
+                    0: DeltaToolCall(
+                        name="delegate_task",
+                        json_args=json.dumps({"agent_name": "worker", "task": f"step {calls}"}),
+                        tool_call_id=f"c-{calls}",
+                    )
+                }
+            else:
+                yield "leaf"
+
+        runtime = AgentRuntime(
+            Agent(FunctionModel(stream_function=model), capabilities=[create_coder(tmp_path)]),
+            session=session,
+        )
+        asyncio.run(_collect(runtime.stream("Go")))
+        # Top-level + L1 + L2 all ran and recorded token totals and persisted runs.
+        assert calls == 3
+        assert runtime.totals.input > 0 and runtime.totals.output > 0
+        runs = asyncio.run(session.store.list_runs())
+        assert len(runs) >= 3
+    finally:
+        session.close()
+
+
+def test_transcript_pops_nested_descendants_without_orphans():
+    from io import StringIO
+
+    from rich.console import Console
+
+    from pcode.ui import Transcript
+
+    stream = StringIO()
+    transcript = Transcript(Console(file=stream))
+    transcript.tool_result(
+        ToolSummary("read_file", "a.py", call_id="c1:c2:r1", parent_call_id="c1:c2")
+    )
+    transcript.tool_result(
+        ToolSummary("delegate_task", "worker → Done", call_id="c1:c2", parent_call_id="c1")
+    )
+    transcript.tool_result(ToolSummary("delegate_task", "worker → Done", call_id="c1"))
+    # No grandchild summaries remain orphaned for the next turn.
+    assert transcript._children == {}
+
+
+def test_worker_browser_does_not_address_nested_workers():
+    from pcode.worker_ui import WorkerBrowser
+    from pcode.workers import Worker, Workers
+
+    workers = Workers(
+        [
+            Worker("c1", "worker", "top", worker_id="w1"),
+            Worker("c1:c2", "worker", "nested", worker_id="w1.1", question="which one?"),
+        ]
+    )
+    assert workers.waiting() == 0
+    browser = WorkerBrowser(workers)
+    assert browser.asking() is None
+    browser.selected = "c1:c2"
+    assert browser.prefill("message") is None
+    assert "parent worker" in browser.notice
