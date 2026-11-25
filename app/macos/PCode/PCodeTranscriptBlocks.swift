@@ -950,22 +950,138 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
     }
 }
 
+// MARK: - Native Swift Running Spinner (CoreAnimation GPU Arc)
+
+/// Crisp 12x12pt CoreAnimation spinning arc indicator for running tool calls and
+/// live edit previews. Animates smoothly on the GPU without timers or Kitty spinners.
+final class PCodeRunningSpinnerView: NSView {
+    private static let animationKey = "pcode.spinner.rotation"
+    private let spinnerContainer = CALayer()
+    private let trackLayer = CAShapeLayer()
+    private let arcLayer = CAShapeLayer()
+    private var lastAccentColor: NSColor = .controlAccentColor
+    private var isAnimating = false
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        trackLayer.fillColor = nil
+        trackLayer.lineWidth = 1.6
+        arcLayer.fillColor = nil
+        arcLayer.lineWidth = 1.6
+        arcLayer.lineCap = .round
+        arcLayer.strokeStart = 0
+        arcLayer.strokeEnd = 0.68
+        spinnerContainer.addSublayer(trackLayer)
+        spinnerContainer.addSublayer(arcLayer)
+        layer?.addSublayer(spinnerContainer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        updatePaths()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColors()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateBackingScale()
+    }
+
+    private func updateBackingScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        spinnerContainer.contentsScale = scale
+        trackLayer.contentsScale = scale
+        arcLayer.contentsScale = scale
+        CATransaction.commit()
+    }
+
+    func startAnimating(color: NSColor) {
+        lastAccentColor = color
+        applyColors()
+        updatePaths()
+        guard !isAnimating else { return }
+        isAnimating = true
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.fromValue = 0
+        spin.toValue = Double.pi * 2
+        spin.duration = 0.85
+        spin.repeatCount = .infinity
+        spin.isRemovedOnCompletion = false
+        spinnerContainer.add(spin, forKey: Self.animationKey)
+    }
+
+    func stopAnimating() {
+        guard isAnimating else { return }
+        isAnimating = false
+        spinnerContainer.removeAnimation(forKey: Self.animationKey)
+    }
+
+    private func updatePaths() {
+        updateBackingScale()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        spinnerContainer.frame = bounds
+        let side = min(bounds.width, bounds.height)
+        let radius = max(1, (side - 2.0) * 0.5)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let path = CGMutablePath()
+        path.addArc(center: center, radius: radius, startAngle: -.pi / 2, endAngle: .pi * 1.5, clockwise: false)
+        trackLayer.frame = bounds
+        trackLayer.path = path
+        arcLayer.frame = bounds
+        arcLayer.path = path
+        CATransaction.commit()
+    }
+
+    private func applyColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            trackLayer.strokeColor = lastAccentColor.withAlphaComponent(0.20).cgColor
+            arcLayer.strokeColor = lastAccentColor.cgColor
+            CATransaction.commit()
+        }
+    }
+}
+
 // MARK: - Tool Card Row (Compact Pill + Optional Expandable Detail)
 
 final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .tool
     let textView = PCodeTextKit2BlockView()
     private let iconView = NSImageView()
+    private let spinnerView = PCodeRunningSpinnerView()
+    private let headerTapButton = NSButton()
+    private let elapsedLabel = NSTextField(labelWithString: "")
+    private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
     private let toggleButton = NSButton()
     private let bottomCollapseButton = NSButton()
     private let bottomDivider = CALayer()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
+    private var lastIsRunning = false
+    private var currentCall: PCodePeekToolCall?
+    private var textToCopy = ""
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
     override var isFlipped: Bool { true }
 
+    private static let headerTapHeight: CGFloat = 26
     private static let bottomCollapseBarHeight: CGFloat = 24
 
     override init(frame frameRect: NSRect) {
@@ -973,7 +1089,28 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         wantsLayer = true
         iconView.imageScaling = .scaleProportionallyDown
         addSubview(iconView)
+        spinnerView.isHidden = true
+        addSubview(spinnerView)
         addSubview(textView)
+
+        headerTapButton.isBordered = false
+        headerTapButton.title = ""
+        headerTapButton.target = self
+        headerTapButton.action = #selector(togglePressed)
+        addSubview(headerTapButton)
+
+        elapsedLabel.isEditable = false
+        elapsedLabel.isSelectable = false
+        elapsedLabel.drawsBackground = false
+        elapsedLabel.isBezeled = false
+        elapsedLabel.alignment = .right
+        elapsedLabel.isHidden = true
+        addSubview(elapsedLabel)
+
+        copyButton.target = self
+        copyButton.action = #selector(copyPressed)
+        copyButton.isHidden = true
+        addSubview(copyButton)
 
         toggleButton.isBordered = false
         toggleButton.title = ""
@@ -1007,7 +1144,17 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
+        spinnerView.stopAnimating()
+        spinnerView.isHidden = true
+        iconView.isHidden = false
+        elapsedLabel.isHidden = true
+        elapsedLabel.stringValue = ""
+        copyButton.cancelCopiedFlash()
+        copyButton.isHidden = true
         onToggle = nil
+        currentCall = nil
+        lastIsRunning = false
+        textToCopy = ""
         bottomCollapseButton.isHidden = true
         bottomDivider.isHidden = true
     }
@@ -1015,6 +1162,18 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyLayerColors()
+    }
+
+    /// Update the live elapsed clock in-place while a command is running (no document relayout).
+    func updateLiveElapsed(now: Date = Date()) {
+        guard let call = currentCall, call.isRunning else { return }
+        if let text = call.liveElapsedText(now: now) {
+            elapsedLabel.stringValue = text
+            elapsedLabel.isHidden = false
+        } else {
+            elapsedLabel.stringValue = ""
+            elapsedLabel.isHidden = true
+        }
     }
 
     /// Number of lines in the expandable payload (output if present, otherwise multiline summary).
@@ -1051,11 +1210,19 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         style.maximumLineHeight = lineHeight
         style.lineBreakMode = isExpanded ? .byWordWrapping : .byTruncatingTail
 
+        let nameColor: NSColor
+        if call.isRunning {
+            nameColor = theme.accent
+        } else if call.failed {
+            nameColor = .systemRed
+        } else {
+            nameColor = theme.secondaryForeground
+        }
         out.append(NSAttributedString(
             string: call.name,
             attributes: [
                 .font: typography.codeNSFont(scale: 0.84, weight: typography.weight.nsEmphasisWeight),
-                .foregroundColor: call.failed ? NSColor.systemRed : theme.secondaryForeground,
+                .foregroundColor: nameColor,
                 .paragraphStyle: style,
             ]))
 
@@ -1072,12 +1239,12 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                 string: displaySummary,
                 attributes: [
                     .font: typography.codeNSFont(scale: 0.84),
-                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.85),
+                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(call.isRunning ? 0.95 : 0.85),
                     .paragraphStyle: style,
                 ]))
         }
 
-        if let elapsed = call.formattedElapsed {
+        if !call.isRunning, let elapsed = call.formattedElapsed {
             out.append(NSAttributedString(
                 string: "  (\(elapsed))",
                 attributes: [
@@ -1089,7 +1256,21 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
         if !isExpanded {
             let lineCount = expandableLineCount(for: call)
-            if lineCount > 0 {
+            if call.isRunning {
+                let liveLabel: String
+                if lineCount > 0 {
+                    liveLabel = lineCount == 1 ? "  · live · 1 line" : "  · live · \(lineCount) lines"
+                } else {
+                    liveLabel = "  · running"
+                }
+                out.append(NSAttributedString(
+                    string: liveLabel,
+                    attributes: [
+                        .font: typography.codeNSFont(scale: 0.78),
+                        .foregroundColor: theme.accent.withAlphaComponent(0.85),
+                        .paragraphStyle: style,
+                    ]))
+            } else if lineCount > 0 {
                 let label = lineCount == 1 ? "1 line" : "\(lineCount) lines"
                 out.append(NSAttributedString(
                     string: "  · \(label)",
@@ -1102,14 +1283,24 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         }
 
         // Lazy tool output rendering: only format/append output when expanded.
-        if isExpanded && !call.output.isEmpty {
-            out.append(NSAttributedString(
-                string: "\n" + call.output,
-                attributes: [
-                    .font: typography.codeNSFont(scale: 0.80),
-                    .foregroundColor: theme.foreground.withAlphaComponent(0.82),
-                    .paragraphStyle: style,
-                ]))
+        if isExpanded {
+            if !call.output.isEmpty {
+                out.append(NSAttributedString(
+                    string: "\n" + call.output,
+                    attributes: [
+                        .font: typography.codeNSFont(scale: 0.80),
+                        .foregroundColor: theme.foreground.withAlphaComponent(0.84),
+                        .paragraphStyle: style,
+                    ]))
+            } else if call.isRunning {
+                out.append(NSAttributedString(
+                    string: "\nWaiting for output…",
+                    attributes: [
+                        .font: typography.codeNSFont(scale: 0.80),
+                        .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.58),
+                        .paragraphStyle: style,
+                    ]))
+            }
         }
         return out
     }
@@ -1125,17 +1316,35 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     ) -> CGFloat {
         self.onToggle = onToggle
         self.lastTheme = theme
-        let summary = call.summaryText
-        let canExpand = summary.count > 90 || summary.contains("\n") || !call.output.isEmpty
+        self.lastIsRunning = call.isRunning
+        self.currentCall = call
+        self.textToCopy = !call.output.isEmpty ? call.output : call.summaryText
 
-        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
-        let symbolName = call.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
-        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: call.failed ? "Failed" : "Succeeded")?
-            .withSymbolConfiguration(cfg)
-        iconView.contentTintColor = call.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
+        let canExpand = call.canExpand
+        let showCopy = isExpanded && !textToCopy.isEmpty
+
+        if call.isRunning {
+            iconView.isHidden = true
+            spinnerView.isHidden = false
+            spinnerView.startAnimating(color: theme.accent)
+        } else {
+            spinnerView.stopAnimating()
+            spinnerView.isHidden = true
+            iconView.isHidden = false
+            let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            let symbolName = call.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
+            iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: call.failed ? "Failed" : "Succeeded")?
+                .withSymbolConfiguration(cfg)
+            iconView.contentTintColor = call.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
+        }
+
+        let elapsedWidth: CGFloat = (call.isRunning && call.startedAt != nil) ? 54 : 0
+        let copyWidth: CGFloat = showCopy ? max(64, ceil(copyButton.frame.width)) : 0
+        let chevronWidth: CGFloat = canExpand ? 26 : 10
+        let rightControlsWidth = chevronWidth + (showCopy ? copyWidth + 4 : 0) + (elapsedWidth > 0 ? elapsedWidth + 4 : 0)
 
         let leftPad: CGFloat = 26
-        let rightPad: CGFloat = canExpand ? 26 : 10
+        let rightPad: CGFloat = rightControlsWidth
         let topPad: CGFloat = 5
         let bottomPad: CGFloat = 5
         let textWidth = max(1, width - leftPad - rightPad)
@@ -1146,7 +1355,18 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         let showBottomCollapse = canExpand && isExpanded
         let contentHeight = max(26, textHeight + topPad + bottomPad)
         let totalHeight = contentHeight + (showBottomCollapse ? Self.bottomCollapseBarHeight : 0)
-        iconView.frame = CGRect(x: 9, y: floor((min(contentHeight, 26) - 12) * 0.5), width: 12, height: 12)
+        let iconFrame = CGRect(x: 9, y: floor((min(contentHeight, 26) - 12) * 0.5), width: 12, height: 12)
+        iconView.frame = iconFrame
+        spinnerView.frame = iconFrame
+
+        // Clicking anywhere on a collapsed pill (or the first header line of an expanded card)
+        // toggles it, while keeping line 2+ (command & output body) free for text selection.
+        headerTapButton.isHidden = !canExpand
+        if canExpand {
+            let tapWidth = max(0, width - rightControlsWidth)
+            let tapHeight = isExpanded ? 18 : contentHeight
+            headerTapButton.frame = CGRect(x: 0, y: 0, width: tapWidth, height: tapHeight)
+        }
 
         toggleButton.isHidden = !canExpand
         if canExpand {
@@ -1157,11 +1377,38 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             toggleButton.frame = CGRect(x: width - 22, y: 3, width: 18, height: 20)
         }
 
+        var cursorX = width - chevronWidth
+        copyButton.isHidden = !showCopy
+        if showCopy {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                copyButton.applyTheme(foreground: theme.secondaryForeground, background: .clear)
+            }
+            cursorX -= copyWidth
+            copyButton.frame = CGRect(x: max(leftPad, cursorX), y: 3, width: copyWidth, height: 20)
+            cursorX -= 4
+        }
+
+        if call.isRunning && call.startedAt != nil {
+            elapsedLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+            elapsedLabel.textColor = theme.accent.withAlphaComponent(0.85)
+            cursorX -= elapsedWidth
+            elapsedLabel.frame = CGRect(x: max(leftPad, cursorX), y: 5, width: elapsedWidth, height: 16)
+            updateLiveElapsed()
+        } else {
+            elapsedLabel.isHidden = true
+            elapsedLabel.stringValue = ""
+        }
+
         bottomCollapseButton.isHidden = !showBottomCollapse
         bottomDivider.isHidden = !showBottomCollapse
         if showBottomCollapse {
             let lineCount = Self.expandableLineCount(for: call)
-            let title = lineCount > 1 ? " Collapse (\(lineCount) lines)" : " Collapse"
+            let title: String
+            if call.isRunning {
+                title = lineCount > 1 ? " Collapse (streaming · \(lineCount) lines)" : " Collapse (streaming)"
+            } else {
+                title = lineCount > 1 ? " Collapse (\(lineCount) lines)" : " Collapse"
+            }
             let symCfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
             bottomCollapseButton.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Collapse")?
                 .withSymbolConfiguration(symCfg)
@@ -1192,12 +1439,27 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = theme.toolBackground.cgColor
             layer?.cornerRadius = 5
+            if lastIsRunning {
+                layer?.borderWidth = 1
+                layer?.borderColor = theme.accent.withAlphaComponent(theme.isDark ? 0.38 : 0.30).cgColor
+            } else {
+                layer?.borderWidth = 0
+                layer?.borderColor = nil
+            }
             bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
         }
     }
 
     @objc private func togglePressed() {
         onToggle?()
+    }
+
+    @objc private func copyPressed() {
+        guard !textToCopy.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(textToCopy, forType: .string)
+        copyButton.flashCopied()
     }
 }
 
@@ -1277,6 +1539,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
     let textView = PCodeTextKit2BlockView()
     private let headerView = NSView()
     private let iconView = NSImageView()
+    private let spinnerView = PCodeRunningSpinnerView()
     private let toolLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
     private let statsLabel = NSTextField(labelWithString: "")
@@ -1329,6 +1592,8 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
 
         headerView.addSubview(headerTapButton)
         headerView.addSubview(iconView)
+        spinnerView.isHidden = true
+        headerView.addSubview(spinnerView)
         headerView.addSubview(toolLabel)
         headerView.addSubview(pathLabel)
         headerView.addSubview(statsLabel)
@@ -1367,6 +1632,9 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         textView.inkSweepFrontier = nil
         scrollView.resetScrollOrigin()
         copyButton.cancelCopiedFlash()
+        spinnerView.stopAnimating()
+        spinnerView.isHidden = true
+        iconView.isHidden = false
         onToggle = nil
         bottomCollapseButton.isHidden = true
         bottomDivider.isHidden = true
@@ -1463,12 +1731,23 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         let padX: CGFloat = 12
         let padY: CGFloat = 8
 
-        let symCfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
-        let symbolName = payload.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
-        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: payload.failed ? "Failed" : "Succeeded")?
-            .withSymbolConfiguration(symCfg)
-        iconView.contentTintColor = payload.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
-        iconView.frame = CGRect(x: 9, y: floor((Self.headerHeight - 12) * 0.5), width: 12, height: 12)
+        let iconFrame = CGRect(x: 9, y: floor((Self.headerHeight - 12) * 0.5), width: 12, height: 12)
+        iconView.frame = iconFrame
+        spinnerView.frame = iconFrame
+        if payload.isPreview {
+            iconView.isHidden = true
+            spinnerView.isHidden = false
+            spinnerView.startAnimating(color: theme.accent)
+        } else {
+            spinnerView.stopAnimating()
+            spinnerView.isHidden = true
+            iconView.isHidden = false
+            let symCfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            let symbolName = payload.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
+            iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: payload.failed ? "Failed" : "Succeeded")?
+                .withSymbolConfiguration(symCfg)
+            iconView.contentTintColor = payload.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
+        }
 
         headerView.frame = CGRect(x: 0, y: 0, width: width, height: Self.headerHeight)
         headerTapButton.isHidden = !canExpand

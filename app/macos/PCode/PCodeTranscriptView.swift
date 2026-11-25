@@ -333,6 +333,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var lastMountedRange: Range<Int> = 0..<0
     private var isApplyingDocumentHeight = false
     private var hoveredItemID: String?
+    private var liveRunningTimer: Timer?
+    private var runningToolIDs: Set<String> = []
 
     // Settle-then-reveal streaming state
     private struct ActiveStreamingMessage {
@@ -397,6 +399,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     deinit {
         stopDisplayLink()
+        stopLiveRunningTimer()
     }
 
     /// Route clicks on explicit buttons/scrollers and scroll events on horizontal code/table
@@ -425,6 +428,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil {
             stopDisplayLink()
+            stopLiveRunningTimer()
         }
     }
 
@@ -435,7 +439,41 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if isStreamingAnimationActive {
                 ensureDisplayLinkRunning()
             }
+            syncLiveRunningTimer()
         }
+    }
+
+    private func trackRunningState(for item: PCodeTranscriptItem) {
+        if case .tool(let call, _) = item.payload, call.isRunning && call.startedAt != nil {
+            runningToolIDs.insert(item.id)
+        } else {
+            runningToolIDs.remove(item.id)
+        }
+        syncLiveRunningTimer()
+    }
+
+    private func syncLiveRunningTimer() {
+        guard !runningToolIDs.isEmpty, window != nil else {
+            stopLiveRunningTimer()
+            return
+        }
+        guard liveRunningTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = Date()
+            for id in self.runningToolIDs {
+                if let card = self.mountedViews[id] as? PCodeToolCardView {
+                    card.updateLiveElapsed(now: now)
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        liveRunningTimer = timer
+    }
+
+    private func stopLiveRunningTimer() {
+        liveRunningTimer?.invalidate()
+        liveRunningTimer = nil
     }
 
     override func updateTrackingAreas() {
@@ -539,6 +577,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             isApplyingDocumentHeight = false
         }
         mountViews(in: visibleRect)
+        runningToolIDs.removeAll(keepingCapacity: true)
+        for item in newItems {
+            if case .tool(let call, _) = item.payload, call.isRunning && call.startedAt != nil {
+                runningToolIDs.insert(item.id)
+            }
+        }
+        syncLiveRunningTimer()
     }
 
     // MARK: - ID-Addressed Upsert & Streaming Pipeline
@@ -598,6 +643,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
             invalidateSearchIndex()
             mountViews(in: visibleRect)
+            trackRunningState(for: item)
             return existingIdx
         }
 
@@ -621,6 +667,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             setHasUnreadStreamingContent(true)
         }
         mountViews(in: visibleRect)
+        trackRunningState(for: item)
         return targetIdx
     }
 
@@ -642,7 +689,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         layoutEngine.remove(at: idx)
         invalidateSearchIndex()
         clampSelectionToCurrentItems()
+        runningToolIDs.remove(id)
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     /// Start a new turn by appending the user prompt. Pass `forcePin: true` for user-submitted
@@ -1214,7 +1263,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
               items.indices.contains(index),
               case .tool(let call, let isExpanded) = items[index].payload
         else { return }
-        if !isExpanded {
+        // Keep sticky-bottom pinned when expanding a live running command so streaming
+        // output stays in view; unpin for historical settled cards.
+        if !isExpanded && !call.isRunning {
             stickyBottom.unpinForUserAction()
         }
         notifySearchContentWillChange()

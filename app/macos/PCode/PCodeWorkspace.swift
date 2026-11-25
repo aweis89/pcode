@@ -147,7 +147,7 @@ enum PCodeWorkspaceMode {
         "PWD", "OLDPWD", "SHLVL", "_", "TERM", "TERM_PROGRAM",
         "TERM_PROGRAM_VERSION", "COLORTERM", "TERM_SESSION_ID",
         "TERMINFO", "XDG_DATA_DIRS", "MANPATH", "VTE_VERSION", "LANGUAGE",
-        "PCODE_DOCK", "PCODE_HUSH_LOGIN",
+        "PCODE_DOCK", "PCODE_NATIVE_TRANSCRIPT", "PCODE_HUSH_LOGIN",
     ]
 
     private static let envSentinel = "__PCODE_ENV_START__"
@@ -1831,6 +1831,9 @@ final class PCodeWorkspace: ObservableObject {
         config.workingDirectory = resolvedDir
         // The docked editor (PCodeDock) is what the workspace shows under each session.
         config.environmentVariables["PCODE_DOCK"] = "1"
+        // Signal to pcode's Python UI whether the Swift native transcript is active
+        // so terminal-only editor rows (tool rows, live command previews) stay suppressed.
+        config.environmentVariables["PCODE_NATIVE_TRANSCRIPT"] = PCodeNativeTranscriptMode.shared.enabled ? "1" : "0"
         // Suppress macOS `login(1)` "Last login:" banner in pcode session panes.
         config.environmentVariables["PCODE_HUSH_LOGIN"] = "1"
         config.waitAfterCommand = false
