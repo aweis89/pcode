@@ -199,18 +199,35 @@ def _owner_path(worktree: Worktree) -> Path | None:
 
 
 def claim(worktree: Worktree, owner: str) -> None:
-    """Record the session that created `worktree`; only it tidies the worktree on exit."""
+    """Record a session that owns `worktree`; only owners tidy it on exit.
+
+    Appends, so `/new` can hand the worktree on to its session (`adopt`).
+    """
     if path := _owner_path(worktree):
-        path.write_text(owner + "\n")
+        with path.open("a") as file:
+            file.write(owner + "\n")
 
 
-def owner_of(worktree: Worktree) -> str | None:
-    """The session that created `worktree`, or None for one made before owners were recorded."""
+def owners_of(worktree: Worktree) -> set[str]:
+    """The sessions that own `worktree`; empty for one made before owners were recorded."""
     path = _owner_path(worktree)
     try:
-        return (path.read_text().strip() or None) if path else None
+        return set(path.read_text().split()) if path else set()
     except OSError:
-        return None
+        return set()
+
+
+def adopt(workspace: Path, owner: str, session_id: str) -> None:
+    """Let `session_id` (started by `/new`) own the worktree `owner` made, best effort.
+
+    Otherwise a session that replaced the creator before its first turn was
+    saved could never tidy the worktree from another process (`pcode -c`, a host).
+    """
+    try:
+        if (linked := describe(workspace)) and owner in owners_of(linked):
+            claim(linked, session_id)
+    except WorktreeError, OSError:
+        pass
 
 
 def _exclude_worktrees_dir(main: Path) -> None:
@@ -695,10 +712,11 @@ def leave_worktree(
         linked = describe(workspace)
         if linked is None:
             return False
-        creator = owner_of(linked)
+        owners = owners_of(linked)
         mine = {owner, session.info.id if session is not None else None} - {None}
-        if creator is not None and creator not in mine:
-            notify(f"worktree: kept {linked.path}; session {creator[:8]} created it")
+        if owners and not owners & mine:
+            creator = sorted(owners)[0][:8]
+            notify(f"worktree: kept {linked.path}; session {creator} created it")
             return False
         ours = linked.branch.startswith(SESSION_WORKTREE_PREFIX)
         dirty = is_dirty(linked.path)

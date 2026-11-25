@@ -4181,6 +4181,8 @@ def _enter_worktree(
     name = requested if isinstance(requested, str) else identity[:8]
     created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name, base)
     try:
+        # Unclaimed it would fall back to the older rules, where any process
+        # leaving it clean may remove it; better to fail as setup does.
         worktree.claim(created, owner or identity)
         worktree.run_setup(created, stream=sys.stderr)
     except worktree.WorktreeError, OSError:

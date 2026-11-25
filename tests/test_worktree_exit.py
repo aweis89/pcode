@@ -379,14 +379,40 @@ def test_enter_worktree_claims_it_for_the_new_session(repo, tmp_path, monkeypatc
 
     monkeypatch.setattr(worktree, "run_setup", lambda *a, **k: None)
     path, identity = _enter_worktree(repo, "named")
-    assert worktree.owner_of(worktree.describe(path)) == identity
+    assert worktree.owners_of(worktree.describe(path)) == {identity}
     path, _ = _enter_worktree(repo, "forked", always=True, owner="existing")
-    assert worktree.owner_of(worktree.describe(path)) == "existing"
+    assert worktree.owners_of(worktree.describe(path)) == {"existing"}
 
 
 def test_owner_record_lives_outside_the_checkout(repo):
     created = worktree.create(repo, "pcode-abc")
-    assert worktree.owner_of(created) is None
+    assert worktree.owners_of(created) == set()
     worktree.claim(created, "someone")
     assert git(created.path, "status", "--porcelain") == ""
     assert worktree.is_untouched(created)
+
+
+def test_a_session_started_by_new_adopts_the_worktree(repo, tmp_path):
+    """`/new` before the creator saved a turn: the new session can still tidy it later."""
+    created = worktree.create(repo, "pcode-abc")
+    worktree.claim(created, "creator")
+    worktree.adopt(created.path, "stranger", "intruder")  # Not the owner: ignored.
+    worktree.adopt(created.path, "creator", "successor")
+    assert worktree.owners_of(created) == {"creator", "successor"}
+    session = SavedSession.create(
+        "test:local", created.path, tmp_path / "sessions", identity="successor"
+    )
+    app = PreviewApp(workspace=created.path)
+    app.runtime = FakeRuntime(session)
+    assert "removed untouched" in leave(app)
+    assert not created.path.exists()
+
+
+def test_fork_worktree_is_claimed_for_the_copy(repo, tmp_path, monkeypatch):
+    from pcode.host import fork_worktree
+
+    monkeypatch.setattr(worktree, "run_setup", lambda *a, **k: None)
+    saved = SavedSession.create("test:local", repo, tmp_path / "sessions")
+    path = fork_worktree(saved, repo)
+    assert worktree.owners_of(worktree.describe(path)) == {saved.info.id}
+    saved.close()

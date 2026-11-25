@@ -411,3 +411,6 @@ def test_a_remote_session_whose_worktree_is_gone_resumes_in_a_new_one(tmp_path):
     gone = SimpleNamespace(id="session-id", workspace=str(repo / ".worktrees" / "removed"))
     created = remote_resume_workspace(gone, repo, profile)
     assert created != repo and created.parent == repo / ".worktrees" and created.is_dir()
+    from pcode import worktree
+
+    assert worktree.owners_of(worktree.describe(created)) == {"session-id"}

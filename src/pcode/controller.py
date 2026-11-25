@@ -3028,9 +3028,15 @@ class SessionController:
         from pcode.sessions import SavedSession
 
         identity, self._session_id = self._session_id, None
-        return SavedSession.create(
+        session = SavedSession.create(
             model or self.model, self.workspace, self.session_dir, identity=identity
         )
+        if self.worktree_owner and session.info.id != self.worktree_owner:
+            from pcode.worktree import adopt
+
+            # A `/new` session inherits the worktree made for this process.
+            adopt(self.workspace, self.worktree_owner, session.info.id)
+        return session
 
     async def warn_outdated(self) -> None:
         """Warn when PyPI has a newer release. Run as a background task: it may hit the network."""
