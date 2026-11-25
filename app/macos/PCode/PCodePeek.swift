@@ -21,7 +21,7 @@ struct PCodePeekTarget: Equatable {
     }
 }
 
-/// One settled tool call summarized in a session transcript.
+/// One tool call (running or settled) summarized in a session transcript.
 struct PCodePeekToolCall: Identifiable {
     let id: Int
     let name: String
@@ -30,6 +30,9 @@ struct PCodePeekToolCall: Identifiable {
     let elapsedSeconds: Double?
     let command: String
     let output: String
+    let isRunning: Bool
+    let startedAt: Date?
+    let isBackgroundJob: Bool
 
     init(
         id: Int,
@@ -38,7 +41,10 @@ struct PCodePeekToolCall: Identifiable {
         failed: Bool,
         elapsedSeconds: Double?,
         command: String,
-        output: String = ""
+        output: String = "",
+        isRunning: Bool = false,
+        startedAt: Date? = nil,
+        isBackgroundJob: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -47,6 +53,9 @@ struct PCodePeekToolCall: Identifiable {
         self.elapsedSeconds = elapsedSeconds
         self.command = command
         self.output = output
+        self.isRunning = isRunning
+        self.startedAt = startedAt
+        self.isBackgroundJob = isBackgroundJob
     }
 
     var summaryText: String {
@@ -55,10 +64,39 @@ struct PCodePeekToolCall: Identifiable {
         return ""
     }
 
+    var isShellLike: Bool {
+        if !command.isEmpty { return true }
+        let lower = name.lowercased()
+        return lower == "shell" || lower == "run_command" || lower == "wait_for_job" || lower == "bash"
+    }
+
+    var canExpand: Bool {
+        if isRunning && isShellLike { return true }
+        let summary = summaryText
+        return summary.count > 90 || summary.contains("\n") || !output.isEmpty
+    }
+
     var formattedElapsed: String? {
         guard let elapsed = elapsedSeconds, elapsed >= 0.05 else { return nil }
+        return Self.formatDuration(elapsed)
+    }
+
+    func liveElapsedText(now: Date = Date()) -> String? {
+        if isRunning {
+            guard let startedAt else { return nil }
+            let elapsed = max(0, now.timeIntervalSince(startedAt))
+            guard elapsed >= 0.2 else { return nil }
+            return Self.formatDuration(elapsed)
+        }
+        return formattedElapsed
+    }
+
+    static func formatDuration(_ elapsed: Double) -> String {
         if elapsed < 10 { return String(format: "%.1fs", elapsed) }
-        return "\(Int(elapsed.rounded()))s"
+        if elapsed < 60 { return "\(Int(elapsed.rounded()))s" }
+        let mins = Int(elapsed) / 60
+        let secs = Int(elapsed) % 60
+        return "\(mins)m\(secs)s"
     }
 }
 

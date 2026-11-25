@@ -3792,8 +3792,10 @@ class PromptLayout:
         circular dependency between frame_height and command_rows.
         """
         activity, transcript = self.activity, self.transcript
-        if transcript is None or self.btw_docked():
-            if self.btw_docked():
+        from pcode.ui_surface import native_transcript_active
+
+        if transcript is None or self.btw_docked() or native_transcript_active():
+            if self.btw_docked() or native_transcript_active():
                 self.command_waiting = False
                 self.live_delta.forget()
             return None
@@ -3940,7 +3942,9 @@ class PromptLayout:
         spinner that says it is still going; the full line reaches scrollback
         when the run closes.
         """
-        if self.transcript is None or self.activity.status_shown:
+        from pcode.ui_surface import native_transcript_active
+
+        if self.transcript is None or self.activity.status_shown or native_transcript_active():
             return []
         row = self.transcript.pending_group_row(self.size().columns - 1)
         return [("class:activity.group", row)] if row else []
@@ -3996,7 +4000,15 @@ class PromptLayout:
         apart from the thought drawn in the box's header. They share a quarter
         of the pane with the thought, which keeps one row of it when there is
         one to show.
+
+        When the Swift native transcript is active, running tools and live
+        command output render directly in the transcript instead so the main
+        status line stays pinned as the top line of the docked editor.
         """
+        from pcode.ui_surface import native_transcript_active
+
+        if native_transcript_active():
+            return []
         limit = self.size().rows // 4 - int(bool(self.shown_thought()))
         return self.activity.tool_rows(
             self.status_line(), self.size().columns - 1, limit, self.tool_spinner_mark()
@@ -4114,8 +4126,10 @@ class PromptLayout:
 
     def status_height(self) -> int:
         """Live rows above the editor box. The status rides the box's own border."""
-        # Attached, the thought is the box's band instead.
-        unboxed = not self.activity.attach_activity
+        from pcode.ui_surface import native_transcript_active
+
+        # Attached (or native Swift transcript), the thought never sits above the box.
+        unboxed = not self.activity.attach_activity and not native_transcript_active()
         return (
             # Gliding, the typing row and the reserved row are always there.
             (2 if self.gliding() else bool(self.typing_row()))
@@ -4424,10 +4438,17 @@ class PromptLayout:
         """Everything live between scrollback and the editor, top to bottom."""
         activity = self.activity
 
+        from pcode.ui_surface import native_transcript_active
+
         # With `attach_activity off`, the thought gets rows of its own above
         # the editor box, so a running tool taking the status never hides it;
-        # attached, the box's band draws it under the status row instead.
-        thought = self.panel_rows(lambda: [] if activity.attach_activity else self.thought_rows())
+        # attached (or under the Swift native transcript), it never sits above the box.
+        def unboxed_thought():
+            if activity.attach_activity or native_transcript_active():
+                return []
+            return self.thought_rows()
+
+        thought = self.panel_rows(unboxed_thought)
         # Just above the box whose border carries the status, on the
         # terminal's own background: what runs, then how it is going.
         tool = self.panel_rows(self.tool_rows)

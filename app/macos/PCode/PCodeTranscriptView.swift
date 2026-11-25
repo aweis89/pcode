@@ -333,6 +333,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var lastMountedRange: Range<Int> = 0..<0
     private var isApplyingDocumentHeight = false
     private var hoveredItemID: String?
+    private var liveRunningTimer: Timer?
 
     // Settle-then-reveal streaming state
     private struct ActiveStreamingMessage {
@@ -397,6 +398,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     deinit {
         stopDisplayLink()
+        stopLiveRunningTimer()
     }
 
     /// Route clicks on explicit buttons/scrollers and scroll events on horizontal code/table
@@ -425,6 +427,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil {
             stopDisplayLink()
+            stopLiveRunningTimer()
         }
     }
 
@@ -435,7 +438,38 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if isStreamingAnimationActive {
                 ensureDisplayLinkRunning()
             }
+            syncLiveRunningTimer()
         }
+    }
+
+    private func syncLiveRunningTimer() {
+        let hasRunning = items.contains { item in
+            if case .tool(let call, _) = item.payload {
+                return call.isRunning && call.startedAt != nil
+            }
+            return false
+        }
+        guard hasRunning, window != nil else {
+            stopLiveRunningTimer()
+            return
+        }
+        guard liveRunningTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = Date()
+            for view in self.mountedViews.values {
+                if let card = view as? PCodeToolCardView {
+                    card.updateLiveElapsed(now: now)
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        liveRunningTimer = timer
+    }
+
+    private func stopLiveRunningTimer() {
+        liveRunningTimer?.invalidate()
+        liveRunningTimer = nil
     }
 
     override func updateTrackingAreas() {
@@ -539,6 +573,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             isApplyingDocumentHeight = false
         }
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     // MARK: - ID-Addressed Upsert & Streaming Pipeline
@@ -598,6 +633,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
             invalidateSearchIndex()
             mountViews(in: visibleRect)
+            syncLiveRunningTimer()
             return existingIdx
         }
 
@@ -621,6 +657,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             setHasUnreadStreamingContent(true)
         }
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
         return targetIdx
     }
 
@@ -643,6 +680,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         invalidateSearchIndex()
         clampSelectionToCurrentItems()
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     /// Start a new turn by appending the user prompt. Pass `forcePin: true` for user-submitted
@@ -713,6 +751,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         activeStream = nil
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     private func commitSettledBlocks(_ blocks: [PCodeMarkdownBlock], reveal: Bool) {
@@ -777,6 +816,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             setHasUnreadStreamingContent(true)
         }
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     private func enqueueRevealIfNeeded(for item: PCodeTranscriptItem, estimatedHeight: CGFloat) {
@@ -841,6 +881,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         guard stickyBottom.shouldProgrammaticallyPin else { return }
         applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     /// Explicitly unpin sticky-bottom tracking (e.g. Find jump or programmatic scroll-up).
@@ -1214,7 +1255,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
               items.indices.contains(index),
               case .tool(let call, let isExpanded) = items[index].payload
         else { return }
-        if !isExpanded {
+        // Keep sticky-bottom pinned when expanding a live running command so streaming
+        // output stays in view; unpin for historical settled cards.
+        if !isExpanded && !call.isRunning {
             stickyBottom.unpinForUserAction()
         }
         notifySearchContentWillChange()
@@ -1297,6 +1340,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             depth: items[index].depth)
         invalidateSearchIndex()
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     private func remountVisibleViews() {
@@ -1306,6 +1350,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             rowView.needsDisplay = true
         }
         mountViews(in: visibleRect)
+        syncLiveRunningTimer()
     }
 
     private func dequeueRowView(for kind: PCodeTranscriptItem.Kind) -> any PCodeTranscriptRowHosting {

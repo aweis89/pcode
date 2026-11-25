@@ -1090,4 +1090,111 @@ struct PCodeTranscriptTests {
         _ = doc.contentView(at: sepIdx, effectiveCharacterRange: &outRange)
         #expect(NSLocationInRange(sepIdx, outRange))
     }
+
+    @Test @MainActor func runningCommandStreamsLiveOutputAndSettlesCleanly() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let snap = PCodeTypography.shared.snapshot
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Run tests", isSide: false, runID: "r1"), reveal: true)
+        reducer.apply(.toolStarted(
+            callID: "c1",
+            parentCallID: "",
+            name: "shell",
+            detail: "pytest tests/test_ui_surface.py",
+            command: "pytest tests/test_ui_surface.py",
+            purpose: "Run unit tests"), reveal: true)
+
+        // Immediately visible as running and expandable before any output arrives.
+        let idx = doc.indexOfItem(id: "call-c1")
+        #expect(idx != nil)
+        if let idx, case .tool(let runningCall, let expanded) = doc.items[idx].payload {
+            #expect(runningCall.isRunning)
+            #expect(runningCall.canExpand)
+            #expect(!expanded)
+            let compact = PCodeToolCardView.attributedText(for: runningCall, isExpanded: false, typography: snap, theme: theme)
+            #expect(compact.string.contains("running"))
+            let waiting = PCodeToolCardView.attributedText(for: runningCall, isExpanded: true, typography: snap, theme: theme)
+            #expect(waiting.string.contains("Waiting for output"))
+        } else {
+            Issue.record("Expected running tool item for call-c1")
+        }
+
+        // Expand while running and stream live CommandOutput chunks.
+        let children = (doc.accessibilityChildren() as? [PCodeTranscriptAccessibilityRowElement]) ?? []
+        let toolProxy = children.first { $0.itemID == "call-c1" }
+        #expect(toolProxy != nil)
+        #expect(toolProxy?.accessibilityLabel()?.contains("running") == true)
+        #expect(toolProxy?.accessibilityPerformPress() == true)
+        #expect(doc.isItemExpanded(id: "call-c1"))
+
+        reducer.apply(.commandOutput(callID: "c1", command: "pytest tests/test_ui_surface.py", output: "line 1\nline 2"), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-c1"), case .tool(let streamingCall, let expanded) = doc.items[idx].payload {
+            #expect(streamingCall.isRunning)
+            #expect(expanded)
+            #expect(streamingCall.output.contains("line 2"))
+            let collapsedLive = PCodeToolCardView.attributedText(for: streamingCall, isExpanded: false, typography: snap, theme: theme)
+            #expect(collapsedLive.string.contains("live · 2 lines"))
+        } else {
+            Issue.record("Expected streaming tool item for call-c1")
+        }
+
+        // Settling via ToolSummary stops the running indicator and preserves final output.
+        reducer.apply(.toolSummary(
+            callID: "c1",
+            parentCallID: "",
+            name: "shell",
+            detail: "pytest tests/test_ui_surface.py",
+            command: "pytest tests/test_ui_surface.py",
+            failed: false,
+            elapsedSeconds: 1.2,
+            error: "",
+            result: "line 1\nline 2\n2 passed",
+            isBackgroundJob: false), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-c1"), case .tool(let settledCall, let expanded) = doc.items[idx].payload {
+            #expect(!settledCall.isRunning)
+            #expect(expanded)
+            #expect(settledCall.output.contains("2 passed"))
+            #expect(settledCall.formattedElapsed == "1.2s")
+        } else {
+            Issue.record("Expected settled tool item for call-c1")
+        }
+    }
+
+    @Test @MainActor func turnEndedAndShellModeSettleRunningTools() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        // Cancelled turn settles any still-running tool call as failed and not running.
+        reducer.apply(.turnStarted(prompt: "Sleep", isSide: false, runID: "r2"), reveal: true)
+        reducer.apply(.toolStarted(callID: "c2", parentCallID: "", name: "shell", detail: "sleep 60", command: "sleep 60", purpose: ""), reveal: true)
+        reducer.apply(.turnEnded(status: .cancelled), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-c2"), case .tool(let call, _) = doc.items[idx].payload {
+            #expect(!call.isRunning)
+            #expect(call.failed)
+        } else {
+            Issue.record("Expected cancelled tool item c2 to settle")
+        }
+
+        // `!command` shell mode: user -> commandOutput -> dropOutput -> shellResult coalesces onto one row.
+        reducer.apply(.user(text: "!echo hi"), reveal: true)
+        reducer.apply(.commandOutput(callID: "shell_mode_abc", command: "echo hi", output: "hi"), reveal: true)
+        reducer.apply(.dropOutput(callID: "shell_mode_abc"), reveal: true)
+        reducer.apply(.shellResult(command: "echo hi", output: "hi\n", failed: false, elapsedSeconds: 0.1), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-shell_mode_abc"), case .tool(let call, _) = doc.items[idx].payload {
+            #expect(!call.isRunning)
+            #expect(!call.failed)
+            #expect(call.output.contains("hi"))
+        } else {
+            Issue.record("Expected shell_mode_abc to settle in-place")
+        }
+    }
 }

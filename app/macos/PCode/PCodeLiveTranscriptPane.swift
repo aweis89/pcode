@@ -427,11 +427,31 @@ final class PCodeLiveTranscriptController: ObservableObject {
     }
 }
 
+/// Global UI surface checker mirroring Python's `pcode.ui_surface`.
+///
+/// Use `PCodeUISurface.current` / `PCodeUISurface.isSwift` to gate UI behavior
+/// that belongs exclusively to the native Swift transcript vs. terminal scrollback.
+enum PCodeUISurface: Equatable {
+    case swift
+    case terminal
+
+    static var current: PCodeUISurface {
+        PCodeNativeTranscriptMode.shared.enabled ? .swift : .terminal
+    }
+
+    static var isSwift: Bool { current == .swift }
+    static var isTerminal: Bool { current == .terminal }
+}
+
 /// Shared toggle controlling whether the main session window renders the native
-/// AppKit transcript (default `true`) or falls back to the raw Ghostty terminal scrollback.
+/// AppKit transcript (default `true`, unless `PCODE_NATIVE_TRANSCRIPT=0`) or falls
+/// back to the raw Ghostty terminal scrollback.
 final class PCodeNativeTranscriptMode: ObservableObject {
     static let shared = PCodeNativeTranscriptMode()
-    @Published var enabled: Bool = true
+    @Published var enabled: Bool = {
+        let raw = ProcessInfo.processInfo.environment["PCODE_NATIVE_TRANSCRIPT"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return raw != "0" && raw != "false" && raw != "off"
+    }()
 }
 
 /// SwiftUI `NSViewRepresentable` hosting `PCodeTranscriptScrollView` connected to
