@@ -22,13 +22,13 @@ struct PCodeStreamingTextPacer {
     var pendingCount: Int { remainingCount }
 
     init(
-        minCharsPerSecond: Double = 110,
-        maxCharsPerSecond: Double = 2800,
-        catchUpSeconds: Double = 0.18
+        minCharsPerSecond: Double = 85,
+        maxCharsPerSecond: Double = 1800,
+        catchUpSeconds: Double = 0.35
     ) {
         self.minCharsPerSecond = minCharsPerSecond
         self.maxCharsPerSecond = maxCharsPerSecond
-        self.catchUpSeconds = max(0.02, catchUpSeconds)
+        self.catchUpSeconds = max(0.05, catchUpSeconds)
         self.readIndex = pending.startIndex
     }
 
@@ -108,26 +108,37 @@ struct PCodeStreamingTextPacer {
     }
 }
 
-/// Critically-damped spring smooth-scroll glide for sticky-bottom streaming.
+/// Backlog-paced conveyor smooth-scroll glide for sticky-bottom streaming.
 ///
-/// Mirrors `pcode`'s `smooth_scroll.py` (`GLIDE_STIFFNESS = 220.0`), gliding
-/// `clipView.bounds.origin.y` pixel-by-pixel at 120Hz when new lines, code blocks,
-/// or tool cards arrive instead of snapping by full line/block heights.
+/// Mirrors `pcode` / Ghostty Smooth's conveyor (`smooth_scroll.py`): instead of a stiff
+/// start-stop spring that kicks on every line wrap, maintains a smoothly eased velocity
+/// proportional to the remaining backlog (`minSpeed...maxSpeed`) and tapers gently into
+/// the final landing zone so continuous streaming glides at a rock-steady 120Hz cadence.
 struct PCodeSmoothScrollGlide: Equatable {
-    var stiffness: CGFloat
+    var minSpeed: CGFloat
+    var maxSpeed: CGFloat
+    var catchUpSeconds: CGFloat
     var maxOffset: CGFloat
 
     /// Points remaining behind the target bottom origin (`> 0` while gliding downward).
     private(set) var remainingOffset: CGFloat = 0
+    /// Current conveyor velocity in points/sec.
     private(set) var velocity: CGFloat = 0
 
     var isActive: Bool {
-        abs(remainingOffset) > 0.25 || abs(velocity) > 1.0
+        remainingOffset > 0.25
     }
 
-    init(stiffness: CGFloat = 220.0, maxOffset: CGFloat = 480.0) {
-        self.stiffness = max(10, stiffness)
-        self.maxOffset = max(32, maxOffset)
+    init(
+        minSpeed: CGFloat = 110.0,
+        maxSpeed: CGFloat = 900.0,
+        catchUpSeconds: CGFloat = 0.55,
+        maxOffset: CGFloat = 2400.0
+    ) {
+        self.minSpeed = max(20, minSpeed)
+        self.maxSpeed = max(self.minSpeed, maxSpeed)
+        self.catchUpSeconds = max(0.1, catchUpSeconds)
+        self.maxOffset = max(64, maxOffset)
     }
 
     mutating func reset() {
@@ -135,10 +146,10 @@ struct PCodeSmoothScrollGlide: Equatable {
         velocity = 0
     }
 
-    /// Absorb a new bottom growth delta (`> 0` when content grew taller) into the active glide.
+    /// Absorb a new bottom growth delta (`> 0` when content grew taller) into the active conveyor.
     mutating func addOffset(_ delta: CGFloat) {
-        guard delta.isFinite, abs(delta) > 0.01 else { return }
-        remainingOffset = min(max(remainingOffset + delta, -maxOffset), maxOffset)
+        guard delta.isFinite, delta > 0.01 else { return }
+        remainingOffset = min(remainingOffset + delta, maxOffset)
     }
 
     /// Absorb a bottom shrink (e.g. an overestimated offscreen item measuring shorter) without
@@ -146,32 +157,39 @@ struct PCodeSmoothScrollGlide: Equatable {
     mutating func absorbShrink(_ shrinkAmount: CGFloat) {
         guard shrinkAmount.isFinite, shrinkAmount > 0, remainingOffset > 0 else { return }
         remainingOffset = max(0, remainingOffset - shrinkAmount)
-        if remainingOffset == 0 {
-            velocity = 0
+        if remainingOffset <= 0.25 {
+            reset()
         }
     }
 
-    /// Advance the critically-damped spring by `dt` seconds and return the new `remainingOffset`.
+    /// Advance the conveyor glide by `dt` seconds and return the new `remainingOffset`.
     @discardableResult
     mutating func step(dt: TimeInterval) -> CGFloat {
         guard isActive else {
             reset()
             return 0
         }
-        let clampedDt = CGFloat(min(max(dt, 1.0 / 240.0), 0.1))
-        let omega = sqrt(stiffness)
-        let c = velocity + omega * remainingOffset
-        let decay = exp(-omega * clampedDt)
-        let nextOffset = (remainingOffset + c * clampedDt) * decay
-        let nextVel = (velocity - omega * c * clampedDt) * decay
+        let clampedDt = CGFloat(min(max(dt, 1.0 / 240.0), 0.05))
 
-        let crossed = remainingOffset != 0 && (remainingOffset > 0) != (nextOffset > 0)
-        if crossed || (abs(nextOffset) <= 0.25 && abs(nextVel) < 1.0) {
+        // Desired conveyor speed follows backlog (`remainingOffset / catchUpSeconds`),
+        // tapering smoothly in the final 24pt landing zone so arrival has zero snap.
+        let rawTarget: CGFloat
+        if remainingOffset < 24.0 {
+            rawTarget = max(24.0, (remainingOffset / 24.0) * minSpeed)
+        } else {
+            rawTarget = min(maxSpeed, max(minSpeed, remainingOffset / catchUpSeconds))
+        }
+
+        // Smoothly ease velocity toward target speed (no abrupt acceleration kicks on line wraps).
+        let blend = 1.0 - exp(-12.0 * clampedDt)
+        velocity = velocity + (rawTarget - velocity) * blend
+
+        let advance = velocity * clampedDt
+        if advance >= remainingOffset - 0.25 {
             reset()
             return 0
         }
-        remainingOffset = nextOffset
-        velocity = nextVel
+        remainingOffset -= advance
         return remainingOffset
     }
 }
@@ -441,6 +459,7 @@ final class PCodeTranscriptStreamReplayer {
     private weak var documentView: PCodeTranscriptDocumentView?
     private let steps: [Step]
     private var nextStepIndex = 0
+    private var cooldownTicks = 0
     private var timer: Timer?
     private let stepInterval: TimeInterval
     private let onComplete: (() -> Void)?
@@ -506,6 +525,10 @@ final class PCodeTranscriptStreamReplayer {
         documentView.setItems([], pinToBottom: true)
         let t = Timer(timeInterval: stepInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
+            if self.cooldownTicks > 0 {
+                self.cooldownTicks -= 1
+                return
+            }
             // Let the 120Hz text pacer finish draining the current message before `.finishMessage`
             // flushes it, so short/medium messages glide smoothly to their final character.
             if self.nextStepIndex < self.steps.count,
@@ -514,9 +537,21 @@ final class PCodeTranscriptStreamReplayer {
             {
                 return
             }
+            let currentStep = self.nextStepIndex < self.steps.count ? self.steps[self.nextStepIndex] : nil
             if !self.stepOnce() {
                 self.stop()
                 self.onComplete?()
+                return
+            }
+            // Give tool cards and new turns a natural brief beat (~48ms at 4x) so rapid tool
+            // runs glide smoothly on the conveyor instead of dumping 125 cards/sec.
+            switch currentStep {
+            case .toolCall:
+                self.cooldownTicks = 5
+            case .beginTurn:
+                self.cooldownTicks = 8
+            default:
+                break
             }
         }
         RunLoop.main.add(t, forMode: .common)

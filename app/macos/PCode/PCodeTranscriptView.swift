@@ -315,6 +315,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private(set) var hasUnreadStreamingContent: Bool = false
     /// Invoked whenever the floating "Jump to bottom" pill visibility should change.
     var onJumpToBottomVisibilityChanged: ((Bool) -> Void)?
+    /// Invoked whenever the smooth-scroll conveyor glide starts or settles (drives bottom-edge dissolve).
+    var onSmoothGlideActiveChanged: ((Bool) -> Void)?
+    private var lastNotifiedGlideActive: Bool = false
     /// Exposed for tests/telemetry: whether the most recent streaming diff took the open-fence fast path.
     var lastStreamingUpdateUsedOpenFenceFastPath: Bool {
         activeStream?.differ.lastUpdateUsedOpenFenceFastPath ?? false
@@ -455,7 +458,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         selection = nil
         hoveredItemIndex = nil
         activeStream = nil
-        smoothGlide.reset()
+        resetSmoothGlide()
         setHasUnreadStreamingContent(false)
         attributedCache.removeAll(keepingCapacity: true)
         stopDisplayLink()
@@ -656,7 +659,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Re-pin to bottom and scroll immediately (used by the floating "Jump to bottom" pill).
     func scrollToBottomAndPin() {
-        smoothGlide.reset()
+        resetSmoothGlide()
         stickyBottom.pinToBottom()
         setHasUnreadStreamingContent(false)
         applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
@@ -665,7 +668,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Explicitly unpin sticky-bottom tracking (e.g. Find jump or programmatic scroll-up).
     func unpinFromBottom() {
-        smoothGlide.reset()
+        resetSmoothGlide()
         stickyBottom.unpinForUserAction()
     }
 
@@ -757,7 +760,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     // MARK: - Scroll Notifications (called by PCodeTranscriptScrollView)
 
     func handleWillStartLiveScroll() {
-        smoothGlide.reset()
+        resetSmoothGlide()
         stickyBottom.didStartLiveScroll()
         lastClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
     }
@@ -791,7 +794,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let dist = distanceFromBottom(in: scrollView)
             stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
             if movedUp && stickyBottom.mode == .userScrolledUp {
-                smoothGlide.reset()
+                resetSmoothGlide()
             }
             if stickyBottom.mode == .pinnedToBottom {
                 setHasUnreadStreamingContent(false)
@@ -1064,9 +1067,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 } else if deltaBottom < -0.5 {
                     smoothGlide.absorbShrink(-deltaBottom)
                 }
-                rawOriginY = targetBottomY - smoothGlide.remainingOffset
+                notifyGlideActiveIfNeeded()
+                let scale = max(window?.backingScaleFactor ?? 2.0, 1.0)
+                rawOriginY = round((targetBottomY - smoothGlide.remainingOffset) * scale) / scale
             } else {
                 smoothGlide.reset()
+                notifyGlideActiveIfNeeded()
                 rawOriginY = targetBottomY
             }
         } else {
@@ -1153,7 +1159,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
         }
 
-        // 2. Step the 120Hz critically-damped spring smooth-scroll glide while pinned.
+        // 2. Step the 120Hz backlog-paced conveyor smooth-scroll glide while pinned.
         if smoothGlide.isActive {
             if stickyBottom.shouldProgrammaticallyPin, let scrollView = enclosingScrollView {
                 let remaining = smoothGlide.step(dt: dt)
@@ -1163,10 +1169,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     clipHeight: clipView.bounds.height,
                     topInset: scrollView.contentInsets.top,
                     bottomInset: scrollView.contentInsets.bottom)
-                let desiredY = targetBottomY - remaining
+                let scale = max(window?.backingScaleFactor ?? 2.0, 1.0)
+                let desiredY = round((targetBottomY - remaining) * scale) / scale
                 let clamped = clipView.constrainBoundsRect(
                     CGRect(origin: CGPoint(x: clipView.bounds.origin.x, y: desiredY), size: clipView.bounds.size))
-                if abs(clamped.origin.y - clipView.bounds.origin.y) > 0.1 {
+                if abs(clamped.origin.y - clipView.bounds.origin.y) >= (0.5 / scale) {
                     isApplyingDocumentHeight = true
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
@@ -1181,11 +1188,24 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 smoothGlide.reset()
             }
         }
+        notifyGlideActiveIfNeeded()
 
         // Pause the display link as soon as both pacer and smooth-scroll glide settle.
         if !isStreamingAnimationActive {
             stopDisplayLink()
         }
+    }
+
+    private func resetSmoothGlide() {
+        smoothGlide.reset()
+        notifyGlideActiveIfNeeded()
+    }
+
+    private func notifyGlideActiveIfNeeded() {
+        let active = smoothGlide.isActive && stickyBottom.mode == .pinnedToBottom
+        guard active != lastNotifiedGlideActive else { return }
+        lastNotifiedGlideActive = active
+        onSmoothGlideActiveChanged?(active)
     }
 
     private func flushStreamingMessage() {
@@ -1631,12 +1651,60 @@ final class PCodeJumpToBottomButton: NSButton {
     }
 }
 
+/// Non-interactive soft bottom-edge dissolve overlay shown while the smooth-scroll conveyor glides.
+private final class PCodeBottomDissolveView: NSView {
+    private let gradientLayer = CAGradientLayer()
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
+        gradientLayer.opacity = 0
+        layer?.addSublayer(gradientLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func applyTheme(_ theme: PCodeTranscriptTheme) {
+        let base = theme.background
+        let topColor = base.withAlphaComponent(0.0).cgColor
+        let bottomColor = base.withAlphaComponent(0.92).cgColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradientLayer.colors = [topColor, bottomColor]
+        CATransaction.commit()
+    }
+
+    func setActive(_ active: Bool) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(active ? 0.12 : 0.25)
+        gradientLayer.opacity = active ? 1.0 : 0.0
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        gradientLayer.frame = bounds
+        CATransaction.commit()
+    }
+}
+
 /// Native `NSScrollView` hosting `PCodeTranscriptDocumentView` with live-scroll observation
-/// (without overriding `scrollWheel`, preserving AppKit responsive scrolling) and a floating
-/// "Jump to bottom" pill when scrolled up during live streaming.
+/// (without overriding `scrollWheel`, preserving AppKit responsive scrolling), a soft bottom-edge
+/// dissolve during conveyor glides, and a floating "Jump to bottom" pill when scrolled up.
 final class PCodeTranscriptScrollView: NSScrollView {
     let transcriptDocumentView: PCodeTranscriptDocumentView
     let jumpToBottomButton = PCodeJumpToBottomButton()
+    private let bottomDissolveView = PCodeBottomDissolveView()
     private var observers: [NSObjectProtocol] = []
     private var typographyCancellable: AnyCancellable?
 
@@ -1657,6 +1725,9 @@ final class PCodeTranscriptScrollView: NSScrollView {
         contentView.postsBoundsChangedNotifications = true
         appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
 
+        bottomDissolveView.applyTheme(theme)
+        addSubview(bottomDissolveView)
+
         jumpToBottomButton.isHidden = true
         jumpToBottomButton.target = self
         jumpToBottomButton.action = #selector(jumpToBottomPressed)
@@ -1669,6 +1740,9 @@ final class PCodeTranscriptScrollView: NSScrollView {
             if visible {
                 self.layoutJumpToBottomButton()
             }
+        }
+        transcriptDocumentView.onSmoothGlideActiveChanged = { [weak self] active in
+            self?.bottomDissolveView.setActive(active)
         }
 
         let nc = NotificationCenter.default
@@ -1726,6 +1800,7 @@ final class PCodeTranscriptScrollView: NSScrollView {
 
     func applyTheme(_ theme: PCodeTranscriptTheme) {
         jumpToBottomButton.applyTheme(theme)
+        bottomDissolveView.applyTheme(theme)
     }
 
     @objc private func jumpToBottomPressed() {
@@ -1738,6 +1813,9 @@ final class PCodeTranscriptScrollView: NSScrollView {
         if clipWidth > 0, abs(transcriptDocumentView.frame.width - clipWidth) > 0.5 {
             transcriptDocumentView.frame.size.width = clipWidth
         }
+        let dissolveH: CGFloat = 28
+        let dissolveY: CGFloat = isFlipped ? (bounds.height - dissolveH) : 0
+        bottomDissolveView.frame = CGRect(x: 0, y: dissolveY, width: bounds.width, height: dissolveH)
         layoutJumpToBottomButton()
     }
 
