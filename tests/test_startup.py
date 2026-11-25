@@ -72,6 +72,29 @@ assert asyncio.run(_stopping_provider_processes(editor())) == 'done'
     )
 
 
+def test_provider_shutdown_wrapper_stops_loaded_providers(monkeypatch):
+    from types import SimpleNamespace
+
+    from pcode.app import _stopping_provider_processes
+
+    stopped = []
+
+    async def stop(name):
+        stopped.append(name)
+
+    for name in ("pcode.claude_sdk.session_pool", "pcode.antigravity"):
+        monkeypatch.setitem(
+            sys.modules, name, SimpleNamespace(shutdown=lambda name=name: stop(name))
+        )
+
+    async def editor():
+        raise RuntimeError("editor failed")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_stopping_provider_processes(editor()))
+    assert stopped == ["pcode.claude_sdk.session_pool", "pcode.antigravity"]
+
+
 @pytest.mark.parametrize("outcome", ["success", "cancel", "failure", "quit", "restore", "commands"])
 def test_editor_accepts_input_while_backend_starts(outcome):
     async def run():
