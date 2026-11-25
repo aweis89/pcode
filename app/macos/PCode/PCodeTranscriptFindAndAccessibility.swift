@@ -161,18 +161,22 @@ extension PCodeTranscriptDocumentView: NSTextFinderClient {
 
     func scrollRangeToVisible(_ range: NSRange) {
         let index = currentSearchIndex()
-        guard let pos = index.position(forFlatOffset: range.location) else { return }
-        scrollItemToVisible(at: pos.itemIndex)
+        guard let sel = index.selection(for: range) else { return }
+        let idx = sel.lower.itemIndex
+        let localRange: NSRange?
+        if items.indices.contains(idx) {
+            let itemLen = (plainTextForCopy(at: idx) as NSString).length
+            localRange = sel.localRange(forItem: idx, utf16Length: itemLen)
+        } else {
+            localRange = nil
+        }
+        scrollItemToVisible(at: idx, localRange: localRange)
     }
 
     func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
-        let searchIndex = currentSearchIndex()
-        if let entryIdx = searchIndex.entryIndex(for: index) {
-            let entry = searchIndex.entries[entryIdx]
-            outRange.pointee = NSRange(location: entry.utf16Location, length: max(1, entry.utf16Length))
-        } else {
-            outRange.pointee = NSRange(location: 0, length: searchIndex.totalUTF16Length)
-        }
+        // All text is hosted in `self`; unconditionally cover the entire range so
+        // `NSLocationInRange(index, outRange)` always holds, including on item separators.
+        outRange.pointee = NSRange(location: 0, length: currentSearchIndex().totalUTF16Length)
         return self
     }
 
@@ -210,16 +214,16 @@ extension PCodeTranscriptDocumentView: NSTextFinderClient {
 // MARK: - Accessibility Proxies (`NSAccessibilityElement`)
 
 /// Lightweight VoiceOver proxy for one visible row in `PCodeTranscriptDocumentView`.
+/// Cached by stable `itemID` so VoiceOver preserves focus identity across updates,
+/// and computes `accessibilityValue()` lazily on demand.
 final class PCodeTranscriptAccessibilityRowElement: NSAccessibilityElement {
     private weak var documentView: PCodeTranscriptDocumentView?
     let itemID: String
-    let itemIndex: Int
-    let isExpandable: Bool
+    var isExpandable: Bool
 
-    init(documentView: PCodeTranscriptDocumentView, itemID: String, itemIndex: Int, isExpandable: Bool) {
+    init(documentView: PCodeTranscriptDocumentView, itemID: String, isExpandable: Bool) {
         self.documentView = documentView
         self.itemID = itemID
-        self.itemIndex = itemIndex
         self.isExpandable = isExpandable
         super.init()
     }
@@ -228,19 +232,47 @@ final class PCodeTranscriptAccessibilityRowElement: NSAccessibilityElement {
         documentView
     }
 
+    override func accessibilityValue() -> Any? {
+        guard let doc = documentView, let idx = doc.indexOfItem(id: itemID) else { return "" }
+        return doc.plainTextForCopy(at: idx)
+    }
+
     override func accessibilityFrame() -> NSRect {
         guard let doc = documentView,
-              doc.layoutEngine.entries.indices.contains(itemIndex),
+              let idx = doc.indexOfItem(id: itemID),
+              doc.items.indices.contains(idx),
+              doc.layoutEngine.entries.indices.contains(idx),
               let window = doc.window
         else { return .zero }
-        let entry = doc.layoutEngine.entries[itemIndex]
-        let localRect = CGRect(
-            x: PCodeTranscriptDocumentView.horizontalPadding,
+        let entry = doc.layoutEngine.entries[idx]
+        let indent = CGFloat(doc.items[idx].depth) * 16
+        let contentW = max(1, doc.bounds.width - PCodeTranscriptDocumentView.horizontalPadding * 2 - indent)
+        var localRect = CGRect(
+            x: PCodeTranscriptDocumentView.horizontalPadding + indent,
             y: entry.yOffset,
-            width: max(1, doc.bounds.width - PCodeTranscriptDocumentView.horizontalPadding * 2),
+            width: contentW,
             height: entry.height)
+        // Clip to unobstructed visible viewport so VoiceOver focus boxes never cover PCodeDockCard.
+        if let scrollView = doc.enclosingScrollView {
+            var vis = doc.visibleRect
+            let bottomInset = scrollView.contentInsets.bottom
+            if bottomInset > 0 {
+                vis.size.height = max(0, vis.size.height - bottomInset)
+            }
+            let clipped = localRect.intersection(vis)
+            if !clipped.isNull {
+                localRect = clipped
+            }
+        }
         let windowRect = doc.convert(localRect, to: nil)
         return window.convertToScreen(windowRect)
+    }
+
+    override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
+        if selector == #selector(accessibilityPerformPress) {
+            return isExpandable
+        }
+        return super.isAccessibilitySelectorAllowed(selector)
     }
 
     override func accessibilityPerformPress() -> Bool {
@@ -252,7 +284,7 @@ final class PCodeTranscriptAccessibilityRowElement: NSAccessibilityElement {
 
 extension PCodeTranscriptDocumentView {
     override func isAccessibilityElement() -> Bool {
-        false
+        true
     }
 
     override func accessibilityRole() -> NSAccessibility.Role? {
@@ -264,26 +296,60 @@ extension PCodeTranscriptDocumentView {
     }
 
     override func accessibilityChildren() -> [Any]? {
-        guard !items.isEmpty else { return [] }
+        guard !items.isEmpty else {
+            accessibilityRowProxies.removeAll(keepingCapacity: false)
+            return []
+        }
         let range = layoutEngine.visibleRange(in: visibleRect)
         let indices: Range<Int> = range.isEmpty ? (0..<min(items.count, 16)) : range
+        var activeIDs = Set<String>()
+        activeIDs.reserveCapacity(indices.count)
         var children: [PCodeTranscriptAccessibilityRowElement] = []
         children.reserveCapacity(indices.count)
+
         for idx in indices where items.indices.contains(idx) {
             let item = items[idx]
+            activeIDs.insert(item.id)
             let (role, roleDesc, label, expandable) = accessibilityMetadata(for: item)
-            let element = PCodeTranscriptAccessibilityRowElement(
-                documentView: self,
-                itemID: item.id,
-                itemIndex: idx,
-                isExpandable: expandable)
+            let element: PCodeTranscriptAccessibilityRowElement
+            if let cached = accessibilityRowProxies[item.id] {
+                cached.isExpandable = expandable
+                element = cached
+            } else {
+                let created = PCodeTranscriptAccessibilityRowElement(
+                    documentView: self,
+                    itemID: item.id,
+                    isExpandable: expandable)
+                accessibilityRowProxies[item.id] = created
+                element = created
+            }
             element.setAccessibilityRole(role)
             element.setAccessibilityRoleDescription(roleDesc)
             element.setAccessibilityLabel(label)
-            element.setAccessibilityValue(plainTextForCopy(at: idx))
             children.append(element)
         }
+        // Prune proxies that scrolled out of the visible range.
+        if accessibilityRowProxies.count > activeIDs.count {
+            for key in accessibilityRowProxies.keys where !activeIDs.contains(key) {
+                accessibilityRowProxies.removeValue(forKey: key)
+            }
+        }
         return children
+    }
+
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        guard let window else { return super.accessibilityHitTest(point) }
+        let windowPt = window.convertPoint(fromScreen: point)
+        let localPt = convert(windowPt, from: nil)
+        guard let idx = layoutEngine.itemIndex(atY: localPt.y),
+              items.indices.contains(idx)
+        else { return self }
+        let id = items[idx].id
+        if let proxy = accessibilityRowProxies[id] {
+            return proxy
+        }
+        _ = accessibilityChildren()
+        return accessibilityRowProxies[id] ?? self
     }
 
     private func accessibilityMetadata(

@@ -442,6 +442,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     let typography: PCodeTypography
     let controller: PCodeLiveTranscriptController
     var bottomContentInset: CGFloat = 0
+    weak var composerSurface: Ghostty.SurfaceView?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -450,6 +451,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> PCodeTranscriptScrollView {
         let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
         scrollView.bottomContentInset = bottomContentInset
+        wireFocusHandlers(on: scrollView)
         context.coordinator.lastTheme = theme
         context.coordinator.lastTypographySnapshot = typography.snapshot
         context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
@@ -469,6 +471,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         let typoID = ObjectIdentifier(typography)
 
         nsView.bottomContentInset = bottomContentInset
+        wireFocusHandlers(on: nsView)
 
         if coord.lastTypographyObjectID != typoID {
             coord.lastTypographyObjectID = typoID
@@ -487,6 +490,29 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
                 guard let controller, let doc else { return }
                 controller.attach(sessionID: sid, documentView: doc)
             }
+        }
+    }
+
+    private func wireFocusHandlers(on scrollView: PCodeTranscriptScrollView) {
+        weak var composer = composerSurface
+        scrollView.transcriptDocumentView.onReturnFocusToComposer = {
+            guard let composer else { return }
+            Ghostty.moveFocus(to: composer)
+        }
+        scrollView.canHandleFindShortcut = { [weak scrollView, weak composer] in
+            guard let scrollView,
+                  !scrollView.isHiddenOrHasHiddenAncestor,
+                  let window = scrollView.window,
+                  window.isKeyWindow,
+                  let responder = window.firstResponder as? NSView
+            else { return false }
+            if responder === scrollView || responder.isDescendant(of: scrollView) {
+                return true
+            }
+            if let composer, responder === composer || responder.isDescendant(of: composer) {
+                return true
+            }
+            return false
         }
     }
 
@@ -512,6 +538,7 @@ struct PCodeMainWindowTranscriptView: View {
     @EnvironmentObject var ghostty: Ghostty.App
     let sessionID: String?
     let bottomContentInset: CGFloat
+    var composerSurface: Ghostty.SurfaceView? = nil
     @ObservedObject private var typography = PCodeTypography.shared
     @StateObject private var controller = PCodeLiveTranscriptController()
 
@@ -531,7 +558,8 @@ struct PCodeMainWindowTranscriptView: View {
             theme: transcriptTheme,
             typography: typography,
             controller: controller,
-            bottomContentInset: bottomContentInset)
+            bottomContentInset: bottomContentInset,
+            composerSurface: composerSurface)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ghostty.config.backgroundColor)
             .environment(\.colorScheme, colorScheme)

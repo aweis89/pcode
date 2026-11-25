@@ -187,19 +187,21 @@ struct PCodeDockedSurface: View {
 
                 // Native AppKit live transcript replacing the terminal scrollback layer
                 // while keeping the underlying Ghostty surface alive for PTY/OSC/dock.
-                if !isSplit, transcriptMode.enabled, let sid = sessionID ?? surfaceView.pcodeSession, !sid.isEmpty {
-                    if let docked = dock.surface {
-                        PCodeDockedTranscriptLayer(
-                            sessionID: sid,
-                            dock: dock,
-                            docked: docked,
-                            fallbackCell: paneCell,
-                            drawerOpen: drawerOpen)
-                    } else {
-                        PCodeMainWindowTranscriptView(
-                            sessionID: sid,
-                            bottomContentInset: 0)
-                    }
+                // Only shown while the docked composer card is active so undocked inline
+                // editors or exited shells underneath are never hidden.
+                if !isSplit,
+                   transcriptMode.enabled,
+                   let docked = dock.surface,
+                   dock.ready,
+                   let sid = surfaceView.pcodeSession ?? sessionID,
+                   !sid.isEmpty
+                {
+                    PCodeDockedTranscriptLayer(
+                        sessionID: sid,
+                        dock: dock,
+                        docked: docked,
+                        fallbackCell: paneCell,
+                        drawerOpen: drawerOpen)
                 }
 
                 // The /btw drawer over the right side, full height, reserving the
@@ -234,6 +236,9 @@ struct PCodeDockedSurface: View {
             .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
                 sessionID = surfaceView.pcodeSession
             }
+            .onChange(of: ObjectIdentifier(surfaceView)) { _ in
+                sessionID = surfaceView.pcodeSession
+            }
             .onAppear {
                 if sessionID != surfaceView.pcodeSession {
                     sessionID = surfaceView.pcodeSession
@@ -264,7 +269,8 @@ private struct PCodeDockedTranscriptLayer: View {
             : 0
         PCodeMainWindowTranscriptView(
             sessionID: sessionID,
-            bottomContentInset: bottomInset)
+            bottomContentInset: bottomInset,
+            composerSurface: docked)
     }
 }
 

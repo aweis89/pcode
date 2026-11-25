@@ -1041,5 +1041,37 @@ struct PCodeTranscriptTests {
         // Pressing the expandable tool proxy toggles its expanded state.
         #expect(children[1].accessibilityPerformPress())
         #expect(doc.isItemExpanded(id: "t1"))
+        #expect(!children[0].isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.accessibilityPerformPress)))
+        #expect(children[1].isAccessibilitySelectorAllowed(#selector(NSAccessibilityElement.accessibilityPerformPress)))
+    }
+
+    @Test @MainActor func shortTranscriptWithBottomContentInsetDoesNotScrollTopOffscreen() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 800)
+        scrollView.bottomContentInset = 140
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+
+        doc.setItems([
+            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "You", text: "Hello", isSide: false), spacingAfter: 10),
+        ], pinToBottom: true)
+        scrollView.layoutSubtreeIfNeeded()
+
+        #expect(scrollView.contentView.bounds.origin.y <= 0.5)
+
+        // Trailing newline in command output must not overcount lines by 1.
+        let call = PCodePeekToolCall(id: 1, name: "run", detail: "cmd", failed: false, elapsedSeconds: nil, command: "cmd", output: "a\nb\nc\n")
+        #expect(PCodeToolCardView.expandableLineCount(for: call) == 3)
+
+        // contentView(at:effectiveCharacterRange:) covers separator offsets.
+        doc.setItems([
+            PCodeTranscriptItem(id: "a", payload: .prompt(label: "You", text: "Hi", isSide: false), spacingAfter: 10),
+            PCodeTranscriptItem(id: "b", payload: .prose(markdown: "Bye", referenceDefinitions: "", copyMarkdown: nil), spacingAfter: 10),
+        ], pinToBottom: false)
+        let sepIdx = doc.currentSearchIndex().entries[0].utf16End
+        var outRange = NSRange(location: 0, length: 0)
+        _ = doc.contentView(at: sepIdx, effectiveCharacterRange: &outRange)
+        #expect(NSLocationInRange(sepIdx, outRange))
     }
 }

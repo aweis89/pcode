@@ -199,6 +199,9 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
     }
 
     private func computeLayoutMetrics() -> (height: CGFloat, inkSweepLength: CGFloat) {
+        if (textContentStorage.textStorage?.length ?? 0) == 0 {
+            return (0, 0)
+        }
         var totalSpan: CGFloat = 0
         var maxY: CGFloat = 0
         textLayoutManager.enumerateTextLayoutFragments(

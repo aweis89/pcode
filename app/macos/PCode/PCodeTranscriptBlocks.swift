@@ -1019,12 +1019,20 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
     /// Number of lines in the expandable payload (output if present, otherwise multiline summary).
     static func expandableLineCount(for call: PCodePeekToolCall) -> Int {
+        func countLines(_ raw: String) -> Int {
+            var s = raw[...]
+            if s.last?.isNewline == true {
+                s = s.dropLast()
+            }
+            guard !s.isEmpty else { return 0 }
+            return s.split(separator: "\n", omittingEmptySubsequences: false).count
+        }
         if !call.output.isEmpty {
-            return call.output.split(separator: "\n", omittingEmptySubsequences: false).count
+            return countLines(call.output)
         }
         let summary = call.summaryText
         if summary.contains("\n") {
-            return summary.split(separator: "\n", omittingEmptySubsequences: false).count
+            return countLines(summary)
         }
         return 0
     }
