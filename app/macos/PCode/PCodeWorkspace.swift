@@ -733,7 +733,7 @@ final class PCodeWorkspace: ObservableObject {
         didSet { UserDefaults.standard.set(Double(sidebarWidth), forKey: Self.sidebarWidthKey) }
     }
 
-    /// When true, the sidebar hides off the left edge and slides out as an overlay on hover.
+    /// When true, the sidebar hides off the left edge and slides the layout over on hover.
     @Published var sidebarAutoHide: Bool = UserDefaults.standard.bool(forKey: PCodeWorkspace.sidebarAutoHideKey) {
         didSet {
             UserDefaults.standard.set(sidebarAutoHide, forKey: Self.sidebarAutoHideKey)
@@ -746,7 +746,7 @@ final class PCodeWorkspace: ObservableObject {
         }
     }
 
-    /// Whether the auto-hiding sidebar is currently slid out over the terminal.
+    /// Whether the auto-hiding sidebar is currently slid open.
     @Published var sidebarRevealed = false
 
     /// True while the user is dragging the sidebar's right resize handle.
@@ -796,10 +796,9 @@ final class PCodeWorkspace: ObservableObject {
         if sidebarAutoHide {
             sidebarAutoHide = false
         } else {
-            let wasRevealed = sidebarRevealed
             sidebarRevealed = false
             sidebarAutoHide = true
-            if wasRevealed { restoreFocusAfterSidebarHide() }
+            restoreFocusAfterSidebarHide()
         }
     }
 
@@ -1777,27 +1776,29 @@ struct PCodeWorkspaceView: View {
                 GeometryReader { geometry in
                     let totalWidth = geometry.size.width
                     let sidebarWidth = workspace.effectiveSidebarWidth(in: totalWidth)
+                    let sidebarVisible = !workspace.sidebarAutoHide || workspace.sidebarRevealed
                     HStack(spacing: 0) {
-                        if !workspace.sidebarAutoHide {
-                            sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: false)
-                        }
-                        detailPane(peekLeadingInset: workspace.sidebarAutoHide && workspace.sidebarRevealed ? sidebarWidth : 0)
-                    }
-                    .overlay(alignment: .leading) {
-                        if workspace.sidebarAutoHide {
-                            ZStack(alignment: .leading) {
-                                Color.clear.allowsHitTesting(false)
-                                if workspace.sidebarRevealed {
-                                    sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: true)
-                                        .onHover { workspace.sidebarHoverChanged($0) }
-                                        .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
-                                        .transition(.move(edge: .leading))
-                                }
+                        ZStack(alignment: .trailing) {
+                            if sidebarVisible {
+                                sidebar
+                                    .frame(width: sidebarWidth)
+                                    .background(sidebarBackground)
+                                    .onHover { workspace.sidebarHoverChanged($0) }
+                                    .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
+                                    .transition(.identity)
                             }
-                            .clipped()
-                            .animation(.easeOut(duration: 0.18), value: workspace.sidebarRevealed)
                         }
+                        .frame(width: sidebarVisible ? sidebarWidth : 0, alignment: .trailing)
+                        .clipped()
+
+                        if sidebarVisible {
+                            sidebarResizeHandle(width: sidebarWidth, totalWidth: totalWidth)
+                                .transition(.identity)
+                        }
+
+                        detailPane
                     }
+                    .animation(.easeOut(duration: 0.2), value: sidebarVisible)
                 }
 
                 if workspace.showingDirectoryPicker {
@@ -1832,7 +1833,7 @@ struct PCodeWorkspaceView: View {
         }
     }
 
-    private func detailPane(peekLeadingInset: CGFloat) -> some View {
+    private var detailPane: some View {
         ZStack {
             if let pane = workspace.selectedPane {
                 PCodeSessionPaneView(pane: pane)
@@ -1850,7 +1851,6 @@ struct PCodeWorkspaceView: View {
             ) { target in
                 workspace.openPeekTarget(target)
             }
-            .padding(.leading, peekLeadingInset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ghostty.config.backgroundColor, ignoresSafeAreaEdges: [])
@@ -1865,18 +1865,6 @@ struct PCodeWorkspaceView: View {
         // Solid, a shade off the terminal's background: no vibrancy behind it.
         Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
             withFraction: 0.06, of: .white) ?? .windowBackgroundColor)
-    }
-
-    private func sidebarWithHandle(width: CGFloat, totalWidth: CGFloat, floating: Bool) -> some View {
-        HStack(spacing: 0) {
-            sidebar
-                .frame(width: width)
-            sidebarResizeHandle(width: width, totalWidth: totalWidth)
-        }
-        .background(
-            sidebarBackground
-                .shadow(color: floating ? .black.opacity(0.35) : .clear, radius: floating ? 8 : 0, x: floating ? 2 : 0, y: 0)
-        )
     }
 
     /// The sidebar's right edge: a hairline to see, a wider strip to drag (double-click resets width).
