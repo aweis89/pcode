@@ -56,8 +56,10 @@ from pcode.startup_input import TerminalReplyParser
 CONNECT_TIMEOUT = 3.0
 # Never ask for more of the pane than this.
 MAX_ROWS = 40
-# Rows of the dock's cells the card covers on top of the rows it shows (its
-# margins and padding): `PCodeDock.slackRows` in the app, kept in step.
+# Conservative upper bound in dock rows for the card's margins and padding
+# (`PCodeDock.cardPadding + topMargin + bottomMargin` = 22pt in the app).
+# `TIOCGWINSZ` reports pixels without backing scale, so pcode reserves up to
+# two rows rather than risking overlap on small fonts.
 CARD_SLACK_ROWS = 2.0
 # The rows the app shows before pcode asks for any (`PCodeDock.rows`).
 INITIAL_ROWS = 3

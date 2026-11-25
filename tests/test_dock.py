@@ -302,3 +302,24 @@ def test_status_gap_is_disabled_when_docked(docked, monkeypatch):
     assert layout.status_gap() is True
     monkeypatch.setattr(dock, "_active", docked)
     assert layout.status_gap() is False
+
+
+def test_after_render_reports_rows_while_render_cache_is_warm(docked, monkeypatch):
+    from pcode.ui import PromptLayout
+
+    seen_cache = []
+    layout = PromptLayout.__new__(PromptLayout)
+    layout.render_cache = {"size": Size(rows=25, columns=80)}
+    layout.animation_task = None
+    layout.needs_animation = lambda: False
+    layout.sync_native_menu = lambda app: None
+    layout.sync_native_toast = lambda app: None
+    layout.replay_after_menu = lambda app: None
+    layout.refill_after_shrink = lambda app: None
+    monkeypatch.setattr(dock, "_active", docked)
+    monkeypatch.setattr(
+        docked, "report_rows", lambda app: seen_cache.append(layout.render_cache is not None)
+    )
+    layout.after_render(SimpleNamespace(is_running=False))
+    assert seen_cache == [True]
+    assert layout.render_cache is None
