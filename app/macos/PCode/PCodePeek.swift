@@ -814,32 +814,22 @@ struct PCodePeekOverlay: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .loaded(let turns):
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(turns) { turn in
-                            turnView(turn)
-                        }
-                        Color.clear
-                            .frame(height: 1)
-                            .id("peek-bottom-\(target.sessionID ?? "")")
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 16)
-                    .textSelection(.enabled)
-                }
-                // The card is drawn on the terminal's background, so markdown colors follow it.
-                .environment(\.colorScheme, transcriptColorScheme)
-                // Markdown and code cards settle their heights a frame or two after
-                // appearing, so a one-off scrollTo can land short; the anchor keeps up.
-                .defaultScrollAnchor(.bottom)
-                .id(target.sessionID ?? "")
-                .onAppear {
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("peek-bottom-\(target.sessionID ?? "")", anchor: .bottom)
+            // Opens at the top. Don't anchor or scroll to the bottom: Textual views
+            // settle their heights after appearing, so the lazy stack's estimate
+            // lands past the content and long transcripts open blank.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(turns) { turn in
+                        turnView(turn)
                     }
                 }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .textSelection(.enabled)
             }
+            // The card is drawn on the terminal's background, so markdown colors follow it.
+            .environment(\.colorScheme, transcriptColorScheme)
+            .id(target.sessionID ?? "")
         }
     }
 
