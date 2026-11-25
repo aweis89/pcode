@@ -283,6 +283,7 @@ final class PCodePeekController: ObservableObject {
     @Published private(set) var state: LoadState = .idle
     @Published private(set) var pinned: Bool = false
     @Published var isReplaying: Bool = false
+    @Published var replaySpeed: Double = 1.0
 
     /// Called whenever `target` changes so the workspace can wake/occlude a live-peeked pane.
     var onTargetChange: (() -> Void)?
@@ -823,6 +824,7 @@ struct PCodePeekOverlay: View {
                 typography: typography,
                 pinToBottom: false,
                 replayActive: peek.isReplaying,
+                replaySpeed: peek.replaySpeed,
                 onReplayFinished: {
                     peek.isReplaying = false
                 })
@@ -847,23 +849,39 @@ struct PCodePeekOverlay: View {
                 .lineLimit(1)
             Spacer(minLength: 8)
             if hasLoadedTurns {
-                Button {
-                    peek.isReplaying.toggle()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: peek.isReplaying ? "stop.fill" : "play.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(peek.isReplaying ? "Stop" : "Replay 4×")
-                            .font(.caption2.weight(.medium))
+                HStack(spacing: 4) {
+                    Button {
+                        peek.isReplaying.toggle()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: peek.isReplaying ? "stop.fill" : "play.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(peek.isReplaying ? "Stop" : "Replay")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .foregroundStyle(peek.isReplaying ? Color.accentColor : Color.primary.opacity(0.85))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(peek.isReplaying ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
-                    .foregroundStyle(peek.isReplaying ? Color.accentColor : Color.primary.opacity(0.85))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(peek.isReplaying ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .buttonStyle(.plain)
+                    .help("Replay this transcript through the live settle-and-reveal pipeline")
+
+                    Button {
+                        peek.replaySpeed = (peek.replaySpeed < 2.0) ? 4.0 : 1.0
+                    } label: {
+                        Text(peek.replaySpeed < 2.0 ? "1×" : "4×")
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.primary.opacity(0.85))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
+                            .background(Color.primary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Toggle replay speed between 1× (regular) and 4×")
                 }
-                .buttonStyle(.plain)
-                .help("Replay this transcript through the live streaming pipeline at 4× speed")
                 .fixedSize(horizontal: true, vertical: false)
             }
             typographyControls

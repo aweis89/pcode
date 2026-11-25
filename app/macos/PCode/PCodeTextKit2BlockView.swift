@@ -92,6 +92,22 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
 
     private var lastAttributedString: NSAttributedString?
     private var lastLayoutWidth: CGFloat = 0
+    private(set) var totalInkSweepLength: CGFloat = 0
+
+    /// Active ink-sweep frontier in linear horizontal points across all lines (`nil` = fully revealed).
+    var inkSweepFrontier: CGFloat? {
+        didSet {
+            guard inkSweepFrontier != oldValue else { return }
+            if let dirty = inkSweepDirtyRect(from: oldValue, to: inkSweepFrontier) {
+                setNeedsDisplay(dirty)
+            } else {
+                needsDisplay = true
+            }
+        }
+    }
+
+    /// Width of the soft alpha feather at the leading edge of the ink-sweep reveal (~6 chars).
+    var inkSweepFeatherWidth: CGFloat = 48
 
     /// Active selection range in this item's local UTF-16 coordinates, owned by the transcript model.
     var selectedRange: NSRange? {
@@ -173,9 +189,56 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             textContainer.size = CGSize(width: clampedWidth, height: 0)
             lastLayoutWidth = clampedWidth
             textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+            totalInkSweepLength = computeTotalInkSweepLength()
             needsDisplay = true
         }
         return textLayoutManager.usageBoundsForTextContainer.height
+    }
+
+    private func computeTotalInkSweepLength() -> CGFloat {
+        var total: CGFloat = 0
+        textLayoutManager.enumerateTextLayoutFragments(
+            from: textLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            for line in fragment.textLineFragments {
+                total += max(1, ceil(line.typographicBounds.width))
+            }
+            return true
+        }
+        return total
+    }
+
+    private func inkSweepDirtyRect(from oldFrontier: CGFloat?, to newFrontier: CGFloat?) -> CGRect? {
+        guard let oldF = oldFrontier, let newF = newFrontier else { return nil }
+        let lo = min(oldF, newF) - inkSweepFeatherWidth - 4
+        let hi = max(oldF, newF) + 4
+        var cursor: CGFloat = 0
+        var union: CGRect?
+        textLayoutManager.enumerateTextLayoutFragments(
+            from: textLayoutManager.documentRange.location,
+            options: []
+        ) { fragment in
+            let fragOrigin = fragment.layoutFragmentFrame.origin
+            for line in fragment.textLineFragments {
+                let lineW = max(1, ceil(line.typographicBounds.width))
+                let lineStart = cursor
+                let lineEnd = cursor + lineW
+                cursor = lineEnd
+                if lineEnd >= lo && lineStart <= hi {
+                    let b = line.typographicBounds
+                    let rect = CGRect(
+                        x: fragOrigin.x + b.origin.x - 8,
+                        y: fragOrigin.y + b.origin.y - 4,
+                        width: b.width + 16,
+                        height: b.height + 8)
+                    union = union.map { $0.union(rect) } ?? rect
+                }
+                if lineStart > hi { return false }
+            }
+            return true
+        }
+        return union
     }
 
     /// Compute the longest UTF-16 prefix length where both text and attributes match identically,
@@ -252,6 +315,12 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         // 2. Draw visible TextKit 2 layout fragments (include 4pt margin for pill/bar overhangs).
         let expandedDirty = dirtyRect.insetBy(dx: 0, dy: -4)
         textLayoutManager.ensureLayout(for: expandedDirty)
+
+        if let frontier = inkSweepFrontier {
+            drawInkSweepFragments(frontier: frontier, in: expandedDirty, context: context)
+            return
+        }
+
         let startLocation = textLayoutManager.textLayoutFragment(for: CGPoint(x: 0, y: max(0, expandedDirty.minY)))?.rangeInElement.location
             ?? textLayoutManager.documentRange.location
         textLayoutManager.enumerateTextLayoutFragments(
@@ -264,6 +333,111 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             }
             if frame.maxY >= expandedDirty.minY {
                 fragment.draw(at: frame.origin, in: context)
+            }
+            return true
+        }
+    }
+
+    /// Draw settled layout fragments with a soft left-to-right ink-sweep reveal frontier.
+    /// Lines before the frontier draw normally; lines after are skipped; the single frontier
+    /// line is masked with a soft horizontal feather.
+    private func drawInkSweepFragments(frontier: CGFloat, in expandedDirty: CGRect, context: CGContext) {
+        let feather = max(8, inkSweepFeatherWidth)
+        var cursor: CGFloat = 0
+
+        textLayoutManager.enumerateTextLayoutFragments(
+            from: textLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            let fragFrame = fragment.layoutFragmentFrame
+            let lines = fragment.textLineFragments
+            guard !lines.isEmpty else { return true }
+
+            var fragSpan: CGFloat = 0
+            for line in lines {
+                fragSpan += max(1, ceil(line.typographicBounds.width))
+            }
+            let fragStart = cursor
+            let fragEnd = cursor + fragSpan
+
+            if fragStart >= frontier {
+                // Entire fragment is beyond the reveal frontier; stop walking.
+                return false
+            }
+
+            if fragEnd + feather <= frontier {
+                // Entire fragment is completely revealed.
+                cursor = fragEnd
+                if fragFrame.maxY >= expandedDirty.minY && fragFrame.minY <= expandedDirty.maxY {
+                    fragment.draw(at: fragFrame.origin, in: context)
+                }
+                return true
+            }
+
+            // Partial fragment: draw revealed lines whole, and soft-feather the single frontier line.
+            for line in lines {
+                let lineW = max(1, ceil(line.typographicBounds.width))
+                let lineStart = cursor
+                let lineEnd = cursor + lineW
+                cursor = lineEnd
+
+                if lineStart >= frontier {
+                    return false
+                }
+
+                let lb = line.typographicBounds
+                let lineRect = CGRect(
+                    x: fragFrame.origin.x + lb.origin.x - 6,
+                    y: fragFrame.origin.y + lb.origin.y - 2,
+                    width: lb.width + 12,
+                    height: lb.height + 4)
+
+                guard lineRect.intersects(expandedDirty) else { continue }
+
+                if lineEnd + feather <= frontier {
+                    context.saveGState()
+                    context.clip(to: lineRect)
+                    fragment.draw(at: fragFrame.origin, in: context)
+                    context.restoreGState()
+                } else {
+                    let revealX = fragFrame.origin.x + lb.origin.x + (frontier - lineStart)
+                    let clipRight = min(lineRect.maxX, revealX)
+                    guard clipRight > lineRect.minX else { continue }
+
+                    let clippedRect = CGRect(
+                        x: lineRect.minX,
+                        y: lineRect.minY,
+                        width: clipRight - lineRect.minX,
+                        height: lineRect.height)
+
+                    context.saveGState()
+                    context.clip(to: clippedRect)
+                    context.beginTransparencyLayer(in: clippedRect, auxiliaryInfo: nil)
+                    fragment.draw(at: fragFrame.origin, in: context)
+
+                    // Soft right-edge alpha dissolve via `.destinationIn` gradient.
+                    let gradStartX = max(lineRect.minX, revealX - feather)
+                    let gradEndX = revealX
+                    if gradEndX > gradStartX,
+                       let space = CGColorSpace(name: CGColorSpace.sRGB),
+                       let gradient = CGGradient(
+                           colorsSpace: space,
+                           colors: [
+                               NSColor.white.withAlphaComponent(1.0).cgColor,
+                               NSColor.white.withAlphaComponent(0.0).cgColor,
+                           ] as CFArray,
+                           locations: [0.0, 1.0])
+                    {
+                        context.setBlendMode(.destinationIn)
+                        context.drawLinearGradient(
+                            gradient,
+                            start: CGPoint(x: gradStartX, y: clippedRect.midY),
+                            end: CGPoint(x: gradEndX, y: clippedRect.midY),
+                            options: [.drawsBeforeStartLocation])
+                    }
+                    context.endTransparencyLayer()
+                    context.restoreGState()
+                }
             }
             return true
         }

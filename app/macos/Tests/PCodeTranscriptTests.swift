@@ -231,37 +231,43 @@ struct PCodeTranscriptTests {
         """
 
         let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
-        #expect(blocks.count == 4)
+        // Per-top-level-block splitting: heading, intro paragraph, code block, table, closing paragraph.
+        #expect(blocks.count == 5)
 
         if case .prose(let p0, _) = blocks[0] {
             #expect(p0.contains("# Title"))
-            #expect(p0.contains("Intro paragraph"))
         } else {
-            Issue.record("Expected prose block at index 0")
+            Issue.record("Expected heading prose block at index 0")
         }
 
-        if case .codeBlock(let lang, let code, let fullCode, let chunkIdx, let total) = blocks[1] {
+        if case .prose(let p1, _) = blocks[1] {
+            #expect(p1.contains("Intro paragraph"))
+        } else {
+            Issue.record("Expected intro prose block at index 1")
+        }
+
+        if case .codeBlock(let lang, let code, let fullCode, let chunkIdx, let total) = blocks[2] {
             #expect(lang == "swift")
             #expect(code == "let x = 42")
             #expect(fullCode == "let x = 42")
             #expect(chunkIdx == 0)
             #expect(total == 1)
         } else {
-            Issue.record("Expected code block at index 1")
+            Issue.record("Expected code block at index 2")
         }
 
-        if case .table(let table) = blocks[2] {
+        if case .table(let table) = blocks[3] {
             #expect(table.headers.map(\.plainText) == ["Col A", "Col B"])
             #expect(table.alignments == [.left, .right])
             #expect(table.rows.map { $0.map(\.plainText) } == [["one", "1"], ["two", "2"]])
         } else {
-            Issue.record("Expected table block at index 2")
+            Issue.record("Expected table block at index 3")
         }
 
-        if case .prose(let p3, _) = blocks[3] {
-            #expect(p3.contains("Closing paragraph."))
+        if case .prose(let p4, _) = blocks[4] {
+            #expect(p4.contains("Closing paragraph."))
         } else {
-            Issue.record("Expected prose block at index 3")
+            Issue.record("Expected prose block at index 4")
         }
     }
 
@@ -300,21 +306,29 @@ struct PCodeTranscriptTests {
         [ref1]: https://example.com/docs
         """
         let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
-        #expect(blocks.count == 1)
-        guard case .prose(let proseMD, let refDefs) = blocks[0] else {
-            Issue.record("Expected single prose block")
+        #expect(blocks.count == 2)
+        guard case .prose(let listMD, let listRefs) = blocks[0],
+              case .prose(let paraMD, let paraRefs) = blocks[1]
+        else {
+            Issue.record("Expected two prose blocks (list + paragraph)")
             return
         }
-        let attr = PCodeTranscriptMarkdown.attributedString(
-            forProse: proseMD,
-            referenceDefinitions: refDefs,
+        let listAttr = PCodeTranscriptMarkdown.attributedString(
+            forProse: listMD,
+            referenceDefinitions: listRefs,
             typography: snap,
             theme: theme)
-        let str = attr.string as NSString
-        #expect(str.contains("let nested = true"))
+        #expect(listAttr.string.contains("let nested = true"))
+
+        let paraAttr = PCodeTranscriptMarkdown.attributedString(
+            forProse: paraMD,
+            referenceDefinitions: paraRefs,
+            typography: snap,
+            theme: theme)
+        let str = paraAttr.string as NSString
         let docsRange = str.range(of: "docs")
         #expect(docsRange.location != NSNotFound)
-        #expect(attr.attribute(.link, at: docsRange.location, effectiveRange: nil) as? URL == URL(string: "https://example.com/docs"))
+        #expect(paraAttr.attribute(.link, at: docsRange.location, effectiveRange: nil) as? URL == URL(string: "https://example.com/docs"))
     }
 
     @Test func markdownProseFiltersLinksRendersRawHTMLAndScalesHeadingInlineCode() {
@@ -525,32 +539,21 @@ struct PCodeTranscriptTests {
         let targetRange = rendered.range(of: "settled paragraph")
         #expect(targetRange.location != NSNotFound)
 
-        // Simulate user dragging a selection and scrolling up
-        doc.setItems(doc.items, pinToBottom: true)
-        doc.beginStreamingMessage(id: "msg-2")
-        doc.appendStreamingDelta("Keep this selected phrase intact.")
-        let streamIdx = doc.items.count - 1
-        let streamStr = doc.plainTextForCopy(at: streamIdx) as NSString
-        let selRange = streamStr.range(of: "selected phrase")
-        #expect(selRange.location != NSNotFound)
-
-        // Select "selected phrase" inside the streaming prose block
+        // Simulate user dragging a selection inside settled block 1 and scrolling up
         doc.setSelection(PCodeTranscriptSelection(
-            anchor: .init(itemIndex: streamIdx, utf16Offset: selRange.location),
-            focus: .init(itemIndex: streamIdx, utf16Offset: NSMaxRange(selRange))))
-        #expect(doc.selectedPlainText() == "selected phrase")
+            anchor: .init(itemIndex: proseIdx, utf16Offset: targetRange.location),
+            focus: .init(itemIndex: proseIdx, utf16Offset: NSMaxRange(targetRange))))
+        #expect(doc.selectedPlainText() == "settled paragraph")
 
-        // Unpin (as if user scrolled up) and stream a fenced code block after the prose
+        // Unpin (as if user scrolled up) and stream a settled fenced code block after the prose
         doc.unpinFromBottom()
         #expect(!scrollView.isJumpToBottomVisible)
 
-        doc.appendStreamingDelta("\n\n```swift\nlet x = 42\n")
-        doc.appendStreamingDelta("let y = 99\n")
-        #expect(doc.lastStreamingUpdateUsedOpenFenceFastPath)
+        doc.appendStreamingDelta("```swift\nlet x = 42\n```\n\n")
         #expect(doc.hasUnreadStreamingContent)
         #expect(scrollView.isJumpToBottomVisible)
-        // Selection in the prose block survives live streaming completely intact!
-        #expect(doc.selectedPlainText() == "selected phrase")
+        // Selection in the settled prose block survives live streaming completely intact!
+        #expect(doc.selectedPlainText() == "settled paragraph")
 
         // Clicking Jump to bottom re-pins and hides the pill
         doc.scrollToBottomAndPin()
@@ -560,7 +563,7 @@ struct PCodeTranscriptTests {
 
         doc.finishStreamingMessage()
         doc.finishStreamingTurn(status: .complete)
-        #expect(doc.selectedPlainText() == "selected phrase")
+        #expect(doc.selectedPlainText() == "settled paragraph")
     }
 
     @Test @MainActor func streamingFourXReplayStressTest() {
@@ -610,13 +613,12 @@ struct PCodeTranscriptTests {
         let replayer = PCodeTranscriptStreamReplayer(
             turns: turns,
             documentView: doc,
-            speedMultiplier: 4.0,
-            chunkSize: 24)
+            speedMultiplier: 4.0)
         replayer.runAllSynchronously()
 
-        // Each turn produces: 1 prompt + 10 tools + 1 prose + 1 codeBlock + 1 table = 14 items -> 56 total
-        #expect(doc.items.count == 56)
-        #expect(doc.layoutEngine.entries.count == 56)
+        // Each turn: 1 prompt + 10 tools + 2 prose (heading + para) + 1 codeBlock + 1 table = 15 items -> 60 total
+        #expect(doc.items.count == 60)
+        #expect(doc.layoutEngine.entries.count == 60)
         #expect(doc.layoutEngine.totalHeight > 800)
 
         // Verify yOffsets are strictly increasing
@@ -625,28 +627,65 @@ struct PCodeTranscriptTests {
         }
     }
 
-    @Test func streamingTextPacerSmoothsBurstsAndPreservesGraphemeClusters() {
-        var pacer = PCodeStreamingTextPacer(minCharsPerSecond: 120, maxCharsPerSecond: 2400, catchUpSeconds: 0.2)
-        let input = "Hello 👨‍👩‍👧‍👦 streaming world!"
-        pacer.enqueue(input)
-        #expect(pacer.hasPending)
+    @Test func markdownSettlerHoldsUnsettledBoldUntilBlankLineOrFinish() {
+        var settler = PCodeMarkdownSettler()
+        // Partial unclosed bold must NOT emit raw `**bold`
+        #expect(settler.append("Hello **bold").isEmpty)
+        #expect(settler.hasUnsettledTail)
 
-        var collected = ""
-        var ticks = 0
-        while pacer.hasPending && ticks < 200 {
-            if let chunk = pacer.drain(dt: 1.0 / 120.0) {
-                collected.append(chunk)
-            }
-            ticks += 1
+        // Closing the bold still holds the paragraph until a blank line or finish
+        #expect(settler.append(" text** here.").isEmpty)
+
+        // Blank line settles the paragraph with final bold Markdown intact
+        let settled = settler.append("\n\n")
+        #expect(settled.count == 1)
+        if case .prose(let md, _) = settled[0] {
+            #expect(md == "Hello **bold text** here.")
+        } else {
+            Issue.record("Expected settled prose block")
         }
-        #expect(collected == input)
-        #expect(ticks > 1) // smoothed over multiple 120Hz frames rather than dumped in 1 frame
 
-        // Huge burst accelerates up toward maxCharsPerSecond
-        pacer.enqueue(String(repeating: "a", count: 1000))
-        #expect(pacer.currentRate() >= 2000)
-        #expect(pacer.flushAll()?.count == 1000)
-        #expect(!pacer.hasPending)
+        // Trailing paragraph settles on finish()
+        #expect(settler.append("Final line").isEmpty)
+        let tail = settler.finish()
+        #expect(tail.count == 1)
+    }
+
+    @Test func revealQueueGatesOnVisibilityAndNeverDecelerates() {
+        var queue = PCodeRevealQueue()
+        queue.enqueue(itemID: "p1", style: .inkSweep, targetExtent: 400)
+        queue.enqueue(itemID: "p2", style: .inkSweep, targetExtent: 400)
+
+        // Off-screen item is held at 0 until visible
+        let blocked = queue.step(dt: 1.0 / 60.0, speedMultiplier: 1.0, isVisible: { _ in false })
+        #expect(blocked.isEmpty)
+        #expect(queue.entries.first?.progress == 0)
+
+        // Once visible, advances smoothly with monotonic speed
+        let u1 = queue.step(dt: 1.0 / 60.0, speedMultiplier: 1.0, isVisible: { _ in true })
+        #expect(!u1.isEmpty)
+        let speed1 = queue.entries.first?.speed ?? 0
+        #expect(speed1 > 0)
+
+        let _ = queue.step(dt: 1.0 / 60.0, speedMultiplier: 1.0, isVisible: { _ in true })
+        if let speed2 = queue.entries.first?.speed {
+            #expect(speed2 >= speed1)
+        }
+    }
+
+    @Test func layoutEngineInsertAndRemoveKeepYOffsetsConsistent() {
+        var engine = PCodeTranscriptLayoutEngine(topPadding: 10, bottomPadding: 10, backingScale: 2)
+        engine.append(id: "a", height: 40, spacingAfter: 8)
+        engine.append(id: "c", height: 60, spacingAfter: 8)
+        engine.insert(at: 1, id: "b", height: 50, spacingAfter: 10)
+        #expect(engine.entries.map(\.id) == ["a", "b", "c"])
+        #expect(engine.entries[0].yOffset == 10)
+        #expect(engine.entries[1].yOffset == 58)
+        #expect(engine.entries[2].yOffset == 118)
+
+        engine.remove(at: 1)
+        #expect(engine.entries.map(\.id) == ["a", "c"])
+        #expect(engine.entries[1].yOffset == 58)
     }
 
     @Test func smoothScrollGlideConvergesCriticallyDampedWithoutOvershoot() {

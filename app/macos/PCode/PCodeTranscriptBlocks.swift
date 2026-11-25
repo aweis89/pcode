@@ -14,13 +14,69 @@ protocol PCodeTranscriptRowHosting: NSView {
     func setHovered(_ hovered: Bool)
     /// Reset transient state (scroll offsets, in-flight tasks, copy flash, selection) before pooling.
     func resetForTranscriptReuse()
+    /// Apply a compositor-only top-to-bottom curtain reveal mask (`nil` = fully revealed, `0...1` = revealing).
+    func setCurtainRevealProgress(_ progress: CGFloat?)
 }
 
 extension PCodeTranscriptRowHosting {
     func setHovered(_ hovered: Bool) {}
+
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        primaryTextView?.inkSweepFrontier = nil
+    }
+
+    func setCurtainRevealProgress(_ progress: CGFloat?) {
+        guard let layer else { return }
+        guard let progress else {
+            if layer.mask != nil {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.mask = nil
+                CATransaction.commit()
+            }
+            return
+        }
+
+        let clamped = min(max(0, progress), 1)
+        if clamped >= 1 {
+            setCurtainRevealProgress(nil)
+            return
+        }
+
+        let maskLayer: CAGradientLayer
+        if let existing = layer.mask as? CAGradientLayer {
+            maskLayer = existing
+        } else {
+            let created = CAGradientLayer()
+            created.colors = [
+                NSColor.white.withAlphaComponent(1.0).cgColor,
+                NSColor.white.withAlphaComponent(1.0).cgColor,
+                NSColor.white.withAlphaComponent(0.0).cgColor,
+            ]
+            created.startPoint = CGPoint(x: 0.5, y: 0.0)
+            created.endPoint = CGPoint(x: 0.5, y: 1.0)
+            layer.mask = created
+            maskLayer = created
+        }
+
+        let h = max(1, bounds.height)
+        // Soft 1.5-row (~30pt) feather matching Ghostty Smooth's curtain reveal.
+        let featherFrac = min(0.45, 30.0 / h)
+        let lead = min(1.0, clamped * (1.0 + featherFrac))
+        let solidEnd = max(0.0, lead - featherFrac)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        maskLayer.frame = bounds
+        maskLayer.locations = [
+            NSNumber(value: 0.0),
+            NSNumber(value: Double(solidEnd)),
+            NSNumber(value: Double(lead)),
+        ]
+        CATransaction.commit()
     }
 }
 
@@ -320,6 +376,8 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        textView.inkSweepFrontier = nil
         copyPayload = nil
         copyButton.cancelCopiedFlash()
     }
@@ -438,6 +496,8 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        textView.inkSweepFrontier = nil
         highlightTask?.cancel()
         highlightTask = nil
         highlightGeneration &+= 1
@@ -749,6 +809,7 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
         scrollView.resetScrollOrigin()
     }
 

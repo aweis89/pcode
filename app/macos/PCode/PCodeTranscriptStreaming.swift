@@ -1,119 +1,283 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import Markdown
 
-/// Adaptive 120Hz text pacer that smooths bursty LLM token deltas into a steady,
-/// backlog-paced character stream on every `CADisplayLink` frame.
+/// Matches pcode's `paced_scrollback` preference (`"rows"`, `"typed"`, `"off"`).
+enum PCodeStreamingPaceMode: String, CaseIterable, Equatable {
+    case rows
+    case typed
+    case off
+
+    /// Read `~/.config/pcode/preferences.json` as a local fallback (Python's default is `.rows`).
+    /// Live host sessions override this from session state when connected.
+    static func loadDefaultFromPreferences() -> PCodeStreamingPaceMode {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/pcode/preferences.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["paced_scrollback"] as? String,
+              let mode = PCodeStreamingPaceMode(rawValue: raw)
+        else {
+            return .rows
+        }
+        return mode
+    }
+}
+
+/// Stage 1 of the settle-then-reveal pipeline (mirrors pcode's `settled_lines()`).
 ///
-/// Always steps on Swift `Character` (extended grapheme cluster) boundaries so emoji
-/// and combining marks are never split mid-stream.
-struct PCodeStreamingTextPacer {
-    var minCharsPerSecond: Double
-    var maxCharsPerSecond: Double
-    var catchUpSeconds: Double
+/// Buffers incoming `TextDelta`s and commits ONLY settled top-level Markdown blocks that
+/// later text cannot mutate — eliminating raw `**bold` / `` `code `` snapping and mid-word
+/// line re-wraps. Settled blocks are laid out once at final geometry and then uncovered by
+/// `PCodeRevealQueue`.
+struct PCodeMarkdownSettler {
+    private(set) var fullMarkdown: String = ""
+    private var settledBlockCount: Int = 0
+    private var lastParsedBlocks: [PCodeMarkdownBlock] = []
 
-    private var pending: String = ""
-    private var readIndex: String.Index
-    private var remainingCount: Int = 0
-    private var consumedCount: Int = 0
-    private var charBudget: Double = 0
-
-    var hasPending: Bool { remainingCount > 0 }
-    var pendingCount: Int { remainingCount }
-
-    init(
-        minCharsPerSecond: Double = 85,
-        maxCharsPerSecond: Double = 1800,
-        catchUpSeconds: Double = 0.35
-    ) {
-        self.minCharsPerSecond = minCharsPerSecond
-        self.maxCharsPerSecond = maxCharsPerSecond
-        self.catchUpSeconds = max(0.05, catchUpSeconds)
-        self.readIndex = pending.startIndex
+    var hasUnsettledTail: Bool {
+        let trimmed = fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return settledBlockCount < lastParsedBlocks.count || lastParsedBlocks.isEmpty
     }
 
     mutating func reset() {
-        pending.removeAll(keepingCapacity: true)
-        readIndex = pending.startIndex
-        remainingCount = 0
-        consumedCount = 0
-        charBudget = 0
+        fullMarkdown = ""
+        settledBlockCount = 0
+        lastParsedBlocks = []
     }
 
-    mutating func enqueue(_ delta: String) {
-        guard !delta.isEmpty else { return }
-        if remainingCount == 0 {
-            pending.removeAll(keepingCapacity: true)
-            pending.append(delta)
-            readIndex = pending.startIndex
-            consumedCount = 0
-            remainingCount = delta.count
+    /// Append a streaming text delta and return any newly settled top-level blocks (if any).
+    mutating func append(_ delta: String) -> [PCodeMarkdownBlock] {
+        guard !delta.isEmpty else { return [] }
+        fullMarkdown.append(delta)
+        return collectNewlySettled(final: false)
+    }
+
+    /// Settle and return all remaining blocks when the assistant message finishes.
+    mutating func finish() -> [PCodeMarkdownBlock] {
+        collectNewlySettled(final: true)
+    }
+
+    private mutating func collectNewlySettled(final: Bool) -> [PCodeMarkdownBlock] {
+        let trimmed = fullMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let allBlocks = PCodeTranscriptMarkdown.parseBlocks(fullMarkdown)
+        lastParsedBlocks = allBlocks
+        guard !allBlocks.isEmpty else { return [] }
+
+        let targetSettledCount: Int
+        if final {
+            targetSettledCount = allBlocks.count
         } else {
-            let offset = pending.utf8.distance(from: pending.startIndex, to: readIndex)
-            pending.append(delta)
-            readIndex = pending.utf8.index(pending.startIndex, offsetBy: offset)
-            remainingCount += delta.count
+            // Everything strictly before the last top-level block is settled.
+            // The last block is also settled if the markdown ends with a blank line (`\n\n`)
+            // outside an open code fence, or if a top-level code fence just closed.
+            let inOpenFence = PCodeStreamingMessageDiffer.detectTrailingOpenFence(in: fullMarkdown) != nil
+            if inOpenFence {
+                // Hold the open code fence's chunks until closed or finished; earlier blocks settle.
+                var tailCodeCount = 0
+                for block in allBlocks.reversed() {
+                    if case .codeBlock = block {
+                        tailCodeCount += 1
+                    } else {
+                        break
+                    }
+                }
+                targetSettledCount = max(0, allBlocks.count - tailCodeCount)
+            } else if fullMarkdown.hasSuffix("\n\n") || fullMarkdown.hasSuffix("\r\n\r\n") {
+                targetSettledCount = allBlocks.count
+            } else {
+                targetSettledCount = max(0, allBlocks.count - 1)
+            }
+        }
+
+        guard targetSettledCount > settledBlockCount else { return [] }
+        let newlySettled = Array(allBlocks[settledBlockCount..<targetSettledCount])
+        settledBlockCount = targetSettledCount
+        return newlySettled
+    }
+}
+
+/// Purely visual FIFO reveal queue over laid-out transcript blocks.
+///
+/// Mirrors Ghostty Smooth's `State.zig` reveal queue:
+/// - **Ink sweep** (`.inkSweep`, used for prose in `.typed` mode): uncovers settled lines
+///   left-to-right at 280 cells/s (~2240 pt/s) up to 2400 cells/s, 2.0s catch-up.
+/// - **Curtain** (`.curtain`, used for code/tables/tools/diffs in `.typed` mode and all blocks
+///   in `.rows` mode): compositor-only top-to-bottom gradient mask at 10–30 rows/s (200–600 pt/s),
+///   1.5s catch-up.
+/// - **Monotonic speed:** speed never decreases mid-reveal (`max(speed, targetSpeed)`).
+/// - **Visibility gated:** holds an entry at 0 until its top enters the visible viewport.
+struct PCodeRevealQueue {
+    enum Style: Equatable {
+        case inkSweep
+        case curtain
+    }
+
+    struct Entry: Equatable {
+        let itemID: String
+        let style: Style
+        /// Total extent to traverse: horizontal line points for `.inkSweep`, or height in pt for `.curtain`.
+        var targetExtent: CGFloat
+        /// Current frontier in points (`0...targetExtent`).
+        var progress: CGFloat
+        /// Current monotonic speed in points/sec.
+        var speed: CGFloat
+        /// Extra feather distance for `.inkSweep` so the leading feather exits the final line cleanly.
+        let featherMargin: CGFloat
+
+        var normalizedProgress: CGFloat {
+            let total = max(1, targetExtent)
+            return min(1, max(0, progress / total))
+        }
+
+        var isComplete: Bool {
+            progress >= targetExtent + featherMargin
         }
     }
 
-    /// Adaptive drain rate (characters/sec) based on current backlog.
-    func currentRate() -> Double {
-        let backlog = Double(remainingCount)
-        let target = backlog / catchUpSeconds
-        return min(maxCharsPerSecond, max(minCharsPerSecond, target))
+    struct StepUpdate: Equatable {
+        let itemID: String
+        let style: Style
+        /// `nil` once complete (clears mask/frontier).
+        let frontier: CGFloat?
+        /// Normalized `0...1` progress for `.curtain` (`nil` once complete).
+        let curtainProgress: CGFloat?
     }
 
-    /// Drain the paced chunk for a single display frame of duration `dt` seconds.
-    /// Returns `nil` if no full character is ready on this tick.
-    mutating func drain(dt: TimeInterval) -> String? {
-        guard remainingCount > 0 else {
-            charBudget = 0
-            return nil
-        }
-        let clampedDt = min(max(dt, 1.0 / 240.0), 0.1)
-        charBudget += currentRate() * clampedDt
-        let count = Int(charBudget)
-        guard count > 0 else { return nil }
-        charBudget -= Double(count)
+    private(set) var entries: [Entry] = []
 
-        if count >= remainingCount {
-            let out = String(pending[readIndex...])
-            reset()
-            return out
-        }
+    var isEmpty: Bool { entries.isEmpty }
 
-        let splitIdx = pending.index(readIndex, offsetBy: count)
-        let out = String(pending[readIndex..<splitIdx])
-        readIndex = splitIdx
-        remainingCount -= count
-        consumedCount += count
-
-        if consumedCount >= 2048 {
-            pending.removeSubrange(pending.startIndex..<readIndex)
-            readIndex = pending.startIndex
-            consumedCount = 0
-        }
-        return out
+    mutating func reset() {
+        entries.removeAll(keepingCapacity: true)
     }
 
-    /// Drain all buffered text immediately (used on message finalization or headless tests).
-    mutating func flushAll() -> String? {
-        guard remainingCount > 0 else {
-            charBudget = 0
-            return nil
+    mutating func enqueue(itemID: String, style: Style, targetExtent: CGFloat, featherMargin: CGFloat = 48) {
+        if entries.contains(where: { $0.itemID == itemID }) { return }
+        let safeExtent = max(1, targetExtent)
+        let margin: CGFloat = (style == .inkSweep) ? featherMargin : 0
+        entries.append(Entry(
+            itemID: itemID,
+            style: style,
+            targetExtent: safeExtent,
+            progress: 0,
+            speed: 0,
+            featherMargin: margin))
+    }
+
+    mutating func updateExtent(for itemID: String, targetExtent: CGFloat) {
+        guard let idx = entries.firstIndex(where: { $0.itemID == itemID }) else { return }
+        entries[idx].targetExtent = max(1, targetExtent)
+    }
+
+    mutating func remove(itemID: String) {
+        entries.removeAll { $0.itemID == itemID }
+    }
+
+    /// Current reveal state for a newly mounted view so scrolled-in queued items start hidden.
+    func state(for itemID: String) -> StepUpdate? {
+        guard let entry = entries.first(where: { $0.itemID == itemID }) else { return nil }
+        switch entry.style {
+        case .inkSweep:
+            return StepUpdate(itemID: itemID, style: .inkSweep, frontier: entry.progress, curtainProgress: nil)
+        case .curtain:
+            return StepUpdate(itemID: itemID, style: .curtain, frontier: nil, curtainProgress: entry.normalizedProgress)
         }
-        let out = String(pending[readIndex...])
-        reset()
-        return out
+    }
+
+    /// Advance the head reveal entry by `dt` seconds, gated on `isVisible(itemID)`.
+    mutating func step(
+        dt: TimeInterval,
+        speedMultiplier: CGFloat = 1.0,
+        isVisible: (String) -> Bool
+    ) -> [StepUpdate] {
+        guard !entries.isEmpty else { return [] }
+        let clampedDt = CGFloat(min(max(dt, 1.0 / 240.0), 0.05))
+        let mult = max(0.25, speedMultiplier)
+        var updates: [StepUpdate] = []
+        var remainingDt = clampedDt
+
+        while !entries.isEmpty && remainingDt > 0.0001 {
+            let head = entries[0]
+            if !isVisible(head.itemID) {
+                // Visibility gate: hold reveal until the item glides into view above the clip edge.
+                break
+            }
+
+            let minSpeed: CGFloat
+            let maxSpeed: CGFloat
+            let catchUp: CGFloat
+            let backlog: CGFloat
+            switch head.style {
+            case .inkSweep:
+                // Ghostty Smooth: 280 cells/s min (~2240 pt/s), 2400 cells/s max, 2.0s catch-up.
+                minSpeed = 2240.0 * mult
+                maxSpeed = 19200.0 * mult
+                catchUp = 2.0 / mult
+                backlog = entries
+                    .filter { $0.style == .inkSweep }
+                    .reduce(0) { $0 + max(0, ($1.targetExtent + $1.featherMargin) - $1.progress) }
+            case .curtain:
+                // Ghostty Smooth: 10 rows/s min (~200 pt/s), 30 rows/s max (~600 pt/s), 1.5s catch-up.
+                minSpeed = 200.0 * mult
+                maxSpeed = 600.0 * mult
+                catchUp = 1.5 / mult
+                backlog = entries
+                    .filter { $0.style == .curtain }
+                    .reduce(0) { $0 + max(0, $1.targetExtent - $1.progress) }
+            }
+
+            let targetSpeed = min(maxSpeed, max(minSpeed, backlog / max(0.1, catchUp)))
+            // Monotonic speed: never decelerate mid-reveal.
+            let speed = max(head.speed, targetSpeed)
+            entries[0].speed = speed
+
+            let totalSpan = head.targetExtent + head.featherMargin
+            let distNeeded = max(0, totalSpan - head.progress)
+            let distStep = speed * remainingDt
+
+            if distStep >= distNeeded {
+                let completedID = head.itemID
+                let completedStyle = head.style
+                entries.removeFirst()
+                updates.append(StepUpdate(itemID: completedID, style: completedStyle, frontier: nil, curtainProgress: nil))
+                let usedDt = speed > 0 ? (distNeeded / speed) : remainingDt
+                remainingDt = max(0, remainingDt - usedDt)
+            } else {
+                entries[0].progress += distStep
+                let updated = entries[0]
+                switch updated.style {
+                case .inkSweep:
+                    updates.append(StepUpdate(
+                        itemID: updated.itemID,
+                        style: .inkSweep,
+                        frontier: updated.progress,
+                        curtainProgress: nil))
+                case .curtain:
+                    updates.append(StepUpdate(
+                        itemID: updated.itemID,
+                        style: .curtain,
+                        frontier: nil,
+                        curtainProgress: updated.normalizedProgress))
+                }
+                remainingDt = 0
+            }
+        }
+
+        return updates
     }
 }
 
 /// Backlog-paced conveyor smooth-scroll glide for sticky-bottom streaming.
 ///
-/// Mirrors `pcode` / Ghostty Smooth's conveyor (`smooth_scroll.py`): instead of a stiff
-/// start-stop spring that kicks on every line wrap, maintains a smoothly eased velocity
-/// proportional to the remaining backlog (`minSpeed...maxSpeed`) and tapers gently into
-/// the final landing zone so continuous streaming glides at a rock-steady 120Hz cadence.
+/// Mirrors Ghostty Smooth's conveyor (`src/pcode/smooth_scroll.py`):
+/// - `minSpeed = 110 pt/s` (~5.5 rows/s), `maxSpeed = 660 pt/s` (~33 rows/s)
+/// - `catchUpSeconds = 2.2s` so multi-block output glides continuously without start-stop kicks
+/// - Smooth velocity easing with a gentle 24pt landing taper.
 struct PCodeSmoothScrollGlide: Equatable {
     var minSpeed: CGFloat
     var maxSpeed: CGFloat
@@ -131,13 +295,13 @@ struct PCodeSmoothScrollGlide: Equatable {
 
     init(
         minSpeed: CGFloat = 110.0,
-        maxSpeed: CGFloat = 900.0,
-        catchUpSeconds: CGFloat = 0.55,
+        maxSpeed: CGFloat = 660.0,
+        catchUpSeconds: CGFloat = 2.2,
         maxOffset: CGFloat = 2400.0
     ) {
         self.minSpeed = max(20, minSpeed)
         self.maxSpeed = max(self.minSpeed, maxSpeed)
-        self.catchUpSeconds = max(0.1, catchUpSeconds)
+        self.catchUpSeconds = max(0.2, catchUpSeconds)
         self.maxOffset = max(64, maxOffset)
     }
 
@@ -164,24 +328,26 @@ struct PCodeSmoothScrollGlide: Equatable {
 
     /// Advance the conveyor glide by `dt` seconds and return the new `remainingOffset`.
     @discardableResult
-    mutating func step(dt: TimeInterval) -> CGFloat {
+    mutating func step(dt: TimeInterval, speedMultiplier: CGFloat = 1.0) -> CGFloat {
         guard isActive else {
             reset()
             return 0
         }
         let clampedDt = CGFloat(min(max(dt, 1.0 / 240.0), 0.05))
+        let mult = max(0.25, speedMultiplier)
+        let effMin = minSpeed * mult
+        let effMax = maxSpeed * mult
+        let effCatchUp = max(0.15, catchUpSeconds / mult)
 
-        // Desired conveyor speed follows backlog (`remainingOffset / catchUpSeconds`),
-        // tapering smoothly in the final 24pt landing zone so arrival has zero snap.
         let rawTarget: CGFloat
         if remainingOffset < 24.0 {
-            rawTarget = max(24.0, (remainingOffset / 24.0) * minSpeed)
+            rawTarget = max(24.0 * mult, (remainingOffset / 24.0) * effMin)
         } else {
-            rawTarget = min(maxSpeed, max(minSpeed, remainingOffset / catchUpSeconds))
+            rawTarget = min(effMax, max(effMin, remainingOffset / effCatchUp))
         }
 
-        // Smoothly ease velocity toward target speed (no abrupt acceleration kicks on line wraps).
-        let blend = 1.0 - exp(-12.0 * clampedDt)
+        // Smooth velocity easing so arrival of new blocks never kicks acceleration abruptly.
+        let blend = 1.0 - exp(-8.0 * clampedDt)
         velocity = velocity + (rawTarget - velocity) * blend
 
         let advance = velocity * clampedDt
@@ -194,15 +360,10 @@ struct PCodeSmoothScrollGlide: Equatable {
     }
 }
 
-/// Per-frame Markdown block differ for an active streaming assistant message.
-///
-/// Re-parses the active message via `PCodeTranscriptMarkdown.parseBlocks` and computes
-/// the longest unchanged prefix so earlier blocks keep their identity, layout, and user
-/// selection untouched. When the message ends inside an unclosed fenced code block, uses
-/// an append-only fast path that avoids re-parsing the full Markdown document on every frame.
+/// Per-frame Markdown block differ with open-fence detection (used by `PCodeMarkdownSettler`
+/// and streaming diff unit tests).
 struct PCodeStreamingMessageDiffer {
     struct OpenFence: Equatable {
-        /// Exact substring of the markdown up to and including the opening fence line's newline.
         let prefixThroughOpeningLine: String
         let fenceChar: Character
         let fenceLength: Int
@@ -211,11 +372,8 @@ struct PCodeStreamingMessageDiffer {
     }
 
     struct DiffResult: Equatable {
-        /// Number of leading blocks identical to the previous frame (`0..<commonPrefixCount`).
         let commonPrefixCount: Int
-        /// Full updated block list for the active message.
         let newBlocks: [PCodeMarkdownBlock]
-        /// Whether this frame took the append-only open-fence fast path.
         let usedOpenFenceFastPath: Bool
     }
 
@@ -234,7 +392,6 @@ struct PCodeStreamingMessageDiffer {
         prefixBlockCountBeforeFence = 0
     }
 
-    /// Apply the latest full Markdown string for the active message and return the minimal block diff.
     mutating func update(markdown: String) -> DiffResult {
         if let fence = activeFence,
            prefixBlockCountBeforeFence <= blocks.count,
@@ -275,16 +432,12 @@ struct PCodeStreamingMessageDiffer {
             }
         }
 
-        // General path: exact cmark-gfm re-parse + top-level block diff.
         let newBlocks = PCodeTranscriptMarkdown.parseBlocks(markdown)
         let common = Self.commonPrefixCount(old: blocks, new: newBlocks)
         rawMarkdown = markdown
         blocks = newBlocks
         lastUpdateUsedOpenFenceFastPath = false
 
-        // Check if we just entered (or are inside) an unclosed top-level fenced code block
-        // whose parsed `fullCode` matches `open.body` exactly so subsequent streaming frames
-        // can safely take the append-only fast path.
         if let open = Self.detectTrailingOpenFence(in: markdown),
            !open.body.contains("\r"),
            let tailChunkCount = Self.trailingCodeBlockChunkCount(
@@ -305,9 +458,6 @@ struct PCodeStreamingMessageDiffer {
             usedOpenFenceFastPath: false)
     }
 
-    /// Compare blocks for streaming stability: settled code-block chunks compare by
-    /// `(language, code, chunkIndex)` rather than `fullCode`/`totalChunks` so chunk 0
-    /// does not re-render at 120Hz once chunk 1 begins streaming.
     static func commonPrefixCount(old: [PCodeMarkdownBlock], new: [PCodeMarkdownBlock]) -> Int {
         let limit = min(old.count, new.count)
         var i = 0
@@ -326,8 +476,6 @@ struct PCodeStreamingMessageDiffer {
         }
     }
 
-    /// Detect whether `markdown` currently ends inside an unclosed top-level fenced code block
-    /// (```` ``` ```` or `~~~` with 0–3 leading spaces and a newline after the opening fence line).
     static func detectTrailingOpenFence(in markdown: String) -> OpenFence? {
         var openChar: Character?
         var openLen = 0
@@ -348,7 +496,6 @@ struct PCodeStreamingMessageDiffer {
                     openBodyStart = nil
                 }
             } else if let opened = parseOpeningFenceLine(line) {
-                // Only engage the fast path once the opening fence line has its trailing newline.
                 if lineEnd < markdown.endIndex {
                     openChar = opened.char
                     openLen = opened.length
@@ -384,8 +531,6 @@ struct PCodeStreamingMessageDiffer {
     }
 
     private static func parseOpeningFenceLine(_ line: Substring) -> (char: Character, length: Int, language: String?)? {
-        // Restrict fast path to column-0 fences so indented fences (which strip leading spaces
-        // per CommonMark) stay on the exact cmark-gfm parser.
         guard let fc = line.first, fc == "`" || fc == "~" else { return nil }
         var idx = line.startIndex
         var count = 0
@@ -396,7 +541,6 @@ struct PCodeStreamingMessageDiffer {
         guard count >= 3 else { return nil }
 
         let info = line[idx...].trimmingCharacters(in: .whitespacesAndNewlines)
-        // CommonMark: backtick info strings cannot contain backticks.
         if fc == "`" && info.contains("`") { return nil }
         let langToken = info.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
         let normalizedLang = (langToken?.isEmpty == false) ? langToken : nil
@@ -441,17 +585,13 @@ struct PCodeStreamingMessageDiffer {
     }
 }
 
-/// Event stream replayer that drives `PCodeTranscriptDocumentView` at realistic (or accelerated)
-/// token-by-token speed from saved `[PCodePeekTurn]` data.
-///
-/// Useful both for interactive live-streaming preview inside `Pcode.app` and for deterministic
-/// headless stress tests.
+/// Settled-block stream replayer that drives `PCodeTranscriptDocumentView` at `1×` (regular)
+/// or `4×` (accelerated) speed through the exact same reveal queue and conveyor glide used
+/// for live sessions.
 final class PCodeTranscriptStreamReplayer {
     enum Step: Equatable {
         case beginTurn(prompt: String, isSide: Bool)
-        case beginMessage(id: String)
-        case textDelta(String)
-        case finishMessage
+        case settledMessage(id: String, markdown: String)
         case toolCall(name: String, detail: String, command: String, failed: Bool, elapsed: Double?, id: Int)
         case finishTurn(PCodePeekTurn.Status)
     }
@@ -459,27 +599,24 @@ final class PCodeTranscriptStreamReplayer {
     private weak var documentView: PCodeTranscriptDocumentView?
     private let steps: [Step]
     private var nextStepIndex = 0
-    private var cooldownTicks = 0
     private var timer: Timer?
+    private let speedMultiplier: Double
     private let stepInterval: TimeInterval
     private let onComplete: (() -> Void)?
 
     var isRunning: Bool { timer != nil }
-    var progress: Double {
-        guard !steps.isEmpty else { return 1 }
-        return Double(nextStepIndex) / Double(steps.count)
-    }
 
     init(
         turns: [PCodePeekTurn],
         documentView: PCodeTranscriptDocumentView,
-        speedMultiplier: Double = 4.0,
-        chunkSize: Int = 18,
+        speedMultiplier: Double = 1.0,
         onComplete: (() -> Void)? = nil
     ) {
         self.documentView = documentView
-        self.steps = Self.buildSteps(from: turns, chunkSize: max(1, chunkSize))
-        self.stepInterval = max(0.004, 0.032 / max(0.5, speedMultiplier))
+        self.speedMultiplier = max(0.25, speedMultiplier)
+        self.steps = Self.buildSteps(from: turns)
+        // Natural cadence per settled block/tool call, scaled by speedMultiplier.
+        self.stepInterval = max(0.03, 0.22 / self.speedMultiplier)
         self.onComplete = onComplete
     }
 
@@ -487,22 +624,14 @@ final class PCodeTranscriptStreamReplayer {
         stop()
     }
 
-    /// Build a flat sequence of streaming steps from saved turns.
-    static func buildSteps(from turns: [PCodePeekTurn], chunkSize: Int = 18) -> [Step] {
+    static func buildSteps(from turns: [PCodePeekTurn]) -> [Step] {
         var out: [Step] = []
         for turn in turns {
             out.append(.beginTurn(prompt: turn.prompt, isSide: turn.side))
             for block in turn.blocks {
                 switch block {
                 case .markdown(let blockID, let text):
-                    out.append(.beginMessage(id: "replay-turn-\(turn.id)-md-\(blockID)"))
-                    var idx = text.startIndex
-                    while idx < text.endIndex {
-                        let end = text.index(idx, offsetBy: chunkSize, limitedBy: text.endIndex) ?? text.endIndex
-                        out.append(.textDelta(String(text[idx..<end])))
-                        idx = end
-                    }
-                    out.append(.finishMessage)
+                    out.append(.settledMessage(id: "replay-turn-\(turn.id)-md-\(blockID)", markdown: text))
                 case .tool(let call):
                     out.append(.toolCall(
                         name: call.name,
@@ -522,36 +651,26 @@ final class PCodeTranscriptStreamReplayer {
         stop()
         guard let documentView else { return }
         nextStepIndex = 0
+        documentView.streamingSpeedMultiplier = CGFloat(speedMultiplier)
         documentView.setItems([], pinToBottom: true)
+        // Fire the first step immediately so replay begins without a blank beat.
+        if !stepOnce() {
+            onComplete?()
+            return
+        }
         let t = Timer(timeInterval: stepInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            if self.cooldownTicks > 0 {
-                self.cooldownTicks -= 1
+            // Keep a comfortable reveal queue depth (at most 3 queued items ahead) so
+            // 1x feels like a real conversation and 4x runs briskly without dumping 50 blocks at once.
+            if (self.documentView?.pendingRevealCount ?? 0) > 3 {
                 return
             }
-            // Let the 120Hz text pacer finish draining the current message before `.finishMessage`
-            // flushes it, so short/medium messages glide smoothly to their final character.
-            if self.nextStepIndex < self.steps.count,
-               case .finishMessage = self.steps[self.nextStepIndex],
-               self.documentView?.hasPacedStreamingBacklog == true
-            {
-                return
-            }
-            let currentStep = self.nextStepIndex < self.steps.count ? self.steps[self.nextStepIndex] : nil
             if !self.stepOnce() {
+                if self.documentView?.isStreamingAnimationActive == true {
+                    return
+                }
                 self.stop()
                 self.onComplete?()
-                return
-            }
-            // Give tool cards and new turns a natural brief beat (~48ms at 4x) so rapid tool
-            // runs glide smoothly on the conveyor instead of dumping 125 cards/sec.
-            switch currentStep {
-            case .toolCall:
-                self.cooldownTicks = 5
-            case .beginTurn:
-                self.cooldownTicks = 8
-            default:
-                break
             }
         }
         RunLoop.main.add(t, forMode: .common)
@@ -561,9 +680,9 @@ final class PCodeTranscriptStreamReplayer {
     func stop() {
         timer?.invalidate()
         timer = nil
+        documentView?.streamingSpeedMultiplier = 1.0
     }
 
-    /// Execute a single replay step synchronously (returns `false` once finished).
     @discardableResult
     func stepOnce() -> Bool {
         guard let documentView, nextStepIndex < steps.count else {
@@ -574,11 +693,9 @@ final class PCodeTranscriptStreamReplayer {
         switch step {
         case .beginTurn(let prompt, let isSide):
             documentView.beginStreamingTurn(prompt: prompt, isSide: isSide, forcePin: false)
-        case .beginMessage(let id):
+        case .settledMessage(let id, let markdown):
             documentView.beginStreamingMessage(id: id)
-        case .textDelta(let delta):
-            documentView.appendStreamingDelta(delta)
-        case .finishMessage:
+            documentView.appendStreamingDelta(markdown)
             documentView.finishStreamingMessage()
         case .toolCall(let name, let detail, let command, let failed, let elapsed, let id):
             let call = PCodePeekToolCall(
@@ -595,7 +712,7 @@ final class PCodeTranscriptStreamReplayer {
         return nextStepIndex < steps.count
     }
 
-    /// Run all remaining steps synchronously (for headless benchmarks and unit tests).
+    /// Run all steps synchronously (for headless unit tests and benchmarks).
     func runAllSynchronously() {
         documentView?.setItems([], pinToBottom: true)
         nextStepIndex = 0

@@ -55,7 +55,11 @@ enum PCodeMarkdownBlock: Equatable {
 enum PCodeTranscriptMarkdown {
     static let maxCodeLinesPerItem = 200
 
-    /// Split a Markdown string into top-level virtualized blocks (coalescing adjacent prose).
+    /// Split a Markdown string into top-level virtualized blocks.
+    ///
+    /// Each top-level prose element (paragraph, heading, list, blockquote, thematic break)
+    /// becomes its own `.prose` block so settled streaming blocks are laid out once at final
+    /// geometry and never re-laid-out when later paragraphs arrive.
     static func parseBlocks(_ markdown: String) -> [PCodeMarkdownBlock] {
         guard !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return []
@@ -66,20 +70,10 @@ enum PCodeTranscriptMarkdown {
         let refDefs = extractLinkReferenceDefinitions(from: lines, document: document)
 
         var blocks: [PCodeMarkdownBlock] = []
-        var pendingProseParts: [String] = []
-
-        func flushProse() {
-            guard !pendingProseParts.isEmpty else { return }
-            let combined = pendingProseParts.joined(separator: "\n\n")
-            pendingProseParts.removeAll(keepingCapacity: true)
-            if !combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                blocks.append(.prose(markdown: combined, referenceDefinitions: refDefs))
-            }
-        }
+        blocks.reserveCapacity(8)
 
         for child in document.children {
             if let codeBlock = child as? CodeBlock {
-                flushProse()
                 let rawCode = codeBlock.code.hasSuffix("\n")
                     ? String(codeBlock.code.dropLast())
                     : codeBlock.code
@@ -95,17 +89,14 @@ enum PCodeTranscriptMarkdown {
                         totalChunks: chunks.count))
                 }
             } else if let table = child as? Table {
-                flushProse()
                 blocks.append(.table(extractTable(table)))
             } else {
-                if let slice = sourceSlice(for: child, in: lines) {
-                    pendingProseParts.append(slice)
-                } else {
-                    pendingProseParts.append(child.format())
+                let slice = sourceSlice(for: child, in: lines) ?? child.format()
+                if !slice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    blocks.append(.prose(markdown: slice, referenceDefinitions: refDefs))
                 }
             }
         }
-        flushProse()
         return blocks
     }
 
