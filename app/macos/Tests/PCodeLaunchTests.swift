@@ -30,6 +30,9 @@ struct PCodeLaunchTests {
         #expect(!PCodeWorkspaceMode.hasEnvrc(in: child.path))
         try FileManager.default.removeItem(at: fakeDir)
 
+        // Empty path returns false instead of walking process CWD.
+        #expect(!PCodeWorkspaceMode.hasEnvrc(in: ""))
+
         // An `.envrc` file in an ancestor applies to descendants.
         let envrc = root.appendingPathComponent(".envrc")
         FileManager.default.createFile(atPath: envrc.path, contents: Data("export FOO=1\n".utf8))
@@ -43,20 +46,25 @@ struct PCodeLaunchTests {
 
         let dir1 = root.appendingPathComponent("bin1", isDirectory: true)
         let dir2 = root.appendingPathComponent("bin2", isDirectory: true)
+        let dir3 = root.appendingPathComponent("bin3", isDirectory: true)
         try FileManager.default.createDirectory(at: dir1, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dir2, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dir3, withIntermediateDirectories: true)
 
-        // Non-executable file in dir1 should be skipped in favor of executable in dir2.
+        // Non-executable file in dir1 and directory named `direnv` in dir2 should be skipped.
         let nonExec = dir1.appendingPathComponent("direnv")
         FileManager.default.createFile(atPath: nonExec.path, contents: Data())
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: nonExec.path)
+        try FileManager.default.createDirectory(at: dir2.appendingPathComponent("direnv"), withIntermediateDirectories: true)
 
-        let exec = dir2.appendingPathComponent("direnv")
-        try makeExecutable(at: exec)
+        let target = root.appendingPathComponent("real-direnv")
+        try makeExecutable(at: target)
+        let symlink = dir3.appendingPathComponent("direnv")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: target)
 
-        let found = PCodeWorkspaceMode.findExecutable("direnv", inPath: "\(dir1.path):\(dir2.path)")
-        #expect(found == exec.path)
-        #expect(PCodeWorkspaceMode.findExecutable("missing", inPath: "\(dir1.path):\(dir2.path)") == nil)
+        let found = PCodeWorkspaceMode.findExecutable("direnv", inPath: "relative:\(dir1.path):\(dir2.path):\(dir3.path)")
+        #expect(found == symlink.path)
+        #expect(PCodeWorkspaceMode.findExecutable("missing", inPath: "\(dir1.path):\(dir3.path)") == nil)
     }
 
     @Test func cachedLaunchWrapsInDirenvExecWhenEnvrcOrDirenvDirApplies() throws {
@@ -107,7 +115,7 @@ struct PCodeLaunchTests {
         )
         #expect(withEnvrc.command == "/usr/bin/env -- '\(direnvBin.path)' exec '\(project.path)' '\(pcodeBin.path)'")
 
-        // When `direnv` is not installed (`direnvPath == nil`): falls back to direct launch.
+        // When `direnv` is not installed (`direnvPath == nil`) or missing: falls back to direct launch.
         let noDirenv = PCodeWorkspaceMode.buildLaunchConfig(
             [],
             directory: project.path,
@@ -115,6 +123,42 @@ struct PCodeLaunchTests {
             baseEnvironment: [:]
         )
         #expect(noDirenv.command == "/usr/bin/env -- '\(pcodeBin.path)'")
+
+        let staleDirenv = PCodeWorkspaceMode.buildLaunchConfig(
+            [],
+            directory: project.path,
+            cached: PCodeWorkspaceMode.CachedShellEnv(
+                commandPath: pcodeBin.path,
+                direnvPath: root.appendingPathComponent("missing-direnv").path,
+                env: cached.env
+            ),
+            baseEnvironment: [:]
+        )
+        #expect(staleDirenv.command == "/usr/bin/env -- '\(pcodeBin.path)'")
+    }
+
+    @Test func discardedCachedEnvDoesNotMaskBaseDirenvDir() throws {
+        let root = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let project = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        let staleCached = PCodeWorkspaceMode.CachedShellEnv(
+            commandPath: root.appendingPathComponent("missing-pcode").path,
+            direnvPath: nil,
+            env: ["DIRENV_DIR": ""]
+        )
+        let fallback = PCodeWorkspaceMode.buildLaunchConfig(
+            [],
+            directory: project.path,
+            cached: staleCached,
+            baseEnvironment: ["DIRENV_DIR": "-/other/dir"],
+            shell: "/bin/zsh",
+            command: "pcode"
+        )
+        #expect(fallback.command.contains("exec direnv exec"))
+        #expect(fallback.env.isEmpty)
     }
 
     @Test func fallbackShellCommandConditionallyUsesDirenvForPosixAndFish() throws {
@@ -136,6 +180,16 @@ struct PCodeLaunchTests {
         #expect(plain.command == "'/bin/zsh' -l -c 'exec pcode '\\''-c'\\'' '\\''s1'\\'''")
         #expect(plain.env.isEmpty)
 
+        // Absolute `PCODE_COMMAND` with spaces is quoted.
+        let spacedCmd = PCodeWorkspaceMode.shellCommand(
+            [],
+            directory: project.path,
+            useDirenv: false,
+            shell: "/bin/zsh",
+            command: "/Users/me/My Work/pcode"
+        )
+        #expect(spacedCmd.contains("exec '\\''/Users/me/My Work/pcode'\\''"))
+
         // With `.envrc`: POSIX shell checks `command -v direnv`.
         FileManager.default.createFile(atPath: project.appendingPathComponent(".envrc").path, contents: Data())
         let zsh = PCodeWorkspaceMode.buildLaunchConfig(
@@ -149,16 +203,20 @@ struct PCodeLaunchTests {
         #expect(zsh.command.contains("command -v direnv >/dev/null 2>&1"))
         #expect(zsh.command.contains("exec direnv exec"))
 
-        // With `.envrc` and fish: uses fish's `type -q direnv` syntax.
+        // With `.envrc` and fish: uses fish's `type -q direnv` and fish single-quote escaping.
+        let trickyDir = root.appendingPathComponent("fish's\\dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: trickyDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: trickyDir.appendingPathComponent(".envrc").path, contents: Data())
         let fish = PCodeWorkspaceMode.buildLaunchConfig(
             [],
-            directory: project.path,
+            directory: trickyDir.path,
             cached: nil,
             baseEnvironment: [:],
             shell: "/opt/homebrew/bin/fish",
             command: "pcode"
         )
         #expect(fish.command.contains("if type -q direnv; exec direnv exec"))
+        #expect(fish.command.contains("fish\\'\\''s\\\\dir"))
         #expect(fish.command.contains("; else; exec pcode; end"))
     }
 }

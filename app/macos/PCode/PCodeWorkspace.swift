@@ -43,8 +43,28 @@ enum PCodeWorkspaceMode {
         return "/bin/zsh"
     }
 
+    /// True when `path` exists as a non-directory executable file.
+    private static func isExecutableRegularFile(
+        _ path: String,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        var isDir: ObjCBool = false
+        return fileManager.fileExists(atPath: path, isDirectory: &isDir)
+            && !isDir.boolValue
+            && fileManager.isExecutableFile(atPath: path)
+    }
+
+    /// Single-quote `text` for `fish`, where `\` and `'` are escaped inside `'...'`.
+    private static func fishQuoted(_ text: String) -> String {
+        let escaped = text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+        return "'\(escaped)'"
+    }
+
     /// True when `directory` or any ancestor contains a `.envrc` file.
     static func hasEnvrc(in directory: String, fileManager: FileManager = .default) -> Bool {
+        guard !directory.isEmpty else { return false }
         var current = URL(fileURLWithPath: directory).standardizedFileURL
         while true {
             let envrc = current.appendingPathComponent(".envrc").path
@@ -66,14 +86,11 @@ enum PCodeWorkspaceMode {
         inPath path: String,
         fileManager: FileManager = .default
     ) -> String? {
-        for dir in path.split(separator: ":") where !dir.isEmpty {
+        for dir in path.split(separator: ":") where dir.hasPrefix("/") {
             let candidate = URL(fileURLWithPath: String(dir))
                 .appendingPathComponent(name)
                 .path
-            var isDir: ObjCBool = false
-            if fileManager.fileExists(atPath: candidate, isDirectory: &isDir),
-               !isDir.boolValue,
-               fileManager.isExecutableFile(atPath: candidate) {
+            if isExecutableRegularFile(candidate, fileManager: fileManager) {
                 return candidate
             }
         }
@@ -95,12 +112,15 @@ enum PCodeWorkspaceMode {
         shell: String = loginShell,
         command: String = command
     ) -> String {
-        let cmdParts = ([command] + args.map(PCode.shellQuoted)).joined(separator: " ")
+        let isFish = URL(fileURLWithPath: shell).lastPathComponent == "fish"
+        let quote: (String) -> String = isFish ? fishQuoted : PCode.shellQuoted
+        let commandToken = command.hasPrefix("/") ? quote(command) : command
+        let cmdParts = ([commandToken] + args.map(quote)).joined(separator: " ")
         let inner: String
         if useDirenv, let directory {
-            let direnvCmd = "exec direnv exec \(PCode.shellQuoted(directory)) \(cmdParts)"
+            let direnvCmd = "exec direnv exec \(quote(directory)) \(cmdParts)"
             let plainCmd = "exec \(cmdParts)"
-            if URL(fileURLWithPath: shell).lastPathComponent == "fish" {
+            if isFish {
                 inner = "if type -q direnv; \(direnvCmd); else; \(plainCmd); end"
             } else {
                 inner = "if command -v direnv >/dev/null 2>&1; then \(direnvCmd); else \(plainCmd); fi"
@@ -246,11 +266,10 @@ enum PCodeWorkspaceMode {
         command: String = command,
         fileManager: FileManager = .default
     ) -> (command: String, env: [String: String]) {
-        let hasDirenvDir = !(cached?.env["DIRENV_DIR"] ?? baseEnvironment["DIRENV_DIR"] ?? "").isEmpty
-        let shouldUseDirenv = hasDirenvDir || hasEnvrc(in: directory, fileManager: fileManager)
-
         guard let cached,
-              fileManager.isExecutableFile(atPath: cached.commandPath) else {
+              isExecutableRegularFile(cached.commandPath, fileManager: fileManager) else {
+            let hasDirenvDir = !(baseEnvironment["DIRENV_DIR"] ?? "").isEmpty
+            let shouldUseDirenv = hasDirenvDir || hasEnvrc(in: directory, fileManager: fileManager)
             return (
                 shellCommand(
                     args,
@@ -262,13 +281,15 @@ enum PCodeWorkspaceMode {
                 [:]
             )
         }
+        let hasDirenvDir = !(cached.env["DIRENV_DIR"] ?? baseEnvironment["DIRENV_DIR"] ?? "").isEmpty
+        let shouldUseDirenv = hasDirenvDir || hasEnvrc(in: directory, fileManager: fileManager)
         // Pass through `env --` so `exec -l` doesn't prepend `-` to argv[0] of
         // a venv-backed Python entry point, and paths with `=` aren't parsed as
         // variable assignments.
         var parts = ["/usr/bin/env", "--"]
         if shouldUseDirenv,
            let direnvPath = cached.direnvPath,
-           fileManager.isExecutableFile(atPath: direnvPath) {
+           isExecutableRegularFile(direnvPath, fileManager: fileManager) {
             parts += [PCode.shellQuoted(direnvPath), "exec", PCode.shellQuoted(directory)]
         }
         parts += [PCode.shellQuoted(cached.commandPath)] + args.map(PCode.shellQuoted)
