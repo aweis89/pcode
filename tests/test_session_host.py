@@ -1589,6 +1589,39 @@ def test_the_app_restart_signal_exits_past_an_open_popup(tmp_path, host_dir):
     asyncio.run(run())
 
 
+@pytest.mark.in_process("exits a session running in this terminal")
+def test_an_app_restart_signal_from_startup_is_acted_on_and_exit_cleanup_stays_covered(
+    tmp_path, host_dir, monkeypatch
+):
+    """Before the editor runs, `pcode.cli` only notes the signal; after, its handler is back."""
+    from pcode import cli
+
+    async def run():
+        output = StringIO()
+        app = local_app(tmp_path, Script(), output)
+        monkeypatch.setattr(cli, "app_restart_signalled", False)
+        previous = signal.signal(signal.SIGUSR2, cli.remember_app_restart)
+        try:
+            os.kill(os.getpid(), signal.SIGUSR2)  # As during the slow imports.
+            await until(lambda: cli.app_restart_signalled)
+
+            async def drive(pipe, seen):
+                pass  # Nobody types: the noted signal alone ends it.
+
+            def spawn_host(**kwargs):
+                raise AssertionError("nothing saved yet, so nothing to move")
+
+            await run_local(app, output, drive, spawn_host)
+            assert app.app_restart_requested and not cli.app_restart_signalled
+            # Exit cleanup is past, and a late signal is noted rather than fatal.
+            assert signal.getsignal(signal.SIGUSR2) is cli.remember_app_restart
+        finally:
+            signal.signal(signal.SIGUSR2, previous)
+            app.runtime.close()
+
+    asyncio.run(run())
+
+
 def test_the_app_restart_signal_restarts_a_stale_host_then_detaches(host_dir, monkeypatch):
     async def run():
         class Host:

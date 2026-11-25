@@ -8,7 +8,12 @@ pane. That command attaches to the host now running the session.
 ## Contract
 
 Signal: `SIGUSR2` to the interactive terminal process (`pcode`, not
-`pcode.host`; hosts ignore it). `pcode --print` installs no handler.
+`pcode.host`; hosts ignore it). From the very start of `pcode.cli.main` the
+signal never kills the process: until the editor runs it is only noted
+(`cli.remember_app_restart`) and acted on once it does; `PreviewApp.run_async`
+handles it through the end of its exit cleanup, then puts the noting handler
+back for the rest of the exit. Non-interactive modes (`--print`, `config`)
+just note and ignore it.
 
 What it does (`PreviewApp.request_app_restart` / `_app_restart`):
 

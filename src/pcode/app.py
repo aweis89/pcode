@@ -3098,6 +3098,28 @@ class PreviewApp:
             self.prompt_session.app.exit()
 
     async def run_async(self) -> None:
+        loop = asyncio.get_running_loop()
+        previous = signal.getsignal(signal.SIGUSR2)
+        try:
+            # `request_app_restart`, through everything below, cleanup included.
+            loop.add_signal_handler(signal.SIGUSR2, self.request_app_restart)
+        except NotImplementedError, RuntimeError, ValueError:
+            await self._run_editor()  # No signals here (not the main thread).
+            return
+        from pcode import cli
+
+        if cli.app_restart_signalled:  # Before this process got this far.
+            cli.app_restart_signalled = False
+            self.request_app_restart()
+        try:
+            await self._run_editor()
+        finally:
+            # Removing it resets the default action, which would kill the
+            # process on its way out: hand back to what was there before.
+            loop.remove_signal_handler(signal.SIGUSR2)
+            signal.signal(signal.SIGUSR2, previous)
+
+    async def _run_editor(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         # A brand-new session shows the welcome banner; attaching to an existing
@@ -3487,21 +3509,11 @@ class PreviewApp:
                 # Signalled before the editor ran: act on it now.
                 self._app_restart_task = session.app.create_background_task(self._app_restart())
 
-        loop = asyncio.get_running_loop()
-        signalled = False
-        try:
-            # `request_app_restart`; replaces the default action, which kills the process.
-            loop.add_signal_handler(signal.SIGUSR2, self.request_app_restart)
-            signalled = True
-        except NotImplementedError, RuntimeError, ValueError:
-            pass  # No signals here (Windows, or not the main thread).
         try:
             await session.app.run_async(pre_run=start)
             # Before `leave_controller` closes the connection the stop goes out on.
             self.stop_host_on_exit()
         finally:
-            if signalled:
-                loop.remove_signal_handler(signal.SIGUSR2)
             # Whatever is still unsent, without waiting for the next save.
             drafts.save()
             if docked is not None:
