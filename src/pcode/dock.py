@@ -24,6 +24,7 @@ costs a `CONNECT_TIMEOUT` wait at startup), no tmux, no tests.
 
 import asyncio
 import os
+import re
 import secrets
 import socket
 import sys
@@ -60,6 +61,10 @@ def _apc(payload: str) -> str:
     return f"\x1b_pcode;{payload}\x1b\\"
 
 
+# A cursor position report, taken out of pcode's pane's input while one is asked for.
+_CPR = re.compile(rb"\x1b\[(\d{1,4});(\d{1,4})R")
+
+
 class Dock:
     def __init__(self, fd: int, connection: socket.socket) -> None:
         self.fd = fd
@@ -87,6 +92,17 @@ class Dock:
         # (`Transcript.frame_shades` sets it), sent before the next frame.
         self.tint: str | None = None
         self._sent_tint: str | None = None
+        # Where the cursor is on pcode's own pane (0-based row), which holds
+        # only scrollback now, for the transcript's glide (`Transcript`'s
+        # docked glide); None until the terminal says (`ask_cursor`). The
+        # pane's resizes pull rows out of scrollback and back, so after one
+        # the row is asked again rather than guessed.
+        self.pane_row: int | None = None
+        self._pane_size: tuple[int, int] | None = None
+        self._cpr_pending = False
+        self._written_since_ask = 0
+        # The outstanding reply predates a home, so it no longer says anything.
+        self._stale_reply = False
 
     # The editor's application, once it runs.
 
@@ -132,6 +148,9 @@ class Dock:
             for handle in flush_later:
                 handle.cancel()
             flush_later.clear()
+            if self._cpr_pending and (match := _CPR.search(data)):
+                data = data[: match.start()] + data[match.end() :]
+                self._answered(int(match.group(1)) - 1)
             parser.feed(data.decode("utf-8", "replace"))
             app.key_processor.process_keys()
             # A lone Escape only comes out once the parser is told nothing follows.
@@ -141,6 +160,48 @@ class Dock:
         # pcode's own pane shows no editor, so no cursor either.
         sys.stdout.write("\x1b[?25l")
         sys.stdout.flush()
+        self.pane_rows()
+
+    def pane_rows(self) -> int:
+        """pcode's pane's height; a new size asks where the cursor ended up."""
+        try:
+            size = os.get_terminal_size(sys.stdout.fileno())
+        except OSError:
+            return 0
+        if (size.lines, size.columns) != self._pane_size:
+            self._pane_size = (size.lines, size.columns)
+            self.ask_cursor()
+        return size.lines
+
+    def ask_cursor(self) -> None:
+        """Ask the pane for its cursor row; the answer comes in with typing."""
+        self.pane_row = None
+        self._written_since_ask = 0
+        self._stale_reply = False
+        if not self._cpr_pending:
+            self._cpr_pending = True
+            sys.stdout.write("\x1b[6n")
+            sys.stdout.flush()
+
+    def _answered(self, row: int) -> None:
+        # The reply is where the cursor was when the query arrived; rows
+        # written since then moved it on.
+        self._cpr_pending = False
+        if self._stale_reply:
+            self._stale_reply = False
+            return
+        rows = self._pane_size[0] if self._pane_size else row + 1
+        self.pane_row = min(rows - 1, row + self._written_since_ask)
+
+    def wrote(self, rows: int, *, homed: bool = False) -> None:
+        """pcode wrote ``rows`` rows to its pane, after homing the cursor if ``homed``."""
+        if homed:
+            self.pane_row = 0
+            self._stale_reply = self._cpr_pending
+        if self.pane_row is not None and self._pane_size:
+            self.pane_row = min(self._pane_size[0] - 1, self.pane_row + rows)
+        elif self._cpr_pending:
+            self._written_since_ask += rows
 
     def _bridge_spoke(self) -> None:
         try:

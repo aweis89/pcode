@@ -2382,6 +2382,12 @@ class TerminalOutput:
         # them itself. ``_declared`` is the region last sent and when (None:
         # cleared).
         self.gliding = False
+        # SPIKE: the same glide with the editor docked on its own terminal
+        # (`pcode.dock`): pcode's pane then holds only scrollback, so the
+        # region is the whole pane and each batch glides in the frame that
+        # writes it (`_docked_frame`), with no editor render to hook.
+        self.docked_glide = False
+        self._docked_declared: tuple[tuple[int, int], float] | None = None
         # The batch just written, `(rows, rows scrolled, runs)`, for
         # `_track_layout` to announce in the same frame; see `_native_runs`.
         self._native_commit: tuple[int, int, list[tuple[int, int, bool]]] | None = None
@@ -2697,7 +2703,7 @@ class TerminalOutput:
                 if self.pending:
                     width = max(1, self._screen_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.gliding:
+                if self.gliding or self.docked_glide:
                     # The terminal paces and reveals the batch itself.
                     due = self._native_batch()
                 elif self.rows:
@@ -2771,6 +2777,14 @@ class TerminalOutput:
                         if self._park_off and not self.rows and not self.pending:
                             written += smooth_scroll.PARK_OFF
                             self._park_off = False
+                        if (docked := dock.active()) is not None:
+                            written = self._docked_frame(
+                                docked,
+                                written,
+                                self._native_runs(chunk),
+                                rebuilt=rebuilt,
+                                glide=self.docked_glide and paced and not rebuilt,
+                            )
                         counter.write(written)
                         counter.flush()
                         handoff.rows_written = counter.rows
@@ -2963,6 +2977,74 @@ class TerminalOutput:
             runs.append((cur_start, len(chunk) - cur_start, cur_prose))
         return runs
 
+    def _docked_frame(
+        self,
+        docked,
+        written: str,
+        runs: list[tuple[int, int, bool]],
+        *,
+        rebuilt: bool,
+        glide: bool,
+    ) -> str:
+        """SPIKE: ``written``, for pcode's pane with the editor docked, with its glide.
+
+        The pane holds only scrollback, so its cursor sits on the row after
+        the last one written (`Dock.pane_row`) and that row is blank: the
+        glide region is the whole pane, that last row its hidden bottom.
+        The rows, the region, the glide and the reveals go out as one
+        synchronized frame, so no frame shows the rows unglided.
+        """
+        rows = written.count("\n")
+        pane_rows = docked.pane_rows()
+        before = docked.pane_row
+        docked.wrote(rows, homed=rebuilt)
+        if rebuilt:
+            self._native_backlog = 0.0
+        if not glide or before is None or rows == 0 or pane_rows < 2:
+            return written
+        columns = max(1, self._screen_size().columns)
+        now = monotonic()
+        head = SYNC_START
+        key = (pane_rows, columns)
+        # Re-sent every second, as `_declare` does, in case the terminal dropped it.
+        if (
+            self._docked_declared is None
+            or self._docked_declared[0] != key
+            or now - self._docked_declared[1] >= 1.0
+        ):
+            self._docked_declared = (key, now)
+            head += smooth_scroll.declaration(pane_rows - 1, columns)
+        bottom = pane_rows - 1
+        scrolled = max(0, before + rows - bottom)
+        end_row = min(bottom, before + rows) - 1
+        reach = smooth_scroll.MAX_BATCH_GLIDE
+        floor = 0
+        tail = ""
+        if scrolled:
+            backlog = min(self._drain_native_backlog(now) + scrolled, float(reach))
+            self._native_backlog = backlog
+            self._native_rate = smooth_scroll.batch_rate(backlog)
+            flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
+            tail += smooth_scroll.advance(scrolled, flags=flags)
+            floor = -reach
+            if not self.typed:
+                # `rows` mode: the glide and fade are the reveal, except for
+                # rows that landed in place before the pane filled.
+                in_place = rows - scrolled
+                runs = [(0, in_place, False)] if in_place > 0 else []
+        base_row = end_row - rows + 1
+        for offset, length, prose in runs:
+            start = base_row + offset
+            end = min(start + length, end_row + 1)
+            if end <= floor:
+                continue
+            start = max(floor, start)
+            count = min(end - start, reach)
+            if count > 0:
+                flags = smooth_scroll.REVEAL_SWEEP if prose else smooth_scroll.REVEAL_CURTAIN
+                tail += smooth_scroll.reveal(start, count, flags=flags)
+        return head + written + tail + SYNC_END
+
     def _native_batch_cap(self) -> int:
         """Most rows one handoff may write.
 
@@ -2970,6 +3052,14 @@ class TerminalOutput:
         `MAX_BATCH_GLIDE` rows. Before the screen fills, rows land in place
         instead, so no more than the transcript rows that can be seen.
         """
+        if self.docked_glide:
+            # SPIKE: docked, the pane is full once its cursor reaches the bottom.
+            docked = dock.active()
+            row = docked.pane_row if docked is not None else None
+            pane_rows = docked.pane_rows() if docked is not None else 0
+            if row is None or row >= pane_rows - 1:
+                return smooth_scroll.MAX_BATCH_GLIDE
+            return max(1, min(smooth_scroll.MAX_BATCH_GLIDE, pane_rows - 1 - row))
         if self._editor_pinned():
             return smooth_scroll.MAX_BATCH_GLIDE
         size_rows = max(1, self.app.output.get_size().rows)
@@ -5240,8 +5330,12 @@ class Transcript:
             output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
             if dock.active() is not None:
-                # SPIKE: both draw into the live panel, which is on the dock now.
-                output.gliding = output.typed = False
+                # SPIKE: the glide moves to pcode's own pane (`docked_glide`);
+                # without it, typing would draw into the live panel, on the dock.
+                output.docked_glide = output.gliding
+                output.gliding = False
+                if not output.docked_glide:
+                    output.typed = False
             output.marks = self.console.is_terminal and marks_supported()
             output.park = output.marks and self.reader_park == "on"
             if self.replays_on_resize:
