@@ -74,6 +74,8 @@ enum PCode {
         var config = Ghostty.SurfaceConfiguration(
             from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
         config.command = command
+        // Suppress macOS `login(1)` "Last login:" banner in pcode overlays.
+        config.environmentVariables["PCODE_HUSH_LOGIN"] = "1"
         // Not the pane's directory: nothing from a checkout is near the overlay's command.
         config.workingDirectory = NSHomeDirectory()
         config.initialInput = nil
