@@ -325,6 +325,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             || (activeStream?.hasDirectMarkdownUpdate == true)
             || smoothGlide.isActive
     }
+    /// True while the 120Hz text pacer still has buffered characters waiting to be revealed.
+    var hasPacedStreamingBacklog: Bool {
+        activeStream?.pacer.hasPending == true
+    }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -563,17 +567,40 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if let ratchetIdx = stream.activeRatchetIndex {
             layoutEngine.setTailRatchet(at: ratchetIdx, active: false)
         }
-        // Attach full copyMarkdown to the first prose block of the finalized message.
-        let endIdx = min(items.count, stream.baseItemIndex + stream.differ.blocks.count)
-        if stream.baseItemIndex < endIdx && !stream.displayedMarkdown.isEmpty {
+        // Attach full copyMarkdown to the first prose block and refresh `fullCopyCode`
+        // on any multi-chunk code blocks whose earlier chunks were kept untouched while streaming.
+        let blocks = stream.differ.blocks
+        let endIdx = min(items.count, stream.baseItemIndex + blocks.count)
+        if stream.baseItemIndex < endIdx {
+            var attachedCopyMarkdown = false
             for idx in stream.baseItemIndex..<endIdx {
-                if case .prose(let md, let refDefs, _) = items[idx].payload {
+                let localIdx = idx - stream.baseItemIndex
+                if !attachedCopyMarkdown,
+                   !stream.displayedMarkdown.isEmpty,
+                   case .prose(let md, let refDefs, _) = items[idx].payload
+                {
                     items[idx] = PCodeTranscriptItem(
                         id: items[idx].id,
                         payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: stream.displayedMarkdown),
                         spacingAfter: items[idx].spacingAfter,
                         revision: items[idx].revision &+ 1)
-                    break
+                    attachedCopyMarkdown = true
+                } else if case .codeBlock(let lang, let code, let oldFull, let showHeader, let groupID) = items[idx].payload,
+                          case .codeBlock(_, _, let latestFull, _, let totalChunks) = blocks[localIdx]
+                {
+                    let needsGroup = totalChunks > 1 ? (groupID ?? "\(stream.id)-code-\(localIdx)") : nil
+                    if oldFull != latestFull || groupID != needsGroup {
+                        items[idx] = PCodeTranscriptItem(
+                            id: items[idx].id,
+                            payload: .codeBlock(
+                                language: lang,
+                                code: code,
+                                fullCopyCode: latestFull,
+                                showHeader: showHeader,
+                                groupID: needsGroup),
+                            spacingAfter: items[idx].spacingAfter,
+                            revision: items[idx].revision &+ 1)
+                    }
                 }
             }
         }
@@ -777,7 +804,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     // MARK: - Mounting & Reuse Pool
 
     private func mountViews(in rect: NSRect, pass: Int = 0) {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else {
+            let clipHeight = enclosingScrollView?.contentView.bounds.height ?? 0
+            let targetHeight = max(layoutEngine.totalHeight, clipHeight)
+            if abs(bounds.height - targetHeight) > 0.5 {
+                applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: false, allowSmoothGlide: false)
+            }
+            return
+        }
         let contentWidth = max(1, bounds.width - Self.horizontalPadding * 2)
         let range = layoutEngine.visibleRange(in: rect)
 
@@ -1016,17 +1050,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 clipHeight: clipView.bounds.height,
                 topInset: scrollView.contentInsets.top,
                 bottomInset: scrollView.contentInsets.bottom)
+            let prevBottomY = PCodeStickyBottomState.bottomOriginY(
+                documentHeight: oldHeight,
+                clipHeight: clipView.bounds.height,
+                topInset: scrollView.contentInsets.top,
+                bottomInset: scrollView.contentInsets.bottom)
+            let deltaBottom = targetBottomY - prevBottomY
             let growthDelta = targetBottomY - clipView.bounds.origin.y
-            if allowSmoothGlide && window != nil && growthDelta > 0.5 {
-                let prevBottomY = PCodeStickyBottomState.bottomOriginY(
-                    documentHeight: oldHeight,
-                    clipHeight: clipView.bounds.height,
-                    topInset: scrollView.contentInsets.top,
-                    bottomInset: scrollView.contentInsets.bottom)
-                let newlyAddedBottom = max(0, targetBottomY - prevBottomY)
-                if newlyAddedBottom > 0.5 {
-                    smoothGlide.addOffset(newlyAddedBottom)
+            if allowSmoothGlide && window != nil && (growthDelta > 0.5 || smoothGlide.isActive) {
+                if deltaBottom > 0.5 {
+                    smoothGlide.addOffset(deltaBottom)
                     ensureDisplayLinkRunning()
+                } else if deltaBottom < -0.5 {
+                    smoothGlide.absorbShrink(-deltaBottom)
                 }
                 rawOriginY = targetBottomY - smoothGlide.remainingOffset
             } else {
@@ -1554,10 +1590,11 @@ final class PCodeJumpToBottomButton: NSButton {
         wantsLayer = true
         layer?.cornerRadius = 14
         layer?.borderWidth = 1
-        shadow = NSShadow()
-        layer?.shadowOpacity = 0.18
-        layer?.shadowRadius = 6
-        layer?.shadowOffset = CGSize(width: 0, height: -2)
+        let dropShadow = NSShadow()
+        dropShadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        dropShadow.shadowBlurRadius = 6
+        dropShadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow = dropShadow
         applyTitle(foreground: .labelColor)
     }
 
@@ -1705,7 +1742,8 @@ final class PCodeTranscriptScrollView: NSScrollView {
     }
 
     private func layoutJumpToBottomButton() {
-        let width = max(136, jumpToBottomButton.frame.width + 24)
+        let naturalWidth = ceil(jumpToBottomButton.fittingSize.width)
+        let width = max(136, naturalWidth + 24)
         let height: CGFloat = 28
         let x = floor((bounds.width - width) * 0.5)
         let y: CGFloat = isFlipped ? (bounds.height - height - 14) : 14

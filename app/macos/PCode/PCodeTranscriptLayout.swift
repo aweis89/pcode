@@ -89,9 +89,17 @@ struct PCodeTranscriptLayoutEngine {
     }
 
     /// Ratchet the minimum height of an active streaming item so it never shrinks until finalized.
+    /// Releasing an active ratchet marks the entry unmeasured so the next layout pass settles its true height.
     mutating func setTailRatchet(at index: Int, active: Bool) {
         guard entries.indices.contains(index) else { return }
-        entries[index].minHeight = active ? entries[index].height : 0
+        if active {
+            entries[index].minHeight = entries[index].height
+        } else {
+            if entries[index].minHeight > 0 {
+                entries[index].isMeasured = false
+            }
+            entries[index].minHeight = 0
+        }
     }
 
     /// Update an entry's `spacingAfter`, shifting trailing `yOffset`s and recomputing `totalHeight`.

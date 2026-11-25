@@ -655,6 +655,10 @@ struct PCodeTranscriptTests {
         #expect(glide.isActive)
         #expect(glide.remainingOffset == 60.0)
 
+        // Absorbing a shrink reduces remainingOffset without pulling viewport backward
+        glide.absorbShrink(15.0)
+        #expect(glide.remainingOffset == 45.0)
+
         var prev = glide.remainingOffset
         var ticks = 0
         while glide.isActive && ticks < 240 {
@@ -667,5 +671,72 @@ struct PCodeTranscriptTests {
         #expect(!glide.isActive)
         #expect(glide.remainingOffset == 0)
         #expect(ticks > 5 && ticks < 180)
+    }
+
+    @Test @MainActor func textKit2KeepsTextStorageAttachedAndRespectsSurrogateBoundaries() {
+        let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 420, height: 100))
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14)]
+        let first = NSAttributedString(string: "Hi 😀", attributes: attrs)
+        let second = NSAttributedString(string: "Hi 😁", attributes: attrs)
+
+        // Shared high surrogate (0xD83D) must back up to offset 3 ("Hi "), not 4 (mid-surrogate).
+        #expect(PCodeTextKit2BlockView.commonAttributedPrefixLength(first, second) == 3)
+
+        _ = view.configure(attributedText: first, width: 420)
+        #expect(view.textContentStorage.textStorage != nil)
+        _ = view.configure(attributedText: second, width: 420)
+        #expect(view.textContentStorage.textStorage != nil)
+        #expect(view.textContentStorage.attributedString?.string == "Hi 😁")
+    }
+
+    @Test @MainActor func jumpToBottomPillWidthStaysStableAcrossRepeatedLayouts() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let w1 = scrollView.jumpToBottomButton.frame.width
+        scrollView.needsLayout = true
+        scrollView.layoutSubtreeIfNeeded()
+        scrollView.needsLayout = true
+        scrollView.layoutSubtreeIfNeeded()
+        #expect(abs(scrollView.jumpToBottomButton.frame.width - w1) < 0.5)
+    }
+
+    @Test func streamingDifferGuardsNestedAndIndentedFencesAndKeepsChunkZeroStable() {
+        var differ = PCodeStreamingMessageDiffer()
+
+        // Nested fence inside a list item followed by a new unclosed fence must not corrupt body.
+        let nested = "- ~~~\n  nested\n  ~~~\n\n```\nhello\n"
+        let d1 = differ.update(markdown: nested)
+        if case .codeBlock(_, let code, _, _, _) = d1.newBlocks.last {
+            #expect(code == "hello")
+        } else {
+            Issue.record("Expected trailing codeBlock")
+        }
+
+        // Indented opening fence stays on exact cmark-gfm path (no indentation jump).
+        var indentedDiffer = PCodeStreamingMessageDiffer()
+        _ = indentedDiffer.update(markdown: "  ```swift\n  let x = 1\n")
+        let dInd = indentedDiffer.update(markdown: "  ```swift\n  let x = 1\n  let y = 2\n")
+        #expect(!dInd.usedOpenFenceFastPath)
+
+        // Settled chunk 0 stays in commonPrefixCount when chunk 1 grows past 200 lines.
+        var chunkDiffer = PCodeStreamingMessageDiffer()
+        let lines202 = (1...202).map { "line_\($0)" }.joined(separator: "\n")
+        _ = chunkDiffer.update(markdown: "```swift\n\(lines202)\n")
+        let dGrow = chunkDiffer.update(markdown: "```swift\n\(lines202)\nline_203\n")
+        #expect(dGrow.usedOpenFenceFastPath)
+        #expect(dGrow.newBlocks.count == 2)
+        #expect(dGrow.commonPrefixCount == 1) // chunk 0 untouched while chunk 1 grows!
+    }
+
+    @Test func layoutEngineRatchetReleaseMarksUnmeasured() {
+        var engine = PCodeTranscriptLayoutEngine(topPadding: 0, bottomPadding: 0, backingScale: 2)
+        let idx = engine.append(id: "tail", height: 100, spacingAfter: 8, measured: true)
+        engine.setTailRatchet(at: idx, active: true)
+        #expect(engine.entries[idx].isMeasured)
+        engine.setTailRatchet(at: idx, active: false)
+        #expect(!engine.entries[idx].isMeasured)
+        #expect(engine.entries[idx].minHeight == 0)
     }
 }

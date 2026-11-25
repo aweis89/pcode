@@ -167,9 +167,7 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         guard let info else { throw DebugCommands.Failure("no session to peek") }
         workspace.peek.peekFromMenu(workspace.peekTarget(for: info))
         let startReplay = (args["replay"] as? Bool) == true
-        if startReplay {
-            workspace.peek.isReplaying = true
-        }
+        workspace.peek.isReplaying = startReplay
         finish(["showing": true, "live": false, "session": info.id, "title": info.label, "replaying": startReplay])
     }
 

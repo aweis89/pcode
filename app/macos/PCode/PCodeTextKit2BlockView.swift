@@ -139,10 +139,16 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
 
         if textChanged {
             let immutableCopy = (attributedText.copy() as? NSAttributedString) ?? attributedText
-            if let oldAttr = lastAttributedString,
-               let storage = textContentStorage.textStorage,
-               storage.length == oldAttr.length
-            {
+            let storage: NSTextStorage
+            if let existing = textContentStorage.textStorage {
+                storage = existing
+            } else {
+                let created = NSTextStorage()
+                textContentStorage.textStorage = created
+                storage = created
+            }
+
+            if let oldAttr = lastAttributedString, storage.length == oldAttr.length {
                 let prefixLen = Self.commonAttributedPrefixLength(oldAttr, immutableCopy)
                 if prefixLen > 0 {
                     let replaceRange = NSRange(location: prefixLen, length: oldAttr.length - prefixLen)
@@ -153,12 +159,12 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
                     }
                 } else {
                     textContentStorage.performEditingTransaction {
-                        textContentStorage.attributedString = immutableCopy
+                        storage.setAttributedString(immutableCopy)
                     }
                 }
             } else {
                 textContentStorage.performEditingTransaction {
-                    textContentStorage.attributedString = immutableCopy
+                    storage.setAttributedString(immutableCopy)
                 }
             }
             lastAttributedString = immutableCopy
@@ -172,7 +178,8 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         return textLayoutManager.usageBoundsForTextContainer.height
     }
 
-    /// Compute the longest UTF-16 prefix length where both text and attributes match identically.
+    /// Compute the longest UTF-16 prefix length where both text and attributes match identically,
+    /// backing up across any split UTF-16 surrogate pair or composed character sequence.
     static func commonAttributedPrefixLength(_ lhs: NSAttributedString, _ rhs: NSAttributedString) -> Int {
         let lhsStr = lhs.string as NSString
         let rhsStr = rhs.string as NSString
@@ -191,6 +198,26 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             let step = min(NSMaxRange(lhsRange), NSMaxRange(rhsRange))
             guard step > matched else { break }
             matched = step
+        }
+
+        // Never split a UTF-16 surrogate pair or extended grapheme cluster in either string.
+        while matched > 0 {
+            var backedUp = false
+            if matched < lhsStr.length {
+                let r = lhsStr.rangeOfComposedCharacterSequence(at: matched)
+                if r.location < matched {
+                    matched = r.location
+                    backedUp = true
+                }
+            }
+            if matched > 0 && matched < rhsStr.length {
+                let r = rhsStr.rangeOfComposedCharacterSequence(at: matched)
+                if r.location < matched {
+                    matched = r.location
+                    backedUp = true
+                }
+            }
+            if !backedUp { break }
         }
         return matched
     }

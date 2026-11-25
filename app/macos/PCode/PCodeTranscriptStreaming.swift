@@ -13,10 +13,13 @@ struct PCodeStreamingTextPacer {
     var catchUpSeconds: Double
 
     private var pending: String = ""
+    private var readIndex: String.Index
+    private var remainingCount: Int = 0
+    private var consumedCount: Int = 0
     private var charBudget: Double = 0
 
-    var hasPending: Bool { !pending.isEmpty }
-    var pendingCount: Int { pending.count }
+    var hasPending: Bool { remainingCount > 0 }
+    var pendingCount: Int { remainingCount }
 
     init(
         minCharsPerSecond: Double = 110,
@@ -26,21 +29,36 @@ struct PCodeStreamingTextPacer {
         self.minCharsPerSecond = minCharsPerSecond
         self.maxCharsPerSecond = maxCharsPerSecond
         self.catchUpSeconds = max(0.02, catchUpSeconds)
+        self.readIndex = pending.startIndex
     }
 
     mutating func reset() {
         pending.removeAll(keepingCapacity: true)
+        readIndex = pending.startIndex
+        remainingCount = 0
+        consumedCount = 0
         charBudget = 0
     }
 
     mutating func enqueue(_ delta: String) {
         guard !delta.isEmpty else { return }
-        pending.append(delta)
+        if remainingCount == 0 {
+            pending.removeAll(keepingCapacity: true)
+            pending.append(delta)
+            readIndex = pending.startIndex
+            consumedCount = 0
+            remainingCount = delta.count
+        } else {
+            let offset = pending.utf8.distance(from: pending.startIndex, to: readIndex)
+            pending.append(delta)
+            readIndex = pending.utf8.index(pending.startIndex, offsetBy: offset)
+            remainingCount += delta.count
+        }
     }
 
     /// Adaptive drain rate (characters/sec) based on current backlog.
     func currentRate() -> Double {
-        let backlog = Double(pending.count)
+        let backlog = Double(remainingCount)
         let target = backlog / catchUpSeconds
         return min(maxCharsPerSecond, max(minCharsPerSecond, target))
     }
@@ -48,7 +66,7 @@ struct PCodeStreamingTextPacer {
     /// Drain the paced chunk for a single display frame of duration `dt` seconds.
     /// Returns `nil` if no full character is ready on this tick.
     mutating func drain(dt: TimeInterval) -> String? {
-        guard !pending.isEmpty else {
+        guard remainingCount > 0 else {
             charBudget = 0
             return nil
         }
@@ -58,28 +76,34 @@ struct PCodeStreamingTextPacer {
         guard count > 0 else { return nil }
         charBudget -= Double(count)
 
-        if count >= pending.count {
-            let out = pending
-            pending.removeAll(keepingCapacity: true)
-            charBudget = 0
+        if count >= remainingCount {
+            let out = String(pending[readIndex...])
+            reset()
             return out
         }
 
-        let splitIdx = pending.index(pending.startIndex, offsetBy: count)
-        let out = String(pending[..<splitIdx])
-        pending.removeSubrange(pending.startIndex..<splitIdx)
+        let splitIdx = pending.index(readIndex, offsetBy: count)
+        let out = String(pending[readIndex..<splitIdx])
+        readIndex = splitIdx
+        remainingCount -= count
+        consumedCount += count
+
+        if consumedCount >= 2048 {
+            pending.removeSubrange(pending.startIndex..<readIndex)
+            readIndex = pending.startIndex
+            consumedCount = 0
+        }
         return out
     }
 
     /// Drain all buffered text immediately (used on message finalization or headless tests).
     mutating func flushAll() -> String? {
-        guard !pending.isEmpty else {
+        guard remainingCount > 0 else {
             charBudget = 0
             return nil
         }
-        let out = pending
-        pending.removeAll(keepingCapacity: true)
-        charBudget = 0
+        let out = String(pending[readIndex...])
+        reset()
         return out
     }
 }
@@ -115,6 +139,16 @@ struct PCodeSmoothScrollGlide: Equatable {
     mutating func addOffset(_ delta: CGFloat) {
         guard delta.isFinite, abs(delta) > 0.01 else { return }
         remainingOffset = min(max(remainingOffset + delta, -maxOffset), maxOffset)
+    }
+
+    /// Absorb a bottom shrink (e.g. an overestimated offscreen item measuring shorter) without
+    /// pulling the viewport backward.
+    mutating func absorbShrink(_ shrinkAmount: CGFloat) {
+        guard shrinkAmount.isFinite, shrinkAmount > 0, remainingOffset > 0 else { return }
+        remainingOffset = max(0, remainingOffset - shrinkAmount)
+        if remainingOffset == 0 {
+            velocity = 0
+        }
     }
 
     /// Advance the critically-damped spring by `dt` seconds and return the new `remainingOffset`.
@@ -189,7 +223,9 @@ struct PCodeStreamingMessageDiffer {
            markdown.hasPrefix(fence.prefixThroughOpeningLine)
         {
             let suffix = String(markdown.dropFirst(fence.prefixThroughOpeningLine.count))
-            if !Self.containsClosingFence(in: suffix, fenceChar: fence.fenceChar, fenceLength: fence.fenceLength) {
+            if !suffix.contains("\r"),
+               !Self.containsClosingFence(in: suffix, fenceChar: fence.fenceChar, fenceLength: fence.fenceLength)
+            {
                 let rawCode = suffix.hasSuffix("\n") ? String(suffix.dropLast()) : suffix
                 let chunks = PCodeTranscriptMarkdown.chunkLines(
                     rawCode,
@@ -229,9 +265,14 @@ struct PCodeStreamingMessageDiffer {
         lastUpdateUsedOpenFenceFastPath = false
 
         // Check if we just entered (or are inside) an unclosed top-level fenced code block
-        // so subsequent streaming frames can take the append-only fast path.
+        // whose parsed `fullCode` matches `open.body` exactly so subsequent streaming frames
+        // can safely take the append-only fast path.
         if let open = Self.detectTrailingOpenFence(in: markdown),
-           let tailChunkCount = Self.trailingCodeBlockChunkCount(in: newBlocks, language: open.language)
+           !open.body.contains("\r"),
+           let tailChunkCount = Self.trailingCodeBlockChunkCount(
+               in: newBlocks,
+               language: open.language,
+               expectedFullCode: open.body)
         {
             activeFence = open
             prefixBlockCountBeforeFence = newBlocks.count - tailChunkCount
@@ -246,13 +287,25 @@ struct PCodeStreamingMessageDiffer {
             usedOpenFenceFastPath: false)
     }
 
+    /// Compare blocks for streaming stability: settled code-block chunks compare by
+    /// `(language, code, chunkIndex)` rather than `fullCode`/`totalChunks` so chunk 0
+    /// does not re-render at 120Hz once chunk 1 begins streaming.
     static func commonPrefixCount(old: [PCodeMarkdownBlock], new: [PCodeMarkdownBlock]) -> Int {
         let limit = min(old.count, new.count)
         var i = 0
-        while i < limit && old[i] == new[i] {
+        while i < limit && blocksMatchForDiff(old[i], new[i]) {
             i += 1
         }
         return i
+    }
+
+    private static func blocksMatchForDiff(_ lhs: PCodeMarkdownBlock, _ rhs: PCodeMarkdownBlock) -> Bool {
+        switch (lhs, rhs) {
+        case (.codeBlock(let l1, let c1, _, let idx1, _), .codeBlock(let l2, let c2, _, let idx2, _)):
+            return l1 == l2 && c1 == c2 && idx1 == idx2
+        default:
+            return lhs == rhs
+        }
     }
 
     /// Detect whether `markdown` currently ends inside an unclosed top-level fenced code block
@@ -313,17 +366,10 @@ struct PCodeStreamingMessageDiffer {
     }
 
     private static func parseOpeningFenceLine(_ line: Substring) -> (char: Character, length: Int, language: String?)? {
+        // Restrict fast path to column-0 fences so indented fences (which strip leading spaces
+        // per CommonMark) stay on the exact cmark-gfm parser.
+        guard let fc = line.first, fc == "`" || fc == "~" else { return nil }
         var idx = line.startIndex
-        var leadingSpaces = 0
-        while idx < line.endIndex && line[idx] == " " {
-            leadingSpaces += 1
-            if leadingSpaces > 3 { return nil }
-            idx = line.index(after: idx)
-        }
-        guard idx < line.endIndex else { return nil }
-        let fc = line[idx]
-        guard fc == "`" || fc == "~" else { return nil }
-
         var count = 0
         while idx < line.endIndex && line[idx] == fc {
             count += 1
@@ -355,7 +401,7 @@ struct PCodeStreamingMessageDiffer {
         guard count >= fenceLength else { return false }
         while idx < line.endIndex {
             let ch = line[idx]
-            if ch != " " && ch != "\t" && ch != "\r" { return false }
+            if ch != " " && ch != "\t" { return false }
             idx = line.index(after: idx)
         }
         return true
@@ -363,10 +409,12 @@ struct PCodeStreamingMessageDiffer {
 
     private static func trailingCodeBlockChunkCount(
         in blocks: [PCodeMarkdownBlock],
-        language: String?
+        language: String?,
+        expectedFullCode: String
     ) -> Int? {
-        guard case .codeBlock(let tailLang, _, _, let chunkIdx, let totalChunks) = blocks.last,
+        guard case .codeBlock(let tailLang, _, let fullCode, let chunkIdx, let totalChunks) = blocks.last,
               tailLang == language,
+              fullCode == expectedFullCode,
               chunkIdx == totalChunks - 1,
               totalChunks > 0,
               blocks.count >= totalChunks
@@ -458,6 +506,14 @@ final class PCodeTranscriptStreamReplayer {
         documentView.setItems([], pinToBottom: true)
         let t = Timer(timeInterval: stepInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
+            // Let the 120Hz text pacer finish draining the current message before `.finishMessage`
+            // flushes it, so short/medium messages glide smoothly to their final character.
+            if self.nextStepIndex < self.steps.count,
+               case .finishMessage = self.steps[self.nextStepIndex],
+               self.documentView?.hasPacedStreamingBacklog == true
+            {
+                return
+            }
             if !self.stepOnce() {
                 self.stop()
                 self.onComplete?()
