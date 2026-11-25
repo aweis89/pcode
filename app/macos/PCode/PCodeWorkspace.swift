@@ -651,7 +651,7 @@ struct PCodeProjectGroup: Identifiable {
     }
 }
 
-/// One candidate directory in the ⌘⇧N directory picker.
+/// One candidate project/directory in the unified Command Center / launcher.
 struct PCodeDirectoryCandidate: Identifiable, Hashable {
     let path: String
     let name: String
@@ -659,6 +659,7 @@ struct PCodeDirectoryCandidate: Identifiable, Hashable {
     let openCount: Int
     let recentCount: Int
     let isCurrent: Bool
+    let isPinned: Bool
     let isRawPath: Bool
 
     var id: String { isRawPath ? "raw:\(path)" : path }
@@ -831,13 +832,11 @@ final class PCodeWorkspace: ObservableObject {
             let openable = hosted.contains(id) || (marked.contains(id) ? ready.contains(id) : !PCodeSessionInfo.isOpen(id))
             if openable { open(info, select: false) }
         }
-        if panes.isEmpty {
-            // Nothing reopened: start in the newest visible folder, else
-            // the first pinned one, else home.
-            let firstVisible = saved.isEmpty ? nil : all.first { !hiddenFolders.contains($0.normalizedProjectPath) }?.normalizedProjectPath
-            newSession(directory: firstVisible ?? pinnedFolders.first ?? NSHomeDirectory())
-        } else {
+        if !panes.isEmpty {
             select(panes.first { $0.sessionID != nil && $0.sessionID == selectedID } ?? panes[0])
+        } else {
+            // Nothing reopened: stay on the inline project launcher instead of spawning a blank session.
+            launcherFocusTrigger += 1
         }
     }
 
@@ -897,8 +896,10 @@ final class PCodeWorkspace: ObservableObject {
     }
     /// Folders where the user clicked "Show more…" for recent sessions.
     @Published var expandedRecentFolders: Set<String> = []
-    /// Whether the ⌘⇧N fuzzy directory picker overlay is open.
+    /// Whether the ⌘⇧N floating Command Center overlay is open (used when a session pane is active).
     @Published var showingDirectoryPicker = false
+    /// Incremented to focus the inline project launcher when no session pane is open.
+    @Published var launcherFocusTrigger = 0
 
     /// Saved sidebar width in points (clamped at layout time to the current window width).
     @Published var sidebarWidth: CGFloat = {
@@ -1179,9 +1180,10 @@ final class PCodeWorkspace: ObservableObject {
         }
     }
 
-    /// Directories offered by the ⌘⇧N fuzzy picker: current project first, then all known folders.
+    /// Projects offered by the Command Center: current project first, then all known projects.
     var pickerCandidates: [PCodeDirectoryCandidate] {
         let currentProject = selectedPane.map { projectPath(for: $0) }
+        let pinnedSet = Set(pinnedFolders).subtracting(hiddenFolders)
         let groups = projectGroups
         var seen: Set<String> = []
         var result: [PCodeDirectoryCandidate] = []
@@ -1195,6 +1197,7 @@ final class PCodeWorkspace: ObservableObject {
                 openCount: group.openPanes.count,
                 recentCount: group.recentSessions.count,
                 isCurrent: isCurrent,
+                isPinned: pinnedSet.contains(group.path),
                 isRawPath: false))
         }
 
@@ -1204,7 +1207,7 @@ final class PCodeWorkspace: ObservableObject {
         for group in groups {
             append(group, isCurrent: group.path == currentProject)
         }
-        // Also offer folders hidden from the sidebar so ⌘⇧N can still find and reopen them.
+        // Also offer projects hidden from the sidebar so ⌘⇧N can still find and reopen them.
         var hiddenCounts: [String: Int] = [:]
         var hiddenOrder: [String] = []
         for info in history {
@@ -1222,6 +1225,7 @@ final class PCodeWorkspace: ObservableObject {
                 openCount: 0,
                 recentCount: hiddenCounts[path] ?? 0,
                 isCurrent: currentProject == path,
+                isPinned: false,
                 isRawPath: false))
         }
         let home = Self.normalizePath(NSHomeDirectory())
@@ -1233,6 +1237,7 @@ final class PCodeWorkspace: ObservableObject {
                 openCount: 0,
                 recentCount: 0,
                 isCurrent: currentProject == home,
+                isPinned: pinnedSet.contains(home),
                 isRawPath: false))
         }
         return result
@@ -1265,6 +1270,10 @@ final class PCodeWorkspace: ObservableObject {
 
     func openDirectoryPicker() {
         peek.dismiss(restoreFocus: false)
+        if selectedPane == nil {
+            launcherFocusTrigger += 1
+            return
+        }
         showingDirectoryPicker = true
     }
 
@@ -1398,9 +1407,9 @@ final class PCodeWorkspace: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.prompt = startSession ? "New Session" : "Add Folder"
+        panel.prompt = startSession ? "New Session" : "Add Project"
         panel.message = startSession
-            ? "Choose a folder to start a new pcode session in."
+            ? "Choose a project folder to start a new pcode session in."
             : "Choose a project folder to add to the sidebar."
         if let current = selectedPane?.directory {
             panel.directoryURL = URL(fileURLWithPath: current)
@@ -1978,8 +1987,8 @@ struct PCodeWorkspaceView: View {
                     .animation(.easeOut(duration: 0.2), value: sidebarVisible)
                 }
 
-                if workspace.showingDirectoryPicker {
-                    PCodeDirectoryPickerOverlay(workspace: workspace)
+                if workspace.showingDirectoryPicker && workspace.selectedPane != nil {
+                    PCodeProjectLauncher(workspace: workspace, mode: .overlay)
                         .transition(.opacity)
                 }
             }
@@ -2019,7 +2028,8 @@ struct PCodeWorkspaceView: View {
                     .id(pane.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text("No session open").foregroundStyle(.secondary)
+                PCodeProjectLauncher(workspace: workspace, mode: .inline)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             PCodePeekOverlay(
@@ -2105,7 +2115,7 @@ struct PCodeWorkspaceView: View {
 
     private var sidebarHeader: some View {
         HStack(spacing: 6) {
-            Text("Sessions")
+            Text("Projects")
                 .font(.headline)
                 .lineLimit(1)
             Spacer(minLength: 4)
@@ -2123,7 +2133,7 @@ struct PCodeWorkspaceView: View {
             Button { workspace.toggleShell() } label: { Image(systemName: "terminal") }
                 .help("Toggle the shell under this session (⌘J)")
             Button { workspace.openDirectoryPicker() } label: { Image(systemName: "folder.badge.plus") }
-                .help("New session in folder… (⌘⇧N)")
+                .help("Open or add project… (⌘⇧N)")
             Button { workspace.newSession() } label: { Image(systemName: "square.and.pencil") }
                 .help("New session in current project (⌘N)")
             Button { workspace.toggleSidebarAutoHide() } label: {
@@ -2160,8 +2170,6 @@ struct PCodeWorkspaceView: View {
         VStack(spacing: 0) {
             sidebarHeader
             sessionList
-            Divider()
-            sidebarFooter
         }
         .overlay(
             RoundedRectangle(cornerRadius: 4)
@@ -2176,26 +2184,6 @@ struct PCodeWorkspaceView: View {
             isDropTargeted = false
             workspace.isSidebarDropTargeted = false
         }
-    }
-
-    private var sidebarFooter: some View {
-        Button {
-            workspace.browseForFolder(startSession: false)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "plus")
-                    .font(.caption)
-                Text("Add Folder…")
-                    .font(.callout)
-                Spacer()
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Add a project folder to the sidebar")
     }
 
     private var sessionList: some View {
@@ -2497,13 +2485,31 @@ private final class PCodePickerKeyMonitor: ObservableObject {
     deinit { stop() }
 }
 
-/// ⌘⇧N fuzzy directory picker overlay: filter known folders, type any raw path, or ⌘O to browse.
-private struct PCodeDirectoryPickerOverlay: View {
+/// Unified Project Command Center: rendered inline as the empty-state launcher
+/// when no session is open, or as a floating ⌘⇧N overlay over an active session.
+///
+/// - Fuzzy-filters known projects, or lists filesystem subdirectories when typing `/` or `~/`.
+/// - `Tab` completes filesystem paths (and drills into a selected project's subdirectories).
+/// - `↩` starts a new session in the selected project.
+/// - `⌘↩` pins/adds the selected project to the sidebar without starting a session.
+/// - `⌘O` opens the macOS folder chooser (`NSOpenPanel`); folders can also be dropped onto the card.
+private struct PCodeProjectLauncher: View {
+    enum Mode {
+        case inline
+        case overlay
+    }
+
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var workspace: PCodeWorkspace
+    let mode: Mode
+
     @StateObject private var keyMonitor = PCodePickerKeyMonitor()
     @State private var query = ""
     @State private var selectedIndex = 0
+    @State private var hoveredID: String?
+    @State private var isDropTargeted = false
+    @State private var statusBanner: String?
+    @State private var statusClearWork: DispatchWorkItem?
     @FocusState private var searchFocused: Bool
 
     private var filteredCandidates: [PCodeDirectoryCandidate] {
@@ -2511,8 +2517,34 @@ private struct PCodeDirectoryPickerOverlay: View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return base }
 
+        if PCodePathCompleter.isPathQuery(trimmed) {
+            let knownByPath = Dictionary(base.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+            let home = PCodeWorkspace.normalizePath(NSHomeDirectory())
+            let suggestions = PCodePathCompleter.directorySuggestions(for: trimmed, home: home)
+            var result: [PCodeDirectoryCandidate] = []
+            var seen: Set<String> = []
+
+            for path in suggestions where seen.insert(path).inserted {
+                if let known = knownByPath[path] {
+                    result.append(known)
+                } else {
+                    let last = (path as NSString).lastPathComponent
+                    result.append(PCodeDirectoryCandidate(
+                        path: path,
+                        name: path == home ? "~" : (last.isEmpty ? path : last),
+                        abbreviatedPath: PCodeWorkspace.abbreviatePath(path),
+                        openCount: 0,
+                        recentCount: 0,
+                        isCurrent: false,
+                        isPinned: false,
+                        isRawPath: true))
+                }
+            }
+            return result
+        }
+
         let terms = PCodePickMatch.terms(trimmed)
-        var matches = base.filter { candidate in
+        return base.filter { candidate in
             let texts = [
                 PCodePickMatch.casefold(candidate.name),
                 PCodePickMatch.casefold(candidate.abbreviatedPath),
@@ -2520,26 +2552,6 @@ private struct PCodeDirectoryPickerOverlay: View {
             ]
             return PCodePickMatch.matches(texts, terms: terms, fuzzy: true)
         }
-
-        // If the user typed an absolute or ~-relative path that exists on disk, offer it directly.
-        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") {
-            let expanded = PCodeWorkspace.normalizePath(trimmed)
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue,
-               !matches.contains(where: { $0.path == expanded }) {
-                let name = (expanded as NSString).lastPathComponent
-                let raw = PCodeDirectoryCandidate(
-                    path: expanded,
-                    name: expanded == PCodeWorkspace.normalizePath(NSHomeDirectory()) ? "~" : (name.isEmpty ? expanded : name),
-                    abbreviatedPath: PCodeWorkspace.abbreviatePath(expanded),
-                    openCount: 0,
-                    recentCount: 0,
-                    isCurrent: false,
-                    isRawPath: true)
-                matches.insert(raw, at: 0)
-            }
-        }
-        return matches
     }
 
     private var cardBackground: Color {
@@ -2550,116 +2562,42 @@ private struct PCodeDirectoryPickerOverlay: View {
     var body: some View {
         let items = filteredCandidates
         let activeIndex = items.isEmpty ? 0 : min(selectedIndex, items.count - 1)
-        ZStack(alignment: .top) {
-            Color.black.opacity(0.32)
-                .ignoresSafeArea()
-                .onTapGesture { workspace.dismissDirectoryPicker() }
 
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Filter folders or type a path…", text: $query)
-                        .textFieldStyle(.plain)
-                        .font(.body)
-                        .focused($searchFocused)
-                        .onSubmit {
-                            let currentItems = filteredCandidates
-                            let idx = currentItems.isEmpty ? 0 : min(selectedIndex, currentItems.count - 1)
-                            if currentItems.indices.contains(idx) {
-                                selectCandidate(currentItems[idx])
-                            }
-                        }
-                    if !query.isEmpty {
-                        Button {
-                            query = ""
-                            searchFocused = true
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
+        Group {
+            switch mode {
+            case .overlay:
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.32)
+                        .ignoresSafeArea()
+                        .onTapGesture { workspace.dismissDirectoryPicker() }
+
+                    launcherCard(items: items, activeIndex: activeIndex)
+                        .frame(width: 500)
+                        .shadow(color: .black.opacity(0.35), radius: 20, y: 10)
+                        .padding(.top, 72)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
 
-                Divider()
-
-                if items.isEmpty {
-                    VStack(spacing: 6) {
-                        Text("No matching folders")
+            case .inline:
+                VStack(spacing: 18) {
+                    VStack(spacing: 4) {
+                        Text("Open a project")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text("Press ↩ to start a session, type a path with Tab completion, or drop a folder here.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                        Text("Type a full path like ~/p/project or press ⌘O to browse.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .multilineTextAlignment(.center)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 28)
-                } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(spacing: 2) {
-                                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                    candidateRow(item, isSelected: index == activeIndex)
-                                        .id(item.id)
-                                        .onTapGesture {
-                                            selectCandidate(item)
-                                        }
-                                }
-                            }
-                            .padding(6)
-                        }
-                        .frame(maxHeight: 280)
-                        .onChange(of: activeIndex) { newIndex in
-                            if items.indices.contains(newIndex) {
-                                proxy.scrollTo(items[newIndex].id, anchor: .center)
-                            }
-                        }
-                    }
-                }
+                    .padding(.horizontal, 24)
 
-                Divider()
-
-                HStack(spacing: 12) {
-                    Text("↩ new session")
-                    Text("↑↓ navigate")
-                    Text("esc close")
-                    Spacer()
-                    Button {
-                        browseFromPicker()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "folder")
-                            Text("Browse… (⌘O)")
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
-                    .keyboardShortcut("o", modifiers: .command)
+                    launcherCard(items: items, activeIndex: activeIndex)
+                        .frame(maxWidth: 520)
+                        .shadow(color: .black.opacity(0.22), radius: 14, y: 6)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(
-                    Button("") { workspace.dismissDirectoryPicker() }
-                        .keyboardShortcut(.cancelAction)
-                        .opacity(0)
-                        .frame(width: 0, height: 0)
-                )
+                .padding(.horizontal, 32)
+                .padding(.vertical, 36)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
-            .frame(width: 480)
-            .background(cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.primary.opacity(0.14), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.35), radius: 20, y: 10)
-            .onTapGesture { searchFocused = true }
-            .padding(.top, 72)
         }
         .onChange(of: query) { _ in
             selectedIndex = 0
@@ -2671,6 +2609,11 @@ private struct PCodeDirectoryPickerOverlay: View {
                 selectedIndex = count - 1
             }
         }
+        .onChange(of: workspace.launcherFocusTrigger) { _ in
+            if mode == .inline {
+                DispatchQueue.main.async { searchFocused = true }
+            }
+        }
         .onAppear {
             selectedIndex = 0
             DispatchQueue.main.async { searchFocused = true }
@@ -2678,9 +2621,141 @@ private struct PCodeDirectoryPickerOverlay: View {
             keyMonitor.start()
         }
         .onDisappear {
+            statusClearWork?.cancel()
+            statusClearWork = nil
             keyMonitor.stop()
             keyMonitor.handler = nil
         }
+    }
+
+    private func launcherCard(items: [PCodeDirectoryCandidate], activeIndex: Int) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Filter projects or type a path…", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .focused($searchFocused)
+                    .onSubmit {
+                        let currentItems = filteredCandidates
+                        let idx = currentItems.isEmpty ? 0 : min(selectedIndex, currentItems.count - 1)
+                        if currentItems.indices.contains(idx) {
+                            selectCandidate(currentItems[idx])
+                        }
+                    }
+                if !query.isEmpty {
+                    Button {
+                        query = ""
+                        searchFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            if items.isEmpty {
+                VStack(spacing: 6) {
+                    Text("No matching projects")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("Type a path like ~/p/app (Tab to complete) or press ⌘O to browse.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                candidateRow(item, isSelected: index == activeIndex)
+                                    .id(item.id)
+                                    .onHover { inside in
+                                        hoveredID = inside ? item.id : (hoveredID == item.id ? nil : hoveredID)
+                                    }
+                                    .onTapGesture {
+                                        selectCandidate(item)
+                                    }
+                            }
+                        }
+                        .padding(6)
+                    }
+                    .frame(maxHeight: mode == .inline ? 340 : 280)
+                    .onChange(of: activeIndex) { newIndex in
+                        if items.indices.contains(newIndex) {
+                            proxy.scrollTo(items[newIndex].id, anchor: .center)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                if let statusBanner {
+                    HStack(spacing: 5) {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Color.accentColor)
+                        Text(statusBanner)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text("↩ session")
+                    Text("⌘↩ pin")
+                    Text("⇥ complete")
+                    if mode == .overlay {
+                        Text("esc close")
+                    }
+                }
+                Spacer(minLength: 8)
+                Button {
+                    browseFromPicker()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                        Text("Browse… (⌘O)")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                .keyboardShortcut("o", modifiers: .command)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background {
+                if mode == .overlay {
+                    Button("") { workspace.dismissDirectoryPicker() }
+                        .keyboardShortcut(.cancelAction)
+                        .opacity(0)
+                        .frame(width: 0, height: 0)
+                }
+            }
+        }
+        .background(cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    isDropTargeted ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.14),
+                    lineWidth: isDropTargeted ? 2 : 1
+                )
+        )
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers)
+        }
+        .onTapGesture { searchFocused = true }
     }
 
     private func browseFromPicker() {
@@ -2690,7 +2765,8 @@ private struct PCodeDirectoryPickerOverlay: View {
     }
 
     private func candidateRow(_ item: PCodeDirectoryCandidate, isSelected: Bool) -> some View {
-        HStack(spacing: 10) {
+        let showPinButton = (isSelected || hoveredID == item.id) && !item.isPinned
+        return HStack(spacing: 10) {
             Image(systemName: item.isRawPath ? "folder.badge.plus" : "folder.fill")
                 .font(.system(size: 13))
                 .foregroundStyle(isSelected ? Color.accentColor : .secondary)
@@ -2709,6 +2785,11 @@ private struct PCodeDirectoryPickerOverlay: View {
                             .padding(.vertical, 1)
                             .background(Color.primary.opacity(0.08))
                             .clipShape(Capsule())
+                    } else if item.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .help("Pinned in sidebar")
                     }
                 }
                 Text(item.abbreviatedPath)
@@ -2719,6 +2800,20 @@ private struct PCodeDirectoryPickerOverlay: View {
             }
 
             Spacer(minLength: 8)
+
+            if showPinButton {
+                Button {
+                    pinCandidate(item)
+                } label: {
+                    Image(systemName: "pin")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Add project to sidebar (⌘↩)")
+            }
 
             if item.isRawPath {
                 Text("Open path")
@@ -2750,9 +2845,77 @@ private struct PCodeDirectoryPickerOverlay: View {
         workspace.newSession(directory: item.path)
     }
 
+    private func pinCandidate(_ item: PCodeDirectoryCandidate) {
+        workspace.addFolder(item.path)
+        showStatus("Pinned \(item.name) to sidebar")
+        searchFocused = true
+    }
+
+    private func showStatus(_ message: String) {
+        statusClearWork?.cancel()
+        statusBanner = message
+        let work = DispatchWorkItem {
+            statusBanner = nil
+            statusClearWork = nil
+        }
+        statusClearWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    private func completePath() {
+        let items = filteredCandidates
+        let idx = items.isEmpty ? 0 : min(selectedIndex, items.count - 1)
+        let selectedPath = items.indices.contains(idx) ? items[idx].path : nil
+        guard let result = PCodePathCompleter.complete(query: query, selectedPath: selectedPath) else {
+            searchFocused = true
+            return
+        }
+        query = result.completed
+        searchFocused = true
+        let cursorLocation = result.completed.utf16.count
+        DispatchQueue.main.async {
+            if let editor = workspace.window?.firstResponder as? NSTextView {
+                editor.setSelectedRange(NSRange(location: cursorLocation, length: 0))
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var accepted = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            accepted = true
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let url: URL?
+                if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else if let direct = item as? URL {
+                    url = direct
+                } else {
+                    url = nil
+                }
+                guard let url else { return }
+                let path = url.standardizedFileURL.path
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    workspace.addFolder(path)
+                    workspace.newSession(directory: path)
+                }
+            }
+            break
+        }
+        return accepted
+    }
+
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
-        // Let modal sheets (like NSOpenPanel) handle their own keys.
-        guard event.window === workspace.window else { return event }
+        // Let modal sheets (like NSOpenPanel) and other windows handle their own keys.
+        guard event.window === workspace.window, event.window?.attachedSheet == nil else { return event }
+        // In inline mode, step aside if an overlay is active or a session became selected.
+        if mode == .inline && (workspace.showingDirectoryPicker || workspace.selectedPane != nil) {
+            return event
+        }
         // Don't hijack keys during IME composition.
         if let client = event.window?.firstResponder as? NSTextInputClient, client.hasMarkedText() {
             return event
@@ -2762,8 +2925,16 @@ private struct PCodeDirectoryPickerOverlay: View {
 
         // Bare Escape
         if flags.isEmpty && event.keyCode == 53 {
-            workspace.dismissDirectoryPicker()
-            return nil
+            if !query.isEmpty {
+                query = ""
+                searchFocused = true
+                return nil
+            }
+            if mode == .overlay {
+                workspace.dismissDirectoryPicker()
+                return nil
+            }
+            return event
         }
         // ⌘O -> browse via NSOpenPanel
         if flags == .command && chars == "o" {
@@ -2788,7 +2959,16 @@ private struct PCodeDirectoryPickerOverlay: View {
             }
             return nil
         }
-        // Bare Return / Keypad Enter
+        // ⌘Return / ⌘Keypad Enter -> pin/add project to sidebar without starting a session
+        if flags == .command && (event.keyCode == 36 || event.keyCode == 76) {
+            let items = filteredCandidates
+            let idx = items.isEmpty ? 0 : min(selectedIndex, items.count - 1)
+            if items.indices.contains(idx) {
+                pinCandidate(items[idx])
+            }
+            return nil
+        }
+        // Bare Return / Keypad Enter -> start new session in selected project
         if flags.isEmpty && (event.keyCode == 36 || event.keyCode == 76) {
             let items = filteredCandidates
             let idx = items.isEmpty ? 0 : min(selectedIndex, items.count - 1)
@@ -2797,9 +2977,9 @@ private struct PCodeDirectoryPickerOverlay: View {
             }
             return nil
         }
-        // Prevent Tab from moving focus out to the underlying terminal surface.
-        if event.keyCode == 48 {
-            searchFocused = true
+        // Bare Tab -> filesystem path completion (or drill into selected project)
+        if flags.isEmpty && event.keyCode == 48 {
+            completePath()
             return nil
         }
         return event
@@ -3077,6 +3257,7 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         let controller = shared(ghostty)
         if controller.workspace.panes.isEmpty && !controller.workspace.showingDirectoryPicker {
             controller.workspace.restore()
+            controller.workspace.launcherFocusTrigger += 1
         }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)

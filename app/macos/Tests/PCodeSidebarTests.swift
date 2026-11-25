@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Ghostty
 
@@ -68,5 +69,69 @@ struct PCodeSidebarTests {
         let normalizedFull = String(repeating: "a", count: 60) + " " + String(repeating: "b", count: 80)
         let normalizedPrefix = String(normalizedFull.prefix(120))
         #expect(PCodeWorkspace.displayTitle(paneTitle: normalizedPrefix, savedLabel: fullWithWhitespace) == normalizedFull)
+    }
+
+    @Test func pathCompleterDetectsAndCompletesTildeAndAbsolutePaths() throws {
+        let fm = FileManager.default
+        let fakeHome = fm.temporaryDirectory.appendingPathComponent("pcode-path-test-\(UUID().uuidString)")
+        let pDir = fakeHome.appendingPathComponent("p")
+        try fm.createDirectory(at: pDir.appendingPathComponent("pcode"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: pDir.appendingPathComponent("pcode-docs"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: pDir.appendingPathComponent("alpha"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: pDir.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
+        try Data("hi".utf8).write(to: pDir.appendingPathComponent("pcode-file.txt"))
+        defer { try? fm.removeItem(at: fakeHome) }
+
+        let homePath = PCodeWorkspace.normalizePath(fakeHome.path)
+
+        #expect(PCodePathCompleter.isPathQuery("~"))
+        #expect(PCodePathCompleter.isPathQuery("~/p"))
+        #expect(PCodePathCompleter.isPathQuery("/tmp"))
+        #expect(!PCodePathCompleter.isPathQuery("pcode"))
+        #expect(!PCodePathCompleter.isPathQuery(""))
+
+        // Bare tilde completes to ~/
+        let bare = PCodePathCompleter.complete(query: "~", home: homePath, fileManager: fm)
+        #expect(bare == .init(completed: "~/", isUnique: true))
+
+        // Unique tilde match preserves ~/ and appends /
+        let uniqueTilde = PCodePathCompleter.complete(query: "~/p/al", home: homePath, fileManager: fm)
+        #expect(uniqueTilde == .init(completed: "~/p/alpha/", isUnique: true))
+
+        // Unique absolute match preserves absolute path and appends /
+        let uniqueAbs = PCodePathCompleter.complete(query: "\(homePath)/p/al", home: homePath, fileManager: fm)
+        #expect(uniqueAbs == .init(completed: "\(homePath)/p/alpha/", isUnique: true))
+
+        // Multiple matches complete to longest common prefix (ignoring regular files)
+        let lcp = PCodePathCompleter.complete(query: "~/p/pc", home: homePath, fileManager: fm)
+        #expect(lcp == .init(completed: "~/p/pcode", isUnique: false))
+
+        // Already at LCP: Tab completes into the currently selected candidate + /
+        let drill = PCodePathCompleter.complete(
+            query: "~/p/pcode",
+            selectedPath: "\(homePath)/p/pcode-docs",
+            home: homePath,
+            fileManager: fm
+        )
+        #expect(drill == .init(completed: "~/p/pcode-docs/", isUnique: true))
+
+        // Non-path query with selected candidate drills into ~/.../selected/
+        let fromProject = PCodePathCompleter.complete(
+            query: "pco",
+            selectedPath: "\(homePath)/p/pcode",
+            home: homePath,
+            fileManager: fm
+        )
+        #expect(fromProject == .init(completed: "~/p/pcode/", isUnique: true))
+
+        // Hidden directories skipped unless prefix starts with '.'
+        let normalSubs = PCodePathCompleter.matchingSubdirectories(in: "\(homePath)/p", prefix: "", fileManager: fm)
+        #expect(!normalSubs.contains("\(homePath)/p/.hidden"))
+        let hiddenSubs = PCodePathCompleter.matchingSubdirectories(in: "\(homePath)/p", prefix: ".", fileManager: fm)
+        #expect(hiddenSubs == ["\(homePath)/p/.hidden"])
+
+        // Directory suggestions put exact match first, followed by matching subdirectories
+        let suggestions = PCodePathCompleter.directorySuggestions(for: "~/p/pcode", home: homePath, fileManager: fm)
+        #expect(suggestions == ["\(homePath)/p/pcode", "\(homePath)/p/pcode-docs"])
     }
 }
