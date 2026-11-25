@@ -3271,10 +3271,11 @@ class PreviewApp:
             if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
                 items.append(drawer.PaneSession(self.active_session_id, terminal))
             self._reconciler = Reconciler(items)
-            # SPIKE: not while docked: the dock's background is pcode's own tint
-            # (`Dock.tint`), and reading it back would lift it again each time.
+            # Docked, `terminal` is pcode's own pane, not the tinted dock, and its
+            # replies reach `Dock.attach`'s reply filter, so this follows a
+            # light/dark switch there too (re-tinting the dock).
             self._appearance = AppearanceWatch(
-                terminal, active=lambda: self.transcript.theme == "auto" and docked is None
+                terminal, active=lambda: self.transcript.theme == "auto"
             )
 
         async def watch_branch():
