@@ -2748,6 +2748,12 @@ class TerminalOutput:
                             clear = begin + "\x1b[H\x1b[2J\x1b[3J"
                             if dock.active() is not None:
                                 # SPIKE: the transcript's terminal, not the editor's dock.
+                                if self.docked_glide:
+                                    # A rebuilt screen must not be drawn gliding,
+                                    # nor finish a glide queued before it.
+                                    region = smooth_scroll.REGION_ID
+                                    clear = smooth_scroll.region_off(region) + clear
+                                    self._docked_declared = None
                                 self.console.file.write(clear)
                                 self.console.file.flush()
                             else:

@@ -37,7 +37,7 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input.vt100 import Vt100Input
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from pcode import popup_surface
+from pcode import popup_surface, smooth_scroll
 from pcode.popup_bridge import HELLO, RESIZED
 from pcode.startup_input import TerminalReplyParser
 
@@ -61,8 +61,14 @@ def _apc(payload: str) -> str:
     return f"\x1b_pcode;{payload}\x1b\\"
 
 
-# A cursor position report, taken out of pcode's pane's input while one is asked for.
-_CPR = re.compile(rb"\x1b\[(\d{1,4});(\d{1,4})R")
+# A cursor position report, taken out of pcode's pane's input while one is
+# asked for. Column 1 only: every pane write ends a row, so the cursor is
+# always there, while Shift/Ctrl+F3 (`ESC[1;2R` and up) never report column 1.
+_CPR = re.compile(rb"\x1b\[(\d{1,4});1R")
+# The start of one, at the end of a read.
+_CPR_OPEN = re.compile(rb"\x1b\[(?:\d{1,4}(?:;1?)?)?\Z")
+# A report not in after this long is given up on and asked for again.
+CPR_TIMEOUT = 1.0
 
 
 class Dock:
@@ -100,9 +106,15 @@ class Dock:
         self.pane_row: int | None = None
         self._pane_size: tuple[int, int] | None = None
         self._cpr_pending = False
+        self._asked_at = 0.0
         self._written_since_ask = 0
         # The outstanding reply predates a home, so it no longer says anything.
         self._stale_reply = False
+        # Asked again while a reply was outstanding: that reply is dropped and
+        # the question asked anew, never answered with the old one's counts.
+        self._requery = False
+        # The start of a reply split across reads, held for the next one.
+        self._cpr_tail = b""
 
     # The editor's application, once it runs.
 
@@ -132,6 +144,10 @@ class Dock:
 
         def flush() -> None:
             flush_later.clear()
+            if self._cpr_tail:
+                # Nothing completed it: it was typing after all (Escape, Alt+[).
+                parser.feed(self._cpr_tail.decode("utf-8", "replace"))
+                self._cpr_tail = b""
             parser.flush()
             app.key_processor.process_keys()
 
@@ -148,9 +164,8 @@ class Dock:
             for handle in flush_later:
                 handle.cancel()
             flush_later.clear()
-            if self._cpr_pending and (match := _CPR.search(data)):
-                data = data[: match.start()] + data[match.end() :]
-                self._answered(int(match.group(1)) - 1)
+            if self._cpr_pending:
+                data = self._take_reply(self._cpr_tail + data)
             parser.feed(data.decode("utf-8", "replace"))
             app.key_processor.process_keys()
             # A lone Escape only comes out once the parser is told nothing follows.
@@ -171,22 +186,46 @@ class Dock:
         if (size.lines, size.columns) != self._pane_size:
             self._pane_size = (size.lines, size.columns)
             self.ask_cursor()
+        elif self._cpr_pending and time.monotonic() - self._asked_at >= CPR_TIMEOUT:
+            self.ask_cursor()
         return size.lines
 
     def ask_cursor(self) -> None:
         """Ask the pane for its cursor row; the answer comes in with typing."""
         self.pane_row = None
+        if self._cpr_pending:
+            if time.monotonic() - self._asked_at < CPR_TIMEOUT:
+                self._requery = True
+                return
+            # Never answered (or lost): give up on it.
+            self._cpr_pending = False
+            self._cpr_tail = b""
+        self._cpr_pending = True
+        self._asked_at = time.monotonic()
         self._written_since_ask = 0
-        self._stale_reply = False
-        if not self._cpr_pending:
-            self._cpr_pending = True
-            sys.stdout.write("\x1b[6n")
-            sys.stdout.flush()
+        self._stale_reply = self._requery = False
+        sys.stdout.write("\x1b[6n")
+        sys.stdout.flush()
+
+    def _take_reply(self, data: bytes) -> bytes:
+        """``data`` without the cursor report asked for, holding a partial one."""
+        self._cpr_tail = b""
+        if match := _CPR.search(data):
+            self._answered(int(match.group(1)) - 1)
+            return data[: match.start()] + data[match.end() :]
+        if (tail := _CPR_OPEN.search(data)) is not None:
+            self._cpr_tail = data[tail.start() :]
+            return data[: tail.start()]
+        return data
 
     def _answered(self, row: int) -> None:
         # The reply is where the cursor was when the query arrived; rows
         # written since then moved it on.
         self._cpr_pending = False
+        if self._requery:
+            self._requery = False
+            self.ask_cursor()
+            return
         if self._stale_reply:
             self._stale_reply = False
             return
@@ -261,8 +300,16 @@ class Dock:
             asyncio.get_running_loop().remove_reader(self.connection.fileno())
         if self._termios is not None:
             with suppress(termios.error):
+                if self._cpr_pending:
+                    # Not echoed into the shell once the line discipline is back.
+                    time.sleep(0.05)
+                    termios.tcflush(main, termios.TCIFLUSH)
                 termios.tcsetattr(main, termios.TCSANOW, self._termios)
-        sys.stdout.write("\x1b[?25h" + _apc("dock-close"))
+        # The transcript's glide region (`Transcript._docked_frame`) hides the
+        # pane's last row; the pane is about to be an ordinary terminal again.
+        sys.stdout.write(
+            smooth_scroll.region_off(smooth_scroll.REGION_ID) + "\x1b[?25h" + _apc("dock-close")
+        )
         sys.stdout.flush()
         with suppress(OSError):
             self.connection.close()
