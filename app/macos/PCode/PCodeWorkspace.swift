@@ -1109,23 +1109,37 @@ final class PCodeWorkspace: ObservableObject {
     @Published var isFullScreen = false
     /// Height of the window's titlebar region in points (matches AppKit's traffic-light bar).
     @Published var titlebarHeight: CGFloat = 28
+    /// Leading clearance needed in windowed mode to clear the traffic-light buttons.
+    @Published var trafficLightClearance: CGFloat = 78
+
+    /// Collapse runs of whitespace and newlines to single spaces, matching `terminal_notify.title`.
+    private static func normalizeTitle(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
 
     /// Resolve the best display title for an open pane, preferring live terminal
     /// titles (e.g. after `/rename` or auto-titling) while falling back to the
     /// saved `session.json` label when the terminal still has Ghostty's placeholder
-    /// or a truncated prefix of a longer saved label.
+    /// or an OSC 0 120-char truncation prefix of a longer saved label.
     static func displayTitle(paneTitle: String, savedLabel: String?) -> String {
-        let trimmedLive = paneTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isPlaceholder = trimmedLive.isEmpty || trimmedLive == "👻"
-        let trimmedSaved = savedLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let validSaved = (trimmedSaved?.isEmpty == false) ? trimmedSaved : nil
+        let normalizedLive = normalizeTitle(paneTitle)
+        let isPlaceholder = normalizedLive.isEmpty || normalizedLive == "👻"
+        let normalizedSaved = savedLabel.map(normalizeTitle)
+        let validSaved = (normalizedSaved?.isEmpty == false) ? normalizedSaved : nil
 
         if !isPlaceholder {
-            // `TabTitle` truncates OSC 0 to 120 chars; keep the full saved label if live is just its prefix.
-            if let validSaved, validSaved.count > trimmedLive.count, validSaved.hasPrefix(trimmedLive) {
+            // `TabTitle` truncates OSC 0 to 120 Python chars (Unicode scalars); keep the
+            // full saved label only when the live title actually hit that 120-char boundary,
+            // so `/rename` to a shorter prefix still takes effect immediately.
+            if let validSaved,
+               validSaved.unicodeScalars.count > 120,
+               normalizedLive.unicodeScalars.count >= 120,
+               validSaved.hasPrefix(normalizedLive) {
                 return validSaved
             }
-            return trimmedLive
+            return normalizedLive
         }
         return validSaved ?? "New session"
     }
@@ -1323,7 +1337,7 @@ final class PCodeWorkspace: ObservableObject {
 
     func confirmDelete(pane: PCodeSessionPane) {
         guard let id = pane.sessionID else { return }
-        let title = info(for: pane)?.label ?? "this session"
+        let title = displayTitle(for: pane)
         confirm("Delete “\(title)”?", detail: "It is closed first, ending pcode in it.") { [weak self, weak pane] in
             guard let self, let pane else { return }
             self.close(pane)
@@ -2733,9 +2747,14 @@ struct PCodeSessionPaneView: View {
 private struct PCodeWindowTitleBar: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var workspace: PCodeWorkspace
+    @Environment(\.controlActiveState) private var controlActiveState
 
     private var leadingClearance: CGFloat {
-        workspace.isFullScreen ? 16 : 78
+        workspace.isFullScreen ? 16 : workspace.trafficLightClearance
+    }
+
+    private var titlebarColorScheme: ColorScheme {
+        NSColor(ghostty.config.backgroundColor).isLightColor ? .light : .dark
     }
 
     var body: some View {
@@ -2761,12 +2780,14 @@ private struct PCodeWindowTitleBar: View {
                     .onAppear { workspace.window?.title = "pcode" }
                 }
             }
+            .opacity(controlActiveState == .inactive ? 0.55 : 1)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Rectangle()
                 .fill(ghostty.config.splitDividerColor.opacity(0.65))
                 .frame(height: 1)
         }
+        .environment(\.colorScheme, titlebarColorScheme)
         .frame(height: workspace.titlebarHeight)
         .allowsHitTesting(false)
     }
@@ -2784,7 +2805,7 @@ private struct PCodeActiveSessionTitleContent: View {
     }
 
     private var title: String {
-        PCodeWorkspace.displayTitle(paneTitle: pane.title, savedLabel: savedInfo?.label)
+        workspace.displayTitle(for: pane)
     }
 
     private var projectName: String {
@@ -2811,6 +2832,7 @@ private struct PCodeActiveSessionTitleContent: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     if let worktreeName, !worktreeName.isEmpty {
                         Text("/")
                             .font(.system(size: 10.5))
@@ -2819,6 +2841,7 @@ private struct PCodeActiveSessionTitleContent: View {
                             .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(.secondary.opacity(0.9))
                             .lineLimit(1)
+                            .truncationMode(.tail)
                     }
                 }
                 .padding(.horizontal, 7)
@@ -2831,7 +2854,6 @@ private struct PCodeActiveSessionTitleContent: View {
                     Capsule(style: .continuous)
                         .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
-                .fixedSize(horizontal: true, vertical: false)
 
                 Text(title)
                     .font(.system(size: 12.5, weight: .medium))
@@ -2917,10 +2939,7 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         workspace.window = window
-        let barHeight = window.frame.height - window.contentLayoutRect.height
-        if barHeight > 0 {
-            workspace.titlebarHeight = barHeight
-        }
+        syncTitlebarMetrics(for: window)
         workspace.followAppearance()
         workspace.windowVisible = { [weak window] in
             window?.occlusionState.contains(.visible) ?? false
@@ -2958,18 +2977,41 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         workspace.sidebarWindowWillClose()
     }
 
+    private func syncTitlebarMetrics(for window: NSWindow) {
+        let barHeight = window.frame.height - window.contentLayoutRect.height
+        if barHeight > 0 {
+            workspace.titlebarHeight = barHeight
+        }
+        if let zoom = window.standardWindowButton(.zoomButton) {
+            let maxX = zoom.convert(zoom.bounds, to: nil).maxX
+            if maxX > 0 {
+                workspace.trafficLightClearance = max(78, ceil(maxX) + 14)
+            }
+        }
+    }
+
     func windowWillEnterFullScreen(_ notification: Notification) {
         workspace.isFullScreen = true
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        workspace.isFullScreen = false
+        syncTitlebarMetrics(for: window)
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        workspace.isFullScreen = false
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
         workspace.isFullScreen = false
         if let window {
-            let barHeight = window.frame.height - window.contentLayoutRect.height
-            if barHeight > 0 {
-                workspace.titlebarHeight = barHeight
-            }
+            syncTitlebarMetrics(for: window)
         }
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        workspace.isFullScreen = true
     }
 
     required init?(coder: NSCoder) { fatalError("not restorable from a coder") }

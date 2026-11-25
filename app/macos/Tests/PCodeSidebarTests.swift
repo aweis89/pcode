@@ -56,9 +56,17 @@ struct PCodeSidebarTests {
         #expect(PCodeWorkspace.displayTitle(paneTitle: "👻", savedLabel: "Saved title") == "Saved title")
         #expect(PCodeWorkspace.displayTitle(paneTitle: "Renamed title", savedLabel: "Old title") == "Renamed title")
         #expect(PCodeWorkspace.displayTitle(paneTitle: "  Trimmed title  ", savedLabel: nil) == "Trimmed title")
-        // Keep full saved title when OSC 0 live title is a truncated prefix of it.
+        // Shortening `/rename` to a prefix of the old saved label must take effect immediately.
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "Fix auth bug", savedLabel: "Fix auth bug in login flow") == "Fix auth bug")
+        // Normalize internal newlines and consecutive whitespace.
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "👻", savedLabel: "Line one\n  line   two") == "Line one line two")
+        // Keep full saved title when OSC 0 live title is a 120-char truncated prefix of it.
         let full = String(repeating: "a", count: 140)
         let prefix = String(full.prefix(120))
         #expect(PCodeWorkspace.displayTitle(paneTitle: prefix, savedLabel: full) == full)
+        let fullWithWhitespace = String(repeating: "a", count: 60) + "\n  " + String(repeating: "b", count: 80)
+        let normalizedFull = String(repeating: "a", count: 60) + " " + String(repeating: "b", count: 80)
+        let normalizedPrefix = String(normalizedFull.prefix(120))
+        #expect(PCodeWorkspace.displayTitle(paneTitle: normalizedPrefix, savedLabel: fullWithWhitespace) == normalizedFull)
     }
 }
