@@ -533,7 +533,13 @@ final class PCodeWorkspace: ObservableObject {
     init(ghostty: Ghostty.App) {
         self.ghostty = ghostty
         PCodeWorkspaceMode.warmLoginShellCache()
-        peek.onTargetChange = { [weak self] in self?.syncOcclusion() }
+        peek.onTargetChange = { [weak self] in
+            guard let self else { return }
+            self.syncOcclusion()
+            if !self.peek.isShowing {
+                self.scheduleSidebarHideIfPointerOutside()
+            }
+        }
         peek.windowProvider = { [weak self] in self?.window }
         peek.onRestoreFocus = { [weak self] in
             guard let self, !self.showingDirectoryPicker,
@@ -543,6 +549,20 @@ final class PCodeWorkspace: ObservableObject {
             DispatchQueue.main.async { Ghostty.moveFocus(to: pane.keyboardSurface) }
         }
         let center = NotificationCenter.default
+        observers.append(center.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.menuTrackingDepth += 1
+            self.cancelSidebarHide()
+        })
+        observers.append(center.addObserver(
+            forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.menuTrackingDepth = max(0, self.menuTrackingDepth - 1)
+            self.scheduleSidebarHideIfPointerOutside()
+        })
         observers.append(center.addObserver(
             forName: Ghostty.Notification.ghosttyCloseSurface, object: nil, queue: .main
         ) { [weak self] note in
@@ -570,7 +590,10 @@ final class PCodeWorkspace: ObservableObject {
         })
     }
 
-    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    deinit {
+        stopSidebarMonitoring()
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
 
     private var appearanceObserver: NSKeyValueObservation?
 
@@ -693,9 +716,178 @@ final class PCodeWorkspace: ObservableObject {
     /// Whether the ⌘⇧N fuzzy directory picker overlay is open.
     @Published var showingDirectoryPicker = false
 
+    /// Saved sidebar width in points (clamped at layout time to the current window width).
+    @Published var sidebarWidth: CGFloat = {
+        let stored = UserDefaults.standard.double(forKey: PCodeWorkspace.sidebarWidthKey)
+        return stored > 0
+            ? PCodeSidebarLayout.clampedWidth(CGFloat(stored), totalWidth: 0)
+            : PCodeSidebarLayout.defaultWidth
+    }() {
+        didSet { UserDefaults.standard.set(Double(sidebarWidth), forKey: Self.sidebarWidthKey) }
+    }
+
+    /// When true, the sidebar hides off the left edge and slides out as an overlay on hover.
+    @Published var sidebarAutoHide: Bool = UserDefaults.standard.bool(forKey: PCodeWorkspace.sidebarAutoHideKey) {
+        didSet {
+            UserDefaults.standard.set(sidebarAutoHide, forKey: Self.sidebarAutoHideKey)
+            if !sidebarAutoHide {
+                cancelSidebarHide()
+                sidebarRevealed = false
+            }
+            syncSidebarMouseMonitor()
+        }
+    }
+
+    /// Whether the auto-hiding sidebar is currently slid out over the terminal.
+    @Published var sidebarRevealed = false
+
+    /// True while the user is dragging the sidebar's right resize handle.
+    var isResizingSidebar = false {
+        didSet {
+            if isResizingSidebar { cancelSidebarHide() }
+        }
+    }
+
+    /// True while a Finder folder drag is hovering over the sidebar.
+    var isSidebarDropTargeted = false {
+        didSet {
+            if isSidebarDropTargeted { cancelSidebarHide() }
+        }
+    }
+
+    private var sidebarMonitoringActive = false
+    private var sidebarMouseMonitor: Any?
+    private var sidebarHideWork: DispatchWorkItem?
+    private var menuTrackingDepth = 0
+    private static let sidebarHideDelay: TimeInterval = 0.22
+
     private static let pinnedKey = "PCodeWorkspacePinnedFolders"
     private static let hiddenKey = "PCodeWorkspaceHiddenFolders"
     private static let collapsedKey = "PCodeWorkspaceCollapsedFolders"
+    private static let sidebarWidthKey = "PCodeWorkspaceSidebarWidth"
+    private static let sidebarAutoHideKey = "PCodeWorkspaceSidebarAutoHide"
+
+    func effectiveSidebarWidth(in totalWidth: CGFloat) -> CGFloat {
+        PCodeSidebarLayout.clampedWidth(sidebarWidth, totalWidth: totalWidth)
+    }
+
+    func resetSidebarWidth() {
+        sidebarWidth = PCodeSidebarLayout.defaultWidth
+    }
+
+    func toggleSidebarAutoHide() {
+        cancelSidebarHide()
+        if sidebarAutoHide {
+            sidebarAutoHide = false
+        } else {
+            sidebarRevealed = false
+            sidebarAutoHide = true
+        }
+    }
+
+    func startSidebarMonitoring() {
+        sidebarMonitoringActive = true
+        syncSidebarMouseMonitor()
+    }
+
+    func stopSidebarMonitoring() {
+        sidebarMonitoringActive = false
+        cancelSidebarHide()
+        if let sidebarMouseMonitor {
+            NSEvent.removeMonitor(sidebarMouseMonitor)
+            self.sidebarMouseMonitor = nil
+        }
+    }
+
+    private func syncSidebarMouseMonitor() {
+        if sidebarMonitoringActive && sidebarAutoHide {
+            guard sidebarMouseMonitor == nil else { return }
+            sidebarMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
+                self?.handleSidebarMouseMoved(event)
+                return event
+            }
+        } else if let sidebarMouseMonitor {
+            NSEvent.removeMonitor(sidebarMouseMonitor)
+            self.sidebarMouseMonitor = nil
+        }
+    }
+
+    private func handleSidebarMouseMoved(_ event: NSEvent) {
+        guard sidebarAutoHide, let window, event.window === window,
+              window.isKeyWindow, window.attachedSheet == nil,
+              !showingDirectoryPicker
+        else { return }
+        let bounds = window.contentLayoutRect
+        let point = event.locationInWindow
+        if !sidebarRevealed {
+            if PCodeSidebarLayout.shouldReveal(at: point, in: bounds) {
+                cancelSidebarHide()
+                sidebarRevealed = true
+            }
+        } else {
+            let width = effectiveSidebarWidth(in: bounds.width)
+            if PCodeSidebarLayout.isInsideRevealedZone(at: point, in: bounds, sidebarWidth: width) {
+                cancelSidebarHide()
+            } else {
+                scheduleSidebarHide()
+            }
+        }
+    }
+
+    func sidebarHoverChanged(_ hovering: Bool) {
+        guard sidebarAutoHide else { return }
+        if hovering {
+            cancelSidebarHide()
+        } else {
+            scheduleSidebarHide()
+        }
+    }
+
+    private var canAutoHideSidebar: Bool {
+        sidebarAutoHide && sidebarRevealed
+            && !isResizingSidebar
+            && !isSidebarDropTargeted
+            && menuTrackingDepth == 0
+            && !peek.isShowing
+            && window?.attachedSheet == nil
+    }
+
+    private func cancelSidebarHide() {
+        sidebarHideWork?.cancel()
+        sidebarHideWork = nil
+    }
+
+    func scheduleSidebarHide() {
+        guard canAutoHideSidebar else { return }
+        cancelSidebarHide()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.canAutoHideSidebar else { return }
+            self.sidebarRevealed = false
+        }
+        sidebarHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.sidebarHideDelay, execute: work)
+    }
+
+    func scheduleSidebarHideIfPointerOutside() {
+        guard canAutoHideSidebar, let window else { return }
+        let bounds = window.contentLayoutRect
+        let width = effectiveSidebarWidth(in: bounds.width)
+        let point = window.mouseLocationOutsideOfEventStream
+        if !PCodeSidebarLayout.isInsideRevealedZone(at: point, in: bounds, sidebarWidth: width) {
+            scheduleSidebarHide()
+        }
+    }
+
+    func sidebarWindowDidResignKey() {
+        guard canAutoHideSidebar else { return }
+        cancelSidebarHide()
+        sidebarRevealed = false
+    }
+
+    func sidebarWindowWillClose() {
+        cancelSidebarHide()
+        sidebarRevealed = false
+    }
 
     /// Canonical project path for an open pane (uses `session.json`'s `project` once loaded).
     func projectPath(for pane: PCodeSessionPane) -> String {
@@ -1395,6 +1587,43 @@ final class PCodeWorkspace: ObservableObject {
     }
 }
 
+/// Pure geometry helpers for the workspace sidebar's width bounds and auto-hide hit zones.
+enum PCodeSidebarLayout {
+    static let defaultWidth: CGFloat = 250
+    static let minWidth: CGFloat = 200
+    static let maxWidth: CGFloat = 500
+    /// Minimum width reserved for the session pane when resizing the sidebar.
+    static let minDetailWidth: CGFloat = 360
+    /// Width of the left-edge hot zone that reveals the auto-hidden sidebar.
+    static let revealEdgeWidth: CGFloat = 10
+    /// Extra margin past the revealed sidebar's right edge so resizing doesn't trigger a hide.
+    static let hideGraceMargin: CGFloat = 12
+
+    static func clampedWidth(_ proposed: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        let candidate = (proposed.isFinite && proposed > 0) ? proposed : defaultWidth
+        let upper: CGFloat = totalWidth > 0
+            ? max(minWidth, min(maxWidth, totalWidth - minDetailWidth))
+            : maxWidth
+        return min(upper, max(minWidth, candidate))
+    }
+
+    static func shouldReveal(at point: CGPoint, in contentBounds: CGRect) -> Bool {
+        guard contentBounds.width > 0, contentBounds.height > 0 else { return false }
+        return point.x >= contentBounds.minX
+            && point.x <= contentBounds.minX + revealEdgeWidth
+            && point.y >= contentBounds.minY
+            && point.y <= contentBounds.maxY
+    }
+
+    static func isInsideRevealedZone(at point: CGPoint, in contentBounds: CGRect, sidebarWidth: CGFloat) -> Bool {
+        guard contentBounds.width > 0, contentBounds.height > 0 else { return false }
+        return point.x >= contentBounds.minX
+            && point.x <= contentBounds.minX + sidebarWidth + hideGraceMargin
+            && point.y >= contentBounds.minY
+            && point.y <= contentBounds.maxY
+    }
+}
+
 /// What the sidebar can select: an open pane, or a saved session to reopen.
 private enum PCodeSidebarItem: Hashable {
     case pane(UUID)
@@ -1405,8 +1634,9 @@ struct PCodeWorkspaceView: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var workspace: PCodeWorkspace
     @State private var isDropTargeted = false
+    /// `workspace.sidebarWidth` when the current resize drag began.
+    @State private var sidebarDragStart: CGFloat?
 
-    private static let sidebarWidth: CGFloat = 250
     private static let initialRecentLimit = 5
 
     // A plain stack, not NavigationSplitView, and no toolbar: on macOS 26+
@@ -1414,35 +1644,26 @@ struct PCodeWorkspaceView: View {
     // a scroll view, and make the window composite translucent layers.
     var body: some View {
         ZStack {
-            HStack(spacing: 0) {
-                sidebar
-                    .frame(width: Self.sidebarWidth)
-                Divider()
-                ZStack {
-                    if let pane = workspace.selectedPane {
-                        PCodeSessionPaneView(pane: pane)
-                            .id(pane.id)
-                    } else {
-                        Text("No session open").foregroundStyle(.secondary)
+            GeometryReader { geometry in
+                let totalWidth = geometry.size.width
+                let sidebarWidth = workspace.effectiveSidebarWidth(in: totalWidth)
+                ZStack(alignment: .leading) {
+                    HStack(spacing: 0) {
+                        if !workspace.sidebarAutoHide {
+                            sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: false)
+                        }
+                        detailPane
                     }
 
-                    PCodePeekOverlay(
-                        peek: workspace.peek,
-                        resolveLivePane: { paneID in
-                            guard paneID != workspace.selected else { return nil }
-                            return workspace.panes.first { $0.id == paneID }
-                        }
-                    ) { target in
-                        workspace.openPeekTarget(target)
+                    if workspace.sidebarAutoHide && workspace.sidebarRevealed {
+                        sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: true)
+                            .onHover { workspace.sidebarHoverChanged($0) }
+                            .transition(.move(edge: .leading))
+                            .zIndex(2)
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(ghostty.config.backgroundColor)
-                .background(GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { workspace.detailSize = proxy.size }
-                        .onChange(of: proxy.size) { workspace.detailSize = $0 }
-                })
+                .clipped()
+                .animation(.easeOut(duration: 0.18), value: workspace.sidebarRevealed)
             }
 
             if workspace.showingDirectoryPicker {
@@ -1450,22 +1671,138 @@ struct PCodeWorkspaceView: View {
                     .transition(.opacity)
             }
         }
-        .onAppear { workspace.peek.startMonitoring() }
-        .onDisappear { workspace.peek.stopMonitoring() }
+        // Keep workspace keyboard shortcuts mounted even when the sidebar is auto-hidden.
+        .background {
+            Group {
+                Button("") { workspace.toggleShell() }
+                    .keyboardShortcut("j", modifiers: .command)
+                Button("") { workspace.openDirectoryPicker() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("") { workspace.toggleSidebarAutoHide() }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+            }
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        .onChange(of: isDropTargeted) { workspace.isSidebarDropTargeted = $0 }
+        .onAppear {
+            workspace.peek.startMonitoring()
+            workspace.startSidebarMonitoring()
+        }
+        .onDisappear {
+            workspace.peek.stopMonitoring()
+            workspace.stopSidebarMonitoring()
+        }
+    }
+
+    private var detailPane: some View {
+        ZStack {
+            if let pane = workspace.selectedPane {
+                PCodeSessionPaneView(pane: pane)
+                    .id(pane.id)
+            } else {
+                Text("No session open").foregroundStyle(.secondary)
+            }
+
+            PCodePeekOverlay(
+                peek: workspace.peek,
+                resolveLivePane: { paneID in
+                    guard paneID != workspace.selected else { return nil }
+                    return workspace.panes.first { $0.id == paneID }
+                }
+            ) { target in
+                workspace.openPeekTarget(target)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ghostty.config.backgroundColor)
+        .background(GeometryReader { proxy in
+            Color.clear
+                .onAppear { workspace.detailSize = proxy.size }
+                .onChange(of: proxy.size) { workspace.detailSize = $0 }
+        })
+    }
+
+    private var sidebarBackground: Color {
+        // Solid, a shade off the terminal's background: no vibrancy behind it.
+        Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
+            withFraction: 0.06, of: .white) ?? .windowBackgroundColor)
+    }
+
+    private func sidebarWithHandle(width: CGFloat, totalWidth: CGFloat, floating: Bool) -> some View {
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: width)
+            sidebarResizeHandle(width: width, totalWidth: totalWidth)
+        }
+        .background(
+            sidebarBackground
+                .shadow(color: floating ? .black.opacity(0.35) : .clear, radius: floating ? 8 : 0, x: floating ? 2 : 0, y: 0)
+        )
+    }
+
+    /// The sidebar's right edge: a hairline to see, a wider strip to drag (double-click resets width).
+    private func sidebarResizeHandle(width: CGFloat, totalWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(ghostty.config.splitDividerColor)
+            .frame(width: 1)
+            .overlay(
+                Color.clear
+                    .frame(width: 9)
+                    .contentShape(Rectangle())
+                    .backport.pointerStyle(.resizeLeftRight)
+                    .onHover { inside in
+                        if #available(macOS 15, *) { return }
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .onTapGesture(count: 2) {
+                        workspace.resetSidebarWidth()
+                    }
+                    .gesture(
+                        DragGesture(coordinateSpace: .global)
+                            .onChanged { gesture in
+                                let start = sidebarDragStart ?? width
+                                if sidebarDragStart == nil {
+                                    sidebarDragStart = start
+                                    workspace.isResizingSidebar = true
+                                }
+                                workspace.sidebarWidth = PCodeSidebarLayout.clampedWidth(
+                                    start + gesture.translation.width,
+                                    totalWidth: totalWidth
+                                )
+                            }
+                            .onEnded { _ in
+                                sidebarDragStart = nil
+                                workspace.isResizingSidebar = false
+                                workspace.scheduleSidebarHideIfPointerOutside()
+                            }
+                    )
+            )
+            .zIndex(1)
     }
 
     private var sidebarHeader: some View {
         HStack(spacing: 6) {
-            Text("Sessions").font(.headline)
-            Spacer()
+            Text("Sessions")
+                .font(.headline)
+                .lineLimit(1)
+            Spacer(minLength: 4)
             Button { workspace.toggleShell() } label: { Image(systemName: "terminal") }
-                .keyboardShortcut("j", modifiers: .command)
                 .help("Toggle the shell under this session (⌘J)")
             Button { workspace.openDirectoryPicker() } label: { Image(systemName: "folder.badge.plus") }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
                 .help("New session in folder… (⌘⇧N)")
             Button { workspace.newSession() } label: { Image(systemName: "square.and.pencil") }
                 .help("New session in current project (⌘N)")
+            Button { workspace.toggleSidebarAutoHide() } label: {
+                if workspace.sidebarAutoHide {
+                    Image(systemName: "sidebar.left")
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Image(systemName: "sidebar.left")
+                }
+            }
+            .help(workspace.sidebarAutoHide ? "Keep sidebar visible (⌥⌘S)" : "Auto-hide sidebar (⌥⌘S)")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
@@ -1494,9 +1831,6 @@ struct PCodeWorkspaceView: View {
             Divider()
             sidebarFooter
         }
-        // Solid, a shade off the terminal's background: no vibrancy behind it.
-        .background(Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.06, of: .white) ?? .windowBackgroundColor))
         .overlay(
             RoundedRectangle(cornerRadius: 4)
                 .stroke(Color.accentColor.opacity(isDropTargeted ? 0.8 : 0), lineWidth: 2)
@@ -2334,6 +2668,7 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) {
         workspace.peek.windowDidResignKey()
+        workspace.sidebarWindowDidResignKey()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -2341,6 +2676,7 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
             workspace.showingDirectoryPicker = false
         }
         workspace.peek.dismiss(restoreFocus: false)
+        workspace.sidebarWindowWillClose()
     }
 
     required init?(coder: NSCoder) { fatalError("not restorable from a coder") }

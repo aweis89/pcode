@@ -123,6 +123,7 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     ) throws -> Bool {
         switch cmd {
         case "peek": try Self.peekSession(args, finish)
+        case "sidebar": try Self.sidebarCommand(args, finish)
         default: return false
         }
         return true
@@ -166,5 +167,33 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         guard let info else { throw DebugCommands.Failure("no session to peek") }
         workspace.peek.peekFromMenu(workspace.peekTarget(for: info))
         finish(["showing": true, "live": false, "session": info.id, "title": info.label])
+    }
+
+    private static func sidebarCommand(_ args: [String: Any], _ finish: @escaping ([String: Any]) -> Void) throws {
+        guard let controller = DebugCommands.terminalWindows().compactMap({ $0.windowController as? PCodeWorkspaceController }).first else {
+            throw DebugCommands.Failure("no workspace window")
+        }
+        let workspace = controller.workspace
+        let totalWidth = controller.window?.contentLayoutRect.width ?? 0
+        if (args["reset"] as? Bool) == true {
+            workspace.resetSidebarWidth()
+        }
+        if let width = args["width"] as? Double {
+            workspace.sidebarWidth = PCodeSidebarLayout.clampedWidth(CGFloat(width), totalWidth: totalWidth)
+        }
+        if let autoHide = args["auto_hide"] as? Bool {
+            if autoHide != workspace.sidebarAutoHide {
+                workspace.toggleSidebarAutoHide()
+            }
+        }
+        if let revealed = args["revealed"] as? Bool, workspace.sidebarAutoHide {
+            workspace.sidebarRevealed = revealed
+        }
+        finish([
+            "width": Double(workspace.sidebarWidth),
+            "effective_width": Double(workspace.effectiveSidebarWidth(in: totalWidth)),
+            "auto_hide": workspace.sidebarAutoHide,
+            "revealed": workspace.sidebarRevealed,
+        ])
     }
 }
