@@ -4597,7 +4597,7 @@ class PromptLayout:
             phase, detail = status_parts(aside.activity)
             line = StatusLine(phase, detail, elapsed=aside.elapsed)
             lead = self.heading_lead()
-            status = line.fragments(self.aside_spinner_mark(), columns - 3 - len(lead), rule=True)
+            status = line.fragments(self.status_spinner_mark(), columns - 3 - len(lead), rule=True)
             if not status:
                 return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
             used = len(lead) + sum(cell_len(text) for _, text in status)

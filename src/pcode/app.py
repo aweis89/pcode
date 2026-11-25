@@ -2764,6 +2764,8 @@ class PreviewApp:
         if not current(self.activity):
             return None
         parts = text.split(maxsplit=1)
+        if not parts:
+            return None
         name = parts[0]
         argument = parts[1] if len(parts) > 1 else ""
         if shell_command(text) is not None:
@@ -2798,13 +2800,13 @@ class PreviewApp:
                 try:
                     await self.controller.keep_thread(thread, action, argument.strip())
                 except ValueError as error:
-                    if self.activity.btw_thread == thread:
+                    if self.activity.btw_thread is not None:
                         self.transcript.flash(str(error))
                     self.transcript.warning(str(error))
                     return
                 except Exception as error:
                     message = error_message(error, unexpected=f"{name} failed")
-                    if self.activity.btw_thread == thread:
+                    if self.activity.btw_thread is not None:
                         self.transcript.flash(message)
                     self.transcript.error(message)
                     return
