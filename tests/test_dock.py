@@ -66,9 +66,9 @@ def answer(d, row: int) -> None:
 
 
 def test_reserve_rounds_up_and_leaves_the_pane_two_rows():
-    assert dock.reserve_for(3, 50) == 5  # 3 + 1.75 rows
+    assert dock.reserve_for(3, 50) == 5  # 3 + 2 rows
     assert dock.reserve_for(10, 50) == 12
-    assert dock.reserve_for(3, 50, ratio=1.25) == 6  # 5.9375
+    assert dock.reserve_for(3, 50, ratio=1.25) == 7  # 6.25
     assert dock.reserve_for(40, 20) == 18
 
 

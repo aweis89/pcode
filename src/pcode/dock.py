@@ -58,7 +58,7 @@ CONNECT_TIMEOUT = 3.0
 MAX_ROWS = 40
 # Rows of the dock's cells the card covers on top of the rows it shows (its
 # margins and padding): `PCodeDock.slackRows` in the app, kept in step.
-CARD_SLACK_ROWS = 1.75
+CARD_SLACK_ROWS = 2.0
 # The rows the app shows before pcode asks for any (`PCodeDock.rows`).
 INITIAL_ROWS = 3
 SYNC_START = "\x1b[?2026h"
