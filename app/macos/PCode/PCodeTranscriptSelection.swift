@@ -39,20 +39,28 @@ struct PCodeTranscriptSelection: Equatable {
         return NSRange(location: loc, length: endLoc - loc)
     }
 
-    /// Extract plain text across all selected items, joined with blank lines between items.
-    func extractText(itemCount: Int, textForItem: (Int) -> String) -> String {
+    /// Extract plain text across all selected items, joining with `separatorBetween` (default `"\n\n"`).
+    func extractText(
+        itemCount: Int,
+        separatorBetween: (Int, Int) -> String = { _, _ in "\n\n" },
+        textForItem: (Int) -> String
+    ) -> String {
         guard !isEmpty, itemCount > 0 else { return "" }
         let startIdx = max(0, lower.itemIndex)
         let endIdx = min(itemCount - 1, upper.itemIndex)
         guard startIdx <= endIdx else { return "" }
 
-        var parts: [String] = []
-        parts.reserveCapacity(endIdx - startIdx + 1)
+        var out = ""
+        var prevIncluded: Int?
         for i in startIdx...endIdx {
             let full = textForItem(i) as NSString
             guard let range = localRange(forItem: i, utf16Length: full.length) else { continue }
-            parts.append(full.substring(with: range))
+            if let prev = prevIncluded {
+                out.append(separatorBetween(prev, i))
+            }
+            out.append(full.substring(with: range))
+            prevIncluded = i
         }
-        return parts.joined(separator: "\n\n")
+        return out
     }
 }

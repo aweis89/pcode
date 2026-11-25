@@ -40,7 +40,7 @@ struct PCodeSyntaxToken: Equatable, Hashable, Sendable {
                 self = .number
             case "class-name", "namespace", "type-definition":
                 self = .type
-            case "function", "function-variable", "method":
+            case "function", "function-variable", "function-definition", "method":
                 self = .function
             case "property", "symbol", "macro":
                 self = .property
@@ -62,10 +62,12 @@ struct PCodeSyntaxToken: Equatable, Hashable, Sendable {
                 self = .variable
             case "regex":
                 self = .regex
-            case "inserted":
+            case "inserted", "inserted-sign", "inserted-arrow":
                 self = .inserted
-            case "deleted":
+            case "deleted", "deleted-sign", "deleted-arrow":
                 self = .deleted
+            case "coord":
+                self = .keyword
             default:
                 self = .plain
             }
@@ -203,7 +205,6 @@ extension PCodeSyntaxHighlighter {
         case "objc", "obj-c", "m", "mm": return "objectivec"
         case "cs": return "csharp"
         case "kt", "kts": return "kotlin"
-        case "tf", "tfvars": return "hcl"
         case "dockerfile": return "docker"
         case "patch": return "diff"
         default: return cleaned
@@ -259,6 +260,8 @@ extension PCodeSyntaxHighlighter {
 
 /// Actor isolating the `JSContext` running Prism.js off the main thread.
 private actor PCodePrismJSRuntime {
+    static let maxInputBytes = 65_536
+
     private var context: JSContext?
     private var loaded = false
 
@@ -271,7 +274,12 @@ private actor PCodePrismJSRuntime {
         else {
             return nil
         }
+        ctx.exception = nil
         ctx.evaluateScript(script)
+        if ctx.exception != nil {
+            // Clear any JS load exception so subsequent calls see a clean context.
+            ctx.exception = nil
+        }
         context = ctx
         return ctx
     }
@@ -298,7 +306,10 @@ private actor PCodePrismJSRuntime {
     }
 
     func tokenize(code: String, language: String) -> [PCodeSyntaxToken] {
-        guard language != "plain", !code.isEmpty,
+        guard !Task.isCancelled,
+              language != "plain",
+              !code.isEmpty,
+              code.utf8.count <= Self.maxInputBytes,
               let ctx = ensureLoaded(),
               let fn = ctx.objectForKeyedSubscript("tokenizeCode"),
               let result = fn.call(withArguments: [code, language]),
@@ -318,7 +329,7 @@ private actor PCodePrismJSRuntime {
     }
 }
 
-/// Thread-safe, caching Prism syntax highlighter.
+/// Thread-safe, caching, in-flight-deduplicating Prism syntax highlighter.
 final class PCodePrismSyntaxHighlighter: PCodeSyntaxHighlighter, @unchecked Sendable {
     static let shared = PCodePrismSyntaxHighlighter()
 
@@ -326,13 +337,14 @@ final class PCodePrismSyntaxHighlighter: PCodeSyntaxHighlighter, @unchecked Send
     private let lock = NSLock()
     private var cache: [String: [PCodeSyntaxToken]] = [:]
     private var cacheOrder: [String] = []
+    private var inFlight: [String: Task<[PCodeSyntaxToken], Never>] = [:]
     private static let maxCacheEntries = 512
 
     private init() {}
 
     func cachedTokens(code: String, language: String?) -> [PCodeSyntaxToken]? {
         let lang = Self.normalizeLanguage(language)
-        if lang == "plain" || code.isEmpty {
+        if lang == "plain" || code.isEmpty || code.utf8.count > PCodePrismJSRuntime.maxInputBytes {
             return [PCodeSyntaxToken(content: code, kind: .plain)]
         }
         let key = cacheKey(code: code, language: lang)
@@ -343,14 +355,27 @@ final class PCodePrismSyntaxHighlighter: PCodeSyntaxHighlighter, @unchecked Send
 
     func tokenize(code: String, language: String?) async -> [PCodeSyntaxToken] {
         let lang = Self.normalizeLanguage(language)
-        if lang == "plain" || code.isEmpty {
+        if lang == "plain" || code.isEmpty || code.utf8.count > PCodePrismJSRuntime.maxInputBytes {
             return [PCodeSyntaxToken(content: code, kind: .plain)]
         }
         let key = cacheKey(code: code, language: lang)
         if let hit = lookupCache(key) {
             return hit
         }
-        let tokens = await runtime.tokenize(code: code, language: lang)
+        let task: Task<[PCodeSyntaxToken], Never> = {
+            lock.lock()
+            defer { lock.unlock() }
+            if let existing = inFlight[key] {
+                return existing
+            }
+            let created = Task { [runtime] in
+                await runtime.tokenize(code: code, language: lang)
+            }
+            inFlight[key] = created
+            return created
+        }()
+
+        let tokens = await task.value
         storeCache(key, tokens: tokens)
         return tokens
     }
@@ -368,6 +393,7 @@ final class PCodePrismSyntaxHighlighter: PCodeSyntaxHighlighter, @unchecked Send
     private func storeCache(_ key: String, tokens: [PCodeSyntaxToken]) {
         lock.lock()
         defer { lock.unlock() }
+        inFlight.removeValue(forKey: key)
         if cache[key] == nil {
             cacheOrder.append(key)
         }

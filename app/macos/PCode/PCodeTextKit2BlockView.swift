@@ -178,19 +178,20 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             }
         }
 
-        // 2. Draw visible TextKit 2 layout fragments.
-        textLayoutManager.ensureLayout(for: dirtyRect)
-        let startLocation = textLayoutManager.textLayoutFragment(for: CGPoint(x: 0, y: max(0, dirtyRect.minY)))?.rangeInElement.location
+        // 2. Draw visible TextKit 2 layout fragments (include 4pt margin for pill/bar overhangs).
+        let expandedDirty = dirtyRect.insetBy(dx: 0, dy: -4)
+        textLayoutManager.ensureLayout(for: expandedDirty)
+        let startLocation = textLayoutManager.textLayoutFragment(for: CGPoint(x: 0, y: max(0, expandedDirty.minY)))?.rangeInElement.location
             ?? textLayoutManager.documentRange.location
         textLayoutManager.enumerateTextLayoutFragments(
             from: startLocation,
             options: [.ensuresLayout]
         ) { fragment in
             let frame = fragment.layoutFragmentFrame
-            if frame.minY > dirtyRect.maxY {
+            if frame.minY > expandedDirty.maxY {
                 return false
             }
-            if frame.maxY >= dirtyRect.minY {
+            if frame.maxY >= expandedDirty.minY {
                 fragment.draw(at: frame.origin, in: context)
             }
             return true
@@ -219,16 +220,38 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             from: textLayoutManager.documentRange.location,
             to: fragment.rangeInElement.location)
 
+        let fullNSString = (textContentStorage.attributedString?.string ?? "") as NSString
+
         for line in fragment.textLineFragments {
             let lineBounds = line.typographicBounds
             if localY <= lineBounds.maxY || line === fragment.textLineFragments.last {
                 let ptInLine = CGPoint(x: localX - lineBounds.origin.x, y: localY - lineBounds.origin.y)
-                var idx = line.characterIndex(for: ptInLine)
-                let fraction = line.fractionOfDistanceThroughGlyph(for: ptInLine)
-                if fraction >= 0.5, idx < NSMaxRange(line.characterRange) {
-                    idx += 1
+                let lineRange = line.characterRange
+                let rawIdx = line.characterIndex(for: ptInLine)
+
+                // `characterIndex(for:)` returns `NSNotFound` (`Int.max`) when `ptInLine.x`
+                // falls past the line's glyphs. Clamp safely to the line boundaries.
+                if rawIdx == NSNotFound || !NSLocationInRange(rawIdx, lineRange) {
+                    if ptInLine.x <= 0 {
+                        return min(max(0, baseOffset + lineRange.location), totalLength)
+                    }
+                    var endOffset = min(baseOffset + NSMaxRange(lineRange), totalLength)
+                    if endOffset > baseOffset + lineRange.location && endOffset > 0 {
+                        let lastChar = fullNSString.character(at: endOffset - 1)
+                        if lastChar == 0x0A || lastChar == 0x2028 {
+                            endOffset -= 1
+                        }
+                    }
+                    return min(max(0, endOffset), totalLength)
                 }
-                return min(max(0, baseOffset + idx), totalLength)
+
+                var offset = min(max(0, baseOffset + rawIdx), totalLength)
+                let fraction = line.fractionOfDistanceThroughGlyph(for: ptInLine)
+                if fraction >= 0.5, offset < totalLength {
+                    let composed = fullNSString.rangeOfComposedCharacterSequence(at: offset)
+                    offset = min(NSMaxRange(composed), totalLength)
+                }
+                return offset
             }
         }
         return min(max(0, baseOffset), totalLength)

@@ -12,17 +12,23 @@ protocol PCodeTranscriptRowHosting: NSView {
     var selectableTextLength: Int { get }
     /// Update hover state (managed centrally by the document view's single `NSTrackingArea`).
     func setHovered(_ hovered: Bool)
+    /// Reset transient state (scroll offsets, in-flight tasks, copy flash, selection) before pooling.
+    func resetForTranscriptReuse()
 }
 
 extension PCodeTranscriptRowHosting {
     func setHovered(_ hovered: Bool) {}
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+    }
 }
 
 /// Inner horizontal `NSScrollView` for code blocks and wide tables.
 ///
 /// - Forces `.overlay` scroller style so legacy scrollers never alter row heights.
-/// - Latches gesture axis per scroll gesture and forwards vertical-dominant scrolls
-///   to the outer `PCodeTranscriptScrollView` so vertical scrolling never gets trapped.
+/// - Latches gesture axis across finger lift + momentum phase and forwards vertical-dominant
+///   scrolls to the outer `PCodeTranscriptScrollView` so vertical scrolling never gets trapped.
 /// - Forwards mouse selection drags to `transcriptDocumentView` so cross-item selection
 ///   survives even if this row recycles offscreen during autoscroll.
 final class PCodeHorizontalBlockScrollView: NSScrollView {
@@ -61,6 +67,14 @@ final class PCodeHorizontalBlockScrollView: NSScrollView {
         return doc.frame.width > contentView.bounds.width + 1
     }
 
+    func resetScrollOrigin() {
+        gestureAxis = .undecided
+        if contentView.bounds.origin != .zero {
+            contentView.scroll(to: .zero)
+            reflectScrolledClipView(contentView)
+        }
+    }
+
     override func scrollWheel(with event: NSEvent) {
         let phase = event.phase
         let momentum = event.momentumPhase
@@ -71,36 +85,41 @@ final class PCodeHorizontalBlockScrollView: NSScrollView {
             return
         }
 
-        if phase == .began || phase == .mayBegin || (phase == [] && momentum == []) {
-            let dx = abs(event.scrollingDeltaX)
-            let dy = abs(event.scrollingDeltaY)
-            if dx > dy * 1.15 && dx > 0.1 {
-                gestureAxis = .horizontal
-            } else if dy > 0.1 {
-                gestureAxis = .vertical
-            } else {
-                gestureAxis = .undecided
-            }
+        // Wait for real deltas on `.mayBegin` instead of prematurely forwarding to outer.
+        if phase == .mayBegin {
+            gestureAxis = .undecided
+            return
+        }
+
+        if phase == .began || (phase == [] && momentum == []) {
+            gestureAxis = classifyAxis(dx: event.scrollingDeltaX, dy: event.scrollingDeltaY)
         } else if gestureAxis == .undecided {
-            let dx = abs(event.scrollingDeltaX)
-            let dy = abs(event.scrollingDeltaY)
-            if dx > dy * 1.15 && dx > 0.1 {
-                gestureAxis = .horizontal
-            } else if dy > 0.1 {
-                gestureAxis = .vertical
-            }
+            gestureAxis = classifyAxis(dx: event.scrollingDeltaX, dy: event.scrollingDeltaY)
         }
 
         let currentAxis = gestureAxis
-        if phase == .ended || phase == .cancelled || momentum == .ended || momentum == .cancelled {
+        // Keep axis latched across `phase == .ended` so horizontal trackpad momentum stays horizontal.
+        if momentum == .ended || momentum == .cancelled || phase == .cancelled {
             gestureAxis = .undecided
         }
 
         if currentAxis == .horizontal {
             super.scrollWheel(with: event)
-        } else {
+        } else if currentAxis == .vertical {
             forwardScrollToOuter(event)
         }
+    }
+
+    private func classifyAxis(dx: CGFloat, dy: CGFloat) -> GestureAxis {
+        let adx = abs(dx)
+        let ady = abs(dy)
+        if adx > ady * 1.15 && adx > 0.1 {
+            return .horizontal
+        }
+        if ady > 0.1 {
+            return .vertical
+        }
+        return .undecided
     }
 
     private func forwardScrollToOuter(_ event: NSEvent) {
@@ -129,6 +148,7 @@ final class PCodeBlockActionButton: NSButton {
     private var resetWork: DispatchWorkItem?
     private var idleTitle: String
     private var idleSymbol: String
+    private var isShowingCopied = false
 
     init(title: String, symbol: String) {
         self.idleTitle = title
@@ -150,17 +170,30 @@ final class PCodeBlockActionButton: NSButton {
     func applyTheme(foreground: NSColor, background: NSColor) {
         contentTintColor = foreground
         layer?.backgroundColor = background.cgColor
-        applyIdleState()
+        if !isShowingCopied {
+            applyIdleState()
+        }
     }
 
     func flashCopied() {
         resetWork?.cancel()
+        isShowingCopied = true
         setTitle("Copied", symbol: "checkmark", color: .systemGreen)
         let work = DispatchWorkItem { [weak self] in
+            self?.isShowingCopied = false
             self?.applyIdleState()
         }
         resetWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+
+    func cancelCopiedFlash() {
+        resetWork?.cancel()
+        resetWork = nil
+        if isShowingCopied {
+            isShowingCopied = false
+            applyIdleState()
+        }
     }
 
     private func applyIdleState() {
@@ -187,6 +220,8 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .prompt
     let textView = PCodeTextKit2BlockView()
     private let accentBar = NSView()
+    private var lastTheme: PCodeTranscriptTheme?
+    private var lastIsSide = false
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -210,6 +245,11 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
     func configure(
         attributedText: NSAttributedString,
         isSidePrompt: Bool,
@@ -217,6 +257,8 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?
     ) -> CGFloat {
+        lastTheme = theme
+        lastIsSide = isSidePrompt
         let insets = NSEdgeInsets(top: 10, left: 22, bottom: 10, right: 12)
         let textWidth = max(1, width - insets.left - insets.right)
         let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
@@ -224,13 +266,18 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
 
         let totalHeight = textHeight + insets.top + insets.bottom
+        accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
+        applyLayerColors()
+        return totalHeight
+    }
+
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = theme.promptBackground.cgColor
             layer?.cornerRadius = 8
-            accentBar.layer?.backgroundColor = (isSidePrompt ? NSColor.systemOrange : theme.accent).cgColor
-            accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
+            accentBar.layer?.backgroundColor = (lastIsSide ? NSColor.systemOrange : theme.accent).cgColor
         }
-        return totalHeight
     }
 }
 
@@ -241,6 +288,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
     let textView = PCodeTextKit2BlockView()
     private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
     private var copyPayload: String?
+    private var lastTheme: PCodeTranscriptTheme?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -269,6 +317,22 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         copyButton.isHidden = !(hovered && copyPayload != nil)
     }
 
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+        copyPayload = nil
+        copyButton.cancelCopiedFlash()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if let theme = lastTheme {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                copyButton.applyTheme(foreground: theme.secondaryForeground, background: theme.toolBackground)
+            }
+        }
+    }
+
     func configure(
         attributedText: NSAttributedString,
         copyMarkdown: String?,
@@ -277,6 +341,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         selectedRange: NSRange?
     ) -> CGFloat {
         copyPayload = copyMarkdown
+        lastTheme = theme
         let insets = NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
         let textWidth = max(1, width - insets.left - insets.right)
         let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
@@ -323,6 +388,7 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
     private var copyCode: String = ""
     private var highlightGeneration: UInt64 = 0
     private var highlightTask: Task<Void, Never>?
+    private var lastTheme: PCodeTranscriptTheme?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -365,6 +431,21 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+        highlightTask?.cancel()
+        highlightTask = nil
+        highlightGeneration &+= 1
+        scrollView.resetScrollOrigin()
+        copyButton.cancelCopiedFlash()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
     func configure(
         code: String,
         fullCopyCode: String,
@@ -379,6 +460,7 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
     ) -> CGFloat {
         scrollView.transcriptDocumentView = documentView
         copyCode = fullCopyCode
+        lastTheme = theme
         highlightTask?.cancel()
         highlightGeneration &+= 1
         let gen = highlightGeneration
@@ -409,7 +491,7 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
         let verticalPad: CGFloat = 10
         let contentWidth = max(1, width - horizontalPad * 2)
         let maxLineWidth = Self.widestLineWidth(in: code, font: codeFont)
-        let layoutWidth = max(contentWidth, ceil(maxLineWidth) + 8)
+        let layoutWidth = max(contentWidth, ceil(maxLineWidth) + 12)
         let textHeight = textView.configure(attributedText: initialAttr, width: layoutWidth)
         textView.selectedRange = selectedRange
         textView.frame = CGRect(x: 0, y: 0, width: layoutWidth, height: textHeight)
@@ -447,13 +529,7 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
             height: textHeight)
 
         let totalHeight = headerH + textHeight + verticalPad * 2
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = theme.codeBackground.cgColor
-            layer?.cornerRadius = 8
-            layer?.borderWidth = 1
-            layer?.borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
-            dividerLayer.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.10).cgColor
-        }
+        applyLayerColors()
 
         if needsAsyncHighlight {
             highlightTask = Task { [weak self] in
@@ -475,23 +551,37 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
         return totalHeight
     }
 
-    private static func widestLineWidth(in code: String, font: NSFont) -> CGFloat {
-        // Monospace fast path: count max characters per line * advance width of "M".
-        let advance = ("M" as NSString).size(withAttributes: [.font: font]).width
-        var maxChars = 0
-        var current = 0
-        for scalar in code.unicodeScalars {
-            if scalar == "\n" {
-                if current > maxChars { maxChars = current }
-                current = 0
-            } else if scalar == "\t" {
-                current += 4
-            } else {
-                current += 1
-            }
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = theme.codeBackground.cgColor
+            layer?.cornerRadius = 8
+            layer?.borderWidth = 1
+            layer?.borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
+            dividerLayer.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.10).cgColor
         }
-        if current > maxChars { maxChars = current }
-        return CGFloat(maxChars) * advance
+    }
+
+    /// Measure the widest line accurately (ASCII fast path for pure printable ASCII without tabs,
+    /// full `NSString.size(withAttributes:)` whenever tabs or non-ASCII/emoji/CJK are present).
+    static func widestLineWidth(in code: String, font: NSFont) -> CGFloat {
+        let advance = ("M" as NSString).size(withAttributes: [.font: font]).width
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        var maxWidth: CGFloat = 0
+
+        for line in code.split(separator: "\n", omittingEmptySubsequences: false) {
+            let hasComplex = line.unicodeScalars.contains { scalar in
+                scalar.value < 0x20 || scalar.value > 0x7E
+            }
+            let w: CGFloat
+            if hasComplex {
+                w = (String(line) as NSString).size(withAttributes: attrs).width
+            } else {
+                w = CGFloat(line.count) * advance
+            }
+            if w > maxWidth { maxWidth = w }
+        }
+        return maxWidth
     }
 
     @objc private func copyCodePressed() {
@@ -536,13 +626,11 @@ private final class PCodeTableGridView: NSView {
             ctx.fill(CGRect(x: 0, y: 0, width: totalWidth, height: totalHeight))
         }
 
-        // Header fill
         if hasHeader, let firstH = rowHeights.first {
             ctx.setFillColor(headerFill.cgColor)
             ctx.fill(CGRect(x: 0, y: 0, width: totalWidth, height: firstH))
         }
 
-        // Draw cells
         var y: CGFloat = 0
         for (rowIdx, row) in rows.enumerated() {
             let h = rowHeights[rowIdx]
@@ -564,7 +652,6 @@ private final class PCodeTableGridView: NSView {
             y += h
         }
 
-        // Draw 1px hairline grid lines
         ctx.setFillColor(gridColor.cgColor)
         let px: CGFloat = 1.0 / (window?.backingScaleFactor ?? 2.0)
 
@@ -590,6 +677,7 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
     let scrollView = PCodeHorizontalBlockScrollView()
     private let gridView = PCodeTableGridView()
     private var plainLength: Int = 0
+    private var lastTheme: PCodeTranscriptTheme?
 
     var primaryTextView: PCodeTextKit2BlockView? { nil }
     var selectableTextLength: Int { plainLength }
@@ -615,6 +703,17 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
         }
     }
 
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+        scrollView.resetScrollOrigin()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
     func configure(
         table: PCodeMarkdownTable,
         width: CGFloat,
@@ -624,6 +723,7 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
         selectedRange: NSRange?
     ) -> CGFloat {
         scrollView.transcriptDocumentView = documentView
+        lastTheme = theme
         plainLength = (table.plainText as NSString).length
 
         let colCount = max(table.headers.count, table.rows.map(\.count).max() ?? 0)
@@ -650,7 +750,6 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
                 theme: theme))
         }
 
-        // Measure natural column widths (clamped to [68, 320]pt).
         var colWidths = Array(repeating: CGFloat(68), count: colCount)
         for row in allRows {
             for (c, cell) in row.enumerated() {
@@ -695,6 +794,14 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
         gridView.isSelected = (selectedRange?.length ?? 0) > 0
         gridView.frame = CGRect(x: 0, y: 0, width: totalW, height: totalH)
 
+        applyLayerColors()
+        gridView.needsDisplay = true
+        scrollView.frame = CGRect(x: 0, y: 0, width: width, height: totalH)
+        return totalH
+    }
+
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
             gridView.headerFill = theme.toolBackground
             gridView.gridColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.14 : 0.16)
@@ -704,13 +811,10 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
             layer?.borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.14 : 0.16).cgColor
             layer?.masksToBounds = true
         }
-        gridView.needsDisplay = true
-        scrollView.frame = CGRect(x: 0, y: 0, width: width, height: totalH)
-        return totalH
     }
 
     private func buildRow(
-        _ cells: [String],
+        _ cells: [PCodeMarkdownTableCell],
         alignments: [PCodeMarkdownTable.Alignment],
         colCount: Int,
         isHeader: Bool,
@@ -718,10 +822,10 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
         theme: PCodeTranscriptTheme
     ) -> [PCodeTableGridView.CellLayout] {
         (0..<colCount).map { idx in
-            let raw = idx < cells.count ? cells[idx] : ""
+            let raw = idx < cells.count ? cells[idx].markdown : ""
             let align = idx < alignments.count ? alignments[idx] : .left
             let attr = NSMutableAttributedString(attributedString: PCodeTranscriptMarkdown.attributedString(
-                forInline: raw,
+                forInlineCell: raw,
                 typography: typography,
                 theme: theme,
                 scale: 0.92,
@@ -750,6 +854,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     private let iconView = NSImageView()
     private let toggleButton = NSButton()
     private var onToggle: (() -> Void)?
+    private var lastTheme: PCodeTranscriptTheme?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -778,56 +883,14 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
-    func configure(
-        call: PCodePeekToolCall,
-        isExpanded: Bool,
-        width: CGFloat,
-        typography: PCodeTypographySnapshot,
-        theme: PCodeTranscriptTheme,
-        selectedRange: NSRange?,
-        onToggle: @escaping () -> Void
-    ) -> CGFloat {
-        self.onToggle = onToggle
-        let summary = call.summaryText
-        let canExpand = summary.count > 90 || summary.contains("\n")
-
-        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
-        let symbolName = call.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
-        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: call.failed ? "Failed" : "Succeeded")?
-            .withSymbolConfiguration(cfg)
-        iconView.contentTintColor = call.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
-
-        let attr = buildAttributedText(call: call, isExpanded: isExpanded, typography: typography, theme: theme)
-        let leftPad: CGFloat = 26
-        let rightPad: CGFloat = canExpand ? 26 : 10
-        let topPad: CGFloat = 5
-        let bottomPad: CGFloat = 5
-        let textWidth = max(1, width - leftPad - rightPad)
-        let textHeight = textView.configure(attributedText: attr, width: textWidth)
-        textView.selectedRange = selectedRange
-        textView.frame = CGRect(x: leftPad, y: topPad, width: textWidth, height: textHeight)
-
-        let totalHeight = max(26, textHeight + topPad + bottomPad)
-        iconView.frame = CGRect(x: 9, y: floor((min(totalHeight, 26) - 12) * 0.5), width: 12, height: 12)
-
-        toggleButton.isHidden = !canExpand
-        if canExpand {
-            let chevron = isExpanded ? "chevron.down" : "chevron.right"
-            toggleButton.image = NSImage(systemSymbolName: chevron, accessibilityDescription: isExpanded ? "Collapse" : "Expand")?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-            toggleButton.contentTintColor = theme.secondaryForeground
-            toggleButton.frame = CGRect(x: width - 22, y: 3, width: 18, height: 20)
-        }
-
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = theme.toolBackground.cgColor
-            layer?.cornerRadius = 5
-        }
-        return totalHeight
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
     }
 
-    private func buildAttributedText(
-        call: PCodePeekToolCall,
+    /// Single source of truth for rendered tool card text (shared by drawing and copy).
+    static func attributedText(
+        for call: PCodePeekToolCall,
         isExpanded: Bool,
         typography: PCodeTypographySnapshot,
         theme: PCodeTranscriptTheme
@@ -877,6 +940,59 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         return out
     }
 
+    func configure(
+        call: PCodePeekToolCall,
+        isExpanded: Bool,
+        attributedText: NSAttributedString,
+        width: CGFloat,
+        theme: PCodeTranscriptTheme,
+        selectedRange: NSRange?,
+        onToggle: @escaping () -> Void
+    ) -> CGFloat {
+        self.onToggle = onToggle
+        self.lastTheme = theme
+        let summary = call.summaryText
+        let canExpand = summary.count > 90 || summary.contains("\n")
+
+        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+        let symbolName = call.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
+        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: call.failed ? "Failed" : "Succeeded")?
+            .withSymbolConfiguration(cfg)
+        iconView.contentTintColor = call.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
+
+        let leftPad: CGFloat = 26
+        let rightPad: CGFloat = canExpand ? 26 : 10
+        let topPad: CGFloat = 5
+        let bottomPad: CGFloat = 5
+        let textWidth = max(1, width - leftPad - rightPad)
+        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+        textView.selectedRange = selectedRange
+        textView.frame = CGRect(x: leftPad, y: topPad, width: textWidth, height: textHeight)
+
+        let totalHeight = max(26, textHeight + topPad + bottomPad)
+        iconView.frame = CGRect(x: 9, y: floor((min(totalHeight, 26) - 12) * 0.5), width: 12, height: 12)
+
+        toggleButton.isHidden = !canExpand
+        if canExpand {
+            let chevron = isExpanded ? "chevron.down" : "chevron.right"
+            toggleButton.image = NSImage(systemSymbolName: chevron, accessibilityDescription: isExpanded ? "Collapse" : "Expand")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+            toggleButton.contentTintColor = theme.secondaryForeground
+            toggleButton.frame = CGRect(x: width - 22, y: 3, width: 18, height: 20)
+        }
+
+        applyLayerColors()
+        return totalHeight
+    }
+
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = theme.toolBackground.cgColor
+            layer?.cornerRadius = 5
+        }
+    }
+
     @objc private func togglePressed() {
         onToggle?()
     }
@@ -907,38 +1023,43 @@ final class PCodeStatusRowView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
-    func configure(
-        status: PCodePeekTurn.Status,
-        width: CGFloat,
+    /// Single source of truth for rendered status text (shared by drawing and copy).
+    static func displayLabel(for status: PCodePeekTurn.Status) -> String {
+        switch status {
+        case .running: return "In progress"
+        case .cancelled: return "Cancelled"
+        case .failed: return "Failed"
+        case .complete: return "Complete"
+        }
+    }
+
+    static func attributedText(
+        for status: PCodePeekTurn.Status,
         typography: PCodeTypographySnapshot,
-        theme: PCodeTranscriptTheme,
-        selectedRange: NSRange?
-    ) -> CGFloat {
-        let label: String
+        theme: PCodeTranscriptTheme
+    ) -> NSAttributedString {
         let color: NSColor
         switch status {
-        case .running:
-            label = "In progress"
-            color = theme.accent
-        case .cancelled:
-            label = "Cancelled"
-            color = .systemOrange
-        case .failed:
-            label = "Failed"
-            color = .systemRed
-        case .complete:
-            label = "Complete"
-            color = theme.secondaryForeground
+        case .running: color = theme.accent
+        case .cancelled: color = .systemOrange
+        case .failed: color = .systemRed
+        case .complete: color = theme.secondaryForeground
         }
-
-        let attr = NSAttributedString(
-            string: label,
+        return NSAttributedString(
+            string: displayLabel(for: status),
             attributes: [
                 .font: typography.proseNSFont(scale: 0.80, weight: .medium),
                 .foregroundColor: color,
             ])
-        let textW = min(width, ceil(attr.size().width) + 2)
-        let textH = textView.configure(attributedText: attr, width: textW)
+    }
+
+    func configure(
+        attributedText: NSAttributedString,
+        width: CGFloat,
+        selectedRange: NSRange?
+    ) -> CGFloat {
+        let textW = min(width, ceil(attributedText.size().width) + 2)
+        let textH = textView.configure(attributedText: attributedText, width: textW)
         textView.selectedRange = selectedRange
         textView.frame = CGRect(x: 8, y: 3, width: textW, height: textH)
         return textH + 6

@@ -2,6 +2,12 @@ import AppKit
 import Foundation
 import Markdown
 
+/// One cell inside a GFM table, holding both raw inline Markdown and plain text.
+struct PCodeMarkdownTableCell: Equatable {
+    let markdown: String
+    let plainText: String
+}
+
 /// Structured GFM table extracted from Markdown AST.
 struct PCodeMarkdownTable: Equatable {
     enum Alignment: Equatable {
@@ -10,19 +16,19 @@ struct PCodeMarkdownTable: Equatable {
         case right
     }
 
-    let headers: [String]
+    let headers: [PCodeMarkdownTableCell]
     let alignments: [Alignment]
-    let rows: [[String]]
+    let rows: [[PCodeMarkdownTableCell]]
 
-    /// Plain-text tab-separated representation for cross-item copy.
+    /// Plain-text tab-separated representation (without raw Markdown syntax) for cross-item copy.
     var plainText: String {
         var lines: [String] = []
         lines.reserveCapacity(rows.count + 1)
         if !headers.isEmpty {
-            lines.append(headers.joined(separator: "\t"))
+            lines.append(headers.map(\.plainText).joined(separator: "\t"))
         }
         for row in rows {
-            lines.append(row.joined(separator: "\t"))
+            lines.append(row.map(\.plainText).joined(separator: "\t"))
         }
         return lines.joined(separator: "\n")
     }
@@ -32,9 +38,9 @@ struct PCodeMarkdownTable: Equatable {
 enum PCodeMarkdownBlock: Equatable {
     /// One or more contiguous prose elements (paragraphs, headings, lists, blockquotes, rules)
     /// rendered together in a single TextKit 2 block view so selection flows naturally across them.
-    case prose(markdown: String)
+    case prose(markdown: String, referenceDefinitions: String = "")
     /// Fenced or indented code block (chunked to <= `maxCodeLinesPerItem` lines).
-    case codeBlock(language: String?, code: String, chunkIndex: Int, totalChunks: Int)
+    case codeBlock(language: String?, code: String, fullCode: String, chunkIndex: Int, totalChunks: Int)
     /// GitHub Flavored Markdown table.
     case table(PCodeMarkdownTable)
 }
@@ -57,6 +63,8 @@ enum PCodeTranscriptMarkdown {
 
         let document = Document(parsing: markdown, options: [])
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+        let refDefs = extractLinkReferenceDefinitions(from: lines, document: document)
+
         var blocks: [PCodeMarkdownBlock] = []
         var pendingProseParts: [String] = []
 
@@ -65,7 +73,7 @@ enum PCodeTranscriptMarkdown {
             let combined = pendingProseParts.joined(separator: "\n\n")
             pendingProseParts.removeAll(keepingCapacity: true)
             if !combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                blocks.append(.prose(markdown: combined))
+                blocks.append(.prose(markdown: combined, referenceDefinitions: refDefs))
             }
         }
 
@@ -82,6 +90,7 @@ enum PCodeTranscriptMarkdown {
                     blocks.append(.codeBlock(
                         language: normalizedLang,
                         code: chunk,
+                        fullCode: rawCode,
                         chunkIndex: idx,
                         totalChunks: chunks.count))
                 }
@@ -103,13 +112,14 @@ enum PCodeTranscriptMarkdown {
     /// Render a prose Markdown slice into a rich `NSAttributedString` for `PCodeTextKit2BlockView`.
     static func attributedString(
         forProse markdown: String,
+        referenceDefinitions: String = "",
         typography: PCodeTypographySnapshot,
         theme: PCodeTranscriptTheme
     ) -> NSAttributedString {
-        let document = Document(parsing: markdown, options: [])
+        let parseInput = referenceDefinitions.isEmpty ? markdown : (markdown + "\n\n" + referenceDefinitions)
+        let document = Document(parsing: parseInput, options: [])
         var renderer = ProseAttributedRenderer(typography: typography, theme: theme)
         renderer.visit(document)
-        // Trim any single trailing newline added between blocks.
         let result = renderer.result
         while result.length > 0 && (result.string as NSString).character(at: result.length - 1) == 0x0A {
             result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
@@ -117,26 +127,34 @@ enum PCodeTranscriptMarkdown {
         return result
     }
 
-    /// Render inline Markdown (used for table cells).
+    /// Render inline-only Markdown (used for table cells so `- foo`, `# title`, `---` never
+    /// become block-level lists, headings, or rules inside a table cell).
     static func attributedString(
-        forInline markdown: String,
+        forInlineCell markdown: String,
         typography: PCodeTypographySnapshot,
         theme: PCodeTranscriptTheme,
         scale: CGFloat = 0.92,
         weight: NSFont.Weight? = nil
     ) -> NSAttributedString {
-        let document = Document(parsing: markdown, options: [])
+        // Parse as a 1x1 GFM table cell so cmark-gfm parses strictly inline content.
+        let escaped = markdown.replacingOccurrences(of: "|", with: "\\|")
+        let synthetic = "| \(escaped) |\n| --- |"
+        let doc = Document(parsing: synthetic, options: [])
         var renderer = ProseAttributedRenderer(
             typography: typography,
             theme: theme,
             baseScale: scale,
             baseWeightOverride: weight)
-        renderer.visit(document)
-        let result = renderer.result
-        while result.length > 0 && (result.string as NSString).character(at: result.length - 1) == 0x0A {
-            result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
+        if let table = doc.children.first(where: { $0 is Table }) as? Table,
+           let firstCell = table.head.cells.first(where: { _ in true })
+        {
+            for child in firstCell.children {
+                renderer.visit(child)
+            }
+        } else {
+            renderer.appendLiteral(markdown)
         }
-        return result
+        return renderer.result
     }
 
     static func chunkLines(_ text: String, maxLines: Int) -> [String] {
@@ -151,6 +169,32 @@ enum PCodeTranscriptMarkdown {
             i = end
         }
         return chunks
+    }
+
+    /// Extract link reference definitions (`[label]: url`) that cmark-gfm consumes during parsing
+    /// (so they do not appear in `document.children`) and preserve them for sliced prose blocks.
+    private static func extractLinkReferenceDefinitions(
+        from lines: [Substring],
+        document: Document
+    ) -> String {
+        var covered = IndexSet()
+        for child in document.children {
+            if let range = child.range {
+                let start = max(0, range.lowerBound.line - 1)
+                let end = min(lines.count - 1, range.upperBound.line - 1)
+                if start <= end {
+                    covered.insert(integersIn: start...end)
+                }
+            }
+        }
+        var defs: [String] = []
+        for idx in lines.indices where !covered.contains(idx) {
+            let trimmed = lines[idx].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("["), trimmed.contains("]:") {
+                defs.append(String(lines[idx]))
+            }
+        }
+        return defs.joined(separator: "\n")
     }
 
     private static func sourceSlice(for markup: any Markup, in lines: [Substring]) -> String? {
@@ -169,19 +213,17 @@ enum PCodeTranscriptMarkdown {
             case .left, .none: return .left
             }
         }
-        let headers: [String] = Array(table.head.cells).map { cell in
-            inlineSource(for: cell)
-        }
-        let rows: [[String]] = Array(table.body.rows).map { row in
-            Array(row.cells).map { cell in
-                inlineSource(for: cell)
-            }
+        let headers = Array(table.head.cells).map(extractCell)
+        let rows = Array(table.body.rows).map { row in
+            Array(row.cells).map(extractCell)
         }
         return PCodeMarkdownTable(headers: headers, alignments: alignments, rows: rows)
     }
 
-    private static func inlineSource(for cell: Table.Cell) -> String {
-        cell.children.map { $0.format() }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func extractCell(_ cell: Table.Cell) -> PCodeMarkdownTableCell {
+        let md = cell.children.map { $0.format() }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        let plain = cell.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return PCodeMarkdownTableCell(markdown: md, plainText: plain)
     }
 }
 
@@ -223,6 +265,10 @@ private struct ProseAttributedRenderer: MarkupWalker {
         self.baseScale = baseScale
         self.baseWeightOverride = baseWeightOverride
         self.currentScale = baseScale
+    }
+
+    mutating func appendLiteral(_ string: String) {
+        appendInlineText(string)
     }
 
     private var effectiveWeight: NSFont.Weight {
@@ -295,6 +341,33 @@ private struct ProseAttributedRenderer: MarkupWalker {
         }
     }
 
+    private mutating func consumePendingListPrefixIfPresent() -> Bool {
+        guard let prefix = pendingListPrefix else { return false }
+        pendingListPrefix = nil
+        let markerAttrs: [NSAttributedString.Key: Any] = [
+            .font: typography.proseNSFont(scale: currentScale, weight: typography.weight.nsFontWeight),
+            .foregroundColor: theme.secondaryForeground,
+        ]
+        result.append(NSAttributedString(string: prefix + "\t", attributes: markerAttrs))
+        return true
+    }
+
+    private mutating func flushPendingListPrefixAsStandaloneLine() {
+        guard let leftover = pendingListPrefix else { return }
+        pendingListPrefix = nil
+        ensureNewlineBeforeBlock()
+        let start = result.length
+        result.append(NSAttributedString(
+            string: leftover + "\n",
+            attributes: [
+                .font: typography.proseNSFont(scale: currentScale),
+                .foregroundColor: theme.secondaryForeground,
+            ]))
+        applyBlockAttributes(
+            to: NSRange(location: start, length: result.length - start),
+            style: paragraphStyle(scale: currentScale, spacingAfter: 2, isListItem: true))
+    }
+
     mutating func visitHeading(_ heading: Heading) {
         ensureNewlineBeforeBlock()
         let level = min(max(heading.level, 1), 6)
@@ -304,6 +377,7 @@ private struct ProseAttributedRenderer: MarkupWalker {
         currentScale = Self.headingScales[level - 1] * baseScale
 
         let start = result.length
+        let hasPrefix = consumePendingListPrefixIfPresent()
         descendInto(heading)
         result.append(NSAttributedString(string: "\n"))
         let range = NSRange(location: start, length: result.length - start)
@@ -311,7 +385,11 @@ private struct ProseAttributedRenderer: MarkupWalker {
         let spacingAfter: CGFloat = level <= 2 ? 6 : 4
         applyBlockAttributes(
             to: range,
-            style: paragraphStyle(scale: currentScale, spacingBefore: spacingBefore, spacingAfter: spacingAfter))
+            style: paragraphStyle(
+                scale: currentScale,
+                spacingBefore: spacingBefore,
+                spacingAfter: spacingAfter,
+                isListItem: hasPrefix))
 
         inHeading = false
         headingLevel = 0
@@ -321,15 +399,7 @@ private struct ProseAttributedRenderer: MarkupWalker {
     mutating func visitParagraph(_ paragraph: Paragraph) {
         ensureNewlineBeforeBlock()
         let start = result.length
-        let hasPrefix = pendingListPrefix != nil
-        if let prefix = pendingListPrefix {
-            pendingListPrefix = nil
-            let markerAttrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(scale: currentScale, weight: typography.weight.nsFontWeight),
-                .foregroundColor: theme.secondaryForeground,
-            ]
-            result.append(NSAttributedString(string: prefix + "\t", attributes: markerAttrs))
-        }
+        let hasPrefix = consumePendingListPrefixIfPresent()
 
         descendInto(paragraph)
         result.append(NSAttributedString(string: "\n"))
@@ -341,18 +411,22 @@ private struct ProseAttributedRenderer: MarkupWalker {
     }
 
     mutating func visitBlockQuote(_ blockQuote: BlockQuote) {
+        // Flush any outer list marker before entering a nested blockquote so it stays outside the quote bar.
+        flushPendingListPrefixAsStandaloneLine()
         blockquoteDepth += 1
         descendInto(blockQuote)
         blockquoteDepth -= 1
     }
 
     mutating func visitUnorderedList(_ unorderedList: UnorderedList) {
+        flushPendingListPrefixAsStandaloneLine()
         listStack.append(ListState(ordered: false, nextIndex: 1))
         descendInto(unorderedList)
         listStack.removeLast()
     }
 
     mutating func visitOrderedList(_ orderedList: OrderedList) {
+        flushPendingListPrefixAsStandaloneLine()
         listStack.append(ListState(ordered: true, nextIndex: Int(orderedList.startIndex)))
         descendInto(orderedList)
         listStack.removeLast()
@@ -372,25 +446,57 @@ private struct ProseAttributedRenderer: MarkupWalker {
         }
         pendingListPrefix = prefix
         descendInto(listItem)
-        // If a list item contained no paragraph (e.g. empty item), emit marker anyway.
-        if let leftover = pendingListPrefix {
-            pendingListPrefix = nil
-            ensureNewlineBeforeBlock()
+        flushPendingListPrefixAsStandaloneLine()
+    }
+
+    /// Render code blocks nested inside lists or blockquotes as indented monospaced lines
+    /// so they are never dropped by `MarkupWalker`'s default traversal.
+    mutating func visitCodeBlock(_ codeBlock: CodeBlock) {
+        ensureNewlineBeforeBlock()
+        let start = result.length
+        let hasPrefix = consumePendingListPrefixIfPresent()
+        let raw = codeBlock.code.hasSuffix("\n") ? String(codeBlock.code.dropLast()) : codeBlock.code
+        let codeFont = typography.codeNSFont(scale: currentScale * typography.codeBlockScale)
+        let display = raw.replacingOccurrences(of: "\n", with: "\u{2028}")
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: codeFont,
+            .foregroundColor: theme.foreground,
+            .backgroundColor: theme.codeBackground,
+        ]
+        result.append(NSAttributedString(string: display + "\n", attributes: attrs))
+        let range = NSRange(location: start, length: result.length - start)
+        applyBlockAttributes(
+            to: range,
+            style: paragraphStyle(
+                scale: currentScale * typography.codeBlockScale,
+                spacingBefore: 3,
+                spacingAfter: 6,
+                isListItem: hasPrefix))
+    }
+
+    /// Render tables nested inside lists or blockquotes cleanly row-by-row.
+    mutating func visitTable(_ table: Table) {
+        ensureNewlineBeforeBlock()
+        flushPendingListPrefixAsStandaloneLine()
+        let rows: [[String]] = [Array(table.head.cells).map(\.plainText)]
+            + Array(table.body.rows).map { Array($0.cells).map(\.plainText) }
+        for (idx, row) in rows.enumerated() {
             let start = result.length
-            result.append(NSAttributedString(
-                string: leftover + "\n",
-                attributes: [
-                    .font: typography.proseNSFont(scale: currentScale),
-                    .foregroundColor: theme.secondaryForeground,
-                ]))
+            let weight = idx == 0 ? typography.weight.nsEmphasisWeight : typography.weight.nsFontWeight
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: typography.codeNSFont(scale: currentScale * 0.90, weight: weight),
+                .foregroundColor: idx == 0 ? theme.foreground : theme.secondaryForeground,
+            ]
+            result.append(NSAttributedString(string: row.joined(separator: "  |  ") + "\n", attributes: attrs))
             applyBlockAttributes(
                 to: NSRange(location: start, length: result.length - start),
-                style: paragraphStyle(scale: currentScale, spacingAfter: 3, isListItem: true))
+                style: paragraphStyle(scale: currentScale * 0.90, spacingAfter: 3))
         }
     }
 
     mutating func visitThematicBreak(_ thematicBreak: ThematicBreak) {
         ensureNewlineBeforeBlock()
+        flushPendingListPrefixAsStandaloneLine()
         let start = result.length
         let attrs: [NSAttributedString.Key: Any] = [
             .font: typography.proseNSFont(scale: 0.6),
@@ -408,6 +514,7 @@ private struct ProseAttributedRenderer: MarkupWalker {
         // Security invariant: raw HTML is always rendered as literal text.
         ensureNewlineBeforeBlock()
         let start = result.length
+        let hasPrefix = consumePendingListPrefixIfPresent()
         let literal = html.rawHTML.trimmingCharacters(in: .newlines)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: typography.codeNSFont(scale: currentScale * typography.inlineCodeScale),
@@ -416,7 +523,7 @@ private struct ProseAttributedRenderer: MarkupWalker {
         result.append(NSAttributedString(string: literal + "\n", attributes: attrs))
         applyBlockAttributes(
             to: NSRange(location: start, length: result.length - start),
-            style: paragraphStyle(scale: currentScale, spacingAfter: 6))
+            style: paragraphStyle(scale: currentScale, spacingAfter: 6, isListItem: hasPrefix))
     }
 
     // MARK: - Inline Nodes
@@ -430,7 +537,9 @@ private struct ProseAttributedRenderer: MarkupWalker {
     }
 
     mutating func visitLineBreak(_ lineBreak: LineBreak) {
-        appendInlineText("\n")
+        // Use Unicode Line Separator so hard line breaks stay in the same paragraph
+        // (preserving hanging list indents and avoiding extra paragraphSpacing).
+        appendInlineText("\u{2028}")
     }
 
     mutating func visitStrong(_ strong: Strong) {

@@ -233,16 +233,17 @@ struct PCodeTranscriptTests {
         let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
         #expect(blocks.count == 4)
 
-        if case .prose(let p0) = blocks[0] {
+        if case .prose(let p0, _) = blocks[0] {
             #expect(p0.contains("# Title"))
             #expect(p0.contains("Intro paragraph"))
         } else {
             Issue.record("Expected prose block at index 0")
         }
 
-        if case .codeBlock(let lang, let code, let chunkIdx, let total) = blocks[1] {
+        if case .codeBlock(let lang, let code, let fullCode, let chunkIdx, let total) = blocks[1] {
             #expect(lang == "swift")
             #expect(code == "let x = 42")
+            #expect(fullCode == "let x = 42")
             #expect(chunkIdx == 0)
             #expect(total == 1)
         } else {
@@ -250,35 +251,70 @@ struct PCodeTranscriptTests {
         }
 
         if case .table(let table) = blocks[2] {
-            #expect(table.headers == ["Col A", "Col B"])
+            #expect(table.headers.map(\.plainText) == ["Col A", "Col B"])
             #expect(table.alignments == [.left, .right])
-            #expect(table.rows == [["one", "1"], ["two", "2"]])
+            #expect(table.rows.map { $0.map(\.plainText) } == [["one", "1"], ["two", "2"]])
         } else {
             Issue.record("Expected table block at index 2")
         }
 
-        if case .prose(let p3) = blocks[3] {
+        if case .prose(let p3, _) = blocks[3] {
             #expect(p3.contains("Closing paragraph."))
         } else {
             Issue.record("Expected prose block at index 3")
         }
     }
 
-    @Test func markdownChunksLongCodeBlocksAt200Lines() {
+    @Test func markdownChunksLongCodeBlocksAt200LinesAndPreservesFullCopy() {
         let lines = (1...450).map { "line \($0)" }.joined(separator: "\n")
         let md = "```txt\n\(lines)\n```"
         let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
         #expect(blocks.count == 3)
-        if case .codeBlock(_, _, let idx0, let total0) = blocks[0] {
+        if case .codeBlock(_, let chunk0, let full0, let idx0, let total0) = blocks[0] {
             #expect(idx0 == 0 && total0 == 3)
+            #expect(chunk0.split(separator: "\n").count == 200)
+            #expect(full0 == lines)
         } else {
             Issue.record("Expected chunked code block 0")
         }
-        if case .codeBlock(_, _, let idx2, let total2) = blocks[2] {
+        if case .codeBlock(_, _, let full2, let idx2, let total2) = blocks[2] {
             #expect(idx2 == 2 && total2 == 3)
+            #expect(full2 == lines)
         } else {
             Issue.record("Expected chunked code block 2")
         }
+    }
+
+    @Test func markdownHandlesNestedCodeBlocksAndReferenceLinks() {
+        let snap = PCodeTypographySnapshot(style: .sansAndMono, size: 14, weight: .medium, codeFamilyAvailable: false)
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let md = """
+        - Item with nested code:
+
+          ```swift
+          let nested = true
+          ```
+
+        See [docs][ref1] for details.
+
+        [ref1]: https://example.com/docs
+        """
+        let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
+        #expect(blocks.count == 1)
+        guard case .prose(let proseMD, let refDefs) = blocks[0] else {
+            Issue.record("Expected single prose block")
+            return
+        }
+        let attr = PCodeTranscriptMarkdown.attributedString(
+            forProse: proseMD,
+            referenceDefinitions: refDefs,
+            typography: snap,
+            theme: theme)
+        let str = attr.string as NSString
+        #expect(str.contains("let nested = true"))
+        let docsRange = str.range(of: "docs")
+        #expect(docsRange.location != NSNotFound)
+        #expect(attr.attribute(.link, at: docsRange.location, effectiveRange: nil) as? URL == URL(string: "https://example.com/docs"))
     }
 
     @Test func markdownProseFiltersLinksRendersRawHTMLAndScalesHeadingInlineCode() {
@@ -334,18 +370,40 @@ struct PCodeTranscriptTests {
         let tokens = await PCodePrismSyntaxHighlighter.shared.tokenize(code: code, language: "swift")
         let reconstructed = tokens.map(\.content).joined()
         #expect(reconstructed == code)
+        #expect(tokens.contains { $0.kind == .keyword })
+        #expect(tokens.contains { $0.kind == .comment })
         #expect(PCodePrismSyntaxHighlighter.shared.cachedTokens(code: code, language: "swift") == tokens)
+
+        let pyTokens = await PCodePrismSyntaxHighlighter.shared.tokenize(code: "def greet(name):\n    return f'hi {name}'", language: "py")
+        #expect(pyTokens.contains { $0.kind == .keyword })
+    }
+
+    @Test @MainActor func textKit2PastEndOfLineClickOnParagraphTwoDoesNotOverflow() {
+        let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 420, height: 120))
+        let attr = NSAttributedString(
+            string: "First paragraph\nSecond line 😀",
+            attributes: [.font: NSFont.systemFont(ofSize: 14)])
+        let h = view.measureHeight(for: attr, width: 420)
+        view.frame.size.height = h
+
+        // Clicking far past the right edge of paragraph 2 must clamp cleanly to end of line 2 (no Int.max overflow).
+        let offset = view.utf16Offset(at: CGPoint(x: 410, y: h - 4))
+        #expect(offset == (attr.string as NSString).length)
+
+        // Clicking far past the right edge of paragraph 1 must clamp to end of paragraph 1 (15), not end of document.
+        let p1Offset = view.utf16Offset(at: CGPoint(x: 410, y: 4))
+        #expect(p1Offset == 15)
     }
 
     // MARK: - Rich Block Document View Mounting & Selection
 
     @Test @MainActor func documentViewMountsRichBlocksAndExtractsSelection() {
-        let snap = PCodeTypographySnapshot(style: .sansAndMono, size: 14, weight: .medium, codeFamilyAvailable: false)
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
         scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 600)
         scrollView.layoutSubtreeIfNeeded()
 
+        let longCode = (1...205).map { "row_\($0)" }.joined(separator: "\n")
         let turns = [
             PCodePeekTurn(
                 id: 0,
@@ -355,12 +413,12 @@ struct PCodeTranscriptTests {
                     Here is code:
 
                     ```swift
-                    let x = 1
+                    \(longCode)
                     ```
 
                     | Key | Val |
                     | --- | --- |
-                    | a | 1 |
+                    | **a** | 1 |
                     """),
                     .tool(PCodePeekToolCall(
                         id: 1,
@@ -370,18 +428,27 @@ struct PCodeTranscriptTests {
                         elapsedSeconds: 0.2,
                         command: "")),
                 ],
-                status: .complete,
+                status: .running,
                 side: false),
         ]
 
         let items = PCodeTranscriptItem.flatten(turns: turns)
-        // prompt + prose + codeBlock + table + tool = 5 items
-        #expect(items.count == 5)
+        // prompt + prose + 2 code chunks + table + tool + status = 7 items
+        #expect(items.count == 7)
         scrollView.transcriptDocumentView.setItems(items, pinToBottom: false)
         #expect(scrollView.transcriptDocumentView.layoutEngine.totalHeight > 120)
 
         scrollView.transcriptDocumentView.selectAll(nil)
         #expect(scrollView.transcriptDocumentView.selection != nil)
-        #expect(scrollView.transcriptDocumentView.selection?.isEmpty == false)
+        let copied = scrollView.transcriptDocumentView.selectedPlainText()
+        // Contiguous chunks of the same code block join with single newline, not blank line.
+        #expect(copied.contains("row_200\nrow_201"))
+        #expect(!copied.contains("row_200\n\nrow_201"))
+        // Table copies plain text (no raw **markdown**).
+        #expect(copied.contains("a\t1"))
+        #expect(!copied.contains("**a**"))
+        // Tool & status copy exact rendered labels.
+        #expect(copied.contains("read_file  app/macos/PCode/PCodePeek.swift  (0.2s)"))
+        #expect(copied.contains("In progress"))
     }
 }
