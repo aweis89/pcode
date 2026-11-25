@@ -4644,7 +4644,12 @@ class PromptLayout:
                         lambda: editor_mode_badge(session.app),
                         dont_extend_width=True,
                     ),
-                    filter=Condition(lambda: session.app.editing_mode == EditingMode.VI),
+                    filter=Condition(
+                        lambda: (
+                            session.app.editing_mode == EditingMode.VI
+                            and not self.badge_on_toolbar()
+                        )
+                    ),
                 ),
                 Window(FormattedTextControl("─┘"), width=2, style="class:frame.border"),
             ],
@@ -4740,12 +4745,29 @@ class PromptLayout:
         )
         return editor_frame
 
-    def bottom_toolbar(self) -> Window:
-        return Window(
-            FormattedTextControl(
-                lambda: self.session.bottom_toolbar, style="class:bottom-toolbar.text"
-            ),
-            style="class:bottom-toolbar",
+    def badge_on_toolbar(self) -> bool:
+        """Docked, the vi mode badge floats right on the status bar, not in the box."""
+        return dock.active() is not None and self.session.bottom_toolbar is not None
+
+    def bottom_toolbar(self) -> Container:
+        session = self.session
+        return VSplit(
+            [
+                Window(
+                    FormattedTextControl(
+                        lambda: session.bottom_toolbar, style="class:bottom-toolbar.text"
+                    ),
+                    style="class:bottom-toolbar",
+                ),
+                ConditionalContainer(
+                    Label(lambda: editor_mode_badge(session.app), dont_extend_width=True),
+                    filter=Condition(
+                        lambda: (
+                            session.app.editing_mode == EditingMode.VI and self.badge_on_toolbar()
+                        )
+                    ),
+                ),
+            ],
             height=1,
         )
 
