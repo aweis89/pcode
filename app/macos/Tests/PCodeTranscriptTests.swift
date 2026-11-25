@@ -209,4 +209,179 @@ struct PCodeTranscriptTests {
         // Clicking past the end of the line (empty trailing margin) returns nil.
         #expect(view.linkURL(at: CGPoint(x: 415, y: 4)) == nil)
     }
+
+    // MARK: - Markdown Parser & Attributed Prose Builder
+
+    @Test func markdownSplitsProseCodeBlocksAndTables() {
+        let md = """
+        # Title
+
+        Intro paragraph with `inline` code.
+
+        ```swift
+        let x = 42
+        ```
+
+        | Col A | Col B |
+        | :--- | ---: |
+        | one | 1 |
+        | two | 2 |
+
+        Closing paragraph.
+        """
+
+        let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
+        #expect(blocks.count == 4)
+
+        if case .prose(let p0) = blocks[0] {
+            #expect(p0.contains("# Title"))
+            #expect(p0.contains("Intro paragraph"))
+        } else {
+            Issue.record("Expected prose block at index 0")
+        }
+
+        if case .codeBlock(let lang, let code, let chunkIdx, let total) = blocks[1] {
+            #expect(lang == "swift")
+            #expect(code == "let x = 42")
+            #expect(chunkIdx == 0)
+            #expect(total == 1)
+        } else {
+            Issue.record("Expected code block at index 1")
+        }
+
+        if case .table(let table) = blocks[2] {
+            #expect(table.headers == ["Col A", "Col B"])
+            #expect(table.alignments == [.left, .right])
+            #expect(table.rows == [["one", "1"], ["two", "2"]])
+        } else {
+            Issue.record("Expected table block at index 2")
+        }
+
+        if case .prose(let p3) = blocks[3] {
+            #expect(p3.contains("Closing paragraph."))
+        } else {
+            Issue.record("Expected prose block at index 3")
+        }
+    }
+
+    @Test func markdownChunksLongCodeBlocksAt200Lines() {
+        let lines = (1...450).map { "line \($0)" }.joined(separator: "\n")
+        let md = "```txt\n\(lines)\n```"
+        let blocks = PCodeTranscriptMarkdown.parseBlocks(md)
+        #expect(blocks.count == 3)
+        if case .codeBlock(_, _, let idx0, let total0) = blocks[0] {
+            #expect(idx0 == 0 && total0 == 3)
+        } else {
+            Issue.record("Expected chunked code block 0")
+        }
+        if case .codeBlock(_, _, let idx2, let total2) = blocks[2] {
+            #expect(idx2 == 2 && total2 == 3)
+        } else {
+            Issue.record("Expected chunked code block 2")
+        }
+    }
+
+    @Test func markdownProseFiltersLinksRendersRawHTMLAndScalesHeadingInlineCode() {
+        let snap = PCodeTypographySnapshot(style: .sansAndMono, size: 14, weight: .medium, codeFamilyAvailable: false)
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let md = """
+        # Heading `codeInHeading`
+
+        Visit [safe](https://example.com) and [bad](javascript:alert(1)).
+
+        > Quoted line
+
+        <script>alert("x")</script>
+
+        ---
+        """
+        let attr = PCodeTranscriptMarkdown.attributedString(forProse: md, typography: snap, theme: theme)
+        let str = attr.string as NSString
+
+        // Inline code inside H1 should scale larger than body size (14 * 1.42 * 0.92 ≈ 18.29pt).
+        let codeRange = str.range(of: "codeInHeading")
+        #expect(codeRange.location != NSNotFound)
+        if let font = attr.attribute(.font, at: codeRange.location, effectiveRange: nil) as? NSFont {
+            #expect(font.pointSize > 16)
+        } else {
+            Issue.record("Expected font on heading inline code")
+        }
+        #expect(attr.attribute(.pcodeInlineCodeFill, at: codeRange.location, effectiveRange: nil) != nil)
+
+        // Safe link has .link; javascript: link does not.
+        let safeRange = str.range(of: "safe")
+        let badRange = str.range(of: "bad")
+        #expect(attr.attribute(.link, at: safeRange.location, effectiveRange: nil) as? URL == URL(string: "https://example.com"))
+        #expect(attr.attribute(.link, at: badRange.location, effectiveRange: nil) == nil)
+
+        // Blockquote carries depth attribute.
+        let quoteRange = str.range(of: "Quoted line")
+        #expect(attr.attribute(.pcodeBlockquoteDepth, at: quoteRange.location, effectiveRange: nil) as? Int == 1)
+
+        // Raw HTML is preserved as literal text.
+        #expect(str.contains("<script>alert(\"x\")</script>"))
+    }
+
+    // MARK: - Syntax Highlighter
+
+    @Test func syntaxHighlighterNormalizesLanguagesAndTokenizesSwift() async {
+        #expect(PCodePrismSyntaxHighlighter.normalizeLanguage("py") == "python")
+        #expect(PCodePrismSyntaxHighlighter.normalizeLanguage("TS") == "typescript")
+        #expect(PCodePrismSyntaxHighlighter.normalizeLanguage("sh") == "bash")
+        #expect(PCodePrismSyntaxHighlighter.normalizeLanguage(nil) == "plain")
+
+        let code = "let count = 42 // answer"
+        let tokens = await PCodePrismSyntaxHighlighter.shared.tokenize(code: code, language: "swift")
+        let reconstructed = tokens.map(\.content).joined()
+        #expect(reconstructed == code)
+        #expect(PCodePrismSyntaxHighlighter.shared.cachedTokens(code: code, language: "swift") == tokens)
+    }
+
+    // MARK: - Rich Block Document View Mounting & Selection
+
+    @Test @MainActor func documentViewMountsRichBlocksAndExtractsSelection() {
+        let snap = PCodeTypographySnapshot(style: .sansAndMono, size: 14, weight: .medium, codeFamilyAvailable: false)
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 600)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let turns = [
+            PCodePeekTurn(
+                id: 0,
+                prompt: "Show me a snippet and a table",
+                blocks: [
+                    .markdown(id: 0, text: """
+                    Here is code:
+
+                    ```swift
+                    let x = 1
+                    ```
+
+                    | Key | Val |
+                    | --- | --- |
+                    | a | 1 |
+                    """),
+                    .tool(PCodePeekToolCall(
+                        id: 1,
+                        name: "read_file",
+                        detail: "app/macos/PCode/PCodePeek.swift",
+                        failed: false,
+                        elapsedSeconds: 0.2,
+                        command: "")),
+                ],
+                status: .complete,
+                side: false),
+        ]
+
+        let items = PCodeTranscriptItem.flatten(turns: turns)
+        // prompt + prose + codeBlock + table + tool = 5 items
+        #expect(items.count == 5)
+        scrollView.transcriptDocumentView.setItems(items, pinToBottom: false)
+        #expect(scrollView.transcriptDocumentView.layoutEngine.totalHeight > 120)
+
+        scrollView.transcriptDocumentView.selectAll(nil)
+        #expect(scrollView.transcriptDocumentView.selection != nil)
+        #expect(scrollView.transcriptDocumentView.selection?.isEmpty == false)
+    }
 }

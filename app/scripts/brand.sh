@@ -64,6 +64,14 @@ if [ -d "$fonts_dir" ]; then
     fi
 fi
 
+# Bundled resources (e.g. prism-bundle.js for syntax highlighting).
+resources_dir="$here/resources"
+if [ -d "$resources_dir" ]; then
+    for f in "$resources_dir"/*; do
+        [ -f "$f" ] && cp "$f" "$app/Contents/Resources/"
+    done
+fi
+
 # Plain ad-hoc: this drops the hardened runtime and entitlements, which only
 # matter for notarization. Adding `-o runtime` would need --entitlements
 # macos/GhosttyReleaseLocal.entitlements too, or TCC prompts break.
