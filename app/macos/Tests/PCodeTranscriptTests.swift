@@ -650,7 +650,7 @@ struct PCodeTranscriptTests {
     }
 
     @Test func smoothScrollGlideConvergesCriticallyDampedWithoutOvershoot() {
-        var glide = PCodeSmoothScrollGlide(stiffness: 220.0, maxOffset: 480.0)
+        var glide = PCodeSmoothScrollGlide(minSpeed: 110.0, maxSpeed: 900.0, catchUpSeconds: 0.55, maxOffset: 2400.0)
         glide.addOffset(60.0)
         #expect(glide.isActive)
         #expect(glide.remainingOffset == 60.0)
@@ -670,7 +670,7 @@ struct PCodeTranscriptTests {
         }
         #expect(!glide.isActive)
         #expect(glide.remainingOffset == 0)
-        #expect(ticks > 5 && ticks < 180)
+        #expect(ticks > 5 && ticks < 240)
     }
 
     @Test @MainActor func textKit2KeepsTextStorageAttachedAndRespectsSurrogateBoundaries() {
