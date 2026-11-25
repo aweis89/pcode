@@ -386,11 +386,16 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
                 }
 
                 let lb = line.typographicBounds
+                // Extend left edge to `fragFrame.origin.x` so blockquote left accent bars are
+                // never clipped out during ink-sweep, and keep exact vertical bounds (no ±2pt
+                // overlap into adjacent lines).
+                let leftX = min(fragFrame.origin.x, fragFrame.origin.x + lb.origin.x - 6)
+                let rightX = fragFrame.origin.x + lb.origin.x + lb.width + 6
                 let lineRect = CGRect(
-                    x: fragFrame.origin.x + lb.origin.x - 6,
-                    y: fragFrame.origin.y + lb.origin.y - 2,
-                    width: lb.width + 12,
-                    height: lb.height + 4)
+                    x: leftX,
+                    y: fragFrame.origin.y + lb.origin.y,
+                    width: max(1, rightX - leftX),
+                    height: lb.height)
 
                 guard lineRect.intersects(expandedDirty) else { continue }
 

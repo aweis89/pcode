@@ -343,6 +343,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var smoothGlide = PCodeSmoothScrollGlide()
     private var lastDisplayLinkTargetTimestamp: CFTimeInterval?
     private var streamingTurnCounter: Int = 0
+    private var streamingMessageCounter: Int = 0
     private var displayLink: CADisplayLink?
     private var isDraggingSelection = false
     private var dragMoved = false
@@ -546,6 +547,17 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         itemIndexByID[id]
     }
 
+    /// Return whether an existing `.tool` or `.thinking` item is currently expanded by the user.
+    func isItemExpanded(id: String) -> Bool {
+        guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return false }
+        switch items[idx].payload {
+        case .tool(_, let isExpanded), .thinking(_, let isExpanded):
+            return isExpanded
+        default:
+            return false
+        }
+    }
+
     /// Insert or update a transcript item by its stable `id` (used by both live streaming
     /// and Phase 3 `call_id` snapshot upserts / `parent_call_id` nested inserts).
     @discardableResult
@@ -562,7 +574,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     id: item.id,
                     payload: item.payload,
                     spacingAfter: item.spacingAfter,
-                    revision: max(item.revision, existing.revision &+ 1))
+                    revision: max(item.revision, existing.revision &+ 1),
+                    depth: item.depth)
                 layoutEngine.updateSpacingAfter(at: existingIdx, spacingAfter: item.spacingAfter)
             } else {
                 if let oldView = mountedViews.removeValue(forKey: item.id) {
@@ -620,8 +633,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Start a new turn by appending the user prompt. Pass `forcePin: true` for user-submitted
     /// prompts so the view re-pins to bottom, or `false` when replaying/streaming background turns.
-    func beginStreamingTurn(prompt: String, isSide: Bool = false, forcePin: Bool = true) {
-        finishStreamingMessage()
+    func beginStreamingTurn(prompt: String, isSide: Bool = false, forcePin: Bool = true, reveal: Bool = true) {
+        finishStreamingMessage(reveal: reveal)
         streamingTurnCounter += 1
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-prompt",
@@ -631,7 +644,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             stickyBottom.pinToBottom()
             setHasUnreadStreamingContent(false)
         }
-        upsertItem(item, reveal: true)
+        upsertItem(item, reveal: reveal)
     }
 
     /// Begin streaming a new assistant Markdown message at the tail of the transcript.
@@ -647,27 +660,28 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Append a token delta to the active streaming message. Only settled top-level blocks
     /// are committed to the layout and reveal queue (zero raw `**bold` snapping).
-    func appendStreamingDelta(_ delta: String) {
+    func appendStreamingDelta(_ delta: String, reveal: Bool = true) {
         guard !delta.isEmpty else { return }
         if activeStream == nil {
-            beginStreamingMessage(id: "stream-msg-\(items.count)")
+            streamingMessageCounter += 1
+            beginStreamingMessage(id: "stream-msg-\(streamingMessageCounter)")
         }
         guard var stream = activeStream else { return }
         let settled = stream.settler.append(delta)
         activeStream = stream
         if !settled.isEmpty {
-            commitSettledBlocks(settled)
+            commitSettledBlocks(settled, reveal: reveal)
         }
     }
 
     /// Finalize the active streaming message: settle any remaining tail block into the reveal
     /// queue (never abruptly snapping/flushing active reveals) and attach Copy Markdown.
-    func finishStreamingMessage() {
+    func finishStreamingMessage(reveal: Bool = true) {
         guard var stream = activeStream else { return }
         let remaining = stream.settler.finish()
         activeStream = stream
         if !remaining.isEmpty {
-            commitSettledBlocks(remaining)
+            commitSettledBlocks(remaining, reveal: reveal)
         }
         guard let finalStream = activeStream else { return }
         // Attach full copyMarkdown to the first prose block of the finalized message.
@@ -680,13 +694,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 id: firstProseID,
                 payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: finalStream.settler.fullMarkdown),
                 spacingAfter: items[idx].spacingAfter,
-                revision: items[idx].revision &+ 1)
+                revision: items[idx].revision &+ 1,
+                depth: items[idx].depth)
         }
         activeStream = nil
         mountViews(in: visibleRect)
     }
 
-    private func commitSettledBlocks(_ blocks: [PCodeMarkdownBlock]) {
+    private func commitSettledBlocks(_ blocks: [PCodeMarkdownBlock], reveal: Bool) {
         guard var stream = activeStream, !blocks.isEmpty else { return }
         var activeCodeGroupID: String?
         var appended: [PCodeTranscriptItem] = []
@@ -738,7 +753,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             items.append(item)
             itemIndexByID[item.id] = idx
             layoutEngine.append(id: item.id, height: estHeight, spacingAfter: item.spacingAfter, measured: false)
-            enqueueRevealIfNeeded(for: item, estimatedHeight: estHeight)
+            if reveal {
+                enqueueRevealIfNeeded(for: item, estimatedHeight: estHeight)
+            }
         }
         if stickyBottom.mode == .userScrolledUp {
             setHasUnreadStreamingContent(true)
@@ -776,14 +793,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     }
 
     /// Finalize the current streaming turn with its terminal status.
-    func finishStreamingTurn(status: PCodePeekTurn.Status) {
-        finishStreamingMessage()
+    func finishStreamingTurn(status: PCodePeekTurn.Status, reveal: Bool = true) {
+        finishStreamingMessage(reveal: reveal)
         if status != .complete {
             let item = PCodeTranscriptItem(
                 id: "stream-turn-\(streamingTurnCounter)-status-\(items.count)",
                 payload: .status(status),
                 spacingAfter: 14)
-            upsertItem(item, reveal: true)
+            upsertItem(item, reveal: reveal)
         } else if let lastIdx = items.indices.last {
             items[lastIdx] = items[lastIdx].withSpacingAfter(18)
             layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 18)
@@ -798,6 +815,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         setHasUnreadStreamingContent(false)
         applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
         mountViews(in: visibleRect)
+        if !revealQueue.isEmpty {
+            ensureDisplayLinkRunning()
+        }
     }
 
     /// Explicitly unpin sticky-bottom tracking (e.g. Find jump or programmatic scroll-up).
@@ -898,6 +918,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         lastClipOriginY = originY
         mountViews(in: visibleRect)
+        if !revealQueue.isEmpty, window != nil {
+            ensureDisplayLinkRunning()
+        }
     }
 
     // MARK: - Mounting & Reuse Pool
@@ -953,10 +976,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 isFreshMount = true
             }
 
+            let indent = CGFloat(item.depth) * 16
+            let effectiveWidth = max(1, contentWidth - indent)
             let targetState = AppliedRowState(
                 itemID: item.id,
                 revision: item.revision,
-                width: contentWidth,
+                width: effectiveWidth,
                 appearanceGeneration: appearanceGeneration)
 
             let needsConfigure = isFreshMount
@@ -964,7 +989,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 || !layoutEngine.entries[idx].isMeasured
 
             if needsConfigure {
-                let measured = applyRowView(rowView, item: item, index: idx, width: contentWidth)
+                let measured = applyRowView(rowView, item: item, index: idx, width: effectiveWidth)
                 appliedStates[item.id] = targetState
 
                 let delta = layoutEngine.updateHeight(
@@ -990,6 +1015,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 rowView.setSelectedRange(selection?.localRange(forItem: idx, utf16Length: len))
             }
 
+            rowView.setHovered(hoveredItemID == item.id)
+
+            // Position `rowView.frame` BEFORE applying curtain masks so `bounds` is final.
+            let entry = layoutEngine.entries[idx]
+            let targetFrame = CGRect(
+                x: Self.horizontalPadding + indent,
+                y: entry.yOffset,
+                width: effectiveWidth,
+                height: entry.height)
+            if rowView.frame != targetFrame {
+                rowView.frame = targetFrame
+            }
+
             // Apply active reveal state (or clear if fully revealed).
             if let revealState = revealQueue.state(for: item.id) {
                 switch revealState.style {
@@ -1003,19 +1041,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             } else {
                 rowView.primaryTextView?.inkSweepFrontier = nil
                 rowView.setCurtainRevealProgress(nil)
-            }
-
-            rowView.setHovered(hoveredItemID == item.id)
-
-            let entry = layoutEngine.entries[idx]
-            let indent = CGFloat(item.depth) * 16
-            let targetFrame = CGRect(
-                x: Self.horizontalPadding + indent,
-                y: entry.yOffset,
-                width: max(1, contentWidth - indent),
-                height: entry.height)
-            if rowView.frame != targetFrame {
-                rowView.frame = targetFrame
             }
         }
 
@@ -1103,7 +1128,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return view.configure(
                 payload: payload,
                 attributedPatch: attr,
-                width: max(1, width - CGFloat(item.depth) * 16),
+                width: width,
                 typography: typography,
                 theme: theme,
                 documentView: self,
@@ -1115,7 +1140,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return view.configure(
                 isExpanded: isExpanded,
                 attributedText: attr,
-                width: max(1, width - CGFloat(item.depth) * 16),
+                width: width,
                 theme: theme,
                 selectedRange: localSel,
                 onToggle: { [weak self] in
@@ -1127,7 +1152,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
             return view.configure(
                 attributedText: attr,
-                width: max(1, width - CGFloat(item.depth) * 16),
+                width: width,
                 theme: theme,
                 selectedRange: localSel)
 
@@ -1157,7 +1182,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             id: id,
             payload: .tool(call, isExpanded: !isExpanded),
             spacingAfter: items[index].spacingAfter,
-            revision: items[index].revision &+ 1)
+            revision: items[index].revision &+ 1,
+            depth: items[index].depth)
         mountViews(in: visibleRect)
     }
 
@@ -1371,8 +1397,26 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         notifyGlideActiveIfNeeded()
 
         // 2. Step the visibility-gated visual reveal queue (ink-sweep / curtain).
+        var revealMadeProgress = false
         if !revealQueue.isEmpty {
+            let visMinY = visibleRect.minY
             let visMaxY = visibleRect.maxY
+
+            // Fast-forward items that are already completely above the viewport (e.g. after Jump to bottom).
+            let skippedAbove = revealQueue.completeEntries { [weak self] itemID in
+                guard let self,
+                      let idx = self.itemIndexByID[itemID],
+                      self.layoutEngine.entries.indices.contains(idx)
+                else { return true }
+                let entry = self.layoutEngine.entries[idx]
+                return entry.yOffset + entry.height <= visMinY
+            }
+            for update in skippedAbove {
+                guard let rowView = mountedViews[update.itemID] else { continue }
+                rowView.primaryTextView?.inkSweepFrontier = nil
+                rowView.setCurtainRevealProgress(nil)
+            }
+
             let updates = revealQueue.step(
                 dt: dt,
                 speedMultiplier: streamingSpeedMultiplier,
@@ -1383,6 +1427,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     else { return true }
                     return self.layoutEngine.entries[idx].yOffset < visMaxY - 2
                 })
+            revealMadeProgress = !updates.isEmpty
             for update in updates {
                 guard let rowView = mountedViews[update.itemID] else { continue }
                 switch update.style {
@@ -1394,8 +1439,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
         }
 
-        // Pause the display link as soon as both reveal queue and conveyor settle.
-        if !isStreamingAnimationActive {
+        // Pause the display link when idle OR when scrolled up with only offscreen reveals queued
+        // (avoids spinning at 120Hz while scrolled up; resumes on scroll/Jump to bottom).
+        if !smoothGlide.isActive && (revealQueue.isEmpty || !revealMadeProgress) {
             stopDisplayLink()
         }
     }

@@ -862,13 +862,44 @@ struct PCodeTranscriptTests {
         reducer.apply(.editCompleted(callID: "e1", parentCallID: "", path: "a.py", operation: "edit", patch: "@@ -1 +1 @@\n-x = 0\n+x = 1", added: 1, removed: 1, truncated: false), reveal: false)
         #expect(doc.items.filter { $0.kind == .diff }.count == 1)
 
-        // PlanUpdated upserts single card, PlanPreview(nil) clears it
+        // PlanUpdated upserts single card; PlanPreview(nil) restores authoritative plan instead of deleting it!
         reducer.apply(.planUpdated(items: [
             PCodePlanItem(content: "Inspect code", status: "completed"),
             PCodePlanItem(content: "Write tests", status: "in_progress"),
         ]), reveal: false)
         #expect(doc.items.filter { $0.kind == .plan }.count == 1)
+        reducer.apply(.planPreview(items: [PCodePlanItem(content: "Draft step", status: "pending")]), reveal: false)
         reducer.apply(.planPreview(items: nil), reveal: false)
-        #expect(doc.items.filter { $0.kind == .plan }.isEmpty)
+        #expect(doc.items.filter { $0.kind == .plan }.count == 1)
+        if let planItem = doc.items.first(where: { $0.kind == .plan }),
+           case .plan(let restored) = planItem.payload
+        {
+            #expect(restored.count == 2)
+            #expect(restored[0].content == "Inspect code")
+        } else {
+            Issue.record("Expected restored authoritative plan")
+        }
+
+        // Streamed TextDelta followed by closing Message must NOT duplicate the assistant prose!
+        let beforeMsgCount = doc.items.filter { $0.kind == .prose }.count
+        reducer.apply(.textDelta("Hello streamed "), reveal: false)
+        reducer.apply(.textDelta("world."), reveal: false)
+        reducer.apply(.message(markdown: "Hello streamed world."), reveal: false)
+        #expect(doc.items.filter { $0.kind == .prose }.count == beforeMsgCount + 1)
+    }
+
+    @Test func markdownSettlerPreservesLooseListItemsAcrossBlankLines() {
+        var settler = PCodeMarkdownSettler()
+        // A loose list followed by `\n\n` must NOT prematurely settle before item 2 arrives.
+        #expect(settler.append("- item 1\n\n").isEmpty)
+        #expect(settler.append("- item 2\n").isEmpty)
+        let settled = settler.finish()
+        #expect(settled.count == 1)
+        if case .prose(let md, _) = settled[0] {
+            #expect(md.contains("item 1"))
+            #expect(md.contains("item 2"))
+        } else {
+            Issue.record("Expected complete loose list prose block")
+        }
     }
 }

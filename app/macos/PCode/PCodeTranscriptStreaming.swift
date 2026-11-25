@@ -73,11 +73,11 @@ struct PCodeMarkdownSettler {
             targetSettledCount = allBlocks.count
         } else {
             // Everything strictly before the last top-level block is settled.
-            // The last block is also settled if the markdown ends with a blank line (`\n\n`)
-            // outside an open code fence, or if a top-level code fence just closed.
+            // Only settle the last block on a trailing blank line (`\n\n`) when that last block
+            // is a leaf block that cannot continue after a blank line (never a list or blockquote,
+            // which can have loose items / continuation paragraphs after a blank line!).
             let inOpenFence = PCodeStreamingMessageDiffer.detectTrailingOpenFence(in: fullMarkdown) != nil
             if inOpenFence {
-                // Hold the open code fence's chunks until closed or finished; earlier blocks settle.
                 var tailCodeCount = 0
                 for block in allBlocks.reversed() {
                     if case .codeBlock = block {
@@ -88,7 +88,14 @@ struct PCodeMarkdownSettler {
                 }
                 targetSettledCount = max(0, allBlocks.count - tailCodeCount)
             } else if fullMarkdown.hasSuffix("\n\n") || fullMarkdown.hasSuffix("\r\n\r\n") {
-                targetSettledCount = allBlocks.count
+                let doc = Document(parsing: fullMarkdown, options: [])
+                let lastChild = doc.children.reversed().first
+                let canContinueAfterBlankLine = (lastChild is UnorderedList)
+                    || (lastChild is OrderedList)
+                    || (lastChild is BlockQuote)
+                targetSettledCount = canContinueAfterBlankLine
+                    ? max(0, allBlocks.count - 1)
+                    : allBlocks.count
             } else {
                 targetSettledCount = max(0, allBlocks.count - 1)
             }
@@ -176,6 +183,24 @@ struct PCodeRevealQueue {
 
     mutating func remove(itemID: String) {
         entries.removeAll { $0.itemID == itemID }
+    }
+
+    /// Immediately complete and return updates for any queued entries satisfying `predicate`
+    /// (e.g. offscreen items above the viewport after clicking "Jump to bottom").
+    mutating func completeEntries(where predicate: (String) -> Bool) -> [StepUpdate] {
+        var updates: [StepUpdate] = []
+        entries.removeAll { entry in
+            if predicate(entry.itemID) {
+                updates.append(StepUpdate(
+                    itemID: entry.itemID,
+                    style: entry.style,
+                    frontier: nil,
+                    curtainProgress: nil))
+                return true
+            }
+            return false
+        }
+        return updates
     }
 
     /// Current reveal state for a newly mounted view so scrolled-in queued items start hidden.
@@ -660,13 +685,17 @@ final class PCodeTranscriptStreamReplayer {
         }
         let t = Timer(timeInterval: stepInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            // Keep a comfortable reveal queue depth (at most 3 queued items ahead) so
-            // 1x feels like a real conversation and 4x runs briskly without dumping 50 blocks at once.
-            if (self.documentView?.pendingRevealCount ?? 0) > 3 {
+            // Keep a comfortable reveal queue depth while pinned at bottom (at most 3 queued
+            // items ahead). When the user scrolls up, keep advancing so replay still completes.
+            if self.documentView?.stickyBottom.mode == .pinnedToBottom,
+               (self.documentView?.pendingRevealCount ?? 0) > 3
+            {
                 return
             }
             if !self.stepOnce() {
-                if self.documentView?.isStreamingAnimationActive == true {
+                if self.documentView?.stickyBottom.mode == .pinnedToBottom,
+                   self.documentView?.isStreamingAnimationActive == true
+                {
                     return
                 }
                 self.stop()

@@ -68,8 +68,9 @@ SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 TRANSCRIPT_OBSERVER_VERSION = 1
 TRANSCRIPT_OBSERVER_CALLS = frozenset(
     {
-        "before_turn",
+        "turn_started",
         "turn_event",
+        "cancelled",
         "after_turn",
         "note",
         "error",
@@ -1309,6 +1310,9 @@ class SessionHost:
             self._observe_flush.cancel()
             self._notify_observers()
         for peer in list(self.observers):
+            peer.notify("host_closed")
+            peer.close()
+        for peer in list(self.transcript_observers):
             peer.notify("host_closed")
             peer.close()
         controller.cancel_all()

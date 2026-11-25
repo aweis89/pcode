@@ -73,9 +73,15 @@ enum PCodeHostEventDecoder {
         switch kind {
         case "turn_started":
             guard let prompt = record["prompt"] as? String else { return nil }
-            let isSide = (record["side"] as? Bool) == true
+            let isAside = (record["aside"] as? Bool) == true
+            let hasSidePayload: Bool
+            if let b = record["side"] as? Bool {
+                hasSidePayload = b
+            } else {
+                hasSidePayload = (record["side"] != nil)
+            }
             let runID = (record["run_id"] as? String) ?? ""
-            return .turnStarted(prompt: prompt, isSide: isSide, runID: runID)
+            return .turnStarted(prompt: prompt, isSide: isAside || hasSidePayload, runID: runID)
         case "turn_completed":
             return .turnEnded(status: .complete)
         case "turn_cancelled":
@@ -90,10 +96,12 @@ enum PCodeHostEventDecoder {
     /// Decode one live RPC view call (`[method, args, kwargs]` or `notify` message).
     static func decodeRPCCall(method: String, args: [Any], kwargs: [String: Any]) -> PCodeHostEvent? {
         switch method {
-        case "before_turn":
+        case "turn_started":
             let prompt = (args.first as? String) ?? (kwargs["prompt"] as? String) ?? ""
-            let isSide = (kwargs["side"] as? Bool) == true
+            let isSide = (kwargs["side"] as? Bool) == true || (kwargs["aside"] as? Bool) == true
             return .turnStarted(prompt: prompt, isSide: isSide, runID: "")
+        case "cancelled":
+            return .turnEnded(status: .cancelled)
         case "after_turn":
             let raw = (args.first as? String) ?? (kwargs["outcome"] as? String) ?? "complete"
             let status: PCodePeekTurn.Status
@@ -230,9 +238,14 @@ final class PCodeTranscriptEventReducer {
     private var messageCounter = 0
     private var toolCounter = 0
     private var thinkingCounter = 0
+    private var planCounter = 0
+    private var noteCounter = 0
+    private var streamedTextInCurrentMessage = false
+    private var turnAlreadyTerminated = false
     private var activeThinkingID: String?
     private var activeThinkingText: String = ""
     private var activePlanItemID: String?
+    private var lastAuthoritativePlan: [PCodePlanItem] = []
     private var toolCallsByID: [String: PCodePeekToolCall] = [:]
     private var toolDepthByID: [String: Int] = [:]
     private var pendingChildrenByParent: [String: [PCodeTranscriptItem]] = [:]
@@ -245,9 +258,14 @@ final class PCodeTranscriptEventReducer {
         messageCounter = 0
         toolCounter = 0
         thinkingCounter = 0
+        planCounter = 0
+        noteCounter = 0
+        streamedTextInCurrentMessage = false
+        turnAlreadyTerminated = false
         activeThinkingID = nil
         activeThinkingText = ""
         activePlanItemID = nil
+        lastAuthoritativePlan.removeAll()
         toolCallsByID.removeAll()
         toolDepthByID.removeAll()
         pendingChildrenByParent.removeAll()
@@ -264,22 +282,36 @@ final class PCodeTranscriptEventReducer {
             activeThinkingID = nil
             activeThinkingText = ""
             activePlanItemID = nil
-            doc.beginStreamingTurn(prompt: prompt, isSide: isSide, forcePin: false)
+            lastAuthoritativePlan.removeAll()
+            streamedTextInCurrentMessage = false
+            turnAlreadyTerminated = false
+            doc.beginStreamingTurn(prompt: prompt, isSide: isSide, forcePin: false, reveal: reveal)
 
         case .textDelta(let delta):
             if activeThinkingID != nil {
                 activeThinkingID = nil
                 activeThinkingText = ""
             }
-            doc.appendStreamingDelta(delta)
+            if !streamedTextInCurrentMessage {
+                messageCounter += 1
+                doc.beginStreamingMessage(id: "host-msg-\(messageCounter)")
+                streamedTextInCurrentMessage = true
+            }
+            doc.appendStreamingDelta(delta, reveal: reveal)
 
         case .message(let markdown):
             activeThinkingID = nil
             activeThinkingText = ""
-            messageCounter += 1
-            doc.beginStreamingMessage(id: "host-msg-\(messageCounter)")
-            doc.appendStreamingDelta(markdown)
-            doc.finishStreamingMessage()
+            if streamedTextInCurrentMessage {
+                // Deltas already carried this assistant message; settle the tail without duplicating.
+                streamedTextInCurrentMessage = false
+                doc.finishStreamingMessage(reveal: reveal)
+            } else {
+                messageCounter += 1
+                doc.beginStreamingMessage(id: "host-msg-\(messageCounter)")
+                doc.appendStreamingDelta(markdown, reveal: reveal)
+                doc.finishStreamingMessage(reveal: reveal)
+            }
 
         case .thinkingDelta(let delta):
             guard !delta.isEmpty else { return }
@@ -288,10 +320,11 @@ final class PCodeTranscriptEventReducer {
                 activeThinkingID = "host-thinking-\(thinkingCounter)"
                 activeThinkingText = ""
             }
+            let id = activeThinkingID!
             activeThinkingText.append(delta)
             let item = PCodeTranscriptItem(
-                id: activeThinkingID!,
-                payload: .thinking(text: activeThinkingText, isExpanded: false),
+                id: id,
+                payload: .thinking(text: activeThinkingText, isExpanded: doc.isItemExpanded(id: id)),
                 spacingAfter: 6)
             doc.upsertItem(item, reveal: reveal)
 
@@ -308,12 +341,12 @@ final class PCodeTranscriptEventReducer {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             let item = PCodeTranscriptItem(
                 id: id,
-                payload: .thinking(text: text, isExpanded: false),
+                payload: .thinking(text: text, isExpanded: doc.isItemExpanded(id: id)),
                 spacingAfter: 6)
             doc.upsertItem(item, reveal: reveal)
 
         case .toolStarted(let callID, let parentCallID, let name, let detail, let command, _):
-            doc.finishStreamingMessage()
+            finishActiveStreamIfNeeded(in: doc, reveal: reveal)
             toolCounter += 1
             let call = PCodePeekToolCall(
                 id: toolCounter,
@@ -328,23 +361,17 @@ final class PCodeTranscriptEventReducer {
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
                 id: itemID,
-                payload: .tool(call, isExpanded: false),
+                payload: .tool(call, isExpanded: doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: depth)
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
-
-            // Flush any orphan children that arrived before this parent in catch-up.
-            if let orphans = pendingChildrenByParent.removeValue(forKey: callID) {
-                for orphan in orphans {
-                    insertWithParentNesting(item: orphan, parentCallID: callID, reveal: reveal, in: doc)
-                }
-            }
+            flushOrphans(forParentCallID: callID, reveal: reveal, in: doc)
 
         case .toolSummary(let callID, let parentCallID, let name, let detail, let command, let failed, let elapsed, let error, let result, _):
-            doc.finishStreamingMessage()
-            let key = callID.isEmpty ? "anon-\(toolCounter + 1)" : callID
-            let existing = toolCallsByID[key]
+            finishActiveStreamIfNeeded(in: doc, reveal: reveal)
             toolCounter += 1
+            let key = callID.isEmpty ? "anon-\(toolCounter)" : callID
+            let existing = toolCallsByID[key]
             let mergedDetail: String
             if !detail.isEmpty {
                 mergedDetail = detail
@@ -363,12 +390,16 @@ final class PCodeTranscriptEventReducer {
                 output: result ?? existing?.output ?? "")
             toolCallsByID[key] = call
             let depth = toolDepthByID[key] ?? (parentCallID.isEmpty ? 0 : 1)
+            let itemID = "call-\(key)"
             let item = PCodeTranscriptItem(
-                id: "call-\(key)",
-                payload: .tool(call, isExpanded: false),
+                id: itemID,
+                payload: .tool(call, isExpanded: doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: depth)
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
+            if !callID.isEmpty {
+                flushOrphans(forParentCallID: callID, reveal: reveal, in: doc)
+            }
 
         case .commandOutput(let callID, let command, let output):
             // Cap live command output snapshots to the last N lines so they never pump the conveyor.
@@ -385,9 +416,10 @@ final class PCodeTranscriptEventReducer {
                 output: capped)
             toolCallsByID[callID] = call
             let depth = toolDepthByID[callID] ?? 0
+            let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
-                id: "call-\(callID)",
-                payload: .tool(call, isExpanded: false),
+                id: itemID,
+                payload: .tool(call, isExpanded: doc.isItemExpanded(id: itemID)),
                 spacingAfter: 5,
                 depth: depth)
             doc.upsertItem(item, reveal: false)
@@ -413,8 +445,9 @@ final class PCodeTranscriptEventReducer {
             doc.upsertItem(item, reveal: reveal)
 
         case .editCompleted(let callID, let parentCallID, let path, let operation, let patch, let added, let removed, let truncated):
-            doc.finishStreamingMessage()
-            let key = callID.isEmpty ? "edit-\(toolCounter + 1)" : callID
+            finishActiveStreamIfNeeded(in: doc, reveal: reveal)
+            toolCounter += 1
+            let key = callID.isEmpty ? "edit-\(toolCounter)" : callID
             let depth = parentCallID.isEmpty ? (toolDepthByID[key] ?? 0) : 1
             let payload = PCodeDiffPayload(
                 callID: key,
@@ -434,40 +467,75 @@ final class PCodeTranscriptEventReducer {
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
 
         case .planUpdated(let items):
-            guard !items.isEmpty else {
-                if let id = activePlanItemID {
-                    doc.removeItem(id: id)
-                    activePlanItemID = nil
-                }
-                return
-            }
-            let id = activePlanItemID ?? "host-plan-\(doc.items.count)"
-            activePlanItemID = id
-            let item = PCodeTranscriptItem(id: id, payload: .plan(items), spacingAfter: 8)
-            doc.upsertItem(item, reveal: reveal)
+            lastAuthoritativePlan = items
+            applyPlanItems(items, reveal: reveal, in: doc)
 
         case .planPreview(let items):
-            if let items, !items.isEmpty {
-                let id = activePlanItemID ?? "host-plan-\(doc.items.count)"
-                activePlanItemID = id
-                let item = PCodeTranscriptItem(id: id, payload: .plan(items), spacingAfter: 8)
-                doc.upsertItem(item, reveal: reveal)
-            } else if let id = activePlanItemID {
-                doc.removeItem(id: id)
-                activePlanItemID = nil
-            }
+            // Per runtime.py: `PlanPreview(None)` restores the last authoritative `PlanUpdated` snapshot.
+            let effective = items ?? lastAuthoritativePlan
+            applyPlanItems(effective, reveal: reveal, in: doc)
 
         case .turnEnded(let status):
             activeThinkingID = nil
             activeThinkingText = ""
-            doc.finishStreamingTurn(status: status)
+            streamedTextInCurrentMessage = false
+            // Flush any unresolved orphan children before ending the turn.
+            if !pendingChildrenByParent.isEmpty {
+                let leftovers = pendingChildrenByParent.values.flatMap { $0 }
+                pendingChildrenByParent.removeAll()
+                for orphan in leftovers {
+                    doc.upsertItem(orphan, reveal: reveal)
+                }
+            }
+            if turnAlreadyTerminated && status == .complete {
+                // `cancelled` was already emitted right before `after_turn`; don't overwrite with `.complete`.
+                return
+            }
+            if status != .complete {
+                turnAlreadyTerminated = true
+            }
+            doc.finishStreamingTurn(status: status, reveal: reveal)
 
         case .note(let text), .error(let text):
+            noteCounter += 1
             let item = PCodeTranscriptItem(
-                id: "host-note-\(doc.items.count)",
+                id: "host-note-\(noteCounter)",
                 payload: .prose(markdown: text, referenceDefinitions: "", copyMarkdown: nil),
                 spacingAfter: 6)
             doc.upsertItem(item, reveal: reveal)
+        }
+    }
+
+    private func finishActiveStreamIfNeeded(in doc: PCodeTranscriptDocumentView, reveal: Bool) {
+        streamedTextInCurrentMessage = false
+        doc.finishStreamingMessage(reveal: reveal)
+    }
+
+    private func applyPlanItems(_ items: [PCodePlanItem], reveal: Bool, in doc: PCodeTranscriptDocumentView) {
+        guard !items.isEmpty else {
+            if let id = activePlanItemID {
+                doc.removeItem(id: id)
+                activePlanItemID = nil
+            }
+            return
+        }
+        let id: String
+        if let existing = activePlanItemID {
+            id = existing
+        } else {
+            planCounter += 1
+            id = "host-plan-\(planCounter)"
+            activePlanItemID = id
+        }
+        let item = PCodeTranscriptItem(id: id, payload: .plan(items), spacingAfter: 8)
+        doc.upsertItem(item, reveal: reveal)
+    }
+
+    private func flushOrphans(forParentCallID parentCallID: String, reveal: Bool, in doc: PCodeTranscriptDocumentView) {
+        if let orphans = pendingChildrenByParent.removeValue(forKey: parentCallID) {
+            for orphan in orphans {
+                insertWithParentNesting(item: orphan, parentCallID: parentCallID, reveal: reveal, in: doc)
+            }
         }
     }
 
@@ -510,6 +578,7 @@ final class PCodeTranscriptEventReducer {
 /// multi-megabyte welcome snapshots never block the main thread.
 final class PCodeHostSocketClient {
     static let observerVersion = 1
+    private static let maxLineBytes = 64 * 1024 * 1024
 
     struct Welcome {
         let hostID: String
@@ -520,10 +589,26 @@ final class PCodeHostSocketClient {
         let catchUpCalls: [PCodeHostEvent]
     }
 
+    /// Scoped per-connection state so `close()` only calls `shutdown` while the reader thread
+    /// exclusively owns `Darwin.close(sock)` (eliminating FD-reuse and reconnect races).
+    private final class ConnectionSession {
+        let lock = NSLock()
+        var fd: Int32 = -1
+        var isClosed = false
+
+        func requestShutdown() {
+            lock.lock()
+            isClosed = true
+            let current = fd
+            lock.unlock()
+            if current >= 0 {
+                Darwin.shutdown(current, SHUT_RDWR)
+            }
+        }
+    }
+
     private let lock = NSLock()
-    private var fd: Int32 = -1
-    private var closed = false
-    private var readThread: Thread?
+    private var activeSession: ConnectionSession?
 
     deinit {
         close()
@@ -537,13 +622,16 @@ final class PCodeHostSocketClient {
         onError: @escaping (String) -> Void,
         onClosed: @escaping () -> Void
     ) {
-        close()
+        let session = ConnectionSession()
         lock.lock()
-        closed = false
+        let previous = activeSession
+        activeSession = session
         lock.unlock()
+        previous?.requestShutdown()
 
         let thread = Thread { [weak self] in
             self?.runReaderLoop(
+                session: session,
                 socketPath: socketPath,
                 onReady: onReady,
                 onEvent: onEvent,
@@ -552,35 +640,51 @@ final class PCodeHostSocketClient {
         }
         thread.name = "pcode.host.observer"
         thread.qualityOfService = .userInitiated
-        lock.lock()
-        readThread = thread
-        lock.unlock()
         thread.start()
     }
 
     func close() {
         lock.lock()
-        closed = true
-        let currentFD = fd
-        fd = -1
+        let current = activeSession
+        activeSession = nil
         lock.unlock()
-        if currentFD >= 0 {
-            Darwin.shutdown(currentFD, SHUT_RDWR)
-            Darwin.close(currentFD)
-        }
+        current?.requestShutdown()
+    }
+
+    private func isCurrent(_ session: ConnectionSession) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeSession === session
     }
 
     private func runReaderLoop(
+        session: ConnectionSession,
         socketPath: String,
         onReady: @escaping (Welcome) -> Void,
         onEvent: @escaping (PCodeHostEvent) -> Void,
         onError: @escaping (String) -> Void,
         onClosed: @escaping () -> Void
     ) {
+        func emitError(_ msg: String) {
+            guard isCurrent(session) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isCurrent(session) else { return }
+                onError(msg)
+            }
+        }
+
         let sock = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else {
-            DispatchQueue.main.async { onError("Failed to create Unix socket.") }
+            emitError("Failed to create Unix socket.")
             return
+        }
+        // Reader thread exclusively owns `Darwin.close(sock)`.
+        defer {
+            session.lock.lock()
+            session.fd = -1
+            session.isClosed = true
+            session.lock.unlock()
+            Darwin.close(sock)
         }
 
         var noSigPipe: Int32 = 1
@@ -591,8 +695,7 @@ final class PCodeHostSocketClient {
         let pathBytes = Array(socketPath.utf8)
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path) - 1
         guard pathBytes.count <= maxLen else {
-            Darwin.close(sock)
-            DispatchQueue.main.async { onError("Host socket path exceeds Unix socket limit.") }
+            emitError("Host socket path exceeds Unix socket limit.")
             return
         }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in
@@ -608,8 +711,7 @@ final class PCodeHostSocketClient {
             }
         }
         guard connected == 0 else {
-            Darwin.close(sock)
-            DispatchQueue.main.async { onError("Could not connect to session host socket.") }
+            emitError("Could not connect to session host socket.")
             return
         }
 
@@ -617,42 +719,50 @@ final class PCodeHostSocketClient {
         var euid: uid_t = 0
         var egid: gid_t = 0
         guard Darwin.getpeereid(sock, &euid, &egid) == 0, euid == Darwin.geteuid() else {
-            Darwin.close(sock)
-            DispatchQueue.main.async { onError("Refusing to connect to host owned by another user.") }
+            emitError("Refusing to connect to host owned by another user.")
             return
         }
 
-        lock.lock()
-        if closed {
-            lock.unlock()
-            Darwin.close(sock)
+        session.lock.lock()
+        if session.isClosed {
+            session.lock.unlock()
             return
         }
-        fd = sock
-        lock.unlock()
+        session.fd = sock
+        session.lock.unlock()
 
         // Send `observe_transcript` handshake.
         let helloLine = "{\"type\":\"observe_transcript\",\"version\":\(Self.observerVersion)}\n"
         if !writeAll(sock, Data(helloLine.utf8)) {
-            close()
-            DispatchQueue.main.async { onError("Failed to send observe_transcript handshake.") }
+            emitError("Failed to send observe_transcript handshake.")
             return
         }
 
-        // Read newline-delimited JSON off the main thread with a growable buffer.
+        // Read newline-delimited JSON off the main thread with an O(N) scan cursor.
         var buffer = Data()
         buffer.reserveCapacity(64 * 1024)
+        var scanOffset = 0
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         var receivedHandshake = false
 
         while true {
             let n = Darwin.read(sock, &chunk, chunk.count)
-            if n <= 0 { break }
+            if n < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+            if n == 0 { break }
             buffer.append(contentsOf: chunk[0..<n])
+            if buffer.count - scanOffset > Self.maxLineBytes {
+                emitError("Host message exceeded maximum line limit.")
+                return
+            }
 
-            while let newlineIdx = buffer.firstIndex(of: 0x0A) {
-                let lineData = buffer[buffer.startIndex..<newlineIdx]
-                buffer.removeSubrange(buffer.startIndex...newlineIdx)
+            while scanOffset < buffer.count,
+                  let newlineIdx = buffer[scanOffset...].firstIndex(of: 0x0A)
+            {
+                let lineData = buffer[scanOffset..<newlineIdx]
+                scanOffset = newlineIdx + 1
                 guard !lineData.isEmpty,
                       let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
                 else { continue }
@@ -662,17 +772,18 @@ final class PCodeHostSocketClient {
                     let type = (obj["type"] as? String) ?? ""
                     if type == "error" {
                         let msg = (obj["message"] as? String) ?? "Host rejected transcript observer."
-                        close()
-                        DispatchQueue.main.async { onError(msg) }
+                        emitError(msg)
                         return
                     }
                     guard type == "ready" else {
-                        close()
-                        DispatchQueue.main.async { onError("Unexpected host handshake response.") }
+                        emitError("Unexpected host handshake response.")
                         return
                     }
                     let welcome = Self.decodeWelcome(obj)
-                    DispatchQueue.main.async { onReady(welcome) }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.isCurrent(session) else { return }
+                        onReady(welcome)
+                    }
                     continue
                 }
 
@@ -682,18 +793,32 @@ final class PCodeHostSocketClient {
                     let args = (obj["args"] as? [Any]) ?? []
                     let kwargs = (obj["kwargs"] as? [String: Any]) ?? [:]
                     if let event = PCodeHostEventDecoder.decodeRPCCall(method: method, args: args, kwargs: kwargs) {
-                        DispatchQueue.main.async { onEvent(event) }
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self, self.isCurrent(session) else { return }
+                            onEvent(event)
+                        }
                     }
                 } else if msgType == "request", let reqID = obj["id"] as? Int {
-                    // Read-only observer: decline any unexpected host request cleanly so host never waits.
                     let reply = "{\"type\":\"reply\",\"id\":\(reqID),\"error\":{\"type\":\"PermissionError\",\"message\":\"Transcript observer is read-only.\"}}\n"
                     _ = writeAll(sock, Data(reply.utf8))
                 }
             }
+
+            if scanOffset >= buffer.count {
+                buffer.removeAll(keepingCapacity: true)
+                scanOffset = 0
+            } else if scanOffset >= 64 * 1024 {
+                buffer.removeSubrange(0..<scanOffset)
+                scanOffset = 0
+            }
         }
 
-        close()
-        DispatchQueue.main.async { onClosed() }
+        if isCurrent(session) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isCurrent(session) else { return }
+                onClosed()
+            }
+        }
     }
 
     private func writeAll(_ sock: Int32, _ data: Data) -> Bool {
@@ -702,7 +827,11 @@ final class PCodeHostSocketClient {
             var written = 0
             while written < data.count {
                 let n = Darwin.write(sock, base.advanced(by: written), data.count - written)
-                if n <= 0 { return false }
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                if n == 0 { return false }
                 written += n
             }
             return true

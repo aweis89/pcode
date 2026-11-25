@@ -1312,7 +1312,8 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         let padY: CGFloat = 8
         let contentWidth = max(1, width - padX * 2)
         let codeFont = typography.codeNSFont(scale: typography.codeBlockScale)
-        let widest = PCodeCodeBlockView.widestLineWidth(in: payload.patch, font: codeFont)
+        // Measure only the capped display text (<= 200 lines) rather than scanning huge full patches.
+        let widest = PCodeCodeBlockView.widestLineWidth(in: attributedPatch.string, font: codeFont)
         let layoutWidth = max(contentWidth, ceil(widest) + 12)
         let textHeight = attributedPatch.length > 0
             ? textView.configure(attributedText: attributedPatch, width: layoutWidth)
@@ -1572,11 +1573,12 @@ final class PCodePlanCardView: NSView, PCodeTranscriptRowHosting {
                 string: "\(icon) ",
                 attributes: [.font: typography.codeNSFont(scale: 0.86), .foregroundColor: color, .paragraphStyle: style]))
             let suffix = idx < items.count - 1 ? "\n" : ""
+            let isDone = ["completed", "done"].contains(item.status.lowercased())
             out.append(NSAttributedString(
                 string: item.content + suffix,
                 attributes: [
                     .font: typography.proseNSFont(scale: 0.88),
-                    .foregroundColor: item.status == "completed" ? theme.secondaryForeground : theme.foreground,
+                    .foregroundColor: isDone ? theme.secondaryForeground : theme.foreground,
                     .paragraphStyle: style,
                 ]))
         }
