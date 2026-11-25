@@ -3214,8 +3214,14 @@ class PreviewApp:
             load_preferences(),
             supported=self.transcript.console.is_terminal and kitty_graphics_supported(),
         )
+        from pcode import dock
+
+        # SPIKE: the editor on a terminal docked under this one (`PCODE_DOCK=1`).
+        docked = await dock.open_dock() if dock.requested() else None
+        dock_io = {"input": docked.input, "output": docked.output} if docked else {}
         session = create_prompt(
             self.registry,
+            **dock_io,
             activity=self.activity,
             transcript=self.transcript,
             workspace=lambda: self.workspace,
@@ -3266,6 +3272,9 @@ class PreviewApp:
             terminal = session.app.output.fileno()
         except NotImplementedError, OSError, ValueError:
             terminal = None
+        if docked is not None:
+            # SPIKE: title, progress and session id belong to the pane, not the dock.
+            terminal = sys.stdout.fileno()
         if terminal is not None:
             mode = load_preferences().get("terminal_progress", "auto")
             self._progress = TabProgress(self.activity, terminal, mode)
@@ -3285,6 +3294,9 @@ class PreviewApp:
             if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
                 items.append(drawer.PaneSession(self.active_session_id, terminal))
             self._reconciler = Reconciler(items)
+            # Docked, `terminal` is pcode's own pane, not the tinted dock, and its
+            # replies reach `Dock.attach`'s reply filter, so this follows a
+            # light/dark switch there too (re-tinting the dock).
             self._appearance = AppearanceWatch(
                 terminal, active=lambda: self.transcript.theme == "auto"
             )
@@ -3356,6 +3368,8 @@ class PreviewApp:
                 # Queued like a typed message: it waits for the backend the same
                 # way, and Ctrl+C clears it the same way.
                 submit(self.initial_prompt)
+            if docked is not None:
+                docked.attach(session.app, on_theme=self.follow_appearance)
 
         try:
             await session.app.run_async(pre_run=start)
@@ -3364,6 +3378,8 @@ class PreviewApp:
         finally:
             # Whatever is still unsent, without waiting for the next save.
             drafts.save()
+            if docked is not None:
+                docked.close()
             if stalls is not None:
                 stalls.stop()
             if self._progress is not None:
@@ -3634,6 +3650,11 @@ def main() -> None:
     parser.add_argument("--demo", dest="theme_preview", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument(
+        "--delete-session",
+        metavar="ID",
+        help="Delete a saved session (refused while it is open) and exit",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="With --sessions: drop superseded step checkpoints and report the space freed",
@@ -3759,6 +3780,14 @@ def main() -> None:
         help="Also trace Python allocations (slower; requires --profile)",
     )
     args = parser.parse_args()
+    if args.delete_session:
+        from pcode.sessions import SessionError, delete_session
+
+        try:
+            delete_session(args.delete_session)
+        except SessionError as error:
+            sys.exit(f"pcode: {error}")
+        return
     if args.completions:
         from pcode.completion import install_hint, render
 

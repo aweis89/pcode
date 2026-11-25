@@ -18,6 +18,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app, get_app_or_none
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import merge_completers
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Always, Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
@@ -49,7 +50,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode import glyphs, kitty_spinner, smooth_scroll
+from pcode import dock, glyphs, kitty_spinner, smooth_scroll
 from pcode.aside import typed_word
 from pcode.block import INDENT, RULE, RUNNING, block_heading
 from pcode.command_transcript import CommandTranscript
@@ -1854,7 +1855,8 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     editor paint after a scrollback write.
     """
     # Offline harnesses pass a bare stand-in for the app; nothing to suspend.
-    if not isinstance(app, Application) or not app._is_running:
+    # SPIKE: a docked editor is on its own terminal; scrollback never covers it.
+    if not isinstance(app, Application) or not app._is_running or dock.active():
         yield Handoff(None)
         return
     # Chain to any handoff already in progress, as in_terminal does.
@@ -2383,6 +2385,12 @@ class TerminalOutput:
         # them itself. ``_declared`` is the region last sent and when (None:
         # cleared).
         self.gliding = False
+        # SPIKE: the same glide with the editor docked on its own terminal
+        # (`pcode.dock`): pcode's pane then holds only scrollback, so the
+        # region is the whole pane and each batch glides in the frame that
+        # writes it (`_docked_frame`), with no editor render to hook.
+        self.docked_glide = False
+        self._docked_declared: tuple[tuple[int, int], float] | None = None
         # The batch just written, `(rows, rows scrolled, runs)`, for
         # `_track_layout` to announce in the same frame; see `_native_runs`.
         self._native_commit: tuple[int, int, list[tuple[int, int, bool]]] | None = None
@@ -2696,9 +2704,9 @@ class TerminalOutput:
                 # Decide what this frame reveals before paying for a handoff: a
                 # frame that only types further repaints the live row instead.
                 if self.pending:
-                    width = max(1, self.app.output.get_size().columns)
+                    width = max(1, self._screen_size().columns)
                     self._enqueue(self._take_pending(), width)
-                if self.gliding:
+                if self.gliding or self.docked_glide:
                     # The terminal paces and reveals the batch itself.
                     due = self._native_batch()
                 elif self.rows:
@@ -2714,7 +2722,7 @@ class TerminalOutput:
                     async with suspended_editor(self.app, atomic=True) as handoff:
                         # Snapshot after entering: input/model events can arrive while
                         # the handoff waits for CPR, but not during these sync writes.
-                        width = max(1, self.app.output.get_size().columns)
+                        width = max(1, self._screen_size().columns)
                         rebuilt = keep_place = False
                         marks_before = 0
                         if self._regenerate is not None:
@@ -2740,8 +2748,20 @@ class TerminalOutput:
                             self._same_content = False
                             marks_before, self._marks_written = self._marks_written, 0
                             begin = smooth_scroll.REPLAY_BEGIN if keep_place else ""
-                            self.app.output.write_raw(begin + "\x1b[H\x1b[2J\x1b[3J")
-                            self.app.output.flush()
+                            clear = begin + "\x1b[H\x1b[2J\x1b[3J"
+                            if dock.active() is not None:
+                                # SPIKE: the transcript's terminal, not the editor's dock.
+                                if self.docked_glide:
+                                    # A rebuilt screen must not be drawn gliding,
+                                    # nor finish a glide queued before it.
+                                    region = smooth_scroll.REGION_ID
+                                    clear = smooth_scroll.region_off(region) + clear
+                                    self._docked_declared = None
+                                self.console.file.write(clear)
+                                self.console.file.flush()
+                            else:
+                                self.app.output.write_raw(clear)
+                                self.app.output.flush()
                             handoff.top_row = 1
                             self._enqueue(pending, width, replay=True)
                             # A rebuilt screen lands whole; pacing is for new output.
@@ -2766,6 +2786,14 @@ class TerminalOutput:
                         if self._park_off and not self.rows and not self.pending:
                             written += smooth_scroll.PARK_OFF
                             self._park_off = False
+                        if (docked := dock.active()) is not None:
+                            written = self._docked_frame(
+                                docked,
+                                written,
+                                self._native_runs(chunk),
+                                rebuilt=rebuilt,
+                                glide=self.docked_glide and paced and not rebuilt,
+                            )
                         counter.write(written)
                         counter.flush()
                         handoff.rows_written = counter.rows
@@ -2964,6 +2992,74 @@ class TerminalOutput:
             runs.append((cur_start, len(chunk) - cur_start, cur_prose))
         return runs
 
+    def _docked_frame(
+        self,
+        docked,
+        written: str,
+        runs: list[tuple[int, int, bool]],
+        *,
+        rebuilt: bool,
+        glide: bool,
+    ) -> str:
+        """SPIKE: ``written``, for pcode's pane with the editor docked, with its glide.
+
+        The pane holds only scrollback, so its cursor sits on the row after
+        the last one written (`Dock.pane_row`) and that row is blank: the
+        glide region is the whole pane, that last row its hidden bottom.
+        The rows, the region, the glide and the reveals go out as one
+        synchronized frame, so no frame shows the rows unglided.
+        """
+        rows = written.count("\n")
+        pane_rows = docked.pane_rows()
+        before = docked.pane_row
+        docked.wrote(rows, homed=rebuilt)
+        if rebuilt:
+            self._native_backlog = 0.0
+        if not glide or before is None or rows == 0 or pane_rows < 2:
+            return written
+        columns = max(1, self._screen_size().columns)
+        now = monotonic()
+        head = SYNC_START
+        key = (pane_rows, columns)
+        # Re-sent every second, as `_declare` does, in case the terminal dropped it.
+        if (
+            self._docked_declared is None
+            or self._docked_declared[0] != key
+            or now - self._docked_declared[1] >= 1.0
+        ):
+            self._docked_declared = (key, now)
+            head += smooth_scroll.declaration(pane_rows - 1, columns)
+        bottom = pane_rows - 1
+        scrolled = max(0, before + rows - bottom)
+        end_row = min(bottom, before + rows) - 1
+        reach = smooth_scroll.MAX_BATCH_GLIDE
+        floor = 0
+        tail = ""
+        if scrolled:
+            backlog = min(self._drain_native_backlog(now) + scrolled, float(reach))
+            self._native_backlog = backlog
+            self._native_rate = smooth_scroll.batch_rate(backlog)
+            flags = smooth_scroll.ADVANCE_BATCH | smooth_scroll.ADVANCE_FADE
+            tail += smooth_scroll.advance(scrolled, flags=flags)
+            floor = -reach
+            if not self.typed:
+                # `rows` mode: the glide and fade are the reveal, except for
+                # rows that landed in place before the pane filled.
+                in_place = rows - scrolled
+                runs = [(0, in_place, False)] if in_place > 0 else []
+        base_row = end_row - rows + 1
+        for offset, length, prose in runs:
+            start = base_row + offset
+            end = min(start + length, end_row + 1)
+            if end <= floor:
+                continue
+            start = max(floor, start)
+            count = min(end - start, reach)
+            if count > 0:
+                flags = smooth_scroll.REVEAL_SWEEP if prose else smooth_scroll.REVEAL_CURTAIN
+                tail += smooth_scroll.reveal(start, count, flags=flags)
+        return head + written + tail + SYNC_END
+
     def _native_batch_cap(self) -> int:
         """Most rows one handoff may write.
 
@@ -2971,6 +3067,14 @@ class TerminalOutput:
         `MAX_BATCH_GLIDE` rows. Before the screen fills, rows land in place
         instead, so no more than the transcript rows that can be seen.
         """
+        if self.docked_glide:
+            # SPIKE: docked, the pane is full once its cursor reaches the bottom.
+            docked = dock.active()
+            row = docked.pane_row if docked is not None else None
+            pane_rows = docked.pane_rows() if docked is not None else 0
+            if row is None or row >= pane_rows - 1:
+                return smooth_scroll.MAX_BATCH_GLIDE
+            return max(1, min(smooth_scroll.MAX_BATCH_GLIDE, pane_rows - 1 - row))
         if self._editor_pinned():
             return smooth_scroll.MAX_BATCH_GLIDE
         size_rows = max(1, self.app.output.get_size().rows)
@@ -3193,8 +3297,15 @@ class TerminalOutput:
             self.app.after_render -= self._after_render
             self._declare(None)
 
+    def _screen_size(self):
+        """The transcript's terminal: the editor's, unless the editor is docked (SPIKE)."""
+        if dock.active() is not None:
+            columns, rows = os.get_terminal_size(self.console.file.fileno())
+            return Size(rows=rows, columns=columns)
+        return self.app.output.get_size()
+
     async def _run_frames(self) -> None:
-        size = self.app.output.get_size()
+        size = self._screen_size()
         resized_at = None
         while True:
             # Poll only when resize replay is enabled. Debounce resize storms;
@@ -3212,7 +3323,10 @@ class TerminalOutput:
                     pass
                 # Height changes can scroll pieces of the live preview into
                 # history too; replay must clear those just like width reflow.
-                current = self.app.output.get_size()
+                current = self._screen_size()
+                if dock.active() is not None and current.columns == size.columns:
+                    # SPIKE: the dock growing shortens the pane; only a width change reflows.
+                    current = size
                 if current != size:
                     size, resized_at = current, monotonic()
                 elif resized_at is not None and monotonic() - resized_at >= 0.25:
@@ -3513,6 +3627,10 @@ class PromptLayout:
         if cache is not None and (size := cache.get("size")) is not None:
             return size
         size = self.session.app.output.get_size()
+        if (docked := dock.active()) is not None:
+            # SPIKE: budget rows against the whole pane, not the dock's current
+            # height, or the dock never asks for more than it has.
+            size = docked.layout_size(size)
         # Every layout read comes through here, so the activity panel's size rule
         # follows a resize or split before anything is measured against it.
         self.activity.fit_screen(size.columns, size.rows)
@@ -4504,7 +4622,7 @@ class PromptLayout:
     def frame_shaded(self) -> bool:
         """Whether the boxes are drawn as shades rather than lines (`frame_style`)."""
         return (
-            self.activity.frame_style == "shaded"
+            (self.activity.frame_style == "shaded" or dock.active() is not None)
             and self.transcript is not None
             and self.transcript.frame_shade() is not None
         )
@@ -4641,13 +4759,14 @@ class PromptLayout:
             shortcut_hint(self.shortcuts),
             self.editor_frame(),
         ]
-        if self.transcript is not None:
+        docked = dock.active() is not None
+        if self.transcript is not None and not docked:
             children[:0] = [self.typing(), self.glide_reserve(), Window()]
         if self.session.bottom_toolbar is not None:
             children.append(self.bottom_toolbar())
         self.root = _MeasuredSplit(
             children,
-            align=VerticalAlign.JUSTIFY if self.transcript else VerticalAlign.BOTTOM,
+            align=VerticalAlign.JUSTIFY if self.transcript and not docked else VerticalAlign.BOTTOM,
         )
         return Layout(self.root, focused_element=self.editor)
 
@@ -4718,6 +4837,8 @@ class PromptLayout:
         self.sync_native_toast(app)
         self.replay_after_menu(app)
         self.refill_after_shrink(app)
+        if (docked := dock.active()) is not None:
+            docked.report_rows(app)
 
     # The completion menu, where the terminal draws it (`native_completions`).
 
@@ -4869,7 +4990,7 @@ class PromptLayout:
         the whole screen, so wait until it has held for `REFILL_DELAY`.
         """
         transcript = self.transcript
-        if transcript is None or not transcript.replays_on_resize:
+        if transcript is None or not transcript.replays_on_resize or dock.active() is not None:
             return
         # The menu's own replay covers its close, at once. Mid-turn, the next
         # write fills the gap anyway; a rebuild then would only repaint the
@@ -5060,13 +5181,45 @@ def create_prompt(
         # The app runs for the whole session, redrawn by streaming output and
         # animation; cap that at the paced output's frame rate.
         session.app.min_redraw_interval = 1 / 30
-    install_resize_repaint(session.app)
+    docked = transcript is not None and dock.active() is not None
+    if not docked:
+        install_resize_repaint(session.app)
     session.app.before_render += prompt_layout.before_render
     session.app.after_render += prompt_layout.after_render
     if session.app.editing_mode == EditingMode.VI:
         # Allow terminal escape sequences to arrive, without a half-second pause.
         session.app.ttimeoutlen = 0.1
-    if transcript is None or not transcript.replays_on_resize:
+    if docked:
+        # SPIKE: the dock is the editor's alone, so draw it full screen there:
+        # no cursor reports, no rows above it to keep track of.
+        session.app.full_screen = True
+        session.app.renderer = Renderer(
+            session.app._merged_style,
+            session.app.output,
+            full_screen=True,
+            mouse_support=False,
+            cpr_not_supported_callback=session.app.cpr_not_supported_callback,
+        )
+        app = session.app
+
+        def repaint_docked() -> None:
+            # prompt_toolkit erases on a resize and paints on a later pass,
+            # leaving the cursor parked at the top in between. Full screen
+            # needs no erase: repaint whole, at once, as one frame.
+            if not app._is_running or app.output.get_size() == app.renderer._last_size:
+                # Only pcode's own pane resized (the card growing): the dock's
+                # grid is fixed, and already shows the right frame.
+                return
+            # Home and clear first: `reset` assumes the cursor is at the top
+            # left, and a paint from wherever it really is doubles the layout.
+            app.output.write_raw(SYNC_START + "\x1b[H\x1b[2J")
+            app.renderer.reset(leave_alternate_screen=False)
+            app._redraw()
+            app.output.write_raw(SYNC_END)
+            app.output.flush()
+
+        app._on_resize = repaint_docked
+    elif transcript is None or not transcript.replays_on_resize:
         install_reflow_renderer(session.app)
     elif smooth_scroll.worth_asking():
         install_nowrap_editor(session.app)
@@ -5193,6 +5346,13 @@ class Transcript:
             )
             output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
+            if dock.active() is not None:
+                # SPIKE: the glide moves to pcode's own pane (`docked_glide`);
+                # without it, typing would draw into the live panel, on the dock.
+                output.docked_glide = output.gliding
+                output.gliding = False
+                if not output.docked_glide:
+                    output.typed = False
             output.marks = self.console.is_terminal and marks_supported()
             output.park = output.marks and self.reader_park == "on"
             if self.replays_on_resize:
@@ -5497,7 +5657,10 @@ class Transcript:
 
     def prompt_style(self, task_style: str = "status", frame_style: str = "borders") -> Style:
         """The prompt_toolkit style for the current theme, syntax, task and frame style."""
-        shades = self.frame_shades() if frame_style == "shaded" else None
+        # SPIKE: docked, the card is the frame: the box goes "shaded" in the
+        # terminal's own background, so its lines vanish and its rows stay.
+        shaded = frame_style == "shaded" or dock.active() is not None
+        shades = self.frame_shades() if shaded else None
         return self.chrome_palette.prompt_style(self.menu_palette, task_style, shades)
 
     def frame_shade(self) -> str | None:
@@ -5525,6 +5688,12 @@ class Transcript:
             return None
         else:
             background = self.palette.surface
+        if (docked := dock.active()) is not None:
+            # SPIKE: one raised surface: the dock's own background (`Dock.tint`)
+            # and every box in it share the lifted shade.
+            lifted = frame_shade(background, theme)
+            docked.tint = lifted
+            return lifted, lifted
         return frame_shade(background, theme), header_shade(background, theme)
 
     @property
