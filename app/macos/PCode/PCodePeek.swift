@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Textual
 
 /// Which session the Peek overlay is previewing.
 struct PCodePeekTarget: Equatable {
@@ -43,21 +44,10 @@ struct PCodePeekToolCall: Identifiable {
     }
 }
 
-/// A parsed piece of an assistant message, split off the main thread so scrolling stays smooth.
-enum PCodePeekMarkdownSegment: Identifiable {
-    case prose(id: Int, text: String)
-    case code(id: Int, language: String?, code: String)
-
-    var id: Int {
-        switch self {
-        case .prose(let id, _), .code(let id, _, _): return id
-        }
-    }
-}
-
 /// One ordered block inside a turn: assistant markdown or a tool summary.
 enum PCodePeekBlock: Identifiable {
-    case markdown(id: Int, segments: [PCodePeekMarkdownSegment])
+    /// A whole assistant message, rendered as one `StructuredText` so selection spans its blocks.
+    case markdown(id: Int, text: String)
     case tool(PCodePeekToolCall)
 
     var id: String {
@@ -248,8 +238,7 @@ final class PCodeTranscriptLoader {
             switch kind {
             case "Message":
                 if let markdown = record["markdown"] as? String, !markdown.isEmpty {
-                    let segments = splitMarkdown(markdown)
-                    turns[idx].blocks.append(.markdown(id: nextBlockID, segments: segments))
+                    turns[idx].blocks.append(.markdown(id: nextBlockID, text: markdown))
                     nextBlockID += 1
                 }
             case "ToolSummary":
@@ -279,78 +268,6 @@ final class PCodeTranscriptLoader {
         }
 
         return turns
-    }
-
-    /// Splits fenced code blocks (```lang ... ```) out of markdown so code renders
-    /// cleanly in monospaced boxes while prose uses SwiftUI inline markdown.
-    static func splitMarkdown(_ markdown: String) -> [PCodePeekMarkdownSegment] {
-        var segments: [PCodePeekMarkdownSegment] = []
-        var nextID = 0
-        var proseLines: [String] = []
-        var codeLines: [String] = []
-        var inCode = false
-        var codeLang: String?
-        var openTickCount = 3
-
-        func flushProse() {
-            let text = proseLines.joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                segments.append(.prose(id: nextID, text: text))
-                nextID += 1
-            }
-            proseLines.removeAll(keepingCapacity: true)
-        }
-
-        func flushCode() {
-            let code = codeLines.joined(separator: "\n")
-            segments.append(.code(id: nextID, language: codeLang, code: code))
-            nextID += 1
-            codeLines.removeAll(keepingCapacity: true)
-            codeLang = nil
-        }
-
-        let normalized = markdown
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-
-        for rawLine in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if !inCode {
-                let tickCount = trimmed.prefix { $0 == "`" }.count
-                if tickCount >= 3 {
-                    let info = trimmed.dropFirst(tickCount)
-                    // CommonMark: backtick fence info strings cannot contain backticks
-                    // (which distinguishes inline ```code``` from an opening fence).
-                    if !info.contains("`") {
-                        flushProse()
-                        openTickCount = tickCount
-                        let lang = info.trimmingCharacters(in: .whitespaces)
-                        codeLang = lang.isEmpty ? nil : lang
-                        inCode = true
-                        continue
-                    }
-                }
-                proseLines.append(line)
-            } else {
-                let tickCount = trimmed.prefix { $0 == "`" }.count
-                if tickCount >= openTickCount
-                    && trimmed.dropFirst(tickCount).trimmingCharacters(in: .whitespaces).isEmpty {
-                    flushCode()
-                    inCode = false
-                } else {
-                    codeLines.append(line)
-                }
-            }
-        }
-
-        if inCode {
-            flushCode()
-        } else {
-            flushProse()
-        }
-        return segments
     }
 }
 
@@ -665,6 +582,10 @@ struct PCodePeekOverlay: View {
             withFraction: 0.25, of: .black) ?? .textBackgroundColor)
     }
 
+    private var transcriptColorScheme: ColorScheme {
+        NSColor(ghostty.config.backgroundColor).isLightColor ? .light : .dark
+    }
+
     private var promptBackground: Color {
         Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
             withFraction: 0.13, of: .white) ?? .controlBackgroundColor)
@@ -907,6 +828,8 @@ struct PCodePeekOverlay: View {
                     .padding(.vertical, 16)
                     .textSelection(.enabled)
                 }
+                // The card is drawn on the terminal's background, so markdown colors follow it.
+                .environment(\.colorScheme, transcriptColorScheme)
                 .id(target.sessionID ?? "")
                 .onAppear {
                     DispatchQueue.main.async {
@@ -945,12 +868,8 @@ struct PCodePeekOverlay: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(turn.blocks) { block in
                         switch block {
-                        case .markdown(_, let segments):
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(segments) { segment in
-                                    markdownSegmentView(segment)
-                                }
-                            }
+                        case .markdown(_, let text):
+                            markdownView(text)
                         case .tool(let call):
                             toolCallView(call)
                         }
@@ -966,49 +885,18 @@ struct PCodePeekOverlay: View {
         }
     }
 
-    @ViewBuilder
-    private func markdownSegmentView(_ segment: PCodePeekMarkdownSegment) -> some View {
-        switch segment {
-        case .prose(_, let text):
-            markdownText(text)
-                .font(.body)
-                .foregroundStyle(.primary.opacity(0.92))
-                .fixedSize(horizontal: false, vertical: true)
-        case .code(_, let language, let code):
-            VStack(alignment: .leading, spacing: 0) {
-                if let language, !language.isEmpty {
-                    Text(language)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.top, 6)
-                        .padding(.bottom, 2)
-                }
-                ScrollView(.horizontal, showsIndicators: true) {
-                    Text(code)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.primary.opacity(0.92))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(codeBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            )
-        }
-    }
-
-    private func markdownText(_ source: String) -> Text {
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        if let attributed = try? AttributedString(markdown: source, options: options) {
-            return Text(attributed)
-        }
-        return Text(source)
+    /// One assistant message as a single `StructuredText`, so a drag selects across its
+    /// paragraphs, lists, headings and tables. An unclosed fence in a running turn needs
+    /// no repair: CommonMark runs it to the end of the message as a code block.
+    private func markdownView(_ text: String) -> some View {
+        StructuredText(markdown: text)
+            .font(.body)
+            .foregroundStyle(.primary.opacity(0.92))
+            .textual.structuredTextStyle(PCodePeekMarkdownStyle(codeBackground: codeBackground))
+            .textual.textSelection(.enabled)
+            // SwiftUI's own selection (enabled on the scroll content) would fight Textual's overlay.
+            .textSelection(.disabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func toolCallView(_ call: PCodePeekToolCall) -> some View {
