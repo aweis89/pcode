@@ -410,8 +410,46 @@ def test_the_handoff_is_not_carried_to_the_host_as_typed(tmp_path):
     try:
         app.controller.command("/detach", HANDOFF_TAG)
         app.controller.command("/status")
-        commands, _ = app.controller.take_typed()
-        assert commands == ["/status"]
+        assert app.controller.take_typed() == [("/status", "command")]
+    finally:
+        saved.close()
+
+
+def test_a_move_carries_what_was_typed_in_the_order_it_was_typed(tmp_path):
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    output = StringIO()
+    app = PreviewApp(model="m", runtime=Busy(saved), console=Console(file=output))
+    sent, here = [], []
+
+    class Host:
+        def submit(self, text, mode):
+            sent.append((text, mode))
+
+        def command(self, text, tag=None):
+            sent.append((text, "command"))
+
+    app._run_in_terminal = lambda text, tag: here.append(text)
+    controller = app.controller
+    try:
+        controller.command("/effort high")
+        controller.submit("first", "queue")
+        controller.command("/help")  # The terminal's own: run here, not in the host.
+        controller.submit("second", "steering")
+        controller.command("/compact")
+        app._carry_typed(controller, Host())
+        assert sent == [
+            ("/effort high", "command"),
+            ("first", "queue"),
+            ("second", "steering"),
+            ("/compact", "command"),
+        ]
+        assert here == ["/help"]
+        # Exiting for an app restart, which would cancel it unrun: named instead.
+        app.app_restart_requested = True
+        controller.command("/help")
+        app._carry_typed(controller, Host())
+        assert here == ["/help"]
+        assert "Not run, as this terminal is exiting" in output.getvalue()
     finally:
         saved.close()
 

@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 from pcode import remote_profile
-from pcode.controller import INTENTS, SESSION_FIELDS, SessionController
+from pcode.controller import COMMAND_MODE, INTENTS, SESSION_FIELDS, SessionController
 from pcode.error_report import error_message
 from pcode.host_protocol import (
     LINE_LIMIT,
@@ -1102,9 +1102,11 @@ class SessionHost:
         print(f"restarting mid-work as {self.successor}", file=sys.stderr, flush=True)
         try:
             interrupted = await controller.settle_for_handoff()
-            commands, messages = controller.take_typed()
+            typed = controller.take_typed()
             # A command is its sender's, and that terminal goes with this host:
             # the successor names them rather than running them for nobody.
+            commands = [text for text, mode in typed if mode == COMMAND_MODE]
+            messages = [(text, mode) for text, mode in typed if mode != COMMAND_MODE]
             self.carry = {"continue": interrupted, "messages": messages, "commands": commands}
         finally:
             self.stop()

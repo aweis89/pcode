@@ -11,7 +11,7 @@ import threading
 from collections.abc import Callable
 from contextlib import aclosing, suppress
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import Protocol
@@ -227,9 +227,12 @@ SAVE_FLAG = "--save"
 ADVISOR_USAGE = "Usage: /advisor [MODEL | off] [--save]"
 
 # One queued command: the queue generation it was sent in, its text, whether
-# the session was idle when it was sent, and the popup generation the terminal
-# stamped on it.
-QueuedCommand = tuple[int, str, bool, object]
+# the session was idle when it was sent, the popup generation the terminal
+# stamped on it, and when it was sent (ISO 8601, UTC, as a message's).
+QueuedCommand = tuple[int, str, bool, object, str]
+
+# The mode `take_typed` gives a slash command among the messages it returns.
+COMMAND_MODE = "command"
 
 STARTUP_FAILED = "Agent startup failed; choose another model with /model or restart pcode."
 
@@ -270,8 +273,16 @@ class Steer(str):
         return str(self), self.sent_at
 
 
+_last_sent = datetime.min.replace(tzinfo=timezone.utc)
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """When something is sent: strictly later than the last one, so messages and
+    commands sent in one input batch still sort in the order they were typed."""
+    global _last_sent
+    now = datetime.now(timezone.utc)
+    _last_sent = now if now > _last_sent else _last_sent + timedelta(microseconds=1)
+    return _last_sent.isoformat()
 
 
 class PromptQueue:
@@ -378,8 +389,9 @@ class PromptQueue:
         self._sync()
         return messages
 
-    def take_all(self) -> list[tuple[str, str]]:
-        """Remove and return every waiting message and its mode, oldest first, without dropping it.
+    def take_all(self) -> list[tuple[str, str, str]]:
+        """Remove and return every waiting message, its mode and when it was sent,
+        oldest first, without dropping it.
 
         For a session moving into a host. The panel is left alone: by then it
         shows the host's queue. The new generation makes stale the one `get`
@@ -390,8 +402,8 @@ class PromptQueue:
         self._fetched = None
         self.generation += 1
         return [
-            (text, mode)
-            for generation, text, mode, _owner, _sent_at in items
+            (text, mode, sent_at)
+            for generation, text, mode, _owner, sent_at in items
             if generation == self.generation - 1
         ]
 
@@ -1141,7 +1153,7 @@ class SessionController:
     def command(self, text: str, tag: object = None) -> None:
         """Queue a slash command; `tag` travels with it back to the terminal."""
         idle = not self.activity.busy and not self.activity.queued_prompts
-        self.commands.put_nowait((self.prompts.generation, text, idle, tag))
+        self.commands.put_nowait((self.prompts.generation, text, idle, tag, _now()))
         self.command_idle.clear()
         if text.split()[0] in MODEL_COMMANDS:
             self.pending_model_command += 1
@@ -1171,24 +1183,28 @@ class SessionController:
 
     # --- Stopping ---
 
-    def take_typed(self) -> tuple[list[str], list[tuple[str, str]]]:
-        """Commands and messages (with their modes) the user left waiting, for the
-        host this session moves into. Job wake-ups and continues stay behind: the
-        host makes its own."""
-        commands = []
+    def take_typed(self) -> list[tuple[str, str]]:
+        """The messages and slash commands the user left waiting, in the order they
+        were sent, for the host this session moves into: `(text, mode)`, with
+        `COMMAND_MODE` for a command. Job wake-ups and continues stay behind:
+        the host makes its own."""
         held, self.held_commands = self.held_commands, []
         while not self.commands.empty():
             held.append(self.commands.get_nowait())
-        for generation, text, _idle, tag in held:
-            if generation == self.prompts.generation and tag is not HANDOFF_TAG:
-                commands.append(text)
+        typed = [
+            (sent_at, text, COMMAND_MODE)
+            for generation, text, _idle, tag, sent_at in held
+            if generation == self.prompts.generation and tag is not HANDOFF_TAG
+        ]
         self.command_idle.set()
-        messages = [
-            (text, mode)
-            for text, mode in self.prompts.take_all()
+        typed += [
+            (sent_at, text, mode)
+            for text, mode, sent_at in self.prompts.take_all()
             if mode not in ("wake", "continue", "provider_wake")
         ]
-        return commands, messages
+        # Stable: commands and messages each keep their own queue's order.
+        typed.sort(key=lambda item: datetime.fromisoformat(item[0]))
+        return [(text, mode) for _sent_at, text, mode in typed]
 
     def clear_queue(self) -> None:
         """Drop every queued message and pending command, saying what went."""
@@ -1306,9 +1322,13 @@ class SessionController:
         if live is not None and self._never_recorded(live):
             # Cancelled before its turn was journaled: nothing to `/continue`,
             # so the prompt itself goes back to the front of the queue.
-            text, mode, owner, _active = live
+            text, mode, _owner, _active = live
             if mode in RESENT_MODES:
-                self.prompts.put(text, mode, first=True, owner=owner)
+                # Without its owner: a headless sender was told this turn
+                # started and then (`after_turn`) that it was cancelled, which
+                # is its result. Telling it again would break "exactly once",
+                # and where the message runs next nobody answers it.
+                self.prompts.put(text, mode, first=True)
                 self.activity.busy = True
                 interrupted = False
         self.cancel_asides()  # Summaries too.
@@ -1393,13 +1413,13 @@ class SessionController:
                 self.held_commands.insert(0, item)
                 await self.handoff_idle.wait()
                 continue
-            generation, text, submitted_idle, tag = item
+            generation, text, submitted_idle, tag, _sent_at = item
             name = text.split(maxsplit=1)[0]
             try:
                 if name not in FRONTEND_COMMANDS and not self.ready.is_set():
                     # Keep consuming frontend-only commands while backend
                     # commands wait, preserving their order for readiness.
-                    self.startup_commands.append((generation, text, submitted_idle, tag))
+                    self.startup_commands.append(item)
                     continue
                 if name in FRONTEND_COMMANDS or self.dispatchable(generation, name):
                     self.command_started(text)

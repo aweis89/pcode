@@ -270,7 +270,7 @@ def test_model_commands_hold_the_session_busy_until_they_start():
         controller.command("/compact keep the plan", tag="popup")
         controller.command("/mcp enable docs")
         assert session.activity.busy and not controller.command_idle.is_set()
-        generation, text, idle, tag = await controller.commands.get()
+        generation, text, idle, tag, _sent_at = await controller.commands.get()
         assert (generation, text, idle, tag) == (0, "/compact keep the plan", True, "popup")
         controller.command_started(text)
         # The MCP command behind it still holds the session.
