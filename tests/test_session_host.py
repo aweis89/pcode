@@ -2600,7 +2600,8 @@ def test_a_real_host_restarts_into_a_successor_on_the_same_session(tmp_path, hos
         deadline = time.monotonic() + 60
         while True:
             entry = next((e for e in list_hosts() if e.id == identity), None)
-            if entry is not None:
+            # Its entry is written before it listens: wait for the socket too.
+            if entry is not None and entry.socket.exists():
                 successor, skipped = asyncio.run(restart_entry(entry))
                 if successor or skipped != "it is starting up":
                     break
