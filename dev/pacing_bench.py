@@ -603,7 +603,9 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--app", type=Path, default=Path.home() / "p/ghostty-smooth/builds/current")
+    # `make app` installs there (in the main checkout; pass --app from a worktree).
+    builds = Path(__file__).resolve().parents[1] / "builds"
+    parser.add_argument("--app", type=Path, default=builds / "current")
     parser.add_argument("--timeout", type=float, default=150)
     parser.add_argument("--keep", action="store_true", help="keep the work directory")
     parser.add_argument(

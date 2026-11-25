@@ -38,8 +38,8 @@ from pcode.popup_ui import fuzzy_match, nest_forks
 
 PICK = re.compile(r"\x1b_pcode;pick;([0-9a-f]{16});(sheet|wide)\x1b\\")
 
-# Ghostty's Swift port of `fuzzy_match` must agree on every case: its
-# `PCodePickMatchTests` reads a byte-for-byte copy of this file.
+# Pcode.app's Swift port of `fuzzy_match` must agree on every case: its
+# `PCodePickMatchTests` (app/macos/Tests) reads this same file.
 FUZZY_FIXTURE = Path(__file__).parent / "data" / "pick_fuzzy_cases.json"
 FIXTURE = json.loads(FUZZY_FIXTURE.read_text())
 FUZZY_CASES = [(case["term"], case["text"], case["match"]) for case in FIXTURE["fuzzy"]]

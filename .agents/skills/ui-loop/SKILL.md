@@ -1,12 +1,13 @@
 ---
 name: ui-loop
-description: See and drive the Pcode macOS app (the Ghostty fork, including the Swift workspace spike) while changing its UI. Use when working on the app's Swift code, popups, drawer, docked editor or any pcode rendering inside the app, to snapshot windows, send keys and clicks, check selection and focus, and catch one-frame flicker yourself instead of asking the user to look.
+description: See and drive the Pcode macOS app (app/macos on the Ghostty fork, including the Swift workspace) while changing its UI. Use when working on the app's Swift code, popups, drawer, docked editor or any pcode rendering inside the app, to snapshot windows, send keys and clicks, check selection and focus, and catch one-frame flicker yourself instead of asking the user to look.
 ---
 
 # UI loop
 
-The Pcode app ([aweis89/ghostty-smooth](https://github.com/aweis89/ghostty-smooth),
-branch `pcode-smooth` and the spike branches off it) has a debug socket. Start
+The Pcode app (pcode's Swift in `app/macos`, built onto the Ghostty fork
+[aweis89/ghostty-smooth](https://github.com/aweis89/ghostty-smooth) at
+`app/ghostty.lock` by `app/scripts/build.sh`) has a debug socket. Start
 the app with `GHOSTTY_DEBUG_SOCKET=<path>` and `scripts/gdbg.py` can then read
 and drive it:
 - **What it gives you:** every terminal's frame, grid size, focus and text, plus
@@ -23,19 +24,19 @@ look at it with `read_file`, then drive the interaction that broke.
 ## Build, launch, look
 
 ```sh
-# In the Ghostty checkout. Use a separate bundle so the user's Pcode.app is untouched.
-# It prints "installed builds/<APP_NAME>-<rev>.app": launch that path.
-APP_NAME=pcode-mytest BUNDLE_ID=com.pcode.terminal.mytest scripts/install-macos.sh --build
+# From the pcode repo (any worktree). A separate bundle ID keeps the user's
+# Pcode.app untouched. Add GHOSTTY_SRC=<fork checkout> to try unmerged Zig work.
+APP_NAME=PcodeMytest BUNDLE_ID=com.pcode.terminal.mytest app/scripts/build.sh --out /tmp/mytest/PcodeMytest.app
 
-# From the pcode repo. Replaces whatever app was on the socket, waits for a terminal.
+# Replaces whatever app was on the socket, waits for a terminal.
 G="python3 -I scripts/gdbg.py"
-$G launch --app <ghostty-checkout>/builds/pcode-mytest-<rev>.app --command /tmp/run.sh
+$G launch --app /tmp/mytest/PcodeMytest.app --command /tmp/run.sh
 $G dump                      # windows, surfaces (id, overlay or pane, grid, frame, focus)
 $G snap /tmp/s.png           # then read_file /tmp/s.png
 ```
 
-Don't launch `builds/current`: every install repoints it, whatever the
-`APP_NAME`, so in a checkout other sessions build in it is whoever built last.
+Don't launch `builds/current`: that is the user's app, which `make app`
+replaces.
 
 `/tmp/run.sh` is whatever the first terminal should run, for example
 `cd /tmp/demo && exec pcode --no-worktree`, or

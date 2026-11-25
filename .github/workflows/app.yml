@@ -1,0 +1,132 @@
+name: app
+
+# Pushing a tag like pcode-app-v0.1.0 builds Pcode.app (arm64, ad-hoc signed)
+# and attaches Pcode-<version>-arm64.zip to a GitHub Release. The Homebrew cask
+# in aweis89/homebrew-tap downloads that zip. The tag prefix keeps clear of
+# pcode's own v* release tags. workflow_dispatch on a branch builds without
+# releasing.
+#
+# Pcode.app is the Ghostty fork at app/ghostty.lock with app/macos copied in
+# (app/scripts/build.sh).
+on:
+  push:
+    tags: ["pcode-app-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Releases finish in tag order, so an older build can't point the cask back.
+concurrency:
+  group: pcode-app-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - name: Select Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_27*.app | grep -v -i beta | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          # Xcode 26+ ships the Metal compiler as a separate component, and
+          # the renderer's shaders need it.
+          xcodebuild -downloadComponent MetalToolchain
+          brew list gettext >/dev/null 2>&1 || brew install gettext
+
+      - name: Check out the fork
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout \
+            https://github.com/aweis89/ghostty-smooth.git tmp/ghostty
+          git -C tmp/ghostty checkout --quiet --detach "$(cat app/ghostty.lock)"
+
+      - name: Version
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/pcode-app-v*) version=${GITHUB_REF_NAME#pcode-app-v} ;;
+            # The g keeps an all-digit sha (0412345) from failing semver.
+            *) version=0.0.0-dev.g$(git rev-parse --short HEAD) ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          # Ghostty's own version, as its About window shows it: the upstream
+          # base plus ours. Passing it also skips build.zig's check that a
+          # tagged HEAD is a vX.Y.Z upstream release.
+          base=$(sed -nE 's/^ *\.version = "([0-9]+\.[0-9]+\.[0-9]+).*",/\1/p' tmp/ghostty/build.zig.zon)
+          echo "GHOSTTY_VERSION=$base-pcode.$version" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          ZIG_FLAGS: -Dxcframework-target=native
+          APP_VERSION: ${{ env.VERSION }}
+        run: app/scripts/build.sh --out pcode-dist/Pcode.app
+
+      - name: Package Pcode.app
+        run: |
+          version=$VERSION
+          lipo -archs pcode-dist/Pcode.app/Contents/MacOS/ghostty
+          ditto -c -k --keepParent pcode-dist/Pcode.app "pcode-dist/Pcode-$version-arm64.zip"
+          shasum -a 256 "pcode-dist/Pcode-$version-arm64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pcode-${{ env.VERSION }}-arm64
+          path: pcode-dist/Pcode-${{ env.VERSION }}-arm64.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/pcode-app-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" \
+              $(echo "$VERSION" | grep -qE '^[0-9]+(\.[0-9]+)*$' || echo --prerelease) \
+              --latest=false \
+              --title "Pcode.app $VERSION" \
+              --notes "Install with Homebrew (the zip alone is ad-hoc signed and Gatekeeper blocks it):
+
+          \`\`\`sh
+          brew install --cask aweis89/tap/pcode
+          \`\`\`"
+          gh release upload "$GITHUB_REF_NAME" "pcode-dist/Pcode-$VERSION-arm64.zip" \
+            -R "$GITHUB_REPOSITORY" --clobber
+
+      # GITHUB_TOKEN cannot push to another repository; the tap holds this
+      # key's public half as a write deploy key.
+      - uses: actions/checkout@v7.0.1
+        if: startsWith(github.ref, 'refs/tags/pcode-app-v')
+        with:
+          repository: aweis89/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: homebrew-tap
+
+      - name: Point the cask at this release
+        if: startsWith(github.ref, 'refs/tags/pcode-app-v')
+        working-directory: homebrew-tap
+        run: |
+          # Pre-releases (pcode-app-v0.2.0rc1) stay off the cask.
+          echo "$VERSION" | grep -qE '^[0-9]+(\.[0-9]+)*$' || exit 0
+          sha256=$(shasum -a 256 "../pcode-dist/Pcode-$VERSION-arm64.zip" | cut -d' ' -f1)
+          # Earlier releases came from the fork's repository; the url and
+          # livecheck lines move to this one. --latest=false above keeps
+          # pcode's own release as this repository's latest.
+          sed -i '' -E \
+            -e "s/^  version \"[^\"]*\"/  version \"$VERSION\"/" \
+            -e "s/^  sha256 \"[^\"]*\"/  sha256 \"$sha256\"/" \
+            -e "s|github\.com/aweis89/ghostty-smooth|github.com/$GITHUB_REPOSITORY|g" Casks/pcode.rb
+          git diff --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: point the pcode cask at Pcode.app $VERSION"
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git pull --rebase origin main
+          done
+          exit 1
