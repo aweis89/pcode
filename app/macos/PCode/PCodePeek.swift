@@ -282,6 +282,7 @@ final class PCodePeekController: ObservableObject {
     @Published private(set) var target: PCodePeekTarget?
     @Published private(set) var state: LoadState = .idle
     @Published private(set) var pinned: Bool = false
+    @Published var isReplaying: Bool = false
 
     /// Called whenever `target` changes so the workspace can wake/occlude a live-peeked pane.
     var onTargetChange: (() -> Void)?
@@ -419,6 +420,7 @@ final class PCodePeekController: ObservableObject {
         target = nil
         state = .idle
         pinned = false
+        isReplaying = false
         hoveredRow = nil
         hoveringOverlay = false
         if hadTarget {
@@ -499,6 +501,7 @@ final class PCodePeekController: ObservableObject {
             if case .loaded = state { return }
         }
         target = newTarget
+        isReplaying = false
         loadToken = UUID()
 
         // Open sessions render their live surface directly — no transcript load needed.
@@ -818,9 +821,20 @@ struct PCodePeekOverlay: View {
                 turns: turns,
                 theme: transcriptTheme,
                 typography: typography,
-                pinToBottom: false)
+                pinToBottom: false,
+                replayActive: peek.isReplaying,
+                onReplayFinished: {
+                    peek.isReplaying = false
+                })
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var hasLoadedTurns: Bool {
+        if case .loaded(let turns) = peek.state, !turns.isEmpty {
+            return true
+        }
+        return false
     }
 
     private var footer: some View {
@@ -832,6 +846,26 @@ struct PCodePeekOverlay: View {
             Text("esc close")
                 .lineLimit(1)
             Spacer(minLength: 8)
+            if hasLoadedTurns {
+                Button {
+                    peek.isReplaying.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: peek.isReplaying ? "stop.fill" : "play.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(peek.isReplaying ? "Stop" : "Replay 4×")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(peek.isReplaying ? Color.accentColor : Color.primary.opacity(0.85))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(peek.isReplaying ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help("Replay this transcript through the live streaming pipeline at 4× speed")
+                .fixedSize(horizontal: true, vertical: false)
+            }
             typographyControls
                 .fixedSize(horizontal: true, vertical: false)
         }

@@ -94,6 +94,56 @@ struct PCodeTranscriptLayoutEngine {
         entries[index].minHeight = active ? entries[index].height : 0
     }
 
+    /// Update an entry's `spacingAfter`, shifting trailing `yOffset`s and recomputing `totalHeight`.
+    mutating func updateSpacingAfter(at index: Int, spacingAfter: CGFloat) {
+        guard entries.indices.contains(index) else { return }
+        let newSpacing = roundToPixel(max(0, spacingAfter))
+        let delta = newSpacing - entries[index].spacingAfter
+        guard abs(delta) > 0.0001 else { return }
+        entries[index].spacingAfter = newSpacing
+        if index + 1 < entries.count {
+            for i in (index + 1)..<entries.count {
+                entries[i].yOffset += delta
+            }
+        }
+        totalHeight = roundToPixel(max(topPadding + bottomPadding, totalHeight + delta))
+    }
+
+    /// Replace an entry's ID/spacing in place (e.g. when a streaming block changes kind)
+    /// and mark it unmeasured while preserving its current height until re-measured.
+    mutating func replaceEntry(at index: Int, id: String, spacingAfter: CGFloat) {
+        guard entries.indices.contains(index) else { return }
+        let old = entries[index]
+        let newSpacing = roundToPixel(max(0, spacingAfter))
+        let spacingDelta = newSpacing - old.spacingAfter
+        entries[index] = Entry(
+            id: id,
+            yOffset: old.yOffset,
+            height: old.height,
+            spacingAfter: newSpacing,
+            isMeasured: false,
+            minHeight: old.minHeight)
+        if abs(spacingDelta) > 0.0001 {
+            if index + 1 < entries.count {
+                for i in (index + 1)..<entries.count {
+                    entries[i].yOffset += spacingDelta
+                }
+            }
+            totalHeight = roundToPixel(max(topPadding + bottomPadding, totalHeight + spacingDelta))
+        }
+    }
+
+    /// Remove all entries from `index..<entries.count` and recompute `totalHeight`.
+    mutating func removeTail(from index: Int) {
+        guard index >= 0, index < entries.count else { return }
+        entries.removeSubrange(index..<entries.count)
+        if let last = entries.last {
+            totalHeight = roundToPixel(last.yOffset + last.height + last.spacingAfter + bottomPadding)
+        } else {
+            totalHeight = roundToPixel(topPadding + bottomPadding)
+        }
+    }
+
     /// Update an item's height, shift trailing `yOffset`s, and compute the exact scroll-origin
     /// compensation needed to keep visible content stationary when above `viewportTop`.
     mutating func updateHeight(

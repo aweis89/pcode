@@ -129,6 +129,8 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
     }
 
     /// Update the rendered attributed text and layout width, returning exact measured height.
+    /// When only a trailing suffix changed (e.g. live streaming), applies a minimal suffix edit
+    /// to `textContentStorage.textStorage` so TextKit 2 preserves earlier layout fragments.
     @discardableResult
     func configure(attributedText: NSAttributedString, width: CGFloat) -> CGFloat {
         let clampedWidth = max(1, width)
@@ -137,8 +139,27 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
 
         if textChanged {
             let immutableCopy = (attributedText.copy() as? NSAttributedString) ?? attributedText
-            textContentStorage.performEditingTransaction {
-                textContentStorage.attributedString = immutableCopy
+            if let oldAttr = lastAttributedString,
+               let storage = textContentStorage.textStorage,
+               storage.length == oldAttr.length
+            {
+                let prefixLen = Self.commonAttributedPrefixLength(oldAttr, immutableCopy)
+                if prefixLen > 0 {
+                    let replaceRange = NSRange(location: prefixLen, length: oldAttr.length - prefixLen)
+                    let suffix = immutableCopy.attributedSubstring(
+                        from: NSRange(location: prefixLen, length: immutableCopy.length - prefixLen))
+                    textContentStorage.performEditingTransaction {
+                        storage.replaceCharacters(in: replaceRange, with: suffix)
+                    }
+                } else {
+                    textContentStorage.performEditingTransaction {
+                        textContentStorage.attributedString = immutableCopy
+                    }
+                }
+            } else {
+                textContentStorage.performEditingTransaction {
+                    textContentStorage.attributedString = immutableCopy
+                }
             }
             lastAttributedString = immutableCopy
         }
@@ -149,6 +170,29 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             needsDisplay = true
         }
         return textLayoutManager.usageBoundsForTextContainer.height
+    }
+
+    /// Compute the longest UTF-16 prefix length where both text and attributes match identically.
+    static func commonAttributedPrefixLength(_ lhs: NSAttributedString, _ rhs: NSAttributedString) -> Int {
+        let lhsStr = lhs.string as NSString
+        let rhsStr = rhs.string as NSString
+        let textPrefixLen = (lhsStr.commonPrefix(with: rhs.string, options: .literal) as NSString).length
+        guard textPrefixLen > 0 else { return 0 }
+
+        var matched = 0
+        while matched < textPrefixLen {
+            var lhsRange = NSRange()
+            var rhsRange = NSRange()
+            let lhsAttrs = lhs.attributes(at: matched, longestEffectiveRange: &lhsRange, in: NSRange(location: matched, length: textPrefixLen - matched))
+            let rhsAttrs = rhs.attributes(at: matched, longestEffectiveRange: &rhsRange, in: NSRange(location: matched, length: textPrefixLen - matched))
+            guard NSDictionary(dictionary: lhsAttrs).isEqual(to: rhsAttrs) else {
+                break
+            }
+            let step = min(NSMaxRange(lhsRange), NSMaxRange(rhsRange))
+            guard step > matched else { break }
+            matched = step
+        }
+        return matched
     }
 
     /// Measure exact height using the same TextKit 2 engine that draws the view.
