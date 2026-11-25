@@ -29,6 +29,25 @@ struct PCodePeekToolCall: Identifiable {
     let failed: Bool
     let elapsedSeconds: Double?
     let command: String
+    let output: String
+
+    init(
+        id: Int,
+        name: String,
+        detail: String,
+        failed: Bool,
+        elapsedSeconds: Double?,
+        command: String,
+        output: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+        self.failed = failed
+        self.elapsedSeconds = elapsedSeconds
+        self.command = command
+        self.output = output
+    }
 
     var summaryText: String {
         if !detail.isEmpty { return detail }

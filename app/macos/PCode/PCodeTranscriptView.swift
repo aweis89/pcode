@@ -47,6 +47,9 @@ struct PCodeTranscriptItem: Identifiable {
         case codeBlock
         case table
         case tool
+        case diff
+        case thinking
+        case plan
         case status
     }
 
@@ -56,14 +59,19 @@ struct PCodeTranscriptItem: Identifiable {
         case codeBlock(language: String?, code: String, fullCopyCode: String, showHeader: Bool, groupID: String?)
         case table(PCodeMarkdownTable)
         case tool(PCodePeekToolCall, isExpanded: Bool)
+        case diff(PCodeDiffPayload)
+        case thinking(text: String, isExpanded: Bool)
+        case plan([PCodePlanItem])
         case status(PCodePeekTurn.Status)
     }
 
     let id: String
     let payload: Payload
     let spacingAfter: CGFloat
-    /// Monotonic revision bumped when an item's payload mutates in place (e.g. expand/stream).
+    /// Monotonic revision bumped when an item's payload mutates in place (e.g. expand/upsert).
     let revision: UInt64
+    /// Flattened nesting depth (e.g. `1` for sub-agent tool/edit calls under `parent_call_id`).
+    let depth: Int
 
     var kind: Kind {
         switch payload {
@@ -72,6 +80,9 @@ struct PCodeTranscriptItem: Identifiable {
         case .codeBlock: return .codeBlock
         case .table: return .table
         case .tool: return .tool
+        case .diff: return .diff
+        case .thinking: return .thinking
+        case .plan: return .plan
         case .status: return .status
         }
     }
@@ -98,16 +109,23 @@ struct PCodeTranscriptItem: Identifiable {
         case .tool(let call, _):
             let summary = call.summaryText
             return summary.isEmpty ? call.name : "\(call.name) \(summary)"
+        case .diff(let diff):
+            return "\(diff.path)\n\(diff.patch)"
+        case .thinking(let text, _):
+            return text
+        case .plan(let items):
+            return items.map(\.content).joined(separator: "\n")
         case .status(let status):
             return PCodeStatusRowView.displayLabel(for: status)
         }
     }
 
-    init(id: String, payload: Payload, spacingAfter: CGFloat = 8, revision: UInt64 = 0) {
+    init(id: String, payload: Payload, spacingAfter: CGFloat = 8, revision: UInt64 = 0, depth: Int = 0) {
         self.id = id
         self.payload = payload
         self.spacingAfter = spacingAfter
         self.revision = revision
+        self.depth = max(0, depth)
     }
 
     /// Convenience initializer used by unit tests and simple synthetic items.
@@ -151,14 +169,30 @@ struct PCodeTranscriptItem: Identifiable {
                 elapsedSeconds: nil,
                 command: "")
             self.payload = .tool(call, isExpanded: false)
+        case .diff:
+            self.payload = .diff(PCodeDiffPayload(
+                callID: id,
+                path: secondaryText,
+                operation: "edit",
+                patch: plainText,
+                added: 0,
+                removed: 0,
+                isPreview: false,
+                truncated: false,
+                depth: 0))
+        case .thinking:
+            self.payload = .thinking(text: plainText, isExpanded: false)
+        case .plan:
+            self.payload = .plan([PCodePlanItem(content: plainText, status: "pending")])
         case .status:
             let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
             self.payload = .status(status)
         }
+        self.depth = 0
     }
 
     func withSpacingAfter(_ spacing: CGFloat) -> PCodeTranscriptItem {
-        PCodeTranscriptItem(id: id, payload: payload, spacingAfter: spacing, revision: revision)
+        PCodeTranscriptItem(id: id, payload: payload, spacingAfter: spacing, revision: revision, depth: depth)
     }
 
     /// Flatten `PCodePeekTurn`s into virtualized transcript items, parsing Markdown messages
@@ -505,6 +539,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         for (idx, item) in items.enumerated() {
             itemIndexByID[item.id] = idx
         }
+    }
+
+    /// Look up an item's current index by its stable `id` (`O(1)`).
+    func indexOfItem(id: String) -> Int? {
+        itemIndexByID[id]
     }
 
     /// Insert or update a transcript item by its stable `id` (used by both live streaming
@@ -969,10 +1008,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             rowView.setHovered(hoveredItemID == item.id)
 
             let entry = layoutEngine.entries[idx]
+            let indent = CGFloat(item.depth) * 16
             let targetFrame = CGRect(
-                x: Self.horizontalPadding,
+                x: Self.horizontalPadding + indent,
                 y: entry.yOffset,
-                width: contentWidth,
+                width: max(1, contentWidth - indent),
                 height: entry.height)
             if rowView.frame != targetFrame {
                 rowView.frame = targetFrame
@@ -1057,6 +1097,40 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     self?.toggleToolExpansion(id: item.id)
                 })
 
+        case (let view as PCodeDiffCardView, .diff(let payload)):
+            let attr = cachedDiffAttributedString(for: item.id, payload: payload)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                payload: payload,
+                attributedPatch: attr,
+                width: max(1, width - CGFloat(item.depth) * 16),
+                typography: typography,
+                theme: theme,
+                documentView: self,
+                selectedRange: localSel)
+
+        case (let view as PCodeThinkingCardView, .thinking(let text, let isExpanded)):
+            let attr = cachedThinkingAttributedString(for: item.id, text: text, isExpanded: isExpanded)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                isExpanded: isExpanded,
+                attributedText: attr,
+                width: max(1, width - CGFloat(item.depth) * 16),
+                theme: theme,
+                selectedRange: localSel,
+                onToggle: { [weak self] in
+                    self?.toggleThinkingExpansion(id: item.id)
+                })
+
+        case (let view as PCodePlanCardView, .plan(let planItems)):
+            let attr = cachedPlanAttributedString(for: item.id, planItems: planItems)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                attributedText: attr,
+                width: max(1, width - CGFloat(item.depth) * 16),
+                theme: theme,
+                selectedRange: localSel)
+
         case (let view as PCodeStatusRowView, .status(let status)):
             let attr = cachedStatusAttributedString(for: item.id, status: status)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
@@ -1087,6 +1161,24 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         mountViews(in: visibleRect)
     }
 
+    private func toggleThinkingExpansion(id: String) {
+        guard let index = itemIndexByID[id],
+              items.indices.contains(index),
+              case .thinking(let text, let isExpanded) = items[index].payload
+        else { return }
+        if !isExpanded {
+            stickyBottom.unpinForUserAction()
+        }
+        removeAttributedCache(for: id)
+        items[index] = PCodeTranscriptItem(
+            id: id,
+            payload: .thinking(text: text, isExpanded: !isExpanded),
+            spacingAfter: items[index].spacingAfter,
+            revision: items[index].revision &+ 1,
+            depth: items[index].depth)
+        mountViews(in: visibleRect)
+    }
+
     private func remountVisibleViews() {
         appliedStates.removeAll(keepingCapacity: true)
         for (_, rowView) in mountedViews {
@@ -1107,6 +1199,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .codeBlock: return PCodeCodeBlockView()
         case .table: return PCodeTableBlockView()
         case .tool: return PCodeToolCardView()
+        case .diff: return PCodeDiffCardView()
+        case .thinking: return PCodeThinkingCardView()
+        case .plan: return PCodePlanCardView()
         case .status: return PCodeStatusRowView()
         }
     }
@@ -1434,6 +1529,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return table.plainText
         case .tool(let call, let isExpanded):
             return cachedToolAttributedString(for: item.id, call: call, isExpanded: isExpanded).string
+        case .diff(let payload):
+            return cachedDiffAttributedString(for: item.id, payload: payload).string
+        case .thinking(let text, let isExpanded):
+            return cachedThinkingAttributedString(for: item.id, text: text, isExpanded: isExpanded).string
+        case .plan(let planItems):
+            return cachedPlanAttributedString(for: item.id, planItems: planItems).string
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
         }
@@ -1514,6 +1615,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .table(let table):
             let rowCount = table.rows.count + (table.headers.isEmpty ? 0 : 1)
             return CGFloat(max(1, rowCount)) * (typography.lineHeight(scale: 0.92) + 14)
+        case .diff(let diff):
+            let lineCount = max(1, min(200, diff.patch.split(separator: "\n", omittingEmptySubsequences: false).count))
+            return PCodeDiffCardView.headerHeight + 16 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
+        case .thinking:
+            return 34
+        case .plan(let planItems):
+            return 28 + CGFloat(max(1, planItems.count)) * typography.lineHeight(scale: 0.88)
         }
     }
 
@@ -1590,6 +1698,53 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         let built = PCodeStatusRowView.attributedText(
             for: status,
+            typography: typography,
+            theme: theme)
+        storeAttributedCache(built, for: id)
+        return built
+    }
+
+    private func cachedDiffAttributedString(
+        for id: String,
+        payload: PCodeDiffPayload
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodeDiffCardView.attributedPatch(
+            for: payload,
+            typography: typography,
+            theme: theme)
+        storeAttributedCache(built, for: id)
+        return built
+    }
+
+    private func cachedThinkingAttributedString(
+        for id: String,
+        text: String,
+        isExpanded: Bool
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodeThinkingCardView.attributedText(
+            for: text,
+            isExpanded: isExpanded,
+            typography: typography,
+            theme: theme)
+        storeAttributedCache(built, for: id)
+        return built
+    }
+
+    private func cachedPlanAttributedString(
+        for id: String,
+        planItems: [PCodePlanItem]
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodePlanCardView.attributedText(
+            for: planItems,
             typography: typography,
             theme: theme)
         storeAttributedCache(built, for: id)

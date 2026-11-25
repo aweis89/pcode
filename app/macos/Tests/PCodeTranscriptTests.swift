@@ -778,4 +778,97 @@ struct PCodeTranscriptTests {
         #expect(!engine.entries[idx].isMeasured)
         #expect(engine.entries[idx].minHeight == 0)
     }
+
+    // MARK: - Phase 3: Dual-Format Event Decoder, Reducer & Rich Cards
+
+    @Test func hostEventDecoderHandlesBothJournalAndLiveSocketFormats() {
+        // Flat journal record (`transcript.jsonl`)
+        let journalEvent = PCodeHostEventDecoder.decodeJournalRecord([
+            "kind": "EditCompleted",
+            "call_id": "c4",
+            "path": "src/app.py",
+            "operation": "edit",
+            "patch": "@@ -1 +1 @@\n-old\n+new",
+            "added": 1,
+            "removed": 1,
+        ])
+        #expect(journalEvent == .editCompleted(
+            callID: "c4",
+            parentCallID: "",
+            path: "src/app.py",
+            operation: "edit",
+            patch: "@@ -1 +1 @@\n-old\n+new",
+            added: 1,
+            removed: 1,
+            truncated: false))
+
+        // Nested RPC socket notification (`{"$event": {"kind": ..., "fields": ...}}`)
+        let rpcEvent = PCodeHostEventDecoder.decodeRPCCall(
+            method: "turn_event",
+            args: [[
+                "$event": [
+                    "kind": "EditPreview",
+                    "fields": [
+                        "call_id": "c4",
+                        "path": "src/app.py",
+                        "text": "+new",
+                        "kind": "edit",
+                    ],
+                ],
+            ]],
+            kwargs: [:])
+        #expect(rpcEvent == .editPreview(callID: "c4", path: "src/app.py", text: "+new", kind: "edit"))
+
+        // Display-only ChildText and terminal-only redraw are ignored cleanly
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "redraw", args: [], kwargs: [:]) == nil)
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "ChildText", fields: ["call_id": "c1", "text": "hi"]) == nil)
+    }
+
+    @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsThinkingAndPlan() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Refactor parser", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.thinkingDelta("Checking files…"), reveal: false)
+        reducer.apply(.thinking(text: "Checked files and found 2 bugs."), reveal: false)
+        // Thinking upserts in place (still 1 thinking item)
+        #expect(doc.items.filter { $0.kind == .thinking }.count == 1)
+
+        // Child tool arrives BEFORE parent (orphan buffering), then parent arrives
+        reducer.apply(.toolStarted(callID: "child-1", parentCallID: "parent-1", name: "read_file", detail: "a.py", command: "", purpose: ""), reveal: false)
+        reducer.apply(.toolStarted(callID: "parent-1", parentCallID: "", name: "delegate", detail: "worker", command: "", purpose: ""), reveal: false)
+        let parentIdx = doc.indexOfItem(id: "call-parent-1")
+        let childIdx = doc.indexOfItem(id: "call-child-1")
+        #expect(parentIdx != nil && childIdx != nil)
+        #expect(childIdx == (parentIdx ?? -1) + 1)
+        #expect(doc.items[childIdx!].depth == 1)
+
+        // CommandOutput caps tail lines and upserts onto existing tool call
+        let hugeOutput = (1...80).map { "out_\($0)" }.joined(separator: "\n")
+        reducer.apply(.commandOutput(callID: "parent-1", command: "make test", output: hugeOutput), reveal: false)
+        if case .tool(let updatedCall, _) = doc.items[parentIdx!].payload {
+            #expect(updatedCall.output.contains("out_80"))
+            #expect(updatedCall.output.contains("earlier lines omitted"))
+        } else {
+            Issue.record("Expected updated tool call")
+        }
+
+        // EditPreview morphs into EditCompleted under the same item ID (`edit-e1`)
+        reducer.apply(.editPreview(callID: "e1", path: "a.py", text: "+x = 1", kind: "edit"), reveal: false)
+        reducer.apply(.editCompleted(callID: "e1", parentCallID: "", path: "a.py", operation: "edit", patch: "@@ -1 +1 @@\n-x = 0\n+x = 1", added: 1, removed: 1, truncated: false), reveal: false)
+        #expect(doc.items.filter { $0.kind == .diff }.count == 1)
+
+        // PlanUpdated upserts single card, PlanPreview(nil) clears it
+        reducer.apply(.planUpdated(items: [
+            PCodePlanItem(content: "Inspect code", status: "completed"),
+            PCodePlanItem(content: "Write tests", status: "in_progress"),
+        ]), reveal: false)
+        #expect(doc.items.filter { $0.kind == .plan }.count == 1)
+        reducer.apply(.planPreview(items: nil), reveal: false)
+        #expect(doc.items.filter { $0.kind == .plan }.isEmpty)
+    }
 }
