@@ -92,6 +92,7 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
 
     private var lastAttributedString: NSAttributedString?
     private var lastLayoutWidth: CGFloat = 0
+    private var lastMeasuredHeight: CGFloat = 0
     private(set) var totalInkSweepLength: CGFloat = 0
 
     /// Active ink-sweep frontier in linear horizontal points across all lines (`nil` = fully revealed).
@@ -189,24 +190,32 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             textContainer.size = CGSize(width: clampedWidth, height: 0)
             lastLayoutWidth = clampedWidth
             textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
-            totalInkSweepLength = computeTotalInkSweepLength()
+            let metrics = computeLayoutMetrics()
+            totalInkSweepLength = metrics.inkSweepLength
+            lastMeasuredHeight = metrics.height
             needsDisplay = true
         }
-        return textLayoutManager.usageBoundsForTextContainer.height
+        return lastMeasuredHeight
     }
 
-    private func computeTotalInkSweepLength() -> CGFloat {
-        var total: CGFloat = 0
+    private func computeLayoutMetrics() -> (height: CGFloat, inkSweepLength: CGFloat) {
+        var totalSpan: CGFloat = 0
+        var maxY: CGFloat = 0
         textLayoutManager.enumerateTextLayoutFragments(
             from: textLayoutManager.documentRange.location,
             options: [.ensuresLayout]
         ) { fragment in
+            let frame = fragment.layoutFragmentFrame
+            if frame.maxY > maxY {
+                maxY = frame.maxY
+            }
             for line in fragment.textLineFragments {
-                total += max(1, ceil(line.typographicBounds.width))
+                totalSpan += max(1, ceil(line.typographicBounds.width))
             }
             return true
         }
-        return total
+        let height = maxY > 0 ? maxY : textLayoutManager.usageBoundsForTextContainer.height
+        return (height, totalSpan)
     }
 
     private func inkSweepDirtyRect(from oldFrontier: CGFloat?, to newFrontier: CGFloat?) -> CGRect? {
@@ -562,7 +571,7 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         return union
     }
 
-    private func textRange(fromUTF16 range: NSRange) -> NSTextRange? {
+    func textRange(fromUTF16 range: NSRange) -> NSTextRange? {
         let docStart = textLayoutManager.documentRange.location
         guard let start = textContentStorage.location(docStart, offsetBy: range.location),
               let end = textContentStorage.location(start, offsetBy: range.length)

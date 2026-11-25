@@ -427,13 +427,21 @@ final class PCodeLiveTranscriptController: ObservableObject {
     }
 }
 
+/// Shared toggle controlling whether the main session window renders the native
+/// AppKit transcript (default `true`) or falls back to the raw Ghostty terminal scrollback.
+final class PCodeNativeTranscriptMode: ObservableObject {
+    static let shared = PCodeNativeTranscriptMode()
+    @Published var enabled: Bool = true
+}
+
 /// SwiftUI `NSViewRepresentable` hosting `PCodeTranscriptScrollView` connected to
 /// `PCodeLiveTranscriptController`.
-private struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
+struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     let sessionID: String?
     let theme: PCodeTranscriptTheme
     let typography: PCodeTypography
     let controller: PCodeLiveTranscriptController
+    var bottomContentInset: CGFloat = 0
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -441,9 +449,11 @@ private struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PCodeTranscriptScrollView {
         let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
+        scrollView.bottomContentInset = bottomContentInset
         context.coordinator.lastTheme = theme
         context.coordinator.lastTypographySnapshot = typography.snapshot
         context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
+        context.coordinator.lastRequestedSessionID = sessionID
         context.coordinator.controller = controller
         let sid = sessionID
         DispatchQueue.main.async { [weak controller, weak doc = scrollView.transcriptDocumentView] in
@@ -457,6 +467,8 @@ private struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         let coord = context.coordinator
         let snap = typography.snapshot
         let typoID = ObjectIdentifier(typography)
+
+        nsView.bottomContentInset = bottomContentInset
 
         if coord.lastTypographyObjectID != typoID {
             coord.lastTypographyObjectID = typoID
@@ -491,6 +503,38 @@ private struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         var lastTypographyObjectID: ObjectIdentifier?
         var lastRequestedSessionID: String?
         weak var controller: PCodeLiveTranscriptController?
+    }
+}
+
+/// Main-window live AppKit transcript layer mounted over the Ghostty scrollback surface
+/// and underneath `PCodeDockCard` and the `/btw` drawer.
+struct PCodeMainWindowTranscriptView: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    let sessionID: String?
+    let bottomContentInset: CGFloat
+    @ObservedObject private var typography = PCodeTypography.shared
+    @StateObject private var controller = PCodeLiveTranscriptController()
+
+    private var transcriptTheme: PCodeTranscriptTheme {
+        PCodeTranscriptTheme.make(
+            background: NSColor(ghostty.config.backgroundColor),
+            foreground: NSColor(ghostty.config.foregroundColor))
+    }
+
+    private var colorScheme: ColorScheme {
+        NSColor(ghostty.config.backgroundColor).isLightColor ? .light : .dark
+    }
+
+    var body: some View {
+        PCodeLiveTranscriptRepresentable(
+            sessionID: sessionID,
+            theme: transcriptTheme,
+            typography: typography,
+            controller: controller,
+            bottomContentInset: bottomContentInset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ghostty.config.backgroundColor)
+            .environment(\.colorScheme, colorScheme)
     }
 }
 

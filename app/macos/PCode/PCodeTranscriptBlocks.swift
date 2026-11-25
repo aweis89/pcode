@@ -957,12 +957,16 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     let textView = PCodeTextKit2BlockView()
     private let iconView = NSImageView()
     private let toggleButton = NSButton()
+    private let bottomCollapseButton = NSButton()
+    private let bottomDivider = CALayer()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
     override var isFlipped: Bool { true }
+
+    private static let bottomCollapseBarHeight: CGFloat = 24
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -976,6 +980,17 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         toggleButton.target = self
         toggleButton.action = #selector(togglePressed)
         addSubview(toggleButton)
+
+        layer?.addSublayer(bottomDivider)
+        bottomDivider.isHidden = true
+
+        bottomCollapseButton.isBordered = false
+        bottomCollapseButton.bezelStyle = .inline
+        bottomCollapseButton.imagePosition = .imageLeading
+        bottomCollapseButton.target = self
+        bottomCollapseButton.action = #selector(togglePressed)
+        bottomCollapseButton.isHidden = true
+        addSubview(bottomCollapseButton)
     }
 
     @available(*, unavailable)
@@ -987,9 +1002,31 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        primaryTextView?.inkSweepFrontier = nil
+        onToggle = nil
+        bottomCollapseButton.isHidden = true
+        bottomDivider.isHidden = true
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyLayerColors()
+    }
+
+    /// Number of lines in the expandable payload (output if present, otherwise multiline summary).
+    static func expandableLineCount(for call: PCodePeekToolCall) -> Int {
+        if !call.output.isEmpty {
+            return call.output.split(separator: "\n", omittingEmptySubsequences: false).count
+        }
+        let summary = call.summaryText
+        if summary.contains("\n") {
+            return summary.split(separator: "\n", omittingEmptySubsequences: false).count
+        }
+        return 0
     }
 
     /// Single source of truth for rendered tool card text (shared by drawing and copy).
@@ -1042,6 +1079,20 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                 ]))
         }
 
+        if !isExpanded {
+            let lineCount = expandableLineCount(for: call)
+            if lineCount > 0 {
+                let label = lineCount == 1 ? "1 line" : "\(lineCount) lines"
+                out.append(NSAttributedString(
+                    string: "  · \(label)",
+                    attributes: [
+                        .font: typography.codeNSFont(scale: 0.78),
+                        .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.62),
+                        .paragraphStyle: style,
+                    ]))
+            }
+        }
+
         // Lazy tool output rendering: only format/append output when expanded.
         if isExpanded && !call.output.isEmpty {
             out.append(NSAttributedString(
@@ -1084,8 +1135,10 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = selectedRange
         textView.frame = CGRect(x: leftPad, y: topPad, width: textWidth, height: textHeight)
 
-        let totalHeight = max(26, textHeight + topPad + bottomPad)
-        iconView.frame = CGRect(x: 9, y: floor((min(totalHeight, 26) - 12) * 0.5), width: 12, height: 12)
+        let showBottomCollapse = canExpand && isExpanded
+        let contentHeight = max(26, textHeight + topPad + bottomPad)
+        let totalHeight = contentHeight + (showBottomCollapse ? Self.bottomCollapseBarHeight : 0)
+        iconView.frame = CGRect(x: 9, y: floor((min(contentHeight, 26) - 12) * 0.5), width: 12, height: 12)
 
         toggleButton.isHidden = !canExpand
         if canExpand {
@@ -1094,6 +1147,32 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
             toggleButton.contentTintColor = theme.secondaryForeground
             toggleButton.frame = CGRect(x: width - 22, y: 3, width: 18, height: 20)
+        }
+
+        bottomCollapseButton.isHidden = !showBottomCollapse
+        bottomDivider.isHidden = !showBottomCollapse
+        if showBottomCollapse {
+            let lineCount = Self.expandableLineCount(for: call)
+            let title = lineCount > 1 ? " Collapse (\(lineCount) lines)" : " Collapse"
+            let symCfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+            bottomCollapseButton.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Collapse")?
+                .withSymbolConfiguration(symCfg)
+            bottomCollapseButton.contentTintColor = theme.secondaryForeground
+            bottomCollapseButton.attributedTitle = NSAttributedString(
+                string: title,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: theme.secondaryForeground,
+                ])
+            bottomCollapseButton.frame = CGRect(
+                x: 8,
+                y: contentHeight + 1,
+                width: max(1, width - 16),
+                height: Self.bottomCollapseBarHeight - 2)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            bottomDivider.frame = CGRect(x: 8, y: contentHeight, width: max(0, width - 16), height: 1)
+            CATransaction.commit()
         }
 
         applyLayerColors()
@@ -1105,6 +1184,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = theme.toolBackground.cgColor
             layer?.cornerRadius = 5
+            bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
         }
     }
 

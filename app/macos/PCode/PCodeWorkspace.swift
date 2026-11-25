@@ -863,13 +863,15 @@ final class PCodeWorkspace: ObservableObject {
 
     private var historyGeneration = 0
 
-    /// Non-destructive live AppKit transcript split pane alongside the Ghostty terminal.
-    @Published var liveTranscriptVisible: Bool = false
-    @Published var liveTranscriptFraction: CGFloat = 0.45
+    /// Whether the main session window renders the native AppKit transcript (true)
+    /// or falls back to the raw Ghostty terminal scrollback (false).
+    @Published var liveTranscriptVisible: Bool = PCodeNativeTranscriptMode.shared.enabled
 
     func toggleLiveTranscript() {
-        liveTranscriptVisible.toggle()
-        if !liveTranscriptVisible, let pane = selectedPane {
+        let next = !PCodeNativeTranscriptMode.shared.enabled
+        PCodeNativeTranscriptMode.shared.enabled = next
+        liveTranscriptVisible = next
+        if let pane = selectedPane {
             DispatchQueue.main.async {
                 Ghostty.moveFocus(to: pane.keyboardSurface)
             }
@@ -1935,8 +1937,6 @@ struct PCodeWorkspaceView: View {
     @State private var isDropTargeted = false
     /// `workspace.sidebarWidth` when the current resize drag began.
     @State private var sidebarDragStart: CGFloat?
-    /// `workspace.liveTranscriptFraction` when the current transcript resize drag began.
-    @State private var transcriptDragStartFraction: CGFloat?
     /// Tracks macOS < 15 `NSCursor.resizeLeftRight` push state so pushes and pops stay balanced.
     @State private var resizeCursorPushed = false
 
@@ -2015,58 +2015,9 @@ struct PCodeWorkspaceView: View {
     private var detailPane: some View {
         ZStack {
             if let pane = workspace.selectedPane {
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        PCodeSessionPaneView(pane: pane)
-                            .id(pane.id)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        if workspace.liveTranscriptVisible {
-                            let maxTranscriptW = max(0, geo.size.width - 260)
-                            let desiredW = min(geo.size.width * 0.70, max(240, geo.size.width * workspace.liveTranscriptFraction))
-                            let clampedW = min(desiredW, maxTranscriptW)
-                            if clampedW >= 180 {
-                                Rectangle()
-                                    .fill(ghostty.config.splitDividerColor)
-                                    .frame(width: 1)
-                                    .overlay(
-                                        Color.clear
-                                            .frame(width: 9)
-                                            .contentShape(Rectangle())
-                                            .backport.pointerStyle(.resizeLeftRight)
-                                            .onTapGesture(count: 2) {
-                                                workspace.liveTranscriptFraction = 0.45
-                                            }
-                                            .onDisappear {
-                                                transcriptDragStartFraction = nil
-                                            }
-                                            .gesture(
-                                                DragGesture(coordinateSpace: .global)
-                                                    .onChanged { gesture in
-                                                        let start = transcriptDragStartFraction ?? workspace.liveTranscriptFraction
-                                                        if transcriptDragStartFraction == nil {
-                                                            transcriptDragStartFraction = start
-                                                        }
-                                                        let total = max(1, geo.size.width)
-                                                        let deltaFrac = -gesture.translation.width / total
-                                                        workspace.liveTranscriptFraction = min(0.70, max(0.25, start + deltaFrac))
-                                                    }
-                                                    .onEnded { _ in
-                                                        transcriptDragStartFraction = nil
-                                                    }
-                                            )
-                                    )
-                                    .zIndex(1)
-
-                                PCodeLiveTranscriptPaneView(pane: pane) {
-                                    workspace.toggleLiveTranscript()
-                                }
-                                .frame(width: clampedW)
-                                .transition(.identity)
-                            }
-                        }
-                    }
-                }
+                PCodeSessionPaneView(pane: pane)
+                    .id(pane.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text("No session open").foregroundStyle(.secondary)
             }
@@ -2166,7 +2117,9 @@ struct PCodeWorkspaceView: View {
                     Image(systemName: "doc.plaintext")
                 }
             }
-            .help("Toggle Live Transcript pane alongside terminal (⌥⌘T)")
+            .help(workspace.liveTranscriptVisible
+                ? "Switch to raw terminal scrollback (⌥⌘T)"
+                : "Switch to native transcript view (⌥⌘T)")
             Button { workspace.toggleShell() } label: { Image(systemName: "terminal") }
                 .help("Toggle the shell under this session (⌘J)")
             Button { workspace.openDirectoryPicker() } label: { Image(systemName: "folder.badge.plus") }

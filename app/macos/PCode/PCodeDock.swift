@@ -155,6 +155,8 @@ struct PCodeDockedSurface: View {
     @ObservedObject var surfaceView: Ghostty.SurfaceView
     @ObservedObject var dock: PCodeDock
     @ObservedObject var drawer: PCodeDrawer
+    @ObservedObject private var transcriptMode = PCodeNativeTranscriptMode.shared
+    @State private var sessionID: String?
     var isSplit: Bool
 
     private static let fallbackLineHeight: CGFloat = 18
@@ -163,6 +165,7 @@ struct PCodeDockedSurface: View {
         self.surfaceView = surfaceView
         self.dock = dock
         self.drawer = surfaceView.pcodeDrawer
+        self._sessionID = State(initialValue: surfaceView.pcodeSession)
         self.isSplit = isSplit
     }
 
@@ -181,6 +184,24 @@ struct PCodeDockedSurface: View {
                 PCodeDrawerSurface(
                     surfaceView: surfaceView, drawer: drawer, isSplit: isSplit,
                     drawsDrawer: false)
+
+                // Native AppKit live transcript replacing the terminal scrollback layer
+                // while keeping the underlying Ghostty surface alive for PTY/OSC/dock.
+                if !isSplit, transcriptMode.enabled, let sid = sessionID ?? surfaceView.pcodeSession, !sid.isEmpty {
+                    if let docked = dock.surface {
+                        PCodeDockedTranscriptLayer(
+                            sessionID: sid,
+                            dock: dock,
+                            docked: docked,
+                            fallbackCell: paneCell,
+                            drawerOpen: drawerOpen)
+                    } else {
+                        PCodeMainWindowTranscriptView(
+                            sessionID: sid,
+                            bottomContentInset: 0)
+                    }
+                }
+
                 // The /btw drawer over the right side, full height, reserving the
                 // card's live footprint at its bottom so the viewer and hint bar
                 // always end above the card (observing the dock's surface so font
@@ -210,11 +231,40 @@ struct PCodeDockedSurface: View {
                 }
             }
             .animation(.spring(response: 0.28, dampingFraction: 0.86), value: dock.ready)
+            .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
+                sessionID = surfaceView.pcodeSession
+            }
+            .onAppear {
+                if sessionID != surfaceView.pcodeSession {
+                    sessionID = surfaceView.pcodeSession
+                }
+            }
         }
     }
 
     private var paneCell: CGFloat {
         surfaceView.cellSize.height > 0 ? surfaceView.cellSize.height : Self.fallbackLineHeight
+    }
+}
+
+/// Observes `dock` and `dock.surface` so the main-window native transcript reserves
+/// the exact live bottom footprint of `PCodeDockCard` as the editor grows or zooms.
+private struct PCodeDockedTranscriptLayer: View {
+    let sessionID: String
+    @ObservedObject var dock: PCodeDock
+    @ObservedObject var docked: Ghostty.SurfaceView
+    var fallbackCell: CGFloat
+    var drawerOpen: Bool
+
+    var body: some View {
+        let cell = docked.cellSize.height > 0 ? docked.cellSize.height : fallbackCell
+        let surfaceRows = docked.surfaceSize.map { Int($0.rows) }
+        let bottomInset: CGFloat = (!drawerOpen && dock.ready)
+            ? PCodeDock.footprint(rows: dock.rows, cell: cell, surfaceRows: surfaceRows)
+            : 0
+        PCodeMainWindowTranscriptView(
+            sessionID: sessionID,
+            bottomContentInset: bottomInset)
     }
 }
 

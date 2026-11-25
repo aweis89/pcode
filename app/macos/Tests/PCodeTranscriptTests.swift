@@ -902,4 +902,144 @@ struct PCodeTranscriptTests {
             Issue.record("Expected complete loose list prose block")
         }
     }
+
+    // MARK: - Prompt Height, Tool Card Line Count / Bottom Collapse & Phase 5 (Find + Accessibility)
+
+    @Test @MainActor func promptHeightStaysTightAfterReuseAndTrailingNewlines() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let textView = PCodeTextKit2BlockView()
+        let snap = PCodeTypography.shared.snapshot
+        let para = NSMutableParagraphStyle()
+        para.minimumLineHeight = snap.lineHeight()
+        para.maximumLineHeight = snap.lineHeight()
+
+        // First configure with a tall 10-line prompt (simulating pooled reuse).
+        let tall = NSAttributedString(
+            string: (1...10).map { "Line \($0)" }.joined(separator: "\n"),
+            attributes: [.font: snap.proseNSFont(), .paragraphStyle: para])
+        let tallH = textView.configure(attributedText: tall, width: 500)
+
+        // Then reconfigure at the SAME width with a 2-line prompt ("You\nHi").
+        let short = NSAttributedString(
+            string: "You\nHi",
+            attributes: [.font: snap.proseNSFont(), .paragraphStyle: para])
+        let shortH = textView.configure(attributedText: short, width: 500)
+
+        #expect(shortH < tallH * 0.4)
+        #expect(shortH <= snap.lineHeight() * 2.5)
+    }
+
+    @Test @MainActor func toolCardShowsCompactLineCountAndBottomCollapseWhenExpanded() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let snap = PCodeTypography.shared.snapshot
+        let output = (1...25).map { "output line \($0)" }.joined(separator: "\n")
+        let call = PCodePeekToolCall(
+            id: 1,
+            name: "run_command",
+            detail: "make test",
+            failed: false,
+            elapsedSeconds: 1.4,
+            command: "make test",
+            output: output)
+
+        #expect(PCodeToolCardView.expandableLineCount(for: call) == 25)
+
+        let compactAttr = PCodeToolCardView.attributedText(for: call, isExpanded: false, typography: snap, theme: theme)
+        #expect(compactAttr.string.contains("25 lines"))
+
+        let expandedAttr = PCodeToolCardView.attributedText(for: call, isExpanded: true, typography: snap, theme: theme)
+        #expect(!expandedAttr.string.contains("· 25 lines"))
+        #expect(expandedAttr.string.contains("output line 25"))
+
+        let card = PCodeToolCardView()
+        let compactH = card.configure(
+            call: call,
+            isExpanded: false,
+            attributedText: compactAttr,
+            width: 520,
+            theme: theme,
+            selectedRange: nil,
+            onToggle: {})
+        let expandedH = card.configure(
+            call: call,
+            isExpanded: true,
+            attributedText: expandedAttr,
+            width: 520,
+            theme: theme,
+            selectedRange: nil,
+            onToggle: {})
+        #expect(expandedH > compactH + 100)
+    }
+
+    @Test @MainActor func textFinderClientAndSearchIndexRoundTrip() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+
+        let items = [
+            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "You", text: "Find the needle", isSide: false), spacingAfter: 10),
+            PCodeTranscriptItem(id: "m1", payload: .prose(markdown: "Here is the **needle** in prose.", referenceDefinitions: "", copyMarkdown: nil), spacingAfter: 10),
+        ]
+        doc.setItems(items, pinToBottom: false)
+
+        let totalLen = doc.stringLength()
+        #expect(totalLen > 20)
+
+        var outRange = NSRange(location: 0, length: 0)
+        var boundary: ObjCBool = false
+        let firstChunk = doc.string(at: 0, effectiveRange: &outRange, endsWithSearchBoundary: &boundary)
+        #expect(firstChunk.contains("Find the needle"))
+        #expect(boundary.boolValue)
+
+        // Select "needle" inside item 1 via NSTextFinderClient.selectedRanges
+        let index = doc.currentSearchIndex()
+        let item1Start = index.entries[1].utf16Location
+        let item1Text = doc.plainTextForCopy(at: 1) as NSString
+        let localRange = item1Text.range(of: "needle")
+        #expect(localRange.location != NSNotFound)
+        let flatMatch = NSRange(location: item1Start + localRange.location, length: localRange.length)
+        doc.selectedRanges = [NSValue(range: flatMatch)]
+        #expect(doc.selectedPlainText() == "needle")
+        #expect(doc.firstSelectedRange == flatMatch)
+
+        // scrollRangeToVisible unpins sticky-bottom
+        doc.scrollToBottomAndPin()
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+        doc.scrollRangeToVisible(flatMatch)
+        #expect(doc.stickyBottom.mode == .userScrolledUp)
+    }
+
+    @Test @MainActor func accessibilityProxiesExposeVisibleRowsAndToggleTool() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+
+        let call = PCodePeekToolCall(
+            id: 7,
+            name: "run_command",
+            detail: "ls -la",
+            failed: false,
+            elapsedSeconds: 0.2,
+            command: "ls -la",
+            output: "a\nb\nc")
+        doc.setItems([
+            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "You", text: "List files", isSide: false), spacingAfter: 10),
+            PCodeTranscriptItem(id: "t1", payload: .tool(call, isExpanded: false), spacingAfter: 8),
+        ], pinToBottom: false)
+
+        #expect(doc.accessibilityRole() == .list)
+        let children = (doc.accessibilityChildren() as? [PCodeTranscriptAccessibilityRowElement]) ?? []
+        #expect(children.count == 2)
+        #expect(children[0].accessibilityLabel() == "You")
+        #expect(children[1].isExpandable)
+        #expect(!doc.isItemExpanded(id: "t1"))
+
+        // Pressing the expandable tool proxy toggles its expanded state.
+        #expect(children[1].accessibilityPerformPress())
+        #expect(doc.isItemExpanded(id: "t1"))
+    }
 }

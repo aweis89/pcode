@@ -310,6 +310,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private(set) var layoutEngine = PCodeTranscriptLayoutEngine()
     private(set) var stickyBottom = PCodeStickyBottomState()
     private(set) var selection: PCodeTranscriptSelection?
+    weak var textFinder: NSTextFinder?
+    var cachedSearchIndex: PCodeTranscriptSearchIndex?
 
     var typography: PCodeTypographySnapshot
     var theme: PCodeTranscriptTheme
@@ -494,6 +496,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Replace all transcript items (e.g. when opening Peek or loading history).
     /// Settled history gets no reveal animation.
     func setItems(_ newItems: [PCodeTranscriptItem], pinToBottom: Bool) {
+        invalidateSearchIndex()
         items = newItems
         rebuildItemIndexMap()
         selection = nil
@@ -566,6 +569,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         insertAt: Int? = nil,
         reveal: Bool = false
     ) -> Int {
+        invalidateSearchIndex()
         if let existingIdx = itemIndexByID[item.id] {
             let existing = items[existingIdx]
             removeAttributedCache(for: item.id)
@@ -616,6 +620,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Remove an item by stable `id`, recycling its mounted view and updating layout.
     func removeItem(id: String) {
         guard let idx = itemIndexByID[id] else { return }
+        invalidateSearchIndex()
         revealQueue.remove(itemID: id)
         removeAttributedCache(for: id)
         if let oldView = mountedViews.removeValue(forKey: id) {
@@ -747,6 +752,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
 
         activeStream = stream
+        invalidateSearchIndex()
         for item in appended {
             let estHeight = estimatedHeight(for: item)
             let idx = items.count
@@ -818,6 +824,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if !revealQueue.isEmpty {
             ensureDisplayLinkRunning()
         }
+    }
+
+    /// Re-pin to bottom without smooth glide when the bottom dock inset changes.
+    func repinToBottomForInsetChange() {
+        guard stickyBottom.shouldProgrammaticallyPin else { return }
+        applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+        mountViews(in: visibleRect)
     }
 
     /// Explicitly unpin sticky-bottom tracking (e.g. Find jump or programmatic scroll-up).
@@ -934,7 +947,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
             return
         }
-        let contentWidth = max(1, bounds.width - Self.horizontalPadding * 2)
+        let availableWidth = max(bounds.width, enclosingScrollView?.contentView.bounds.width ?? 0)
+        guard availableWidth > Self.horizontalPadding * 2 + 1 else { return }
+        let contentWidth = max(1, availableWidth - Self.horizontalPadding * 2)
         let range = layoutEngine.visibleRange(in: rect)
         lastMountedRange = range
 
@@ -1185,6 +1200,20 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             revision: items[index].revision &+ 1,
             depth: items[index].depth)
         mountViews(in: visibleRect)
+        // If collapsing a long tool card from its bottom button, ensure its top stays visible.
+        if isExpanded, let scrollView = enclosingScrollView, layoutEngine.entries.indices.contains(index) {
+            let entry = layoutEngine.entries[index]
+            let vis = scrollView.documentVisibleRect
+            if entry.yOffset < vis.minY {
+                let targetY = max(-scrollView.contentInsets.top, entry.yOffset - 12)
+                isApplyingDocumentHeight = true
+                scrollView.contentView.scroll(to: CGPoint(x: 0, y: targetY))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+                lastClipOriginY = scrollView.contentView.bounds.origin.y
+                isApplyingDocumentHeight = false
+                mountViews(in: visibleRect)
+            }
+        }
     }
 
     private func toggleThinkingExpansion(id: String) {
@@ -1523,7 +1552,85 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if item.action == #selector(selectAll(_:)) {
             return !items.isEmpty
         }
+        if item.action == #selector(performFindPanelAction(_:)),
+           let finder = textFinder,
+           let action = NSTextFinder.Action(rawValue: item.tag)
+        {
+            return finder.validateAction(action)
+        }
         return false
+    }
+
+    func invalidateSearchIndex() {
+        cachedSearchIndex = nil
+        if enclosingScrollView?.isFindBarVisible == true {
+            textFinder?.noteClientStringWillChange()
+        }
+    }
+
+    /// Scroll the item at `index` into view (unpinning sticky-bottom) and ensure it is mounted.
+    func scrollItemToVisible(at index: Int) {
+        guard layoutEngine.entries.indices.contains(index),
+              let scrollView = enclosingScrollView
+        else { return }
+        unpinFromBottom()
+        let entry = layoutEngine.entries[index]
+        let clipHeight = scrollView.contentView.bounds.height
+        let centeredY = entry.yOffset - max(0, (clipHeight - entry.height) * 0.35)
+        let maxOriginY = PCodeStickyBottomState.bottomOriginY(
+            documentHeight: frame.size.height,
+            clipHeight: clipHeight,
+            topInset: scrollView.contentInsets.top,
+            bottomInset: scrollView.contentInsets.bottom)
+        let clampedY = min(max(-scrollView.contentInsets.top, centeredY), maxOriginY)
+        isApplyingDocumentHeight = true
+        scrollView.contentView.scroll(to: CGPoint(x: 0, y: clampedY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        lastClipOriginY = scrollView.contentView.bounds.origin.y
+        isApplyingDocumentHeight = false
+        mountViews(in: visibleRect)
+    }
+
+    /// Return highlight rects in document coordinates for `localRange` within item `index`.
+    func characterRects(forItemAt index: Int, localRange: NSRange) -> [CGRect] {
+        guard items.indices.contains(index), layoutEngine.entries.indices.contains(index) else { return [] }
+        let item = items[index]
+        if let rowView = mountedViews[item.id],
+           let textView = rowView.primaryTextView,
+           let textRange = textView.textRange(fromUTF16: localRange)
+        {
+            var out: [CGRect] = []
+            textView.textLayoutManager.enumerateTextSegments(
+                in: textRange,
+                type: .selection,
+                options: []
+            ) { _, segFrame, _, _ in
+                if segFrame.width > 0 && segFrame.height > 0 {
+                    out.append(self.convert(segFrame, from: textView))
+                }
+                return true
+            }
+            if !out.isEmpty { return out }
+        }
+        let entry = layoutEngine.entries[index]
+        return [CGRect(
+            x: Self.horizontalPadding,
+            y: entry.yOffset,
+            width: max(1, bounds.width - Self.horizontalPadding * 2),
+            height: entry.height)]
+    }
+
+    /// Accessibility helper to toggle expandable `.tool` or `.thinking` rows.
+    func toggleExpansionForAccessibility(id: String) {
+        guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return }
+        switch items[idx].payload {
+        case .tool:
+            toggleToolExpansion(id: id)
+        case .thinking:
+            toggleThinkingExpansion(id: id)
+        default:
+            break
+        }
     }
 
     /// Plain-text string for the current selection (used by `copy(_:)` and unit tests).
@@ -1697,15 +1804,27 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if let cached = attributedCache[id] {
             return cached
         }
+        let labelStyle = NSMutableParagraphStyle()
+        let labelLineHeight = typography.lineHeight(scale: 0.82)
+        labelStyle.minimumLineHeight = labelLineHeight
+        labelStyle.maximumLineHeight = labelLineHeight
+        labelStyle.paragraphSpacing = 2
+
         let paragraph = NSMutableParagraphStyle()
         let lineHeight = typography.lineHeight()
         paragraph.minimumLineHeight = lineHeight
         paragraph.maximumLineHeight = lineHeight
 
+        var trimmedText = text
+        while trimmedText.hasSuffix("\n") || trimmedText.hasSuffix("\r") {
+            trimmedText.removeLast()
+        }
+
         let out = NSMutableAttributedString()
         let labelAttrs: [NSAttributedString.Key: Any] = [
             .font: typography.proseNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight),
             .foregroundColor: isSide ? NSColor.systemOrange : theme.accent,
+            .paragraphStyle: labelStyle,
         ]
         out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
         let bodyAttrs: [NSAttributedString.Key: Any] = [
@@ -1713,7 +1832,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             .foregroundColor: theme.foreground,
             .paragraphStyle: paragraph,
         ]
-        out.append(NSAttributedString(string: text, attributes: bodyAttrs))
+        out.append(NSAttributedString(string: trimmedText, attributes: bodyAttrs))
         storeAttributedCache(out, for: id)
         return out
     }
@@ -1903,12 +2022,30 @@ private final class PCodeBottomDissolveView: NSView {
 /// dissolve during conveyor glides, and a floating "Jump to bottom" pill when scrolled up.
 final class PCodeTranscriptScrollView: NSScrollView {
     let transcriptDocumentView: PCodeTranscriptDocumentView
+    let textFinder = NSTextFinder()
     let jumpToBottomButton = PCodeJumpToBottomButton()
     private let bottomDissolveView = PCodeBottomDissolveView()
     private var observers: [NSObjectProtocol] = []
     private var typographyCancellable: AnyCancellable?
+    private var bottomContentInsetValue: CGFloat = 0
 
     var isJumpToBottomVisible: Bool { !jumpToBottomButton.isHidden }
+
+    var bottomContentInset: CGFloat {
+        get { bottomContentInsetValue }
+        set {
+            let clamped = max(0, newValue)
+            guard abs(clamped - bottomContentInsetValue) > 0.5 else { return }
+            bottomContentInsetValue = clamped
+            automaticallyAdjustsContentInsets = false
+            contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: clamped, right: 0)
+            scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: clamped, right: 0)
+            needsLayout = true
+            if transcriptDocumentView.stickyBottom.shouldProgrammaticallyPin {
+                transcriptDocumentView.repinToBottomForInsetChange()
+            }
+        }
+    }
 
     init(typography: PCodeTypography = .shared, theme: PCodeTranscriptTheme) {
         self.transcriptDocumentView = PCodeTranscriptDocumentView(
@@ -1924,6 +2061,12 @@ final class PCodeTranscriptScrollView: NSScrollView {
         documentView = transcriptDocumentView
         contentView.postsBoundsChangedNotifications = true
         appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+
+        findBarPosition = .aboveContent
+        textFinder.client = transcriptDocumentView
+        textFinder.findBarContainer = self
+        textFinder.isIncrementalSearchingEnabled = true
+        transcriptDocumentView.textFinder = textFinder
 
         bottomDissolveView.applyTheme(theme)
         addSubview(bottomDissolveView)
@@ -2007,6 +2150,28 @@ final class PCodeTranscriptScrollView: NSScrollView {
         transcriptDocumentView.scrollToBottomAndPin()
     }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, let chars = event.charactersIgnoringModifiers?.lowercased() {
+            if chars == "f" {
+                textFinder.performAction(.showFindInterface)
+                return true
+            }
+            if chars == "g", isFindBarVisible {
+                textFinder.performAction(.nextMatch)
+                return true
+            }
+        } else if flags == [.command, .shift],
+                  let chars = event.charactersIgnoringModifiers?.lowercased(),
+                  chars == "g",
+                  isFindBarVisible
+        {
+            textFinder.performAction(.previousMatch)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func layout() {
         super.layout()
         let clipWidth = contentView.bounds.width
@@ -2014,7 +2179,8 @@ final class PCodeTranscriptScrollView: NSScrollView {
             transcriptDocumentView.frame.size.width = clipWidth
         }
         let dissolveH: CGFloat = 28
-        let dissolveY: CGFloat = isFlipped ? (bounds.height - dissolveH) : 0
+        let bottomOffset = bottomContentInsetValue
+        let dissolveY: CGFloat = isFlipped ? (bounds.height - bottomOffset - dissolveH) : bottomOffset
         bottomDissolveView.frame = CGRect(x: 0, y: dissolveY, width: bounds.width, height: dissolveH)
         layoutJumpToBottomButton()
     }
@@ -2024,7 +2190,8 @@ final class PCodeTranscriptScrollView: NSScrollView {
         let width = max(136, naturalWidth + 24)
         let height: CGFloat = 28
         let x = floor((bounds.width - width) * 0.5)
-        let y: CGFloat = isFlipped ? (bounds.height - height - 14) : 14
+        let bottomOffset = bottomContentInsetValue
+        let y: CGFloat = isFlipped ? (bounds.height - bottomOffset - height - 14) : (bottomOffset + 14)
         jumpToBottomButton.frame = CGRect(x: x, y: y, width: width, height: height)
     }
 }

@@ -219,15 +219,11 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
             if visible != workspace.liveTranscriptVisible {
                 workspace.toggleLiveTranscript()
             }
-        } else if (args["toggle"] as? Bool) == true || args["fraction"] == nil {
+        } else if (args["toggle"] as? Bool) == true || args.isEmpty {
             workspace.toggleLiveTranscript()
-        }
-        if let fraction = args["fraction"] as? Double {
-            workspace.liveTranscriptFraction = CGFloat(min(max(fraction, 0.25), 0.70))
         }
         finish([
             "visible": workspace.liveTranscriptVisible,
-            "fraction": Double(workspace.liveTranscriptFraction),
             "session_id": workspace.selectedPane?.sessionID ?? "",
         ])
     }
