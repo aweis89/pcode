@@ -34,11 +34,11 @@ from contextlib import suppress
 from prompt_toolkit.application import Application
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input.vt100 import Vt100Input
-from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.output.vt100 import Vt100_Output
 
 from pcode import popup_surface
 from pcode.popup_bridge import HELLO, RESIZED
+from pcode.startup_input import TerminalReplyParser
 
 CONNECT_TIMEOUT = 3.0
 # Never ask for more of the pane than this.
@@ -90,8 +90,13 @@ class Dock:
 
     # The editor's application, once it runs.
 
-    def attach(self, app: Application) -> None:
-        """Hear the dock's resizes, and feed keys typed in pcode's own pane to the editor."""
+    def attach(self, app: Application, on_theme=None) -> None:
+        """Hear the dock's resizes, and feed keys typed in pcode's own pane to the editor.
+
+        pcode's own pane is still where its terminal queries go, so the
+        replies (a late startup probe answer, appearance reports) arrive here
+        too and are taken out before the rest reaches the editor as keys.
+        """
         self.app = app
         loop = asyncio.get_running_loop()
         self.connection.setblocking(False)
@@ -106,7 +111,7 @@ class Dock:
             attrs[6][termios.VMIN] = 1
             attrs[6][termios.VTIME] = 0
             termios.tcsetattr(main, termios.TCSANOW, attrs)
-        parser = Vt100Parser(app.key_processor.feed)
+        parser = TerminalReplyParser(app.key_processor.feed, on_theme)
         flush_later: list[asyncio.TimerHandle] = []
 
         def flush() -> None:

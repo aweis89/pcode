@@ -3345,7 +3345,7 @@ class PreviewApp:
                 # way, and Ctrl+C clears it the same way.
                 submit(self.initial_prompt)
             if docked is not None:
-                docked.attach(session.app)
+                docked.attach(session.app, on_theme=self.follow_appearance)
 
         try:
             await session.app.run_async(pre_run=start)
