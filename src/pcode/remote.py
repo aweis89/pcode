@@ -456,6 +456,11 @@ class RemoteController:
         self.activity.busy = True
         self.peer.notify("submit", text, mode)
 
+    def continue_interrupted(self) -> None:
+        """Continue the turn this terminal stopped to move its session here (`/detach`)."""
+        self.activity.busy = True
+        self.peer.notify("continue_interrupted")
+
     def command(self, text: str, tag=None) -> None:
         if text.split()[0] in MODEL_COMMANDS or mcp_enable(text):
             self.activity.busy = True
@@ -591,12 +596,9 @@ def spawn_host(
         "--workspace",
         str(workspace),
     ]
+    handover = None
     if carry:
-        # Not `.json`: `list_hosts` reads every one of those as a host's entry.
-        handover = directory / f"{identity}.carry"
-        fd = os.open(handover, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w") as file:
-            json.dump(carry, file)
+        handover = write_carry(carry, identity, directory)
         argv += ["--carry", str(handover)]
     if resume:
         argv += ["--resume", resume]
@@ -619,19 +621,59 @@ def spawn_host(
         argv.append("--worktree")
     inherited = os.environ if profile is None else scrubbed_env(os.environ)
     env = {**inherited, "PCODE_HOST_LOG": str(log), "PCODE_HOST_DIR": str(directory)}
-    fd = os.open(log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "ab") as output:
-        process = subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=output,
-            cwd=workspace,
-            env=env,
-            # Its own session: closing this terminal's tab does not signal it.
-            start_new_session=True,
-        )
+    try:
+        fd = os.open(log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "ab") as output:
+            process = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                cwd=workspace,
+                env=env,
+                # Its own session: closing this terminal's tab does not signal it.
+                start_new_session=True,
+            )
+    except BaseException:
+        if handover is not None:
+            handover.unlink(missing_ok=True)  # No host will ever read it.
+        raise
     return identity, process, log
+
+
+def write_carry(carry: dict, identity: str, directory: Path) -> Path:
+    """Write the hand-over `--carry` names for host `identity`, readable by this user alone."""
+    # Not `.json`: `list_hosts` reads every one of those as a host's entry.
+    handover = directory / f"{identity}.carry"
+    fd = os.open(handover, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as file:
+        json.dump(carry, file)
+    return handover
+
+
+def undelivered(identity: str, directory: Path) -> str:
+    """What host `identity`'s unread hand-over held, removing it: a sentence, or "".
+
+    For a successor that never started, so the messages its predecessor
+    queued are at least shown to whoever asked for the restart.
+    """
+    path = directory / f"{identity}.carry"
+    try:
+        carry = json.loads(path.read_text())
+    except OSError, ValueError:
+        return ""
+    finally:
+        path.unlink(missing_ok=True)
+    if not isinstance(carry, dict):
+        return ""
+    parts = []
+    if carry.get("continue"):
+        parts.append("its interrupted turn (pcode --continue it, then /continue)")
+    texts = [message[0] for message in carry.get("messages") or () if message]
+    texts += carry.get("commands") or []
+    if texts:
+        parts.append("what was queued: " + " · ".join(texts))
+    return " Not carried on: " + "; ".join(parts) + "." if parts else ""
 
 
 async def wait_for_host(
@@ -806,12 +848,18 @@ async def restart_entry(
     log = directory / f"{successor}.log"
     # Spawning creates the log, before the old host exits.
     if not log.exists():
-        raise HostError(f"it stopped but could not start its successor; see {entry.log}")
+        raise HostError(
+            f"it stopped but could not start its successor; see {entry.log}."
+            + undelivered(successor, directory)
+        )
     # Written first thing once its code has loaded: the new code imports cleanly.
     deadline = time.monotonic() + timeout
     while not socket_path(successor, directory).with_suffix(".json").exists():
         if time.monotonic() > deadline:
-            raise HostError(f"its successor {successor} did not start; see {log}")
+            raise HostError(
+                f"its successor {successor} did not start; see {log}."
+                + undelivered(successor, directory)
+            )
         await asyncio.sleep(0.05)
     return successor, ""
 

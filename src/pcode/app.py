@@ -12,7 +12,14 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import AsyncExitStack, ExitStack, aclosing, asynccontextmanager, nullcontext
+from contextlib import (
+    AsyncExitStack,
+    ExitStack,
+    aclosing,
+    asynccontextmanager,
+    nullcontext,
+    suppress,
+)
 from pathlib import Path
 
 from prompt_toolkit.application import get_app
@@ -142,6 +149,10 @@ HOST_POLL_SECONDS = 2
 HOST_CANCEL_GRACE = 5.0
 """Seconds a host may stay busy after a cancel before Ctrl+D detaches rather than cancels again."""
 
+
+# How long the app-restart signal waits for a first prompt's turn to save the
+# session (`_first_prompt_saved`); something else holding the queue, it gives up.
+FIRST_SAVE_TIMEOUT = 10.0
 
 NOTHING_TO_MOVE = (
     "Nothing to move to a background host yet: a session is saved with its "
@@ -1899,6 +1910,13 @@ class PreviewApp:
             return  # Restarted meanwhile into a session this terminal does not show.
         busy = bool(self.activity.busy or self.activity.queued_prompts)
         entry = next((e for e in await asyncio.to_thread(list_hosts) if e.id == runtime.id), None)
+        if entry is None and busy:
+            # Stopping it from here would lose the turn it is running.
+            self.transcript.warning(
+                "The session host did not restart: its entry is gone, so it cannot be "
+                "asked to continue its turn in a successor. Wait or cancel, then /restart."
+            )
+            return
         if entry is not None:
             successor = skipped = ""
             # Its going is expected: no "has exited" warning for it.
@@ -1975,9 +1993,11 @@ class PreviewApp:
             return
         self.app_restart_requested = True
         session = self.prompt_session
-        if session is not None and session.app.is_running:
+        future = session.app.future if session is not None else None
+        if future is not None and not future.done():
             self._app_restart_task = session.app.create_background_task(self._app_restart())
-        # Else `start` schedules it once the editor runs.
+        # Else `start` schedules it once the editor runs, or the editor has
+        # exited already and its cleanup is under way: nothing to start then.
 
     async def _app_restart(self) -> None:
         """`request_app_restart`'s work: always ends by exiting, whatever the move did."""
@@ -1988,9 +2008,15 @@ class PreviewApp:
             await self._startup_done.wait()
             async with self._move_lock:
                 if not self.hosted:
+                    await self._first_prompt_saved()
                     if self.model and getattr(self.runtime, "session", None) is not None:
                         # A session not saved yet has nothing to carry on.
                         await self._move_to_host(resume_on_failure=False)
+                    elif self.activity.queued_prompts:
+                        self.transcript.warning(
+                            "Not sent, as the session had not started saving yet: "
+                            + " · ".join(self.activity.queued_prompts)
+                        )
                 elif not self.runtime.lost:
                     code = await asyncio.to_thread(code_fingerprint)
                     entries = await asyncio.to_thread(list_hosts)
@@ -2001,6 +2027,20 @@ class PreviewApp:
             self.transcript.error(error_message(error, unexpected="Moving for the restart failed"))
         finally:
             self._exit_for_app_restart()
+
+    async def _first_prompt_saved(self, timeout: float = FIRST_SAVE_TIMEOUT) -> None:
+        """Give a first prompt sent just before the app-restart signal the moment
+        it takes to start its turn, which saves the session, so it moves too."""
+        runtime = self.runtime
+        if not self.model or getattr(runtime, "session_factory", None) is None:
+            return  # Never saved: nothing would move however long this waited.
+        deadline = time.monotonic() + timeout
+        while (
+            getattr(runtime, "session", None) is None
+            and (self.activity.queued_prompts or self.controller.turn_running())
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(0.05)
 
     def _exit_for_app_restart(self) -> None:
         """Exit, leaving any host running, past any popup or nested prompt that is open."""
@@ -2084,8 +2124,9 @@ class PreviewApp:
                 workspace=self.workspace,
                 resume=saved.info.id,
                 session_dir=self.session_dir,
-                # Ahead of what was typed meanwhile, which `adopt_controller` sends.
-                carry={"continue": True} if interrupted else None,
+                # No `carry`: the host continues the turn only once this terminal
+                # has it (`adopt_controller`), so a host that fails to come up and
+                # is killed never runs it alongside `resume_here`.
             )
             controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
             # From here the host owns the session: an exit before this terminal
@@ -2127,6 +2168,7 @@ class PreviewApp:
             welcome,
             f"{where}: /detach or closing the terminal now leaves it running",
             handed_off=True,
+            continue_turn=interrupted,
         )
 
     async def switch_session(self, output: TerminalOutput, session) -> None:
@@ -2374,11 +2416,13 @@ class PreviewApp:
         *,
         handed_off: bool = False,
         preserve_welcome: bool = False,
+        continue_turn: bool = False,
     ) -> None:
         """Show the host behind `controller` in this terminal, leaving the current session.
 
         A session running in this process ends here (its journal keeps it for
-        /resume or `pcode -c`); another host keeps running.
+        /resume or `pcode -c`); another host keeps running. `continue_turn`
+        has the host continue the turn a move stopped, ahead of what was typed.
         """
         previous = self.controller
         commands, messages = [], []
@@ -2448,6 +2492,8 @@ class PreviewApp:
             self.activity.begin_startup("Starting agent")
         elif self.activity.startup_label:
             self.activity.finish_startup(ok=controller.startup_error is None)
+        if continue_turn:
+            controller.continue_interrupted()
         for text, mode in messages:
             controller.submit(text, mode)
         if self._submit_typed is not None:
@@ -3115,9 +3161,14 @@ class PreviewApp:
             await self._run_editor()
         finally:
             # Removing it resets the default action, which would kill the
-            # process on its way out: hand back to what was there before.
-            loop.remove_signal_handler(signal.SIGUSR2)
-            signal.signal(signal.SIGUSR2, previous)
+            # process on its way out: hand back to what was there before,
+            # with the signal held off so none lands in between.
+            blocked = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR2})
+            try:
+                loop.remove_signal_handler(signal.SIGUSR2)
+                signal.signal(signal.SIGUSR2, previous)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
 
     async def _run_editor(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
@@ -3578,7 +3629,14 @@ class PreviewApp:
         if self.hosted and controller is self.controller:
             # Leave before the loop shuts down, so the connection closing
             # reads as this terminal detaching, not the host dying.
-            controller.close()
+            detach = getattr(controller, "detach", None)
+            if detach is None:
+                controller.close()
+                return
+            # And let what was sent go out (a move's continue and typed
+            # messages, a stop) before an exit can cut it off.
+            with suppress(TimeoutError):
+                await asyncio.wait_for(detach(), 2.0)
             return
         if not isinstance(controller, SessionController):
             controller.close()

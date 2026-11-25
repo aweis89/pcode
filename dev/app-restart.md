@@ -35,6 +35,26 @@ When it exits: only after the successor host has written its entry and this
 terminal has connected to it (`wait_for_host`), so `pcode -c <id>` run after the
 exit finds it registered and listening rather than starting a copy.
 
+How long that takes: usually a second or two, but there is no fixed bound.
+A turn that is compacting its context is waited for rather than thrown away,
+and a hosted restart allows its host up to 300 s to let go (`INTERRUPT_TIMEOUT`)
+and its successor as long again to come up; a first prompt sent just before the
+signal gets up to 10 s to start saving the session. So the exit can take more
+than 300 s. Callers should wait for the process to exit, not SIGKILL it after a
+short timeout: a kill mid-move can leave the session stopped with its turn
+interrupted (`pcode -c <id>` then `/continue` recovers it) and drop messages
+that were queued.
+
+What moves with the session: the interrupted turn (continued with `/continue`
+once the new host is connected, never before, so a host that fails to come up
+never runs it alongside this process), queued messages and slash commands, in
+order. A command already running when the signal lands is not waited for (a
+popup could hold it forever). A message whose turn had not reached the journal
+yet goes back to the front of the queue rather than being continued. Commands
+queued in a host that restarts mid-turn are not run by its successor, which
+names them instead; should the successor fail to start, the error the restart
+reports names what was queued.
+
 If the move or restart fails: the error is shown, and the process still exits
 the same way. A failed local move does not resume the interrupted turn or run
 queued messages here on the way out; the session is saved, and the usual exit

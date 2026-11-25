@@ -122,6 +122,10 @@ def runs_in_terminal(text: str) -> bool:
 # once idle: the move carries typed commands to the host, never that one.
 HANDOFF_TAG = object()
 
+# Queue modes of a message the user typed for the model: one a move stopped
+# before its turn was journaled goes back in the queue rather than being lost.
+RESENT_MODES = frozenset({"queue", "steering", "interrupt"})
+
 WORKTREE_ACTIONS = {
     "status": "Branch, mainline, and what is unmerged",
     "merge": "Merge the mainline into this branch, then fast-forward the mainline",
@@ -652,6 +656,12 @@ class SessionController:
         self.live_task: asyncio.Task | None = None
         # The queue mode of the message `live_task` runs ("shell" for a `!command`).
         self.live_mode: str | None = None
+        # The message `consume` is running: (text, mode, owner, the conversation's
+        # active node before it), so a move can put back one never journaled.
+        self.live_message: tuple | None = None
+        # Commands `consume_commands` took off the queue while a move held it,
+        # oldest first: still waiting, for `take_typed` or the loop to have.
+        self.held_commands: list[QueuedCommand] = []
         self.mcp_task: asyncio.Task | None = None
         self.compact_task: asyncio.Task | None = None
         # A browser sign-in: tracked like a turn so Ctrl+C cancels it.
@@ -1166,8 +1176,10 @@ class SessionController:
         host this session moves into. Job wake-ups and continues stay behind: the
         host makes its own."""
         commands = []
+        held, self.held_commands = self.held_commands, []
         while not self.commands.empty():
-            generation, text, _idle, tag = self.commands.get_nowait()
+            held.append(self.commands.get_nowait())
+        for generation, text, _idle, tag in held:
             if generation == self.prompts.generation and tag is not HANDOFF_TAG:
                 commands.append(text)
         self.command_idle.set()
@@ -1276,7 +1288,9 @@ class SessionController:
             self.view.note("Waiting for the turn's compaction to finish before moving.")
             await self.turn_compaction_idle.wait()
         interrupted = False
+        live = None
         if self.turn_running():
+            live = self.live_message
             # A `!command`, or Antigravity's own wake-up, has no request to continue.
             interrupted = self.live_mode not in ("shell", "provider_wake")
             # The queue stays: a failed turn would otherwise clear it (`turn_ended`).
@@ -1286,14 +1300,30 @@ class SessionController:
             self.set_cancel_policy("stop")
             if not self.live_task.cancelling():
                 self.live_task.cancel()
-        # Until `consume` is between messages, `after_turn` included.
+        # Until `consume` is between messages, `after_turn` included. A message
+        # waiting on a reload (`apply_pending_reload`) is put back, not started.
         await self.turn_idle.wait()
+        if live is not None and self._never_recorded(live):
+            # Cancelled before its turn was journaled: nothing to `/continue`,
+            # so the prompt itself goes back to the front of the queue.
+            text, mode, owner, _active = live
+            if mode in RESENT_MODES:
+                self.prompts.put(text, mode, first=True, owner=owner)
+                self.activity.busy = True
+                interrupted = False
         self.cancel_asides()  # Summaries too.
         work = [task for task in (self.mcp_task, self.login_task) if task and not task.done()]
         for task in work:
             task.cancel()
         await asyncio.gather(*work, return_exceptions=True)
         return interrupted
+
+    def _active_node(self) -> str | None:
+        return getattr(getattr(self.runtime, "tree", None), "active", None)
+
+    def _never_recorded(self, live: tuple) -> bool:
+        """Whether the message `live` describes stopped before its turn reached the journal."""
+        return self._active_node() == live[3]
 
     def resume_here(self, interrupted: bool) -> None:
         """A move `settle_for_handoff` prepared did not happen: carry on in this process."""
@@ -1353,7 +1383,17 @@ class SessionController:
     async def consume_commands(self) -> None:
         """Run slash commands one at a time, in the order they were sent."""
         while self.running:
-            generation, text, submitted_idle, tag = await self.commands.get()
+            if self.held_commands:
+                item = self.held_commands.pop(0)
+            else:
+                item = await self.commands.get()
+            if not self.handoff_idle.is_set():
+                # The session is moving (`settle_for_handoff`): the command
+                # goes with it (`take_typed`), or runs here once it stays.
+                self.held_commands.insert(0, item)
+                await self.handoff_idle.wait()
+                continue
+            generation, text, submitted_idle, tag = item
             name = text.split(maxsplit=1)[0]
             try:
                 if name not in FRONTEND_COMMANDS and not self.ready.is_set():
@@ -1579,6 +1619,11 @@ class SessionController:
     async def _run_message(self, text: str, mode: str, owner: MessageOwner | None) -> bool:
         """Run one message `consume` took off the queue; False once the owner is closing."""
         await self.apply_pending_reload()
+        if not self.handoff_idle.is_set():
+            # A move began while the reload ran: the message is the move's to carry.
+            self.prompts.put(text, mode, first=True, owner=owner)
+            return True
+        self.live_message = (text, mode, owner, self._active_node())
         if owner is not None:
             # Everything shown from here to `after_turn` is this message's.
             owner.started()
@@ -1642,6 +1687,7 @@ class SessionController:
         finally:
             self.live_task = None
             self.live_mode = None
+            self.live_message = None
         if self.closing():
             return False
         self.turn_ended(success)

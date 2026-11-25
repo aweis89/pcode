@@ -1477,7 +1477,8 @@ def test_detach_mid_turn_continues_the_turn_in_the_host_ahead_of_the_queue(tmp_p
             pipe.send_text("/detach\r")
             await seen("Moved mid-turn; continuing in the background host cccc3333")
             host = hosts[0]
-            assert host.carry_received == {"continue": True}
+            # Continued once this terminal had the host, not from a carry at spawn.
+            assert host.carry_received is None
             await until(lambda: "hang here" in host.script.gates)
             host.script.release("hang here")
             await seen("Echo: queued after")
@@ -1516,7 +1517,7 @@ def test_the_app_restart_signal_moves_a_local_session_to_a_host_then_exits(tmp_p
             spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
             await run_local(app, output, drive, spawn)
             host = hosts[0]
-            assert host.carry_received == {"continue": True} and app.detach_requested
+            assert host.carry_received is None and app.detach_requested
             assert "keeps running in the background. Reattach: pcode --attach cccc3333" in (
                 output.getvalue()
             )
@@ -1664,12 +1665,20 @@ def test_a_busy_host_restarts_mid_turn_and_its_successor_continues_it(tmp_path, 
             await until(lambda: "hang here" in script.gates)
             terminal.submit("queued after", "queue")
             await until(lambda: "queued after" in host.controller.activity.queued_prompts)
+            # A command sent once the move holds the queue goes nowhere until it lands.
+            host.controller.handoff_idle.clear()
+            terminal.command("/effort high")
+            await until(lambda: host.controller.held_commands)
             # Busy, so a plain restart says why not.
             assert "skipped" in await request_host(host.entry, "restart")
             answer = await request_host(host.entry, "restart", True)
             assert answer == {"id": host.successor}
             await asyncio.wait_for(host.stopped.wait(), 10)
-            assert host.carry == {"continue": True, "messages": [("queued after", "queue")]}
+            assert host.carry == {
+                "continue": True,
+                "messages": [("queued after", "queue")],
+                "commands": ["/effort high"],
+            }
             # Asked twice: already on its way.
             assert host.restart(interrupt=True) == {"id": host.successor}
             session_id = host.entry.session_id
@@ -1678,6 +1687,9 @@ def test_a_busy_host_restarts_mid_turn_and_its_successor_continues_it(tmp_path, 
             saved = SavedSession.open(session_id, tmp_path / "sessions")
             next_script = Script()
             successor = await start_host(host.successor, tmp_path, next_script, saved, host.carry)
+            # It names the command it did not run for anyone.
+            warnings = [args[0] for name, args, _ in successor.buffer if name == "warning"]
+            assert any("/effort high" in text for text in warnings), warnings
             await until(lambda: "hang here" in next_script.gates)
             next_script.release("hang here")
             await until(lambda: asked(next_script) == ["hang here", "queued after"])
@@ -1700,6 +1712,261 @@ def test_a_carried_hand_over_is_read_once(tmp_path):
     path.write_text("not json")
     assert read_carry(path) is None and not path.exists()
     assert read_carry(None) is None
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_a_detach_whose_host_never_connects_continues_the_turn_here_once(tmp_path, host_dir):
+    """The host is not told to continue until this terminal has it, so a failed
+    `wait_for_host` (host killed) never leaves the turn running in two places."""
+
+    async def run():
+        output = StringIO()
+        script = Script()
+        app = local_app(tmp_path, script, output)
+        hosts: list[SessionHost] = []
+
+        async def wait_for_host(*args, **kwargs):
+            await asyncio.sleep(0.2)  # Long enough for a carried continue to start.
+            await stop_host(hosts[0])  # As the terminal's kill does.
+            raise HostError("the host never answered")
+
+        async def drive(pipe, seen):
+            await hang_with_a_queued_message(app, script, pipe, seen)
+            pipe.send_text("/detach\r")
+            await seen("so it carries on here")
+            await until(lambda: asked(script).count("hang here") == 2)
+            script.release("hang here")
+            await seen("Echo: queued after")
+            await until(lambda: not app.activity.busy)
+            pipe.send_text("\x04")
+
+        spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
+        try:
+            with patch("pcode.remote.wait_for_host", wait_for_host):
+                await run_local(app, output, drive, spawn)
+            assert hosts[0].script.requests == [], "the host never ran the turn"
+            assert asked(script) == ["hello here", "hang here", "hang here", "queued after"]
+        finally:
+            app.runtime.close()
+
+    asyncio.run(run())
+
+
+def test_commands_wait_while_the_session_moves_and_go_with_it(tmp_path, host_dir):
+    async def run():
+        host = await start_host("aaaa1111", tmp_path, Script())
+        controller = host.controller
+        try:
+            # Held, then taken by the move.
+            controller.handoff_idle.clear()
+            controller.command("/effort high")
+            await until(lambda: controller.held_commands)
+            await asyncio.sleep(0.05)
+            assert controller.held_commands and not controller.command_idle.is_set()
+            assert controller.take_typed() == (["/effort high"], [])
+            assert controller.command_idle.is_set()
+            # Waiting, then run here once the move did not happen.
+            controller.command("/effort high")
+            await asyncio.sleep(0.05)
+            assert not controller.command_idle.is_set()
+            controller.resume_here(False)
+            await until(lambda: controller.command_idle.is_set() and not controller.held_commands)
+            assert controller.commands.empty()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_move_puts_back_a_prompt_cancelled_before_its_turn_was_journaled(tmp_path, host_dir):
+    """Stopped before `run_turn` recorded the turn, there is nothing to `/continue`."""
+
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        controller = host.controller
+        reached = asyncio.Event()
+
+        async def slow_start(text, **kwargs):
+            # As `stream_on` awaits a side model's options before journaling.
+            reached.set()
+            await asyncio.Event().wait()
+
+        controller.run_turn = slow_start
+        try:
+            controller.submit("first prompt", "queue")
+            await asyncio.wait_for(reached.wait(), 5)
+            assert await controller.settle_for_handoff() is False
+            assert controller.take_typed() == ([], [("first prompt", "queue")])
+            assert script.requests == []
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_a_move_keeps_a_prompt_waiting_on_a_reload_from_starting(tmp_path, host_dir):
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        controller = host.controller
+        reloading, release = asyncio.Event(), asyncio.Event()
+
+        async def reload_extensions():
+            reloading.set()
+            await release.wait()
+            controller.reload_pending = False
+
+        controller.reload_extensions = reload_extensions
+        controller.reload_pending = True
+        try:
+            controller.submit("after the reload", "queue")
+            await asyncio.wait_for(reloading.wait(), 5)
+            settling = asyncio.create_task(controller.settle_for_handoff())
+            await asyncio.sleep(0.05)
+            assert not settling.done(), "waits for the reload"
+            release.set()
+            assert await asyncio.wait_for(settling, 5) is False
+            assert controller.take_typed() == ([], [("after the reload", "queue")])
+            assert script.requests == []
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_the_app_restart_signal_starts_nothing_once_the_editor_has_exited():
+    from types import SimpleNamespace
+
+    async def run():
+        app = PreviewApp(model="m", console=Console(file=StringIO()))
+        started = []
+
+        def create_background_task(work):
+            work.close()
+            started.append(work)
+
+        loop = asyncio.get_running_loop()
+        done = loop.create_future()
+        done.set_result(None)
+        for future, expected in ((None, 0), (done, 0), (loop.create_future(), 1)):
+            app.app_restart_requested = False
+            fake = SimpleNamespace(future=future, create_background_task=create_background_task)
+            app.prompt_session = SimpleNamespace(app=fake)
+            app.request_app_restart()
+            assert app.app_restart_requested and len(started) == expected
+
+    asyncio.run(run())
+
+
+def test_a_busy_restart_with_no_host_entry_warns_rather_than_stopping_the_turn(host_dir):
+    async def run():
+        stopped = []
+
+        class Host:
+            remote = True
+            id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+
+            def stop(self, **kwargs):
+                stopped.append(kwargs)
+
+        output = StringIO()
+        app = PreviewApp(model="m", runtime=Host(), console=Console(file=output, width=200))
+        app.activity.busy = True
+        await app._restart_host()
+        assert stopped == []
+        assert "The session host did not restart" in output.getvalue()
+
+    asyncio.run(run())
+
+
+def test_a_hand_over_whose_host_cannot_spawn_is_removed(tmp_path, host_dir):
+    with (
+        patch("pcode.remote.subprocess.Popen", side_effect=OSError("no exec")),
+        pytest.raises(OSError),
+    ):
+        spawn_host(model="m", workspace=tmp_path, directory=host_dir, carry={"continue": True})
+    assert list(host_dir.glob("*.carry")) == []
+
+
+def test_orphaned_hand_overs_are_swept_with_stale_entries(host_dir):
+    from pcode.host_protocol import ORPHAN_CARRY_SECONDS
+
+    old, fresh = host_dir / "aaaa1111.carry", host_dir / "bbbb2222.carry"
+    for path in (old, fresh):
+        path.write_text("{}")
+    long_ago = time.time() - ORPHAN_CARRY_SECONDS - 60
+    os.utime(old, (long_ago, long_ago))
+    list_hosts(host_dir)
+    assert not old.exists() and fresh.exists()
+    # A dead host's own hand-over goes with its entry.
+    write_entry(HostEntry(id="bbbb2222", pid=2**22 + 12345, model="m", workspace="/"))
+    list_hosts(host_dir)
+    assert not fresh.exists()
+
+
+def test_a_restart_whose_successor_never_starts_says_what_it_was_carrying(host_dir):
+    from pcode.host import start_successor
+    from pcode.remote import restart_entry
+
+    async def run():
+        carry = {
+            "continue": True,
+            "messages": [["queued after", "queue"]],
+            "commands": ["/effort high"],
+        }
+
+        def spawn_fails(**kwargs):
+            raise OSError("no exec")
+
+        # The old host could not spawn it: the hand-over is left to report.
+        with patch("pcode.remote.spawn_host", spawn_fails):
+            start_successor({"identity": "bbbb2222", "carry": carry})
+        assert (host_dir / "bbbb2222.carry").exists()
+
+        async def request(entry, method, *args):
+            return {"id": "bbbb2222"}
+
+        async def exited(pid, timeout=None):
+            return True
+
+        entry = HostEntry(id="aaaa1111", pid=4242, model="m", workspace="/")
+        with (
+            patch("pcode.remote.request_host", request),
+            patch("pcode.remote.wait_for_exit", exited),
+            pytest.raises(HostError) as raised,
+        ):
+            await restart_entry(entry, host_dir, interrupt=True)
+        message = str(raised.value)
+        assert "interrupted turn" in message
+        assert "queued after" in message and "/effort high" in message
+        assert not (host_dir / "bbbb2222.carry").exists()
+
+    asyncio.run(run())
+
+
+def test_an_interrupting_restart_falls_back_for_a_host_too_old_to_take_it(host_dir):
+    from pcode.remote import restart_entry
+    from pcode.rpc import RemoteError
+
+    async def run():
+        calls = []
+
+        async def request(entry, method, *args):
+            calls.append(args)
+            if args:
+                raise RemoteError("TypeError", "restart() takes 1 positional argument")
+            return {"skipped": "a turn is running"}
+
+        entry = HostEntry(id="aaaa1111", pid=4242, model="m", workspace="/")
+        with patch("pcode.remote.request_host", request):
+            assert await restart_entry(entry, host_dir, interrupt=True) == (
+                "",
+                "a turn is running",
+            )
+        assert calls == [(True,), ()]
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("keys", ["\x04", "/quit\r"])

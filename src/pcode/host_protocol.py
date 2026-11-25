@@ -229,7 +229,8 @@ def write_entry(entry: HostEntry, directory: Path | None = None, *, touch: bool 
 
 def remove_entry(identity: str, directory: Path | None = None) -> None:
     directory = directory or host_dir()
-    paths = [directory / f"{identity}{suffix}" for suffix in (".json", ".sock", ".json.tmp")]
+    suffixes = (".json", ".sock", ".json.tmp", ".carry")
+    paths = [directory / f"{identity}{suffix}" for suffix in suffixes]
     for path in [*paths, *directory.glob(f"{identity}-*.claim")]:
         try:
             path.unlink()
@@ -260,7 +261,24 @@ def list_hosts(directory: Path | None = None) -> list[HostEntry]:
             remove_entry(entry.id, directory)
             continue
         entries.append(entry)
+    _sweep_carries(directory, {entry.id for entry in entries})
     return sorted(entries, key=lambda entry: entry.updated, reverse=True)
+
+
+# A hand-over (`remote.spawn_host(carry=...)`) whose host never came up is
+# removed this long after it was written: by then whoever asked for the restart
+# has stopped waiting, and was told what it held (`remote.undelivered`).
+ORPHAN_CARRY_SECONDS = 900.0
+
+
+def _sweep_carries(directory: Path, running: set[str]) -> None:
+    cutoff = time.time() - ORPHAN_CARRY_SECONDS
+    for path in directory.glob("*.carry"):
+        try:
+            if path.stem not in running and path.stat().st_mtime < cutoff:
+                path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _stopped_path(session_id: str, directory: Path | None) -> Path:
