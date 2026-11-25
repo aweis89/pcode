@@ -1868,10 +1868,12 @@ def test_core_tools_bridged_extensions_and_opt_in_extension_are_exposed(fake_agy
     assert "Use ticket_lookup for issue IDs." in instructions
 
 
-def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(fake_agy, tmp_path):
+def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(
+    fake_agy, tmp_path, subagent_models
+):
     from pydantic_ai.capabilities import Capability
 
-    from pcode.antigravity_tools import DELEGATION_PROMPT_NOTE
+    from pcode.antigravity_tools import DELEGATION_PROMPT_NOTE, WORKER_DELEGATION_PROMPT_NOTE
     from pcode.ext import ExtensionAPI, ExtensionUI
 
     def delegate_task(task: str) -> str:
@@ -1970,6 +1972,8 @@ def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(fake_agy, tm
     [listed] = [e for e in fake_agy() if "mcp_tools" in e][:1]
     names = {t["name"] for t in listed["mcp_tools"]}
     assert names == {
+        "delegate_task",
+        "manage_worker",
         "ask_parent",
         "read_tool_result",
         "search_sessions",
@@ -1986,6 +1990,7 @@ def test_worker_bridges_scoped_tools_and_excludes_parent_only_tools(fake_agy, tm
     assert len(new_calls) == 1
     meta = new_calls[0]["params"].get("_meta") or {}
     append = meta.get("antigravity", {}).get("systemPrompt", {}).get("append", "")
+    assert WORKER_DELEGATION_PROMPT_NOTE in append
     assert DELEGATION_PROMPT_NOTE not in append
 
 

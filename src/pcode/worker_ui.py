@@ -65,7 +65,7 @@ def row(worker: Worker, width: int = 90) -> str:
     """One dashboard line: id, plan step, model, state, elapsed, tokens, workspace, task."""
     workspace = WORKSPACES.get(worker.workspace_mode, worker.workspace_mode)
     columns = [
-        cell(worker.worker_id or worker.agent, 6),
+        cell(worker.worker_id or worker.agent, 8),
         cell(worker.plan_step, 14),
         cell(worker.model, 14),
         cell(worker.state(), 16),
@@ -290,17 +290,19 @@ class WorkerBrowser:
         return next((w for w in self.items if w.call_id == self.selected), None)
 
     def asking(self) -> Worker | None:
-        """The worker whose question the panel shows: the selected one's, else the oldest."""
+        """Top-level worker whose question the panel shows: selected, else oldest."""
         worker = self.current()
-        if worker is not None and worker.question:
+        if worker is not None and worker.question and not worker.nested:
             return worker
-        return next((w for w in self.workers.items if w.question), None)
+        return next((w for w in self.workers.items if w.question and not w.nested), None)
 
     def prefill(self, kind: str) -> str | None:
         """The prompt text that asks the parent to answer or message a worker, or None."""
         worker = self.asking() if kind == "answer" else self.current()
         if worker is None:
             self.notice = "no question to answer" if kind == "answer" else "no agent selected"
+        elif worker.nested:
+            self.notice = f"{worker.worker_id or worker.agent} is managed by its parent worker"
         elif not worker.worker_id:
             self.notice = "this agent has no worker id to address"
         elif kind == "message" and not worker.running:

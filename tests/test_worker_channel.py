@@ -47,7 +47,7 @@ def runtime(tmp_path, parent, child):
     """A real coder; `parent` and `child` are stream functions told apart by their tools."""
 
     async def model(messages, info):
-        role = parent if "delegate_task" in {t.name for t in info.function_tools} else child
+        role = parent if "task_worktree" in {t.name for t in info.function_tools} else child
         async for chunk in role(messages, info):
             yield chunk
 

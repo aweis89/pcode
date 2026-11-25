@@ -61,7 +61,7 @@ def test_worker_inherits_tools_instructions_guards_and_reports_edits(tmp_path):
     async def model(messages, info):
         nonlocal parent_names, child_requests
         names = {tool.name for tool in info.function_tools}
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             parent_names = names
             if not returns(messages):
                 yield tool_call(
@@ -71,11 +71,7 @@ def test_worker_inherits_tools_instructions_guards_and_reports_edits(tmp_path):
                 assert "Worker complete" in str(returns(messages)[-1].content)
                 yield "Done"
             return
-        assert names == parent_names - {
-            "delegate_task",
-            "task_worktree",
-            "manage_worker",
-        } | {"ask_parent"}
+        assert names == parent_names - {"task_worktree"} | {"ask_parent"}
         assert {"write_file", "edit_file", "shell", "write_plan", "extension_tool"} <= names
         assert "EXTENSION_GUIDANCE" in info.instructions
         assert "REPOSITORY_GUIDANCE" in info.instructions
@@ -127,9 +123,9 @@ def test_worker_inherits_native_and_local_web_policy(tmp_path, monkeypatch, mode
         nonlocal child_seen, parent_shape
         names = {tool.name for tool in info.function_tools}
         native = [tool.kind for tool in info.model_request_parameters.native_tools]
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             parent_shape = (
-                names - {"delegate_task", "task_worktree"},
+                names - {"task_worktree"} | {"ask_parent"},
                 native,
             )
             if not returns(messages):
@@ -164,7 +160,7 @@ def test_runtime_tools_follow_enabled_state_and_concurrent_workers(tmp_path, con
     async def model(messages, info):
         nonlocal child_count, parent_requests
         names = {tool.name for tool in info.function_tools}
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             parent_requests += 1
             if parent_requests % 2:
                 count = 2 if concurrent else 1

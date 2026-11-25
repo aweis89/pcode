@@ -287,7 +287,7 @@ def test_worker_learns_the_servers_of_the_turn_that_delegated(config, tmp_path):
 
     async def model(messages, info):
         names = {tool.name for tool in info.function_tools}
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             parent.append((notices(messages), info.instructions or ""))
             if len(parent) == 1:
                 task = json.dumps({"agent_name": "worker", "task": "Look it up"})

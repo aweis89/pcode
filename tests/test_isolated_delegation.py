@@ -25,7 +25,7 @@ from pcode.preferences import save_preferences, set_project_root, update_prefere
 from pcode.task_worktrees import TaskWorktrees
 from pcode.task_worktrees import records as task_records
 
-PARENT_ONLY = {"delegate_task", "task_worktree"}
+PARENT_ONLY = {"task_worktree"}
 
 
 def git(repo, *args):
@@ -96,7 +96,7 @@ def delegate_once(agent, child, **arguments):
     returned = []
 
     async def model(messages, info):
-        if "delegate_task" not in {t.name for t in info.function_tools}:
+        if "task_worktree" not in {t.name for t in info.function_tools}:
             async for delta in child(messages, info):
                 yield delta
         elif not results(messages):
@@ -151,7 +151,7 @@ def test_isolated_edit_commit_extension_rebind_close_then_parent_integrates(repo
         nonlocal artifact, child_path
         names = {t.name for t in info.function_tools}
         previous = results(messages)
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             assert PARENT_ONLY <= names
             if not previous:
                 yield call("delegate_task", {"agent_name": "worker", "task": "Implement"})
@@ -207,7 +207,7 @@ def test_concurrent_children_same_filename_and_serial_integration_conflict(repo)
     async def model(messages, info):
         nonlocal parent_step
         previous = results(messages)
-        if "delegate_task" in {t.name for t in info.function_tools}:
+        if "task_worktree" in {t.name for t in info.function_tools}:
             parent_step += 1
             if parent_step == 1:
                 yield {
@@ -549,7 +549,7 @@ def test_cancelled_worker_preserves_partial_artifact(repo):
     stopped = asyncio.Event()
 
     async def model(messages, info):
-        if "delegate_task" in {t.name for t in info.function_tools}:
+        if "task_worktree" in {t.name for t in info.function_tools}:
             assert not results(messages), "a cancelled worker must not return"
             yield call("delegate_task", {"agent_name": "worker", "task": "Partial change"})
         elif not results(messages):
@@ -669,7 +669,7 @@ def test_isolated_job_notices_reach_only_the_worker_once(repo, exit_code):
 
     async def model(messages, info):
         nonlocal child_jobs
-        if "delegate_task" in {tool.name for tool in info.function_tools}:
+        if "task_worktree" in {tool.name for tool in info.function_tools}:
             if not results(messages):
                 yield call("delegate_task", {"agent_name": "worker", "task": "Run a check"})
             else:
@@ -807,7 +807,7 @@ wait
     monkeypatch.setattr(delegation, "_stop_setup", stop)
 
     async def model(messages, info):
-        assert "delegate_task" in {t.name for t in info.function_tools}, "setup must not finish"
+        assert "task_worktree" in {t.name for t in info.function_tools}, "setup must not finish"
         yield call("delegate_task", {"agent_name": "worker", "task": "Provision"})
 
     async def scenario():
@@ -870,7 +870,7 @@ def test_finalization_waits_for_parent_lock_without_blocking_event_loop(repo, mo
 
     async def model(messages, info):
         nonlocal lock, emergency_release
-        if "delegate_task" in {t.name for t in info.function_tools}:
+        if "task_worktree" in {t.name for t in info.function_tools}:
             if not results(messages):
                 yield call("delegate_task", {"agent_name": "worker", "task": "Finish"})
             else:
@@ -954,7 +954,7 @@ def test_worker_concurrency_limits_calls_in_one_response(repo, mode, configured_
 
     async def model(messages, info):
         nonlocal active, peak, executions
-        if "delegate_task" in {t.name for t in info.function_tools}:
+        if "task_worktree" in {t.name for t in info.function_tools}:
             if not results(messages):
                 yield {
                     index: DeltaToolCall(

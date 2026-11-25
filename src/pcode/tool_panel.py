@@ -87,6 +87,8 @@ class ToolCall:
     failed: bool = False
     # A delegate's slot in the hue ring, kept for its whole run.
     hue: int = 0
+    # A delegate's short id (`w3`, `w3.1`), once its worker status arrives.
+    worker_id: str = ""
     # What an edit changed (`+3 −1`), once its `EditCompleted` arrives: two
     # edits to one file are otherwise the same row.
     change: str = ""
@@ -149,16 +151,17 @@ class ToolCall:
         clock = "" if elapsed is None else f"{elapsed:.1f}s"
         # An inset spinner's right cell is its own gap, as on a task row.
         gap = "" if agent == INSET_ICON else " "
+        tag = f" ({self.worker_id})" if self.worker_id else ""
         if event.purpose:
             # Sessions saved before delegates recorded their agent had only workers.
             default = event.agent in ("", DEFAULT_AGENT)
             # Its own ` · ` would end the bold head partway through.
             purpose = plain(event.purpose.replace(" · ", " – "), PURPOSE_CELLS)
             head = purpose if default else f"{name}: {purpose}"
-            parts = (f"{agent}{gap}{head}", clock, state)
+            parts = (f"{agent}{gap}{head}{tag}", clock, state)
         else:
             task = event.task or plain(event.detail, limit=None)
-            parts = (f"{agent}{gap}{name}", clock, state, task)
+            parts = (f"{agent}{gap}{name}{tag}", clock, state, task)
         return " · ".join(part for part in parts if part)
 
 
@@ -202,6 +205,18 @@ class ToolHistory:
         if any(c.event.call_id == call_id for c in self.calls):
             self.plans[call_id] = items
 
+    def record_worker(self, call_id: str, worker_id: str) -> bool:
+        """Attach a worker's short id (`w3`) to its running delegate row."""
+        if not call_id or not worker_id:
+            return False
+        for call in self.calls:
+            if call.event.call_id == call_id and call.event.name == DELEGATE:
+                if call.worker_id == worker_id:
+                    return False
+                call.worker_id = worker_id
+                return True
+        return False
+
     def record(self, event: ToolStarted | ToolSummary) -> None:
         # Planning operations have their own panel. Settled calls leave the
         # live view regardless of whether they need a scrollback entry.
@@ -219,12 +234,18 @@ class ToolHistory:
                 self.recent = existing
             # A sub-agent's calls leave the way the parent's do: scrollback
             # keeps them under their delegate. A finished delegate takes any
-            # still listed, and its plan, with it.
+            # still listed (including nested delegates), and their plans, with it.
             call_id = existing.event.call_id
+            prefix = f"{call_id}:"
             self.calls = [
-                c for c in self.calls if c is not existing and c.event.parent_call_id != call_id
+                c
+                for c in self.calls
+                if c is not existing
+                and c.event.parent_call_id != call_id
+                and not c.event.call_id.startswith(prefix)
             ]
-            self.plans.pop(call_id, None)
+            for cid in [k for k in self.plans if k == call_id or k.startswith(prefix)]:
+                self.plans.pop(cid, None)
         elif existing is not None:
             # A restated start carries fresh progress, not a new invocation.
             existing.event = event
@@ -315,7 +336,8 @@ class ToolHistory:
             return []
         delegates = self.delegates[:count]
         remaining = count - len(delegates)
-        nodes = []
+        roots: list[_PanelNode] = []
+        by_call: dict[str, _PanelNode] = {}
         for parent in delegates:
             # `»` (or the main agent's spinner, under Kitty) stands in for a
             # task icon: with a task's icon in front, a sub-agent would read as
@@ -324,12 +346,16 @@ class ToolHistory:
             node = _PanelNode(
                 (f"class:plan.agent,agent.hue.{parent.hue}", parent.line(agent_icon=agent_icon))
             )
-            nodes.append(node)
+            by_call[parent.event.call_id] = node
             plan = self.plans.get(parent.event.call_id, [])
             steps, _ = plan_window(plan, min(CHILD_PLAN_ROWS, len(plan), remaining))
             remaining -= len(steps)
             node.children = [_PanelNode(plan_row(plan[index], icon, parent.hue)) for index in steps]
-        return nodes
+            if (owner := by_call.get(parent.event.parent_call_id)) is not None:
+                owner.children.append(node)
+            else:
+                roots.append(node)
+        return roots
 
 
 def plan_window(items: list[dict], count: int) -> tuple[range, int | None]:

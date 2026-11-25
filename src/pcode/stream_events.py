@@ -249,6 +249,12 @@ class EventTranslator:
             self.delegates[event.tool_call_id] = start
             yield start
 
+    def _forget_delegate(self, call_id: str) -> None:
+        """Drop `call_id` and any nested descendant delegates from `self.delegates`."""
+        prefix = f"{call_id}:"
+        for cid in [k for k in self.delegates if k == call_id or k.startswith(prefix)]:
+            self.delegates.pop(cid, None)
+
     def on_delegation_end(self, event: DelegationFinishedEvent) -> Iterator[Event]:
         self.delegation_ends[event.tool_call_id] = event
         # Deliberately not added to session totals: a child's *tokens*
@@ -258,8 +264,9 @@ class EventTranslator:
         # budget. Tokens from an interrupted turn are a separate gap.
         # Timeouts/budget stops can leave a child's tool without a
         # result. Settle it before the parent resumes its tool loop.
+        prefix = f"{event.tool_call_id}:"
         for call_id, child in list(self.child_tools.items()):
-            if child.parent_call_id == event.tool_call_id:
+            if child.parent_call_id == event.tool_call_id or call_id.startswith(prefix):
                 yield ToolSummary(
                     child.name,
                     child.detail + " → Interrupted",
@@ -285,7 +292,7 @@ class EventTranslator:
         name, args, started = entry
         if event.tool_call_id in self.tools:
             self.settled_detached.add(event.tool_call_id)
-        self.delegates.pop(event.tool_call_id, None)
+        self._forget_delegate(event.tool_call_id)
         end = self.delegation_ends.pop(event.tool_call_id, None)
         outcome = end.outcome if end is not None else "unknown"
         detail, failed = delegation_detail(args, outcome)
@@ -306,27 +313,35 @@ class EventTranslator:
         )
 
     def on_child_output(self, event: ChildOutput) -> Iterator[Event]:
-        if event.tool_call_id in self.delegates:
+        target_id = event.delegate_call_id or event.tool_call_id
+        if target_id in self.delegates:
             yield ChildText(
-                event.tool_call_id,
+                target_id,
                 event.text,
                 thinking=event.thinking,
                 start=event.start,
             )
 
     def on_child_activity(self, event: ChildActivity) -> Iterator[Event]:
-        if start := self.delegates.get(event.tool_call_id):
+        target_id = event.delegate_call_id or event.tool_call_id
+        if start := self.delegates.get(target_id):
             if event.activity != start.activity:
                 start = replace(start, activity=event.activity)
-                self.delegates[event.tool_call_id] = start
+                self.delegates[target_id] = start
                 yield start
             if event.plan is not None:
-                yield ChildPlan(event.tool_call_id, event.plan)
+                yield ChildPlan(target_id, event.plan)
             if event.child is not None:
                 if isinstance(event.child, ToolStarted):
-                    self.child_tools[event.child.call_id] = event.child
+                    if event.child.name == "delegate_task":
+                        self.delegates[event.child.call_id] = event.child
+                    else:
+                        self.child_tools[event.child.call_id] = event.child
                 else:
-                    self.child_tools.pop(event.child.call_id, None)
+                    if event.child.name == "delegate_task":
+                        self.delegates.pop(event.child.call_id, None)
+                    else:
+                        self.child_tools.pop(event.child.call_id, None)
                 yield event.child
 
     def on_worker_update(self, event: WorkerUpdate) -> WorkerStatus:
@@ -524,7 +539,7 @@ class EventTranslator:
             detail = target(name, args) + (f" → {status}" if status else "")
             if shell_end.truncated:
                 detail += " · preview capped"
-        self.delegates.pop(event.tool_call_id, None)
+        self._forget_delegate(event.tool_call_id)
         end = self.delegation_ends.pop(event.tool_call_id, None)
         if end is not None:
             outcome = end.outcome

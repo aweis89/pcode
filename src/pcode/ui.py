@@ -5477,6 +5477,18 @@ class Transcript:
         if self.activity is not None and self.activity.show_thinking:
             self.print(ThinkingMarkdown(command_text(text), code_theme=self.code_theme), end="")
 
+    def _pop_descendants(self, call_id: str) -> list[ToolSummary]:
+        """Pop all buffered child and nested descendant summaries under `call_id`."""
+        direct = self._children.pop(call_id, [])
+        if not direct:
+            return []
+        collected: list[ToolSummary] = []
+        for child in direct:
+            collected.append(child)
+            if child.call_id and child.call_id in self._children:
+                collected.extend(self._pop_descendants(child.call_id))
+        return collected
+
     @recorded
     def tool_result(self, event: ToolSummary) -> None:
         """Retain hidden results too; choose one representation on each replay."""
@@ -5486,7 +5498,7 @@ class Transcript:
             return
         if self.writes_tool_result(event):
             self.events((event,))
-        for line in self.child_lines(self._children.pop(event.call_id, []), CHILD_INDENT):
+        for line in self.child_lines(self._pop_descendants(event.call_id), CHILD_INDENT):
             self.print(Padding(line, (0, 0, 0, CHILD_INDENT), expand=False), tool_line=True)
 
     def child_lines(self, children: list[ToolSummary], indent: int = 0) -> list[Text]:

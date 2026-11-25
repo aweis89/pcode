@@ -38,7 +38,7 @@ from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.ext import EXTENSION_GUIDE, ExtensionCapabilities
 from pcode.filesystem import DisplayFileSystem
 from pcode.images import ImageGate
-from pcode.isolated_delegation import WorkspaceSubAgents
+from pcode.isolated_delegation import MAX_DELEGATION_DEPTH, WorkspaceSubAgents
 from pcode.job_notices import JobNotices
 from pcode.jobs import isolated_registry
 from pcode.mcp import configured_servers
@@ -336,6 +336,10 @@ def _delegation(
     extensions: Sequence,
     output_limits,
     cache_notices: CacheBustReporting | None,
+    *,
+    nested: bool = False,
+    depth: int = 0,
+    models: dict | None = None,
 ) -> WorkspaceSubAgents:
     """The `delegate_task` tool: the worker beside extension sub-agents."""
 
@@ -351,22 +355,38 @@ def _delegation(
             if isinstance(extensions, ExtensionCapabilities)
             else ExtensionCapabilities([])
         )
+        child_depth = depth + 1
+        can_delegate = child_depth < MAX_DELEGATION_DEPTH - 1
         with isolated_registry() as jobs:
             async with rebound.for_workspace(child_workspace) as child_extensions:
-                child_coder = create_coder(child_workspace, delegation=False)
+                child_coder = create_coder(
+                    child_workspace,
+                    # Extension subagents may close over the parent checkout;
+                    # isolated workers only delegate to the workspace-bound worker.
+                    subagents=(),
+                    extensions=child_extensions if can_delegate else (),
+                    delegation=can_delegate,
+                    delegation_depth=child_depth,
+                )
                 child_coder.capabilities.append(JobNotices(jobs))
-                yield _create_worker(child_coder.capabilities, child_extensions, isolated=True)
+                yield _create_worker(
+                    child_coder.capabilities,
+                    child_extensions,
+                    isolated=True,
+                    can_delegate=can_delegate,
+                )
 
     return WorkspaceSubAgents(
         workspace=workspace,
         worker_factory=isolated_worker,
+        nested=nested,
         agents=[
             SubAgent(worker, usage_limits=SUBAGENT_USAGE_LIMITS),
             *subagents,
         ],
         agent_folders=None,
         # Unavailable names are left out here and reported by /subagents.
-        models=subagent_menu(subagent_models())[0],
+        models=models if models is not None else subagent_menu(subagent_models())[0],
         event_stream_handler=stream_child_activity,
         # One child's crash (a dropped connection past its retries, a bug in a
         # tool) comes back to the parent as a retryable failure. Propagating it
@@ -390,7 +410,12 @@ def _delegation(
 
 
 def create_coder(
-    workspace: Path, subagents: Sequence = (), extensions: Sequence = (), *, delegation: bool = True
+    workspace: Path,
+    subagents: Sequence = (),
+    extensions: Sequence = (),
+    *,
+    delegation: bool = True,
+    delegation_depth: int = 0,
 ) -> CombinedCapability:
     """Compose pcode's coding agent: tools, guidance, planning and delegation.
 
@@ -433,20 +458,62 @@ def create_coder(
     if code_mode := create_code_mode():
         capabilities.append(code_mode)
         worker_capabilities.append(copy(code_mode))
-    if not delegation:
+    if not delegation or delegation_depth >= MAX_DELEGATION_DEPTH - 1:
         return CombinedCapability(worker_capabilities)
 
-    worker = _create_worker(worker_capabilities, extensions)
-    capabilities.append(
-        _delegation(workspace, worker, subagents, extensions, output_limits, cache_notices)
+    models = subagent_menu(subagent_models())[0]
+    # Build the worker chain bottom-up: leaf workers at the depth limit have no
+    # delegation, while shallower workers can delegate (e.g. a work sub-agent
+    # spinning up a review sub-agent) up to `MAX_DELEGATION_DEPTH - 1` levels deep.
+    worker = _create_worker(worker_capabilities, extensions, can_delegate=False)
+    for level in range(MAX_DELEGATION_DEPTH - 2, delegation_depth, -1):
+        level_capabilities = [
+            *worker_capabilities,
+            DelegationReporting(),
+            _delegation(
+                workspace,
+                worker,
+                subagents,
+                extensions,
+                output_limits,
+                cache_notices,
+                nested=True,
+                depth=level,
+                models=models,
+            ),
+            BackgroundDelegation(),
+        ]
+        worker = _create_worker(level_capabilities, extensions, can_delegate=True)
+
+    # An isolated worker (`delegation_depth > 0`) runs its own coder as a worker
+    # already, so its capabilities exclude `shared_types` and its delegation is nested.
+    own_capabilities = list(worker_capabilities) if delegation_depth > 0 else capabilities
+    if delegation_depth > 0:
+        own_capabilities.append(DelegationReporting())
+    own_capabilities.append(
+        _delegation(
+            workspace,
+            worker,
+            subagents,
+            extensions,
+            output_limits,
+            cache_notices,
+            nested=delegation_depth > 0,
+            depth=delegation_depth,
+            models=models,
+        )
     )
     # Steering mid-delegation reaches the parent; the child keeps working.
-    capabilities.append(BackgroundDelegation())
-    return CombinedCapability(capabilities)
+    own_capabilities.append(BackgroundDelegation())
+    return CombinedCapability(own_capabilities)
 
 
 def _create_worker(
-    capabilities: Sequence, extensions: Sequence, *, isolated: bool = False
+    capabilities: Sequence,
+    extensions: Sequence,
+    *,
+    isolated: bool = False,
+    can_delegate: bool = False,
 ) -> Agent:
     return Agent(
         name="worker",
@@ -460,8 +527,14 @@ def _create_worker(
             " You are a general-purpose worker. Complete only the delegated task and report "
             "your changes, verification, and remaining limitations. You inherit the main "
             "agent's instructions, tools, and permission checks, but not its conversation. "
-            "Your plan is independent. You cannot delegate further or manage other task worktrees. "
-            "Stop jobs you no longer need with stop_job. "
+            + (
+                "Your plan is independent. You may delegate self-contained sub-tasks "
+                "(such as a review) in shared mode, but you cannot manage other task worktrees. "
+                if can_delegate
+                else "Your plan is independent. You cannot delegate further or manage other "
+                "task worktrees. "
+            )
+            + "Stop jobs you no longer need with stop_job. "
         )
         + (
             "You have an isolated checkout. Commit completed changes here; do not push or merge "
