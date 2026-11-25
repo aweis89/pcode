@@ -1,9 +1,18 @@
 """Lightweight entry point: silence terminal echo before importing the frontend."""
 
+import signal
 import sys
 from contextlib import ExitStack
 
 _startup: ExitStack | None = None
+# SIGUSR2 (dev/app-restart.md) arrived before the editor could act on it.
+app_restart_signalled = False
+
+
+def remember_app_restart(signum=None, frame=None) -> None:
+    """SIGUSR2 outside the editor: noted for `PreviewApp.run_async`, never the default death."""
+    global app_restart_signalled
+    app_restart_signalled = True
 
 
 def restore_stdin() -> None:
@@ -56,6 +65,8 @@ def main() -> None:
         from pcode.completion import print_candidates
 
         sys.exit(print_candidates(sys.argv[2:]))
+    # First, before the slow imports: the default action would kill the process.
+    signal.signal(signal.SIGUSR2, remember_app_restart)
     from pcode.proctitle import rename
 
     rename()

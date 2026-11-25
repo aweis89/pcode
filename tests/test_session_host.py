@@ -254,11 +254,16 @@ def scripted_agent(script: Script, workspace: Path) -> Agent:
 
 
 async def start_host(
-    identity: str, workspace: Path, script: Script, saved: SavedSession | None = None
+    identity: str,
+    workspace: Path,
+    script: Script,
+    saved: SavedSession | None = None,
+    carried: dict | None = None,
 ) -> SessionHost:
     """A host serving a controller over a scripted model, as `pcode.host` sets one up.
 
-    With `saved` it carries that conversation on, as `pcode.host --resume` does.
+    With `saved` it carries that conversation on, as `pcode.host --resume` does;
+    with `carried`, what the process it replaces handed over, as `--carry` does.
     """
     (workspace / "sample.txt").write_text("a workspace marker\n")
     entry = HostEntry(
@@ -281,6 +286,8 @@ async def start_host(
         )
     await host.serve()
     host.reset_buffer()
+    if carried:
+        host.take_over(carried)
     host.push_state()
     host.start()
     return host
@@ -1137,7 +1144,8 @@ def test_detach_moves_a_session_running_here_into_a_host_and_stays_on_it(tmp_pat
         loop = asyncio.get_running_loop()
         typed = threading.Event()
 
-        def spawn_host(*, model, workspace, resume, session_dir):
+        def spawn_host(*, model, workspace, resume, session_dir, carry=None):
+            assert carry is None, "idle, there is no turn to continue"
             # Typed while it moves: lands in this terminal's own queue first.
             loop.call_soon_threadsafe(pipe.send_text, "typed meanwhile\r")
             loop.call_soon_threadsafe(
@@ -1166,13 +1174,6 @@ def test_detach_moves_a_session_running_here_into_a_host_and_stays_on_it(tmp_pat
                     await seen("Nothing to move to a background host yet")
                     pipe.send_text("hello here\r")
                     await seen("Echo: hello here")
-                    await until(lambda: not app.activity.busy)
-                    pipe.send_text("hang here\r")
-                    await until(lambda: "hang here" in script.gates)
-                    pipe.send_text("/detach\r")
-                    await seen("so what it is doing can't move")
-                    script.release("hang here")
-                    await seen("Finished.")
                     await until(lambda: not app.activity.busy)
                     session_id = app.runtime.session.info.id
                     pipe.send_text("/detach\r")
@@ -1210,14 +1211,17 @@ def spawning(tmp_path: Path, loop, hosts: list) -> callable:
 
     others = iter(["cccc3333", "eeee5555"])
 
-    def spawn_host(*, model, workspace, resume, session_dir, fork=False, worktree=False):
+    def spawn_host(
+        *, model, workspace, resume, session_dir, fork=False, worktree=False, carry=None
+    ):
         identity = "dddd4444" if fork else next(others)
         # Opens the session as the real host does: refused if the terminal still held it.
         saved = SavedSession.open(resume, session_dir, fork=fork) if resume else None
         script = Script()
         host = asyncio.run_coroutine_threadsafe(
-            start_host(identity, workspace, script, saved), loop
+            start_host(identity, workspace, script, saved, carry), loop
         ).result()
+        host.carry_received = carry
         host.script = script
         hosts.append(host)
         return identity, None, tmp_path / f"{identity}.log"
@@ -1419,6 +1423,283 @@ def test_a_session_that_cannot_move_to_a_host_carries_on_here(tmp_path, host_dir
         app.runtime.close()
 
     asyncio.run(run())
+
+
+def run_local(app, output, drive, spawn_host, timeout=30):
+    """Run `app` with `drive(pipe, seen)` typing into it and `spawn_host` patched in."""
+
+    async def run():
+        with create_pipe_input() as pipe:
+
+            def prompt(*args, **kwargs):
+                return create_prompt(*args, input=pipe, output=DummyOutput(), **kwargs)
+
+            async def seen(text):
+                await until(lambda: text in output.getvalue(), timeout=10)
+
+            with (
+                patch("pcode.app.create_prompt", prompt),
+                patch("pcode.remote.spawn_host", spawn_host),
+            ):
+                await asyncio.wait_for(
+                    asyncio.gather(app.run_async(), drive(pipe, seen)), timeout=timeout
+                )
+
+    return run()
+
+
+async def hang_with_a_queued_message(app, script, pipe, seen) -> None:
+    """A turn waiting on the model, with a message queued behind it."""
+    pipe.send_text("hello here\r")  # Saves the session.
+    await seen("Echo: hello here")
+    await until(lambda: not app.activity.busy)
+    app.send_mode = "queue"
+    pipe.send_text("hang here\r")
+    await until(lambda: "hang here" in script.gates)
+    pipe.send_text("queued after\r")
+    await until(lambda: "queued after" in app.activity.queued_prompts)
+
+
+def asked(script: Script) -> list[str]:
+    return [user_texts(messages)[-1] for messages in script.requests]
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_detach_mid_turn_continues_the_turn_in_the_host_ahead_of_the_queue(tmp_path, host_dir):
+    async def run():
+        output = StringIO()
+        script = Script()
+        app = local_app(tmp_path, script, output)
+        hosts: list[SessionHost] = []
+
+        async def drive(pipe, seen):
+            await hang_with_a_queued_message(app, script, pipe, seen)
+            pipe.send_text("/detach\r")
+            await seen("Moved mid-turn; continuing in the background host cccc3333")
+            host = hosts[0]
+            assert host.carry_received == {"continue": True}
+            await until(lambda: "hang here" in host.script.gates)
+            host.script.release("hang here")
+            await seen("Echo: queued after")
+            # Asked again from its checkpoint, then the queued message: none lost or doubled.
+            assert asked(host.script) == ["hang here", "queued after"]
+            assert asked(script) == ["hello here", "hang here"]
+            assert host.controller.runtime.session.info.id == app.runtime.session_id
+            pipe.send_text("/detach\r")
+
+        try:
+            spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
+            await run_local(app, output, drive, spawn)
+            assert "keeps running in the background" in output.getvalue()
+        finally:
+            for host in hosts:
+                await stop_host(host)
+
+    asyncio.run(run())
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_the_app_restart_signal_moves_a_local_session_to_a_host_then_exits(tmp_path, host_dir):
+    """SIGUSR2: the process exits only once the host serves the session, and leaves it running."""
+
+    async def run():
+        output = StringIO()
+        script = Script()
+        app = local_app(tmp_path, script, output)
+        hosts: list[SessionHost] = []
+
+        async def drive(pipe, seen):
+            await hang_with_a_queued_message(app, script, pipe, seen)
+            os.kill(os.getpid(), signal.SIGUSR2)
+
+        try:
+            spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
+            await run_local(app, output, drive, spawn)
+            host = hosts[0]
+            assert host.carry_received == {"continue": True} and app.detach_requested
+            assert "keeps running in the background. Reattach: pcode --attach cccc3333" in (
+                output.getvalue()
+            )
+            await until(lambda: not host.clients)
+            assert not host.stopped.is_set()
+            # The host carries on with the turn and then the queue, with nobody attached.
+            await until(lambda: "hang here" in host.script.gates)
+            host.script.release("hang here")
+            await until(lambda: asked(host.script) == ["hang here", "queued after"])
+        finally:
+            for host in hosts:
+                await stop_host(host)
+
+    asyncio.run(run())
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_the_app_restart_signal_exits_without_resuming_here_when_the_move_fails(tmp_path, host_dir):
+    async def run():
+        output = StringIO()
+        script = Script()
+        app = local_app(tmp_path, script, output)
+
+        def spawn_host(**kwargs):
+            raise OSError("no room for a host")
+
+        async def drive(pipe, seen):
+            await hang_with_a_queued_message(app, script, pipe, seen)
+            app.request_app_restart()
+
+        await run_local(app, output, drive, spawn_host)
+        text = output.getvalue()
+        assert "Could not move this session to a background host" in text
+        # Neither the interrupted turn nor the queued message ran here on the way out.
+        assert "Continuing the interrupted turn" not in text
+        assert asked(script) == ["hello here", "hang here"]
+        assert f"Continue with: pcode --continue {app.runtime.session.info.id}" in text
+        app.runtime.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.in_process("exits a session running in this terminal")
+def test_the_app_restart_signal_exits_past_an_open_popup(tmp_path, host_dir):
+    async def run():
+        output = StringIO()
+        app = local_app(tmp_path, Script(), output)
+        opened = asyncio.Event()
+
+        async def hold_a_popup():
+            async with app.popup(app.output, app.prompt_session):
+                opened.set()
+                await asyncio.Event().wait()
+
+        async def drive(pipe, seen):
+            await until(
+                lambda: app.prompt_session is not None and app.prompt_session.app.is_running
+            )
+            app.prompt_session.app.create_background_task(hold_a_popup())
+            await opened.wait()
+            app.request_app_restart()
+
+        def spawn_host(**kwargs):
+            raise AssertionError("nothing saved yet, so nothing to move")
+
+        await run_local(app, output, drive, spawn_host)
+        assert app.app_restart_requested and not app.running
+        app.runtime.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.in_process("exits a session running in this terminal")
+def test_an_app_restart_signal_from_startup_is_acted_on_and_exit_cleanup_stays_covered(
+    tmp_path, host_dir, monkeypatch
+):
+    """Before the editor runs, `pcode.cli` only notes the signal; after, its handler is back."""
+    from pcode import cli
+
+    async def run():
+        output = StringIO()
+        app = local_app(tmp_path, Script(), output)
+        monkeypatch.setattr(cli, "app_restart_signalled", False)
+        previous = signal.signal(signal.SIGUSR2, cli.remember_app_restart)
+        try:
+            os.kill(os.getpid(), signal.SIGUSR2)  # As during the slow imports.
+            await until(lambda: cli.app_restart_signalled)
+
+            async def drive(pipe, seen):
+                pass  # Nobody types: the noted signal alone ends it.
+
+            def spawn_host(**kwargs):
+                raise AssertionError("nothing saved yet, so nothing to move")
+
+            await run_local(app, output, drive, spawn_host)
+            assert app.app_restart_requested and not cli.app_restart_signalled
+            # Exit cleanup is past, and a late signal is noted rather than fatal.
+            assert signal.getsignal(signal.SIGUSR2) is cli.remember_app_restart
+        finally:
+            signal.signal(signal.SIGUSR2, previous)
+            app.runtime.close()
+
+    asyncio.run(run())
+
+
+def test_the_app_restart_signal_restarts_a_stale_host_then_detaches(host_dir, monkeypatch):
+    async def run():
+        class Host:
+            remote = True
+            id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+
+        monkeypatch.setattr("pcode.host_protocol.code_fingerprint", lambda: "now")
+        restarted = []
+
+        async def restart_host():
+            restarted.append(True)
+
+        for code in ("old", "now"):
+            write_entry(
+                HostEntry(id="aaaa1111", pid=os.getpid(), model="m", workspace="/", code=code)
+            )
+            app = PreviewApp(model="m", runtime=Host(), console=Console(file=StringIO()))
+            app._restart_host = restart_host
+            app._startup_done.set()
+            await app._app_restart()
+            # Left running either way: the terminal detaches rather than stopping it.
+            assert app.detach_requested and not app.running
+        assert restarted == [True], "only a host on older code restarts"
+
+    asyncio.run(run())
+
+
+def test_a_busy_host_restarts_mid_turn_and_its_successor_continues_it(tmp_path, host_dir):
+    """`restart(interrupt=True)`: the turn stops at its checkpoint, the successor asks again."""
+
+    async def run():
+        script = Script()
+        host = await start_host("aaaa1111", tmp_path, script)
+        successor = None
+        try:
+            terminal, _, _ = await attach(host)
+            terminal.submit("hello", "queue")
+            await until(lambda: asked(script) == ["hello"] and not host.busy)
+            terminal.submit("hang here", "queue")
+            await until(lambda: "hang here" in script.gates)
+            terminal.submit("queued after", "queue")
+            await until(lambda: "queued after" in host.controller.activity.queued_prompts)
+            # Busy, so a plain restart says why not.
+            assert "skipped" in await request_host(host.entry, "restart")
+            answer = await request_host(host.entry, "restart", True)
+            assert answer == {"id": host.successor}
+            await asyncio.wait_for(host.stopped.wait(), 10)
+            assert host.carry == {"continue": True, "messages": [("queued after", "queue")]}
+            # Asked twice: already on its way.
+            assert host.restart(interrupt=True) == {"id": host.successor}
+            session_id = host.entry.session_id
+            await host.close()
+            host.controller.runtime.close()
+            saved = SavedSession.open(session_id, tmp_path / "sessions")
+            next_script = Script()
+            successor = await start_host(host.successor, tmp_path, next_script, saved, host.carry)
+            await until(lambda: "hang here" in next_script.gates)
+            next_script.release("hang here")
+            await until(lambda: asked(next_script) == ["hang here", "queued after"])
+            assert not script.gate("hang here").is_set()
+        finally:
+            await stop_host(host)
+            if successor is not None:
+                await stop_host(successor)
+
+    asyncio.run(run())
+
+
+def test_a_carried_hand_over_is_read_once(tmp_path):
+    from pcode.host import read_carry
+
+    path = tmp_path / "x.carry"
+    path.write_text(json.dumps({"continue": True, "messages": [["hi", "queue"]]}))
+    assert read_carry(path) == {"continue": True, "messages": [["hi", "queue"]]}
+    assert not path.exists()
+    path.write_text("not json")
+    assert read_carry(path) is None and not path.exists()
+    assert read_carry(None) is None
 
 
 @pytest.mark.parametrize("keys", ["\x04", "/quit\r"])
@@ -2010,8 +2291,8 @@ def test_restart_entry_reports_a_successor_that_never_started(tmp_path, host_dir
             host.entry.session_id = "session-1"
             original = host.restart
 
-            def restart(original=original, log=log):
-                answer = original()
+            def restart(interrupt=False, original=original, log=log):
+                answer = original(interrupt)
                 if log:  # Spawned, but its new code never got as far as its entry.
                     (host_dir / f"{answer['id']}.log").touch()
                 return answer
@@ -2120,7 +2401,8 @@ def test_restart_hosts_restarts_stale_hosts_and_reports_each(host_dir, monkeypat
     monkeypatch.setattr("pcode.host_protocol.code_fingerprint", lambda: "now")
     asked = []
 
-    async def restart_entry(entry, directory=None):
+    async def restart_entry(entry, directory=None, *, interrupt=False):
+        assert interrupt
         asked.append(entry.id)
         if entry.id == "gone0001":
             raise ConnectionRefusedError("refused")
@@ -2158,7 +2440,8 @@ def test_restart_all_restarts_other_stale_hosts_then_this_one(tmp_path, host_dir
         monkeypatch.setattr("pcode.host_protocol.code_fingerprint", lambda: "now")
         restarted = []
 
-        async def restart_and_report(entry):
+        async def restart_and_report(entry, *, interrupt=False):
+            assert interrupt, "busy hosts restart too"
             restarted.append(entry.id)
             return f"Restarted {entry.id}", False
 
@@ -2212,7 +2495,8 @@ def test_restart_lets_the_host_start_its_successor_and_attaches_to_it(monkeypatc
             [("bbbb2222", ""), ("", "a background command is running"), ("", TOO_OLD_TO_RESTART)]
         )
 
-        async def restart_entry(entry):
+        async def restart_entry(entry, *, interrupt=False):
+            assert interrupt  # A busy host's turn carries over; an idle one just restarts.
             assert app.restarting  # Its host going away is expected, not a warning.
             return next(answers)
 

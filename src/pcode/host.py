@@ -20,6 +20,7 @@ queries, and receives view calls.
 import argparse
 import asyncio
 import itertools
+import json
 import os
 import signal
 import sys
@@ -292,9 +293,12 @@ class _Client:
             require_detached=require_detached, keep_worktree=keep_worktree
         )
 
-    def restart(self) -> dict:
-        """`/restart all`: `{"id": successor}` once stopping, else `{"skipped": why not}`."""
-        return self.host.restart()
+    def restart(self, interrupt: bool = False) -> dict:
+        """`/restart all`: `{"id": successor}` once stopping, else `{"skipped": why not}`.
+
+        `interrupt` restarts a busy host too, continuing its turn (see `SessionHost.restart`).
+        """
+        return self.host.restart(interrupt=bool(interrupt))
 
 
 class HostView:
@@ -482,6 +486,11 @@ class SessionHost:
         self.idle_stopped = False
         # The host `restart` asked to carry the session on once this one has gone.
         self.successor: str | None = None
+        # What that successor needs to pick up a turn the restart stopped
+        # (`hand_over`), and what the host this one replaced left it (`take_over`).
+        self.carry: dict | None = None
+        self.carried: dict | None = None
+        self._handing_over: asyncio.Task | None = None
         # Open connections, counted from hello on: a terminal mid-handshake is not
         # a client yet, and must not find the host gone.
         self.connections = 0
@@ -549,6 +558,11 @@ class SessionHost:
             profile = remote_profile.active()
             if profile is None or profile.mcp:
                 controller.start_mcp_defaults()
+        if self.carried is not None:
+            # Before the loops start: the continued turn goes ahead of anything
+            # a terminal sent while this host booted.
+            self.take_over(self.carried)
+            self.carried = None
         self.push_state()
         self.start()
 
@@ -1039,7 +1053,7 @@ class SessionHost:
         self.stop()
         return ""
 
-    def restart(self) -> dict:
+    def restart(self, interrupt: bool = False) -> dict:
         """Stop, leaving a successor to resume this session on the pcode installed now.
 
         `main` starts the successor once this host has let go of the session,
@@ -1047,16 +1061,49 @@ class SessionHost:
         profile rather than those of whoever asked. Attached terminals do not
         stop it; work in progress does. Checked and stopped with no await in
         between, so nothing starts in the gap.
+
+        With `interrupt`, work in progress does not stop it either, short of
+        a host still starting up: a running turn stops at its checkpoint and
+        the successor continues it, ahead of the messages queued behind it,
+        which carry over (`hand_over`). Compaction finishes first; side
+        questions stop. Background commands outlive any host, and the
+        successor takes them back as this session's.
         """
-        if reason := self.busy_with():
+        reason = self.busy_with()
+        if self.successor is not None:
+            return {"id": self.successor}  # Asked twice: already on its way.
+        if reason and (not interrupt or self.controller.startup_pending):
             return {"skipped": reason}
         if not self.entry.session_id:
             return {"skipped": NOTHING_TO_RESUME}
         self.successor = new_host_id()
         # The successor resumes in this worktree.
         self.keep_worktree = True
-        self.stop()
+        if reason:
+            self._handing_over = asyncio.create_task(self.hand_over())
+        else:
+            self.stop()
         return {"id": self.successor}
+
+    async def hand_over(self) -> None:
+        """Stop mid-turn for a restart, leaving the successor what it needs to carry on."""
+        controller = self.controller
+        print(f"restarting mid-work as {self.successor}", file=sys.stderr, flush=True)
+        try:
+            interrupted = await controller.settle_for_handoff()
+            # A command is its sender's, and that terminal goes with this host.
+            _commands, messages = controller.take_typed()
+            self.carry = {"continue": interrupted, "messages": messages}
+        finally:
+            self.stop()
+
+    def take_over(self, carry: dict) -> None:
+        """Carry on from the host this one replaced mid-turn: its turn first, then its queue."""
+        controller = self.controller
+        if carry.get("continue") and controller.startup_error is None:
+            controller.continue_interrupted()
+        for text, mode in carry.get("messages") or ():
+            controller.submit(text, mode)
 
     async def stop_when_idle(
         self, minutes: float, *, every: float = 2.0, grace: float = IDLE_GRACE_SECONDS
@@ -1149,7 +1196,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-worktree", action="store_true")
     # JSON from `RemoteProfile.to_json`: an unattended host's fixed limits.
     parser.add_argument("--remote-profile")
+    # A file `spawn_host(carry=...)` wrote: a turn to continue and messages to
+    # queue, from the process this host replaces mid-turn. Read once and removed.
+    parser.add_argument("--carry", type=Path)
     return parser
+
+
+def read_carry(path: Path | None) -> dict | None:
+    """The hand-over `--carry` names, removing the file; None without one (or unreadable)."""
+    if path is None:
+        return None
+    try:
+        carry = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        print(f"could not read the hand-over {path}: {error}", file=sys.stderr, flush=True)
+        return None
+    finally:
+        path.unlink(missing_ok=True)
+    return carry if isinstance(carry, dict) else None
 
 
 def remote_resume_workspace(info, workspace: Path, profile) -> Path:
@@ -1264,6 +1328,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
     write_entry(entry)
 
     host = SessionHost(entry)
+    host.carried = read_carry(args.carry)
     # An unattended session's worktree is left for its owner to inspect.
     host.keep_worktree = profile is not None
     controller = host.controller
@@ -1336,6 +1401,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         "resume": entry.session_id,
         "session_dir": controller.session_dir,
         "profile": profile,
+        "carry": host.carry,
     }
 
 
@@ -1374,6 +1440,9 @@ def main(argv: list[str] | None = None) -> None:
     faulthandler.register(signal.SIGUSR1)
     # The terminal that started the host may close; the host outlives it.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    # The terminal's "detach for an app restart" signal (dev/app-restart.md):
+    # meant for terminals, and a host's default action would be to die.
+    signal.signal(signal.SIGUSR2, signal.SIG_IGN)
     try:
         successor = asyncio.run(_serve(args))
     except Exception as error:  # noqa: BLE001 - the log is the only reader.

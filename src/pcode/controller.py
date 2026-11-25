@@ -503,6 +503,16 @@ def delivered_job(event) -> str | None:
     return None
 
 
+def interrupted_turn(runtime) -> bool:
+    """Whether the conversation's last turn stopped short of completing (cancelled, or cut off)."""
+    tree = getattr(runtime, "tree", None)
+    nodes = getattr(tree, "nodes", None)
+    if not isinstance(nodes, dict) or not tree.active:
+        return False
+    node = nodes.get(tree.active)
+    return node is not None and node.kind == "turn" and node.status in ("cancelled", "interrupted")
+
+
 class SessionController:
     """Runs a conversation: what it does next, the turns themselves, and stopping them.
 
@@ -622,9 +632,26 @@ class SessionController:
         self.command_idle = asyncio.Event()
         self.mcp_idle = asyncio.Event()
         self.compact_idle = asyncio.Event()
-        for idle in (self.command_idle, self.mcp_idle, self.compact_idle):
+        # Cleared while the session moves to another process (`settle_for_handoff`):
+        # queued prompts wait there instead of starting a turn here.
+        self.handoff_idle = asyncio.Event()
+        # Set while `consume` is between messages: the last turn has settled,
+        # its `after_turn` included.
+        self.turn_idle = asyncio.Event()
+        # Cleared while the running turn compacts its context automatically.
+        self.turn_compaction_idle = asyncio.Event()
+        for idle in (
+            self.command_idle,
+            self.mcp_idle,
+            self.compact_idle,
+            self.handoff_idle,
+            self.turn_idle,
+            self.turn_compaction_idle,
+        ):
             idle.set()
         self.live_task: asyncio.Task | None = None
+        # The queue mode of the message `live_task` runs ("shell" for a `!command`).
+        self.live_mode: str | None = None
         self.mcp_task: asyncio.Task | None = None
         self.compact_task: asyncio.Task | None = None
         # A browser sign-in: tracked like a turn so Ctrl+C cancels it.
@@ -951,6 +978,7 @@ class SessionController:
         await self.command_idle.wait()
         await self.mcp_idle.wait()
         await self.compact_idle.wait()
+        await self.handoff_idle.wait()
 
     @property
     def commands_pending(self) -> bool:
@@ -1226,6 +1254,69 @@ class SessionController:
             self.view.note("Stopped asking the model for a name.")
         return stopped
 
+    # --- Moving to another process: /detach mid-turn, a restart ---
+
+    async def settle_for_handoff(self) -> bool:
+        """Stop so another process can carry this session on; True if a turn was interrupted.
+
+        The running turn stops at its last checkpoint, as Ctrl+C stops it, and
+        the next process picks it up with `/continue` (`continue_interrupted`).
+        Compaction is waited for, in a turn or beside one: thrown away, it
+        would be paid for twice. Side questions, side-thread summaries, MCP
+        work and a sign-in don't move, so they stop. Queued messages and
+        commands stay queued, and `handoff_idle` holds them back from starting
+        here, for the caller to take (`take_typed`) or, should the move fail,
+        to release with `resume_here`.
+        """
+        self.handoff_idle.clear()
+        if self.compact_task is not None and not self.compact_task.done():
+            self.view.note("Waiting for compaction to finish before moving.")
+            await asyncio.wait({self.compact_task})
+        if self.turn_running() and not self.turn_compaction_idle.is_set():
+            self.view.note("Waiting for the turn's compaction to finish before moving.")
+            await self.turn_compaction_idle.wait()
+        interrupted = False
+        if self.turn_running():
+            # A `!command`, or Antigravity's own wake-up, has no request to continue.
+            interrupted = self.live_mode not in ("shell", "provider_wake")
+            # The queue stays: a failed turn would otherwise clear it (`turn_ended`).
+            self.interrupt_pending = True
+            # As Ctrl+C: a command the turn waits on stops with it, so the
+            # continued turn never finds a twin of the one it starts again.
+            self.set_cancel_policy("stop")
+            if not self.live_task.cancelling():
+                self.live_task.cancel()
+        # Until `consume` is between messages, `after_turn` included.
+        await self.turn_idle.wait()
+        self.cancel_asides()  # Summaries too.
+        work = [task for task in (self.mcp_task, self.login_task) if task and not task.done()]
+        for task in work:
+            task.cancel()
+        await asyncio.gather(*work, return_exceptions=True)
+        return interrupted
+
+    def resume_here(self, interrupted: bool) -> None:
+        """A move `settle_for_handoff` prepared did not happen: carry on in this process."""
+        self.handoff_idle.set()
+        if interrupted:
+            self.continue_interrupted()
+
+    def continue_interrupted(self) -> bool:
+        """`/continue` the turn a move or restart stopped, ahead of anything queued.
+
+        Only a turn that did stop short: one that completed meanwhile is left
+        alone, where `/continue` would answer it a second time.
+        """
+        if not interrupted_turn(self.runtime):
+            return False
+        try:
+            self.continue_turn("", before_queue=True)
+        except ValueError as error:  # SessionError too: nothing to resend.
+            self.view.warning(f"Could not continue the interrupted turn: {error}")
+            return False
+        self.view.note("Continuing the interrupted turn from its last checkpoint.")
+        return True
+
     def _steering_limit(self) -> int | None:
         # Like queued prompts, steering sent after MCP work waits for it, so
         # "/mcp enable x" then "use x" reaches the model with x's tools.
@@ -1478,74 +1569,86 @@ class SessionController:
                     owner.dropped()
                 continue
             self.prompts.taken()
-            await self.apply_pending_reload()
-            if owner is not None:
-                # Everything shown from here to `after_turn` is this message's.
-                owner.started()
-            success = True
+            self.turn_idle.clear()
             try:
-                continuing = mode == "continue"
-                if mode == "shell":
-                    self.live_task = asyncio.create_task(self.run_shell(text))
-                    try:
-                        success = await self.live_task
-                    except asyncio.CancelledError:
-                        if self.closing():
-                            return
-                        success = False
-                elif not (continuing or self.model):
-                    self.view.preview_reply(text)
-                else:
-                    wake = mode == "wake"
-                    provider_wake = mode == "provider_wake"
-                    if (
-                        provider_wake
-                        and not getattr(self.runtime, "has_provider_wake", lambda: False)()
-                    ):
-                        # Model changed or a user turn already took over the wake.
-                        self.refresh_busy()
-                        continue
-                    if provider_wake:
-                        self.activity.start_prompt(
-                            "Antigravity", kind="system", detail="Continuing from background work"
-                        )
-                    elif wake:
-                        label, detail = wake_row(text)
-                        self.activity.start_prompt(label, kind="system", detail=detail)
-                    else:
-                        self.activity.start_prompt(text)
-                    self.runtime.take_steering = self.take_steering
-                    self.runtime.has_steering = self.has_steering
-                    self.live_task = asyncio.create_task(
-                        self.run_turn(
-                            "" if provider_wake else text,
-                            continuing=continuing,
-                            wake=wake,
-                            provider_wake=provider_wake,
-                        )
-                    )
-                    try:
-                        success = await self.live_task
-                    except asyncio.CancelledError:
-                        # Cancellation before run_turn's first instruction.
-                        if self.closing():
-                            return
-                        success = False
-                        self.activity.finish_prompt("cancelled")
-                        self.activity.turn_outcome = "cancelled"
-                        self.view.cancelled()
-            except Exception as error:
-                self.view.error(error_message(error), title="Agent failed")
-                self.activity.turn_outcome = "failed"
-                success = False
+                if not await self._run_message(text, mode, owner):
+                    return
             finally:
-                self.live_task = None
-            if self.closing():
-                return
-            self.turn_ended(success)
-            await self.apply_pending_reload()
-            self.view.session_changed()
-            await self.view.after_turn()
+                self.turn_idle.set()
+
+    async def _run_message(self, text: str, mode: str, owner: MessageOwner | None) -> bool:
+        """Run one message `consume` took off the queue; False once the owner is closing."""
+        await self.apply_pending_reload()
+        if owner is not None:
+            # Everything shown from here to `after_turn` is this message's.
+            owner.started()
+        success = True
+        self.live_mode = mode
+        try:
+            continuing = mode == "continue"
+            if mode == "shell":
+                self.live_task = asyncio.create_task(self.run_shell(text))
+                try:
+                    success = await self.live_task
+                except asyncio.CancelledError:
+                    if self.closing():
+                        return False
+                    success = False
+            elif not (continuing or self.model):
+                self.view.preview_reply(text)
+            else:
+                wake = mode == "wake"
+                provider_wake = mode == "provider_wake"
+                if (
+                    provider_wake
+                    and not getattr(self.runtime, "has_provider_wake", lambda: False)()
+                ):
+                    # Model changed or a user turn already took over the wake.
+                    self.refresh_busy()
+                    return True
+                if provider_wake:
+                    self.activity.start_prompt(
+                        "Antigravity", kind="system", detail="Continuing from background work"
+                    )
+                elif wake:
+                    label, detail = wake_row(text)
+                    self.activity.start_prompt(label, kind="system", detail=detail)
+                else:
+                    self.activity.start_prompt(text)
+                self.runtime.take_steering = self.take_steering
+                self.runtime.has_steering = self.has_steering
+                self.live_task = asyncio.create_task(
+                    self.run_turn(
+                        "" if provider_wake else text,
+                        continuing=continuing,
+                        wake=wake,
+                        provider_wake=provider_wake,
+                    )
+                )
+                try:
+                    success = await self.live_task
+                except asyncio.CancelledError:
+                    # Cancellation before run_turn's first instruction.
+                    if self.closing():
+                        return False
+                    success = False
+                    self.activity.finish_prompt("cancelled")
+                    self.activity.turn_outcome = "cancelled"
+                    self.view.cancelled()
+        except Exception as error:
+            self.view.error(error_message(error), title="Agent failed")
+            self.activity.turn_outcome = "failed"
+            success = False
+        finally:
+            self.live_task = None
+            self.live_mode = None
+        if self.closing():
+            return False
+        self.turn_ended(success)
+        await self.apply_pending_reload()
+        self.view.session_changed()
+        await self.view.after_turn()
+        return True
 
     async def stream_on(self, target: SideTarget, prompt: str):
         """Stream a turn of `prompt` on `target` alone, from `$MODEL` or `+EFFORT`.
@@ -1603,6 +1706,8 @@ class SessionController:
             # (see `status_parts`), and the model has the turn once it is done.
             starting = text.startswith("Compacting")
             self.activity.status = "Compacting context…" if starting else "Waiting for model…"
+            # A move to another process waits for it rather than throwing it away.
+            (self.turn_compaction_idle.clear if starting else self.turn_compaction_idle.set)()
             self.view.note(text)
 
         runtime.compaction_notice = compaction_notice
@@ -1673,6 +1778,7 @@ class SessionController:
             if getattr(runtime, "session", None) is not None:
                 self.start_naming(first_prompt)
             self.borrowed_turn = None
+            self.turn_compaction_idle.set()
             self.view.turn_ended()
             # MCP work started beside the turn may outlast it.
             self.activity.status = self.mcp_status if self.mcp_task is not None else ""

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -142,6 +143,12 @@ HOST_CANCEL_GRACE = 5.0
 """Seconds a host may stay busy after a cancel before Ctrl+D detaches rather than cancels again."""
 
 
+NOTHING_TO_MOVE = (
+    "Nothing to move to a background host yet: a session is saved with its "
+    "first prompt. `pcode --host` starts one in a host."
+)
+
+
 class _PopupSuperseded(Exception):
     """Another popup opened after this command was queued."""
 
@@ -250,6 +257,13 @@ class PreviewApp:
         self.handoff_queued: int | None = None
         # Set once a host owns this terminal's in-process session.
         self.moved_to_host = False
+        # One move into a host at a time: a `/detach` and the app-restart signal.
+        self._move_lock = asyncio.Lock()
+        # SIGUSR2 (`request_app_restart`): carry the session on in a host, then exit.
+        self.app_restart_requested = False
+        self._app_restart_task: asyncio.Task | None = None
+        # Set once the session this terminal starts with is up (or failed to start).
+        self._startup_done = asyncio.Event()
         # The editor's Enter, so what was typed during a move reaches the host.
         self._submit_typed: Callable[[str], None] | None = None
         # The host this terminal showed before the current one, for `/attach -`;
@@ -452,8 +466,8 @@ class PreviewApp:
             ),
             Command(
                 "/restart",
-                "Restart this background session's host on the pcode installed now; "
-                "all: every host on older code",
+                "Restart this background session's host on the pcode installed now, "
+                "continuing a running turn; all: every host on older code",
                 self.restart,
                 arguments=("all",),
                 group="Session",
@@ -1777,12 +1791,13 @@ class PreviewApp:
         # Running here: move it into a host first, and stay on it.
         if not self.model:
             raise ValueError("/detach needs a model; this is a local UI preview.")
-        if why := self.handoff_blocker():
-            raise ValueError(why)
+        if getattr(self.runtime, "session", None) is None:
+            raise ValueError(NOTHING_TO_MOVE)
+        # Mid-turn too: the turn stops at its checkpoint and the host continues it.
         self.handoff_requested = True
 
     def handoff_blocker(self) -> str | None:
-        """Why this session, running here, cannot move into a host right now."""
+        """Why this session, running here, cannot move into a host without stopping anything."""
         if (
             self.activity.busy
             or self.activity.queued_prompts
@@ -1795,10 +1810,7 @@ class PreviewApp:
                 "background host. Wait or cancel, then /detach."
             )
         if getattr(self.runtime, "session", None) is None:
-            return (
-                "Nothing to move to a background host yet: a session is saved with its "
-                "first prompt. `pcode --host` starts one in a host."
-            )
+            return NOTHING_TO_MOVE
         return None
 
     def hand_off_when_idle(self) -> None:
@@ -1855,11 +1867,15 @@ class PreviewApp:
             raise ValueError("Usage: /restart [all]")
         if not self.hosted:
             raise ValueError("/restart restarts a session host; quit and relaunch for new code.")
-        if self.activity.busy or self.activity.queued_prompts:
-            raise ValueError("/restart waits for the turn. Cancel with Ctrl+C or wait, then retry.")
+        # Mid-turn too: the host stops the turn at its checkpoint, and its
+        # successor continues it ahead of anything queued.
         self.restart_requested = True
 
     async def restart_host(self) -> None:
+        async with self._move_lock:
+            await self._restart_host()
+
+    async def _restart_host(self) -> None:
         """Restart this host on the code now installed and show the new one here.
 
         The host starts its successor itself, which keeps its environment and
@@ -1879,6 +1895,9 @@ class PreviewApp:
 
         self.restart_requested = False
         runtime = self.runtime
+        if not self.hosted:
+            return  # Restarted meanwhile into a session this terminal does not show.
+        busy = bool(self.activity.busy or self.activity.queued_prompts)
         entry = next((e for e in await asyncio.to_thread(list_hosts) if e.id == runtime.id), None)
         if entry is not None:
             successor = skipped = ""
@@ -1886,7 +1905,8 @@ class PreviewApp:
             self.restarting = True
             try:
                 with self.activity.waiting("Restarting the session host"):
-                    successor, skipped = await restart_entry(entry)
+                    # Idle, an interrupting restart is a plain one.
+                    successor, skipped = await restart_entry(entry, interrupt=True)
                     if successor:
                         controller, welcome = await wait_for_host(successor, self, self.activity)
             except (OSError, HostError, RemoteError) as error:
@@ -1906,7 +1926,8 @@ class PreviewApp:
                     controller, welcome, f"Restarted on the current pcode ({successor})"
                 )
                 return
-            if skipped not in (TOO_OLD_TO_RESTART, NOTHING_TO_RESUME):
+            if busy or skipped not in (TOO_OLD_TO_RESTART, NOTHING_TO_RESUME):
+                # Busy (a host too old to interrupt): stopping it would lose the turn.
                 self.transcript.warning(f"The session host did not restart: {skipped}.")
                 return
         # Kept: the new host resumes in the same worktree.
@@ -1924,7 +1945,8 @@ class PreviewApp:
         """`/restart all`: every host on older pcode restarts, this terminal's own last.
 
         Each other host starts its own successor, so it keeps its environment
-        rather than taking this terminal's. Busy ones are skipped and say why.
+        rather than taking this terminal's. A busy one's turn stops at a
+        checkpoint and its successor continues it, as `/restart` does.
         """
         from pcode.host_protocol import code_fingerprint, list_hosts
         from pcode.remote import restart_and_report
@@ -1936,31 +1958,109 @@ class PreviewApp:
         others = [entry for entry in stale if entry.id != own]
         for entry in others:
             with self.activity.waiting(f"Restarting session {entry.id}"):
-                line, failed = await restart_and_report(entry)
+                line, failed = await restart_and_report(entry, interrupt=True)
             (self.transcript.warning if failed else self.transcript.note)(line)
         if own is not None and any(entry.id == own for entry in stale):
-            if self.activity.busy or self.activity.queued_prompts:
-                self.transcript.note("This session's host waits for its turn: /restart it after.")
-            else:
-                await self.restart_host()
+            await self.restart_host()
         elif not others:
             self.transcript.note("Every session host already runs the pcode installed now.")
+
+    def request_app_restart(self) -> None:
+        """SIGUSR2: leave the session running in a host on the pcode installed now, then exit.
+
+        For restarting the terminal app around pcode (dev/app-restart.md):
+        once this process has gone, `pcode -c <id>` attaches to that host.
+        """
+        if self.app_restart_requested:
+            return
+        self.app_restart_requested = True
+        session = self.prompt_session
+        if session is not None and session.app.is_running:
+            self._app_restart_task = session.app.create_background_task(self._app_restart())
+        # Else `start` schedules it once the editor runs.
+
+    async def _app_restart(self) -> None:
+        """`request_app_restart`'s work: always ends by exiting, whatever the move did."""
+        from pcode.host_protocol import code_fingerprint, list_hosts
+
+        try:
+            # A host still starting has nothing to move or restart yet.
+            await self._startup_done.wait()
+            async with self._move_lock:
+                if not self.hosted:
+                    if self.model and getattr(self.runtime, "session", None) is not None:
+                        # A session not saved yet has nothing to carry on.
+                        await self._move_to_host(resume_on_failure=False)
+                elif not self.runtime.lost:
+                    code = await asyncio.to_thread(code_fingerprint)
+                    entries = await asyncio.to_thread(list_hosts)
+                    entry = next((e for e in entries if e.id == self.runtime.id), None)
+                    if entry is not None and entry.stale(code):
+                        await self._restart_host()
+        except Exception as error:
+            self.transcript.error(error_message(error, unexpected="Moving for the restart failed"))
+        finally:
+            self._exit_for_app_restart()
+
+    def _exit_for_app_restart(self) -> None:
+        """Exit, leaving any host running, past any popup or nested prompt that is open."""
+        if self.hosted:
+            self.detach_requested = True  # Not `stop_host_on_exit`'s stop.
+        elif isinstance(self.controller, SessionController):
+            # A move that failed holds the queue: it must not start a turn on the way out.
+            self.controller.handoff_idle.clear()
+        self.running = False
+        session = self.prompt_session
+        future = session.app.future if session is not None else None
+        if future is None or future.done():
+            return
+        # The exit cancels the editor's background tasks (popups and nested
+        # prompts run in them) only after waiting for any terminal handoff to
+        # end, and an open full-screen popup holds one until it closes: stop
+        # them first. Exiting would cancel every one of them anyway.
+        current = asyncio.current_task()
+        for task in list(getattr(session.app, "_background_tasks", ())):
+            if task is not current and not task.done():
+                task.cancel()
+        session.app.exit()
 
     async def move_to_host(self) -> None:
         """`/detach` in a session running here: carry it on in a new host, still shown here.
 
         The conversation, its worktree and its running jobs go to the host;
-        only this terminal's own process stays behind. Should the host fail to
-        start, the session carries on here as if nothing happened.
+        only this terminal's own process stays behind. Mid-turn, the turn
+        stops at its checkpoint and the host continues it ahead of anything
+        queued (`settle_for_handoff`). Should the host fail to start, the
+        session carries on here as if nothing happened.
         """
+        async with self._move_lock:
+            await self._move_to_host()
+
+    async def _move_to_host(self, *, resume_on_failure: bool = True) -> None:
+        """`move_to_host` under its lock. Without `resume_on_failure` a failed move
+        leaves the session stopped (the app-restart signal is about to exit):
+        nothing queued starts here, nor does the interrupted turn continue."""
+        self.handoff_requested = False
+        # One try: should it fail, the session carries on here as before.
+        self.host_when_idle = False
+        if self.hosted or self.moved_to_host or not isinstance(self.controller, SessionController):
+            return  # Moved already (a `/detach` and the app-restart signal both asked).
+        if getattr(self.runtime, "session", None) is None:
+            raise ValueError(NOTHING_TO_MOVE)
+        interrupted = await self.controller.settle_for_handoff()
+        try:
+            await self._hand_to_host(interrupted)
+        except BaseException:
+            if resume_on_failure and not self.moved_to_host:
+                self.controller.resume_here(interrupted)
+            raise
+
+    async def _hand_to_host(self, interrupted: bool) -> None:
         from filelock import Timeout
 
         from pcode.remote import HostError, spawn_host, wait_for_host
         from pcode.sessions import SessionError, is_open
 
-        self.handoff_requested = False
-        # One try: should it fail, the session carries on here as before.
-        self.host_when_idle = False
         runtime = self.runtime
         saved = runtime.session
         jobs = getattr(runtime, "jobs", None)
@@ -1984,6 +2084,8 @@ class PreviewApp:
                 workspace=self.workspace,
                 resume=saved.info.id,
                 session_dir=self.session_dir,
+                # Ahead of what was typed meanwhile, which `adopt_controller` sends.
+                carry={"continue": True} if interrupted else None,
             )
             controller, welcome = await wait_for_host(identity, self, self.activity, process, log)
             # From here the host owns the session: an exit before this terminal
@@ -2015,11 +2117,15 @@ class PreviewApp:
             ) from error
         finally:
             self.activity.end_wait(wait)
+        where = (
+            f"Moved mid-turn; continuing in the background host {identity}"
+            if interrupted
+            else f"Moved to background session {identity}"
+        )
         await self.adopt_controller(
             controller,
             welcome,
-            f"Moved to background session {identity}: /detach or closing the terminal "
-            "now leaves it running",
+            f"{where}: /detach or closing the terminal now leaves it running",
             handed_off=True,
         )
 
@@ -2992,6 +3098,28 @@ class PreviewApp:
             self.prompt_session.app.exit()
 
     async def run_async(self) -> None:
+        loop = asyncio.get_running_loop()
+        previous = signal.getsignal(signal.SIGUSR2)
+        try:
+            # `request_app_restart`, through everything below, cleanup included.
+            loop.add_signal_handler(signal.SIGUSR2, self.request_app_restart)
+        except NotImplementedError, RuntimeError, ValueError:
+            await self._run_editor()  # No signals here (not the main thread).
+            return
+        from pcode import cli
+
+        if cli.app_restart_signalled:  # Before this process got this far.
+            cli.app_restart_signalled = False
+            self.request_app_restart()
+        try:
+            await self._run_editor()
+        finally:
+            # Removing it resets the default action, which would kill the
+            # process on its way out: hand back to what was there before.
+            loop.remove_signal_handler(signal.SIGUSR2)
+            signal.signal(signal.SIGUSR2, previous)
+
+    async def _run_editor(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
         os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         # A brand-new session shows the welcome banner; attaching to an existing
@@ -3019,6 +3147,12 @@ class PreviewApp:
                     session.app.invalidate()
 
         async def initialize_host():
+            try:
+                await connect_host()
+            finally:
+                self._startup_done.set()
+
+        async def connect_host():
             nonlocal early
             launch, self._host_launch = self._host_launch, None
             try:
@@ -3076,6 +3210,7 @@ class PreviewApp:
                 for command in controller.startup_commands:
                     controller.commands.put_nowait(command)
                 controller.startup_commands.clear()
+                self._startup_done.set()
                 session.app.invalidate()
 
         async def watch_hosts() -> None:
@@ -3370,6 +3505,9 @@ class PreviewApp:
                 submit(self.initial_prompt)
             if docked is not None:
                 docked.attach(session.app, on_theme=self.follow_appearance)
+            if self.app_restart_requested:
+                # Signalled before the editor ran: act on it now.
+                self._app_restart_task = session.app.create_background_task(self._app_restart())
 
         try:
             await session.app.run_async(pre_run=start)
@@ -3998,7 +4136,8 @@ def _restart_hosts(which: str, entries: list, code: str) -> None:
 
     chosen = [entry for entry in entries if which == "all" or entry.stale(code)]
     for entry in chosen:
-        line, failed = asyncio.run(restart_and_report(entry))
+        # A busy host restarts too, continuing its turn, as `/restart all` does.
+        line, failed = asyncio.run(restart_and_report(entry, interrupt=True))
         print(line, file=sys.stderr if failed else sys.stdout)
     if not chosen:
         print("No stale session hosts." if which == "stale" else "No session hosts are running.")

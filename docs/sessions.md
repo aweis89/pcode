@@ -24,8 +24,10 @@ terminal only draws it. The terminal stays on it, and from then on it can
 leave, switch to another session, or close, and the work carries on.
 
 - `/detach` moves the conversation, its worktree and its running background
-  commands (they keep their IDs). It refuses while a turn, command or side
-  question is in progress, which can't move: let it finish or cancel it first.
+  commands (they keep their IDs). Mid-turn, the turn stops at its last
+  checkpoint and the host picks it up again with `/continue`, ahead of any
+  messages you had queued, which move too. A compaction in progress finishes
+  first; a side question is cancelled.
   A session needs its first prompt (which saves it) before it can move.
   Anything you type while it moves goes to the host once it is there.
 - Once it is in a host, `/detach` again (or closing the terminal) quits and
@@ -83,10 +85,10 @@ Inside a hosted session:
   picker and `--hosts` mark hosts that are on older code.
   The host starts its own replacement, so it keeps the environment it was
   started with (credentials from that project's `.envrc`, say) rather than
-  taking this terminal's.
+  taking this terminal's. Mid-turn, the turn stops at its last checkpoint and
+  the new host continues it with `/continue`, then runs whatever was queued.
 - `/restart all` (or `pcode --restart-hosts stale`) does the same for every host on
-  older code, this one last. A host that is busy is
-  skipped and listed with the reason. Another terminal showing a host that
+  older code, busy ones included, this one last. Another terminal showing a host that
   restarted says which host it became, for `/attach`. Hosts started by a pcode older than
   this feature can't restart from elsewhere: `/restart` each of those once in
   its own terminal.
