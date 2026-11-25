@@ -8,20 +8,34 @@ import Textual
 /// stay in the app's bundled monospace font instead of falling back to SF Mono.
 struct PCodePeekMarkdownStyle: StructuredText.Style {
     let codeBackground: Color
-    let inlineCodeFont: Font
+    let inheritInlineCodeFont: Bool
+    let baseSize: CGFloat
+    let codeFamilyAvailable: Bool
+    let inlineCodeScale: CGFloat
     let codeBlockFont: Font
     let codeLabelFont: Font
     let emphasisWeight: Font.Weight
     let baseWeight: Font.Weight
 
     var inlineStyle: InlineStyle {
-        InlineStyle()
-            .code(.font(inlineCodeFont), .backgroundColor(Self.inlineCodeFill))
-            .strong(.fontWeight(emphasisWeight))
-            .link(.foregroundColor(Color.accentColor))
+        Self.makeInlineStyle(
+            inheritCodeFont: inheritInlineCodeFont,
+            codeFont: PCodeTypography.makeCodeFont(
+                baseSize: baseSize,
+                scale: inlineCodeScale,
+                weight: baseWeight,
+                familyAvailable: codeFamilyAvailable),
+            emphasisWeight: emphasisWeight)
     }
 
-    var headingStyle: Heading { Heading(emphasisWeight: emphasisWeight) }
+    var headingStyle: Heading {
+        Heading(
+            inheritInlineCodeFont: inheritInlineCodeFont,
+            baseSize: baseSize,
+            codeFamilyAvailable: codeFamilyAvailable,
+            inlineCodeScale: inlineCodeScale,
+            emphasisWeight: emphasisWeight)
+    }
     var paragraphStyle: Paragraph { Paragraph() }
     var blockQuoteStyle: BlockQuote { BlockQuote() }
     var codeBlockStyle: CodeBlock {
@@ -41,17 +55,50 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
         dark: Color.white.opacity(0.10))
     static let hairline = Color.primary.opacity(0.12)
 
+    fileprivate static func makeInlineStyle(
+        inheritCodeFont: Bool,
+        codeFont: Font,
+        emphasisWeight: Font.Weight
+    ) -> InlineStyle {
+        let base = InlineStyle()
+            .strong(.fontWeight(emphasisWeight))
+            .link(.foregroundColor(Color.accentColor))
+        if inheritCodeFont {
+            return base.code(.backgroundColor(Self.inlineCodeFill))
+        }
+        return base.code(.font(codeFont), .backgroundColor(Self.inlineCodeFill))
+    }
+
     struct Heading: StructuredText.HeadingStyle {
+        let inheritInlineCodeFont: Bool
+        let baseSize: CGFloat
+        let codeFamilyAvailable: Bool
+        let inlineCodeScale: CGFloat
         let emphasisWeight: Font.Weight
         private static let fontScales: [CGFloat] = [1.3, 1.15, 1.05, 1, 1, 1]
 
         func makeBody(configuration: Configuration) -> some View {
             let level = min(max(configuration.headingLevel, 1), 6)
-            configuration.label
-                .textual.fontScale(Self.fontScales[level - 1])
+            let scale = Self.fontScales[level - 1]
+            let styled = configuration.label
+                .textual.fontScale(scale)
                 .fontWeight(emphasisWeight)
-                .foregroundStyle(level >= 4 ? Color.secondary : Color.primary)
+                .textual.inlineStyle(
+                    PCodePeekMarkdownStyle.makeInlineStyle(
+                        inheritCodeFont: inheritInlineCodeFont,
+                        codeFont: PCodeTypography.makeCodeFont(
+                            baseSize: baseSize,
+                            scale: scale * inlineCodeScale,
+                            weight: emphasisWeight,
+                            familyAvailable: codeFamilyAvailable),
+                        emphasisWeight: emphasisWeight)
+                )
                 .textual.blockSpacing(.fontScaled(top: 0.9, bottom: 0.35))
+            if level >= 4 {
+                styled.foregroundStyle(Color.secondary)
+            } else {
+                styled
+            }
         }
     }
 

@@ -574,13 +574,16 @@ struct PCodePeekOverlay: View {
     let onOpen: (PCodePeekTarget) -> Void
 
     private var cardBackground: Color {
-        Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.05, of: .white) ?? .windowBackgroundColor)
+        let base = NSColor(ghostty.config.backgroundColor)
+        let target: NSColor = base.isLightColor ? .white : .white
+        let fraction: CGFloat = base.isLightColor ? 0.04 : 0.05
+        return Color(nsColor: base.blended(withFraction: fraction, of: target) ?? .windowBackgroundColor)
     }
 
     private var codeBackground: Color {
-        Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.28, of: .black) ?? .textBackgroundColor)
+        let base = NSColor(ghostty.config.backgroundColor)
+        let fraction: CGFloat = base.isLightColor ? 0.06 : 0.28
+        return Color(nsColor: base.blended(withFraction: fraction, of: .black) ?? .textBackgroundColor)
     }
 
     private var textForeground: Color {
@@ -592,8 +595,10 @@ struct PCodePeekOverlay: View {
     }
 
     private var promptBackground: Color {
-        Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.11, of: .white) ?? .controlBackgroundColor)
+        let base = NSColor(ghostty.config.backgroundColor)
+        let target: NSColor = base.isLightColor ? .black : .white
+        let fraction: CGFloat = base.isLightColor ? 0.06 : 0.11
+        return Color(nsColor: base.blended(withFraction: fraction, of: target) ?? .controlBackgroundColor)
     }
 
     var body: some View {
@@ -833,8 +838,6 @@ struct PCodePeekOverlay: View {
                 .padding(.vertical, 16)
                 .textSelection(.enabled)
             }
-            // The card is drawn on the terminal's background, so markdown colors follow it.
-            .environment(\.colorScheme, transcriptColorScheme)
             .id(target.sessionID ?? "")
         }
     }
@@ -894,7 +897,10 @@ struct PCodePeekOverlay: View {
             .textual.structuredTextStyle(
                 PCodePeekMarkdownStyle(
                     codeBackground: codeBackground,
-                    inlineCodeFont: typography.codeFont(scale: typography.inlineCodeScale),
+                    inheritInlineCodeFont: typography.style == .mono,
+                    baseSize: CGFloat(typography.size),
+                    codeFamilyAvailable: typography.isCodeFamilyAvailable,
+                    inlineCodeScale: typography.inlineCodeScale,
                     codeBlockFont: typography.codeFont(scale: typography.codeBlockScale),
                     codeLabelFont: typography.codeFont(scale: 0.78, weight: .medium),
                     emphasisWeight: typography.weight.emphasisWeight,
@@ -965,10 +971,14 @@ struct PCodePeekOverlay: View {
     private var footer: some View {
         HStack(spacing: 12) {
             Text("⌥ + hover sidebar to peek")
+                .lineLimit(1)
             Text("scroll to read")
+                .lineLimit(1)
             Text("esc close")
+                .lineLimit(1)
             Spacer(minLength: 8)
             typographyControls
+                .fixedSize(horizontal: true, vertical: false)
         }
         .font(.caption)
         .foregroundStyle(.secondary)

@@ -126,7 +126,10 @@ final class PCodeTypography: ObservableObject {
     }
 
     static func clampSize(_ value: Double) -> Double {
-        min(max(value.rounded(), minSize), maxSize)
+        guard value.isFinite else {
+            return value.isNaN ? defaultSize : (value > 0 ? maxSize : minSize)
+        }
+        return min(max(value.rounded(), minSize), maxSize)
     }
 
     func increaseSize() {
@@ -157,13 +160,27 @@ final class PCodeTypography: ObservableObject {
 
     /// Code/monospace font (bundled JetBrains Mono, falling back to system monospaced).
     func codeFont(scale: CGFloat = 1, weight overrideWeight: Font.Weight? = nil) -> Font {
-        let resolvedWeight = overrideWeight ?? weight.fontWeight
-        let pt = CGFloat(size) * scale
-        if codeFamilyAvailable {
-            return .custom(Self.defaultCodeFamily, fixedSize: pt).weight(resolvedWeight)
-        }
-        return .system(size: pt, weight: resolvedWeight, design: .monospaced)
+        Self.makeCodeFont(
+            baseSize: CGFloat(size),
+            scale: scale,
+            weight: overrideWeight ?? weight.fontWeight,
+            familyAvailable: codeFamilyAvailable)
     }
+
+    static func makeCodeFont(
+        baseSize: CGFloat,
+        scale: CGFloat = 1,
+        weight: Font.Weight,
+        familyAvailable: Bool
+    ) -> Font {
+        let pt = baseSize * scale
+        if familyAvailable {
+            return .custom(defaultCodeFamily, fixedSize: pt).weight(weight)
+        }
+        return .system(size: pt, weight: weight, design: .monospaced)
+    }
+
+    var isCodeFamilyAvailable: Bool { codeFamilyAvailable }
 
     /// Inline code scale: slightly smaller beside proportional sans, full size in all-mono.
     var inlineCodeScale: CGFloat {

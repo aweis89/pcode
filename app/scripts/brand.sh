@@ -45,10 +45,23 @@ fi
 
 # Bundled fonts (e.g. JetBrains Mono) for app-owned SwiftUI typography.
 fonts_dir="$here/fonts"
-if [ -d "$fonts_dir" ] && find "$fonts_dir" -maxdepth 1 \( -name '*.ttf' -o -name '*.otf' \) | grep -q .; then
-    mkdir -p "$app/Contents/Resources/Fonts"
-    find "$fonts_dir" -maxdepth 1 \( -name '*.ttf' -o -name '*.otf' \) -exec cp {} "$app/Contents/Resources/Fonts/" \;
-    pb "Set :ATSApplicationFontsPath Fonts" 2>/dev/null || pb "Add :ATSApplicationFontsPath string Fonts"
+if [ -d "$fonts_dir" ]; then
+    has_fonts=0
+    for f in "$fonts_dir"/*.ttf "$fonts_dir"/*.otf; do
+        if [ -f "$f" ]; then
+            has_fonts=1
+            break
+        fi
+    done
+    if [ "$has_fonts" = 1 ]; then
+        rm -rf "$app/Contents/Resources/Fonts"
+        mkdir -p "$app/Contents/Resources/Fonts"
+        for f in "$fonts_dir"/*.ttf "$fonts_dir"/*.otf; do
+            [ -f "$f" ] && cp "$f" "$app/Contents/Resources/Fonts/"
+        done
+        [ -f "$fonts_dir/OFL.txt" ] && cp "$fonts_dir/OFL.txt" "$app/Contents/Resources/Fonts/"
+        pb "Set :ATSApplicationFontsPath Fonts" 2>/dev/null || pb "Add :ATSApplicationFontsPath string Fonts"
+    fi
 fi
 
 # Plain ad-hoc: this drops the hardened runtime and entitlements, which only
