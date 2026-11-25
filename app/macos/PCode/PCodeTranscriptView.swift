@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import QuartzCore
+import SwiftUI
 
 /// Visual palette for `PCodeTranscriptView`, derived from the terminal/app theme.
 struct PCodeTranscriptTheme: Equatable {
@@ -43,19 +44,73 @@ struct PCodeTranscriptItem: Identifiable {
     enum Kind: String {
         case prompt
         case prose
+        case codeBlock
+        case table
         case tool
         case status
     }
 
-    let id: String
-    let kind: Kind
-    let plainText: String
-    let secondaryText: String
-    let isSidePrompt: Bool
-    let isFailed: Bool
-    let elapsedText: String?
-    let spacingAfter: CGFloat
+    enum Payload {
+        case prompt(label: String, text: String, isSide: Bool)
+        case prose(markdown: String, referenceDefinitions: String, copyMarkdown: String?)
+        case codeBlock(language: String?, code: String, fullCopyCode: String, showHeader: Bool, groupID: String?)
+        case table(PCodeMarkdownTable)
+        case tool(PCodePeekToolCall, isExpanded: Bool)
+        case status(PCodePeekTurn.Status)
+    }
 
+    let id: String
+    let payload: Payload
+    let spacingAfter: CGFloat
+    /// Monotonic revision bumped when an item's payload mutates in place (e.g. expand/stream).
+    let revision: UInt64
+
+    var kind: Kind {
+        switch payload {
+        case .prompt: return .prompt
+        case .prose: return .prose
+        case .codeBlock: return .codeBlock
+        case .table: return .table
+        case .tool: return .tool
+        case .status: return .status
+        }
+    }
+
+    /// Group ID shared across contiguous >200-line chunks of the same fenced code block.
+    var codeBlockGroupID: String? {
+        if case .codeBlock(_, _, _, _, let groupID) = payload {
+            return groupID
+        }
+        return nil
+    }
+
+    /// Plain-text fallback representation (used for height estimates).
+    var plainText: String {
+        switch payload {
+        case .prompt(let label, let text, _):
+            return "\(label)\n\(text)"
+        case .prose(let markdown, _, _):
+            return markdown
+        case .codeBlock(_, let code, _, _, _):
+            return code
+        case .table(let table):
+            return table.plainText
+        case .tool(let call, _):
+            let summary = call.summaryText
+            return summary.isEmpty ? call.name : "\(call.name) \(summary)"
+        case .status(let status):
+            return PCodeStatusRowView.displayLabel(for: status)
+        }
+    }
+
+    init(id: String, payload: Payload, spacingAfter: CGFloat = 8, revision: UInt64 = 0) {
+        self.id = id
+        self.payload = payload
+        self.spacingAfter = spacingAfter
+        self.revision = revision
+    }
+
+    /// Convenience initializer used by unit tests and simple synthetic items.
     init(
         id: String,
         kind: Kind,
@@ -67,64 +122,120 @@ struct PCodeTranscriptItem: Identifiable {
         spacingAfter: CGFloat = 8
     ) {
         self.id = id
-        self.kind = kind
-        self.plainText = plainText
-        self.secondaryText = secondaryText
-        self.isSidePrompt = isSidePrompt
-        self.isFailed = isFailed
-        self.elapsedText = elapsedText
         self.spacingAfter = spacingAfter
+        self.revision = 0
+        switch kind {
+        case .prompt:
+            self.payload = .prompt(
+                label: secondaryText.isEmpty ? (isSidePrompt ? "/btw" : "You") : secondaryText,
+                text: plainText,
+                isSide: isSidePrompt)
+        case .prose:
+            self.payload = .prose(markdown: plainText, referenceDefinitions: "", copyMarkdown: nil)
+        case .codeBlock:
+            self.payload = .codeBlock(
+                language: secondaryText.isEmpty ? nil : secondaryText,
+                code: plainText,
+                fullCopyCode: plainText,
+                showHeader: true,
+                groupID: nil)
+        case .table:
+            let cell = PCodeMarkdownTableCell(markdown: plainText, plainText: plainText)
+            self.payload = .table(PCodeMarkdownTable(headers: [cell], alignments: [.left], rows: []))
+        case .tool:
+            let call = PCodePeekToolCall(
+                id: 0,
+                name: plainText,
+                detail: secondaryText,
+                failed: isFailed,
+                elapsedSeconds: nil,
+                command: "")
+            self.payload = .tool(call, isExpanded: false)
+        case .status:
+            let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
+            self.payload = .status(status)
+        }
     }
 
-    /// Flatten `PCodePeekTurn`s into virtualized transcript items for Phase 0 spike & Peek.
+    func withSpacingAfter(_ spacing: CGFloat) -> PCodeTranscriptItem {
+        PCodeTranscriptItem(id: id, payload: payload, spacingAfter: spacing, revision: revision)
+    }
+
+    /// Flatten `PCodePeekTurn`s into virtualized transcript items, parsing Markdown messages
+    /// into prose runs, syntax-highlighted code blocks, and GFM tables.
     static func flatten(turns: [PCodePeekTurn]) -> [PCodeTranscriptItem] {
         var result: [PCodeTranscriptItem] = []
         result.reserveCapacity(turns.count * 4)
         for turn in turns {
             result.append(PCodeTranscriptItem(
                 id: "turn-\(turn.id)-prompt",
-                kind: .prompt,
-                plainText: turn.prompt,
-                secondaryText: turn.side ? "/btw" : "You",
-                isSidePrompt: turn.side,
+                payload: .prompt(
+                    label: turn.side ? "/btw" : "You",
+                    text: turn.prompt,
+                    isSide: turn.side),
                 spacingAfter: 10))
+
             for block in turn.blocks {
                 switch block {
                 case .markdown(let blockID, let text):
-                    result.append(PCodeTranscriptItem(
-                        id: "turn-\(turn.id)-md-\(blockID)",
-                        kind: .prose,
-                        plainText: text,
-                        spacingAfter: 8))
+                    let parsed = PCodeTranscriptMarkdown.parseBlocks(text)
+                    var attachedCopy = false
+                    var codeGroupCounter = 0
+                    var activeCodeGroupID: String?
+
+                    for (subIdx, mdBlock) in parsed.enumerated() {
+                        switch mdBlock {
+                        case .prose(let proseMD, let refDefs):
+                            activeCodeGroupID = nil
+                            let copyPayload = attachedCopy ? nil : text
+                            attachedCopy = true
+                            result.append(PCodeTranscriptItem(
+                                id: "turn-\(turn.id)-md-\(blockID)-\(subIdx)",
+                                payload: .prose(
+                                    markdown: proseMD,
+                                    referenceDefinitions: refDefs,
+                                    copyMarkdown: copyPayload),
+                                spacingAfter: 8))
+                        case .codeBlock(let lang, let code, let fullCode, let chunkIdx, let totalChunks):
+                            if chunkIdx == 0 {
+                                activeCodeGroupID = "turn-\(turn.id)-md-\(blockID)-code-\(codeGroupCounter)"
+                                codeGroupCounter += 1
+                            }
+                            let isLastChunk = (chunkIdx == totalChunks - 1)
+                            result.append(PCodeTranscriptItem(
+                                id: "turn-\(turn.id)-md-\(blockID)-\(subIdx)",
+                                payload: .codeBlock(
+                                    language: lang,
+                                    code: code,
+                                    fullCopyCode: fullCode,
+                                    showHeader: chunkIdx == 0,
+                                    groupID: totalChunks > 1 ? activeCodeGroupID : nil),
+                                spacingAfter: isLastChunk ? 10 : 0))
+                        case .table(let table):
+                            activeCodeGroupID = nil
+                            result.append(PCodeTranscriptItem(
+                                id: "turn-\(turn.id)-md-\(blockID)-\(subIdx)",
+                                payload: .table(table),
+                                spacingAfter: 10))
+                        }
+                    }
+
                 case .tool(let call):
                     result.append(PCodeTranscriptItem(
                         id: "turn-\(turn.id)-tool-\(call.id)",
-                        kind: .tool,
-                        plainText: call.name,
-                        secondaryText: call.summaryText,
-                        isFailed: call.failed,
-                        elapsedText: call.formattedElapsed,
+                        payload: .tool(call, isExpanded: false),
                         spacingAfter: 5))
                 }
             }
+
             if turn.status != .complete {
                 result.append(PCodeTranscriptItem(
                     id: "turn-\(turn.id)-status",
-                    kind: .status,
-                    plainText: turn.status.rawValue.capitalized,
-                    isFailed: turn.status == .failed,
+                    payload: .status(turn.status),
                     spacingAfter: 14))
             } else if !result.isEmpty {
                 let last = result.removeLast()
-                result.append(PCodeTranscriptItem(
-                    id: last.id,
-                    kind: last.kind,
-                    plainText: last.plainText,
-                    secondaryText: last.secondaryText,
-                    isSidePrompt: last.isSidePrompt,
-                    isFailed: last.isFailed,
-                    elapsedText: last.elapsedText,
-                    spacingAfter: 18))
+                result.append(last.withSpacingAfter(18))
             }
         }
         return result
@@ -148,77 +259,18 @@ private final class PCodeDisplayLinkProxy: NSObject {
     }
 }
 
-/// Reusable item container view for virtualized rows in `PCodeTranscriptDocumentView`.
-private final class PCodeTranscriptRowView: NSView {
-    let kind: PCodeTranscriptItem.Kind
-    let textView = PCodeTextKit2BlockView()
-    private let accentBar = NSView()
-
-    override var isFlipped: Bool { true }
-
-    init(kind: PCodeTranscriptItem.Kind) {
-        self.kind = kind
-        super.init(frame: .zero)
-        wantsLayer = true
-        if kind == .prompt {
-            accentBar.wantsLayer = true
-            accentBar.layer?.cornerRadius = 1.5
-            addSubview(accentBar)
-        }
-        addSubview(textView)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    static func contentInsets(for kind: PCodeTranscriptItem.Kind) -> NSEdgeInsets {
-        switch kind {
-        case .prompt: return NSEdgeInsets(top: 10, left: 22, bottom: 10, right: 12)
-        case .prose: return NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
-        case .tool: return NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
-        case .status: return NSEdgeInsets(top: 3, left: 8, bottom: 3, right: 8)
-        }
-    }
-
-    func apply(
-        item: PCodeTranscriptItem,
-        attributedText: NSAttributedString,
-        width: CGFloat,
-        theme: PCodeTranscriptTheme,
-        selectedRange: NSRange?
-    ) -> CGFloat {
-        let insets = Self.contentInsets(for: kind)
-        let textWidth = max(1, width - insets.left - insets.right)
-        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
-        textView.selectedRange = selectedRange
-        textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
-
-        let totalHeight = textHeight + insets.top + insets.bottom
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            switch kind {
-            case .prompt:
-                layer?.backgroundColor = theme.promptBackground.cgColor
-                layer?.cornerRadius = 8
-                accentBar.layer?.backgroundColor = (item.isSidePrompt ? NSColor.systemOrange : theme.accent).cgColor
-                accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
-            case .tool:
-                layer?.backgroundColor = theme.toolBackground.cgColor
-                layer?.cornerRadius = 5
-            case .prose, .status:
-                layer?.backgroundColor = nil
-                layer?.cornerRadius = 0
-            }
-        }
-        return totalHeight
-    }
-}
-
 /// Flipped, virtualized AppKit document view supporting responsive scrolling (`prepareContent(in:)`),
-/// bare TextKit 2 rendering, model-owned cross-item selection, and frame-coalesced streaming.
+/// bare TextKit 2 rendering, rich Markdown blocks, model-owned cross-item selection, and
+/// frame-coalesced streaming.
 final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     static let horizontalPadding: CGFloat = 18
+
+    private struct AppliedRowState: Equatable {
+        let itemID: String
+        let revision: UInt64
+        let width: CGFloat
+        let appearanceGeneration: UInt64
+    }
 
     private(set) var items: [PCodeTranscriptItem] = []
     private(set) var layoutEngine = PCodeTranscriptLayoutEngine()
@@ -227,12 +279,17 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     var typography: PCodeTypographySnapshot
     var theme: PCodeTranscriptTheme
+    var highlighter: any PCodeSyntaxHighlighter
 
-    private var mountedViews: [Int: PCodeTranscriptRowView] = [:]
-    private var reusePools: [PCodeTranscriptItem.Kind: [PCodeTranscriptRowView]] = [:]
+    private var mountedViews: [Int: any PCodeTranscriptRowHosting] = [:]
+    private var appliedStates: [Int: AppliedRowState] = [:]
+    private var reusePools: [PCodeTranscriptItem.Kind: [any PCodeTranscriptRowHosting]] = [:]
+    private var attributedCache: [String: NSAttributedString] = [:]
+    private var appearanceGeneration: UInt64 = 0
     private var lastContentWidth: CGFloat = 0
     private var lastClipOriginY: CGFloat = 0
     private var isApplyingDocumentHeight = false
+    private var hoveredItemIndex: Int?
 
     // Frame-coalesced streaming state
     private var pendingTailText: String?
@@ -245,9 +302,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     override var acceptsFirstResponder: Bool { true }
     override class var isCompatibleWithResponsiveScrolling: Bool { true }
 
-    init(typography: PCodeTypographySnapshot, theme: PCodeTranscriptTheme) {
+    init(
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme,
+        highlighter: any PCodeSyntaxHighlighter = PCodePrismSyntaxHighlighter.shared
+    ) {
         self.typography = typography
         self.theme = theme
+        self.highlighter = highlighter
         super.init(frame: .zero)
         wantsLayer = true
         autoresizingMask = [.width]
@@ -262,10 +324,26 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         stopDisplayLink()
     }
 
-    /// Own all mouse events directly so cross-item drag selection keeps receiving
-    /// `mouseDragged`/`mouseUp` even if the starting row recycles offscreen during autoscroll.
+    /// Route clicks on explicit buttons/scrollers and scroll events on horizontal code/table
+    /// scroll views to those views, while owning all text selection drags directly on `self`.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        guard frame.contains(point) else { return nil }
+        if let hit = super.hitTest(point) {
+            if hit is NSButton || hit is NSScroller {
+                return hit
+            }
+            var ancestor: NSView? = hit
+            while let current = ancestor, current !== self {
+                if current is NSButton || current is NSScroller {
+                    return current
+                }
+                if current is PCodeHorizontalBlockScrollView {
+                    return current
+                }
+                ancestor = current.superview
+            }
+        }
+        return self
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -290,7 +368,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if let trackingArea { removeTrackingArea(trackingArea) }
         let area = NSTrackingArea(
             rect: .zero,
-            options: [.activeInKeyWindow, .mouseMoved, .inVisibleRect],
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
             owner: self,
             userInfo: nil)
         addTrackingArea(area)
@@ -299,6 +377,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        updateHover(at: point)
+        let superPoint = superview?.convert(event.locationInWindow, from: nil) ?? point
+        if let hit = super.hitTest(superPoint), hit is NSButton || hit is NSScroller {
+            NSCursor.arrow.set()
+            return
+        }
         if linkURL(at: point) != nil {
             NSCursor.pointingHand.set()
         } else {
@@ -306,11 +390,40 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    override func mouseExited(with event: NSEvent) {
+        setHoveredIndex(nil)
+        NSCursor.arrow.set()
+    }
+
+    private func updateHover(at point: CGPoint) {
+        guard let idx = layoutEngine.itemIndex(atY: point.y),
+              let rowView = mountedViews[idx],
+              rowView.frame.contains(point)
+        else {
+            setHoveredIndex(nil)
+            return
+        }
+        setHoveredIndex(idx)
+    }
+
+    private func setHoveredIndex(_ newIndex: Int?) {
+        guard hoveredItemIndex != newIndex else { return }
+        if let old = hoveredItemIndex {
+            mountedViews[old]?.setHovered(false)
+        }
+        hoveredItemIndex = newIndex
+        if let idx = newIndex {
+            mountedViews[idx]?.setHovered(true)
+        }
+    }
+
     /// Replace all transcript items (e.g. when opening Peek or loading history).
     func setItems(_ newItems: [PCodeTranscriptItem], pinToBottom: Bool) {
         items = newItems
         selection = nil
+        hoveredItemIndex = nil
         pendingTailText = nil
+        attributedCache.removeAll(keepingCapacity: true)
         stopDisplayLink()
         recycleAllMountedViews()
 
@@ -329,6 +442,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let width = max(1, enclosingScrollView?.contentSize.width ?? bounds.width)
         lastContentWidth = width
         applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: pinToBottom)
+        if !pinToBottom, let scrollView = enclosingScrollView {
+            let topOrigin = CGPoint(x: 0, y: -scrollView.contentInsets.top)
+            isApplyingDocumentHeight = true
+            scrollView.contentView.scroll(to: topOrigin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            lastClipOriginY = topOrigin.y
+            isApplyingDocumentHeight = false
+        }
         mountViews(in: visibleRect)
     }
 
@@ -338,7 +459,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if window != nil {
             ensureDisplayLinkRunning()
         } else {
-            // Off-window/headless: apply immediately so pending state is never dropped.
             pendingTailText = nil
             applyStreamingTailText(fullText)
         }
@@ -360,8 +480,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Update typography or theme, invalidating heights while preserving the top-visible scroll anchor.
     func updateAppearance(typography newTypography: PCodeTypographySnapshot, theme newTheme: PCodeTranscriptTheme) {
         let needsRemeasure = newTypography != typography
+        let themeChanged = newTheme != theme
+        guard needsRemeasure || themeChanged else { return }
         typography = newTypography
         theme = newTheme
+        appearanceGeneration &+= 1
+        attributedCache.removeAll(keepingCapacity: true)
         let nsAppearance = NSAppearance(named: newTheme.isDark ? .darkAqua : .aqua)
         appearance = nsAppearance
         enclosingScrollView?.appearance = nsAppearance
@@ -434,48 +558,72 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         // Recycle views that scrolled out of `rect`.
         for (idx, view) in mountedViews where !range.contains(idx) {
+            view.resetForTranscriptReuse()
             view.removeFromSuperview()
-            reusePools[view.kind, default: []].append(view)
+            reusePools[view.itemKind, default: []].append(view)
             mountedViews.removeValue(forKey: idx)
+            appliedStates.removeValue(forKey: idx)
         }
 
-        // Mount and measure visible views in one pass, anchoring any height deltas above viewport.
         let viewportTop = enclosingScrollView?.contentView.bounds.origin.y ?? 0
         var accumulatedScrollDelta: CGFloat = 0
 
         for idx in range {
             let item = items[idx]
-            let rowView: PCodeTranscriptRowView
-            if let existing = mountedViews[idx] {
+            let rowView: any PCodeTranscriptRowHosting
+            var isFreshMount = false
+
+            if let existing = mountedViews[idx], existing.itemKind == item.kind {
                 rowView = existing
             } else {
+                if let existing = mountedViews.removeValue(forKey: idx) {
+                    existing.resetForTranscriptReuse()
+                    existing.removeFromSuperview()
+                    reusePools[existing.itemKind, default: []].append(existing)
+                }
+                appliedStates.removeValue(forKey: idx)
                 rowView = dequeueRowView(for: item.kind)
                 addSubview(rowView)
                 mountedViews[idx] = rowView
+                isFreshMount = true
             }
 
-            let attr = attributedString(for: item)
-            let localSel = selection?.localRange(forItem: idx, utf16Length: attr.length)
-            let measured = rowView.apply(
-                item: item,
-                attributedText: attr,
+            let targetState = AppliedRowState(
+                itemID: item.id,
+                revision: item.revision,
                 width: contentWidth,
-                theme: theme,
-                selectedRange: localSel)
+                appearanceGeneration: appearanceGeneration)
 
-            let delta = layoutEngine.updateHeight(
-                at: idx,
-                measuredHeight: measured,
-                viewportTop: viewportTop + accumulatedScrollDelta,
-                isPinnedToBottom: stickyBottom.shouldProgrammaticallyPin)
-            accumulatedScrollDelta += delta.scrollOriginDelta
+            let needsConfigure = isFreshMount
+                || appliedStates[idx] != targetState
+                || !layoutEngine.entries[idx].isMeasured
+
+            if needsConfigure {
+                let measured = applyRowView(rowView, item: item, index: idx, width: contentWidth)
+                appliedStates[idx] = targetState
+
+                let delta = layoutEngine.updateHeight(
+                    at: idx,
+                    measuredHeight: measured,
+                    viewportTop: viewportTop + accumulatedScrollDelta,
+                    isPinnedToBottom: stickyBottom.shouldProgrammaticallyPin)
+                accumulatedScrollDelta += delta.scrollOriginDelta
+            } else {
+                let len = rowView.selectableTextLength
+                rowView.setSelectedRange(selection?.localRange(forItem: idx, utf16Length: len))
+            }
+
+            rowView.setHovered(hoveredItemIndex == idx)
 
             let entry = layoutEngine.entries[idx]
-            rowView.frame = CGRect(
+            let targetFrame = CGRect(
                 x: Self.horizontalPadding,
                 y: entry.yOffset,
                 width: contentWidth,
                 height: entry.height)
+            if rowView.frame != targetFrame {
+                rowView.frame = targetFrame
+            }
         }
 
         let clipHeight = enclosingScrollView?.contentView.bounds.height ?? 0
@@ -485,34 +633,138 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 layoutEngine.totalHeight,
                 scrollOriginDelta: accumulatedScrollDelta,
                 pinIfNeeded: stickyBottom.shouldProgrammaticallyPin)
-            // Bounded second pass if height shrink or bottom-pin shift exposed new rows.
-            if pass < 1, layoutEngine.visibleRange(in: visibleRect) != range {
+            if pass < 4, layoutEngine.visibleRange(in: visibleRect) != range {
                 mountViews(in: visibleRect, pass: pass + 1)
             }
         }
     }
 
+    private func applyRowView(
+        _ rowView: any PCodeTranscriptRowHosting,
+        item: PCodeTranscriptItem,
+        index: Int,
+        width: CGFloat
+    ) -> CGFloat {
+        switch (rowView, item.payload) {
+        case (let view as PCodePromptRowView, .prompt(let label, let text, let isSide)):
+            let attr = cachedPromptAttributedString(for: item.id, label: label, text: text, isSide: isSide)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                attributedText: attr,
+                isSidePrompt: isSide,
+                width: width,
+                theme: theme,
+                selectedRange: localSel)
+
+        case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, let copyMarkdown)):
+            let attr = cachedProseAttributedString(for: item.id, markdown: markdown, referenceDefinitions: refDefs)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                attributedText: attr,
+                copyMarkdown: copyMarkdown,
+                width: width,
+                theme: theme,
+                selectedRange: localSel)
+
+        case (let view as PCodeCodeBlockView, .codeBlock(let lang, let code, let fullCopy, let showHeader, _)):
+            let localSel = selection?.localRange(forItem: index, utf16Length: (code as NSString).length)
+            return view.configure(
+                code: code,
+                fullCopyCode: fullCopy,
+                language: lang,
+                showHeader: showHeader,
+                width: width,
+                typography: typography,
+                theme: theme,
+                highlighter: highlighter,
+                documentView: self,
+                selectedRange: localSel)
+
+        case (let view as PCodeTableBlockView, .table(let table)):
+            let localSel = selection?.localRange(forItem: index, utf16Length: (table.plainText as NSString).length)
+            return view.configure(
+                table: table,
+                width: width,
+                typography: typography,
+                theme: theme,
+                documentView: self,
+                selectedRange: localSel)
+
+        case (let view as PCodeToolCardView, .tool(let call, let isExpanded)):
+            let attr = cachedToolAttributedString(for: item.id, call: call, isExpanded: isExpanded)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                call: call,
+                isExpanded: isExpanded,
+                attributedText: attr,
+                width: width,
+                theme: theme,
+                selectedRange: localSel,
+                onToggle: { [weak self] in
+                    self?.toggleToolExpansion(at: index)
+                })
+
+        case (let view as PCodeStatusRowView, .status(let status)):
+            let attr = cachedStatusAttributedString(for: item.id, status: status)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                attributedText: attr,
+                width: width,
+                selectedRange: localSel)
+
+        default:
+            return 0
+        }
+    }
+
+    private func toggleToolExpansion(at index: Int) {
+        guard items.indices.contains(index),
+              case .tool(let call, let isExpanded) = items[index].payload
+        else { return }
+        if !isExpanded {
+            stickyBottom.unpinForUserAction()
+        }
+        attributedCache.removeValue(forKey: items[index].id)
+        items[index] = PCodeTranscriptItem(
+            id: items[index].id,
+            payload: .tool(call, isExpanded: !isExpanded),
+            spacingAfter: items[index].spacingAfter,
+            revision: items[index].revision &+ 1)
+        mountViews(in: visibleRect)
+    }
+
     private func remountVisibleViews() {
+        appliedStates.removeAll(keepingCapacity: true)
         for (_, rowView) in mountedViews {
-            rowView.textView.needsDisplay = true
+            rowView.primaryTextView?.needsDisplay = true
+            rowView.needsDisplay = true
         }
         mountViews(in: visibleRect)
     }
 
-    private func dequeueRowView(for kind: PCodeTranscriptItem.Kind) -> PCodeTranscriptRowView {
+    private func dequeueRowView(for kind: PCodeTranscriptItem.Kind) -> any PCodeTranscriptRowHosting {
         if var pool = reusePools[kind], let recycled = pool.popLast() {
             reusePools[kind] = pool
             return recycled
         }
-        return PCodeTranscriptRowView(kind: kind)
+        switch kind {
+        case .prompt: return PCodePromptRowView()
+        case .prose: return PCodeProseRowView()
+        case .codeBlock: return PCodeCodeBlockView()
+        case .table: return PCodeTableBlockView()
+        case .tool: return PCodeToolCardView()
+        case .status: return PCodeStatusRowView()
+        }
     }
 
     private func recycleAllMountedViews() {
         for (_, view) in mountedViews {
+            view.resetForTranscriptReuse()
             view.removeFromSuperview()
-            reusePools[view.kind, default: []].append(view)
+            reusePools[view.itemKind, default: []].append(view)
         }
         mountedViews.removeAll()
+        appliedStates.removeAll()
     }
 
     /// Atomic height + scroll-origin update wrapped in `CATransaction` (actions disabled):
@@ -604,16 +856,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private func applyStreamingTailText(_ text: String) {
         guard let lastIdx = items.indices.last else { return }
         let old = items[lastIdx]
+        attributedCache.removeValue(forKey: old.id)
         items[lastIdx] = PCodeTranscriptItem(
             id: old.id,
-            kind: old.kind,
-            plainText: text,
-            secondaryText: old.secondaryText,
-            isSidePrompt: old.isSidePrompt,
-            isFailed: old.isFailed,
-            elapsedText: old.elapsedText,
-            spacingAfter: old.spacingAfter)
-        // Measure first (via mountViews when visible), then ratchet so we lock measured height.
+            payload: .prose(markdown: text, referenceDefinitions: "", copyMarkdown: text),
+            spacingAfter: old.spacingAfter,
+            revision: old.revision &+ 1)
         mountViews(in: visibleRect)
         layoutEngine.setTailRatchet(at: lastIdx, active: true)
     }
@@ -668,11 +916,27 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         return false
     }
 
+    /// Plain-text string for the current selection (used by `copy(_:)` and unit tests).
+    func selectedPlainText() -> String {
+        guard let selection, !selection.isEmpty else { return "" }
+        return selection.extractText(
+            itemCount: items.count,
+            separatorBetween: { prev, next in
+                if let g1 = items[prev].codeBlockGroupID,
+                   let g2 = items[next].codeBlockGroupID,
+                   g1 == g2
+                {
+                    return "\n"
+                }
+                return "\n\n"
+            },
+            textForItem: { idx in
+                plainTextForCopy(at: idx)
+            })
+    }
+
     @objc func copy(_ sender: Any?) {
-        guard let selection, !selection.isEmpty else { return }
-        let copied = selection.extractText(itemCount: items.count) { idx in
-            attributedString(for: items[idx]).string
-        }
+        let copied = selectedPlainText()
         guard !copied.isEmpty else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -681,22 +945,40 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     override func selectAll(_ sender: Any?) {
         guard let lastIdx = items.indices.last else { return }
-        let lastLen = attributedString(for: items[lastIdx]).length
+        let lastLen = (plainTextForCopy(at: lastIdx) as NSString).length
         selection = PCodeTranscriptSelection(
             anchor: .init(itemIndex: 0, utf16Offset: 0),
             focus: .init(itemIndex: lastIdx, utf16Offset: lastLen))
         updateMountedSelectionHighlights()
     }
 
+    func plainTextForCopy(at index: Int) -> String {
+        let item = items[index]
+        switch item.payload {
+        case .prose(let markdown, let refDefs, _):
+            return cachedProseAttributedString(for: item.id, markdown: markdown, referenceDefinitions: refDefs).string
+        case .prompt(let label, let text, let isSide):
+            return cachedPromptAttributedString(for: item.id, label: label, text: text, isSide: isSide).string
+        case .codeBlock(_, let code, _, _, _):
+            return code
+        case .table(let table):
+            return table.plainText
+        case .tool(let call, let isExpanded):
+            return cachedToolAttributedString(for: item.id, call: call, isExpanded: isExpanded).string
+        case .status(let status):
+            return cachedStatusAttributedString(for: item.id, status: status).string
+        }
+    }
+
     private func selectionPosition(at docPoint: CGPoint) -> PCodeTranscriptSelection.Position? {
         guard let idx = layoutEngine.itemIndex(atY: docPoint.y) else { return nil }
-        if let rowView = mountedViews[idx] {
-            let localPt = rowView.textView.convert(docPoint, from: self)
-            let offset = rowView.textView.utf16Offset(at: localPt)
+        if let rowView = mountedViews[idx], let textView = rowView.primaryTextView {
+            let localPt = textView.convert(docPoint, from: self)
+            let offset = textView.utf16Offset(at: localPt)
             return PCodeTranscriptSelection.Position(itemIndex: idx, utf16Offset: offset)
         }
         let entry = layoutEngine.entries[idx]
-        let len = attributedString(for: items[idx]).length
+        let len = (plainTextForCopy(at: idx) as NSString).length
         let offset = docPoint.y < entry.yOffset + entry.height * 0.5 ? 0 : len
         return PCodeTranscriptSelection.Position(itemIndex: idx, utf16Offset: offset)
     }
@@ -704,92 +986,118 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private func linkURL(at docPoint: CGPoint) -> URL? {
         guard let idx = layoutEngine.itemIndex(atY: docPoint.y),
               let rowView = mountedViews[idx],
-              rowView.frame.contains(docPoint)
+              rowView.frame.contains(docPoint),
+              let textView = rowView.primaryTextView
         else { return nil }
-        let localPt = rowView.textView.convert(docPoint, from: self)
-        return rowView.textView.linkURL(at: localPt)
+        let localPt = textView.convert(docPoint, from: self)
+        return textView.linkURL(at: localPt)
     }
 
     private func updateMountedSelectionHighlights() {
         for (idx, rowView) in mountedViews {
-            let len = rowView.textView.textContentStorage.attributedString?.length ?? 0
-            rowView.textView.selectedRange = selection?.localRange(forItem: idx, utf16Length: len)
+            let len = rowView.selectableTextLength
+            rowView.setSelectedRange(selection?.localRange(forItem: idx, utf16Length: len))
         }
     }
 
-    // MARK: - Attributed String Construction & Estimates
+    // MARK: - Attributed String Cache & Height Estimates
 
     private func estimatedHeight(for item: PCodeTranscriptItem) -> CGFloat {
-        switch item.kind {
+        switch item.payload {
         case .tool: return 28
         case .status: return 24
-        case .prompt: return 56
-        case .prose:
-            let lines = max(1, min(12, item.plainText.count / 72 + 1))
+        case .prompt(_, let text, _):
+            let lines = max(1, min(8, text.count / 68 + 1))
+            return 28 + CGFloat(lines) * typography.lineHeight()
+        case .prose(let markdown, _, _):
+            let lines = max(1, min(14, markdown.count / 72 + 1))
             return CGFloat(lines) * typography.lineHeight()
+        case .codeBlock(_, let code, _, let showHeader, _):
+            let lineCount = max(1, code.split(separator: "\n", omittingEmptySubsequences: false).count)
+            return (showHeader ? PCodeCodeBlockView.headerHeight : 0) + 20 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
+        case .table(let table):
+            let rowCount = table.rows.count + (table.headers.isEmpty ? 0 : 1)
+            return CGFloat(max(1, rowCount)) * (typography.lineHeight(scale: 0.92) + 14)
         }
     }
 
-    private func attributedString(for item: PCodeTranscriptItem) -> NSAttributedString {
+    private func cachedProseAttributedString(
+        for id: String,
+        markdown: String,
+        referenceDefinitions: String
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodeTranscriptMarkdown.attributedString(
+            forProse: markdown,
+            referenceDefinitions: referenceDefinitions,
+            typography: typography,
+            theme: theme)
+        attributedCache[id] = built
+        return built
+    }
+
+    private func cachedPromptAttributedString(
+        for id: String,
+        label: String,
+        text: String,
+        isSide: Bool
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
         let paragraph = NSMutableParagraphStyle()
         let lineHeight = typography.lineHeight()
         paragraph.minimumLineHeight = lineHeight
         paragraph.maximumLineHeight = lineHeight
 
-        switch item.kind {
-        case .prompt:
-            let out = NSMutableAttributedString()
-            let labelAttrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight),
-                .foregroundColor: item.isSidePrompt ? NSColor.systemOrange : theme.accent,
-            ]
-            out.append(NSAttributedString(string: item.secondaryText + "\n", attributes: labelAttrs))
-            let bodyAttrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(),
-                .foregroundColor: theme.foreground,
-                .paragraphStyle: paragraph,
-            ]
-            out.append(NSAttributedString(string: item.plainText, attributes: bodyAttrs))
-            return out
+        let out = NSMutableAttributedString()
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: typography.proseNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight),
+            .foregroundColor: isSide ? NSColor.systemOrange : theme.accent,
+        ]
+        out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: typography.proseNSFont(),
+            .foregroundColor: theme.foreground,
+            .paragraphStyle: paragraph,
+        ]
+        out.append(NSAttributedString(string: text, attributes: bodyAttrs))
+        attributedCache[id] = out
+        return out
+    }
 
-        case .prose:
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(),
-                .foregroundColor: theme.foreground,
-                .paragraphStyle: paragraph,
-            ]
-            return NSAttributedString(string: item.plainText, attributes: attrs)
-
-        case .tool:
-            let out = NSMutableAttributedString()
-            let nameAttrs: [NSAttributedString.Key: Any] = [
-                .font: typography.codeNSFont(scale: 0.84, weight: typography.weight.nsEmphasisWeight),
-                .foregroundColor: item.isFailed ? NSColor.systemRed : theme.secondaryForeground,
-            ]
-            out.append(NSAttributedString(string: item.plainText, attributes: nameAttrs))
-            if !item.secondaryText.isEmpty {
-                let detailAttrs: [NSAttributedString.Key: Any] = [
-                    .font: typography.codeNSFont(scale: 0.84),
-                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.85),
-                ]
-                out.append(NSAttributedString(string: "  " + item.secondaryText, attributes: detailAttrs))
-            }
-            if let elapsed = item.elapsedText {
-                let timeAttrs: [NSAttributedString.Key: Any] = [
-                    .font: typography.codeNSFont(scale: 0.78),
-                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.65),
-                ]
-                out.append(NSAttributedString(string: "  (\(elapsed))", attributes: timeAttrs))
-            }
-            return out
-
-        case .status:
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(scale: 0.82, weight: .medium),
-                .foregroundColor: item.isFailed ? NSColor.systemRed : theme.accent,
-            ]
-            return NSAttributedString(string: item.plainText, attributes: attrs)
+    private func cachedToolAttributedString(
+        for id: String,
+        call: PCodePeekToolCall,
+        isExpanded: Bool
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
         }
+        let built = PCodeToolCardView.attributedText(
+            for: call,
+            isExpanded: isExpanded,
+            typography: typography,
+            theme: theme)
+        attributedCache[id] = built
+        return built
+    }
+
+    private func cachedStatusAttributedString(
+        for id: String,
+        status: PCodePeekTurn.Status
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodeStatusRowView.attributedText(
+            for: status,
+            typography: typography,
+            theme: theme)
+        attributedCache[id] = built
+        return built
     }
 }
 
@@ -845,12 +1153,7 @@ final class PCodeTranscriptScrollView: NSScrollView {
             self?.transcriptDocumentView.handleBoundsDidChange()
         })
 
-        typographyCancellable = typography.snapshotPublisher.sink { [weak self] snapshot in
-            guard let self else { return }
-            self.transcriptDocumentView.updateAppearance(
-                typography: snapshot,
-                theme: self.transcriptDocumentView.theme)
-        }
+        subscribeTypography(typography)
     }
 
     @available(*, unavailable)
@@ -864,11 +1167,121 @@ final class PCodeTranscriptScrollView: NSScrollView {
         }
     }
 
+    func subscribeTypography(_ typography: PCodeTypography) {
+        typographyCancellable = typography.snapshotPublisher.sink { [weak self] snapshot in
+            guard let self else { return }
+            self.transcriptDocumentView.updateAppearance(
+                typography: snapshot,
+                theme: self.transcriptDocumentView.theme)
+        }
+    }
+
     override func layout() {
         super.layout()
         let clipWidth = contentView.bounds.width
         if clipWidth > 0, abs(transcriptDocumentView.frame.width - clipWidth) > 0.5 {
             transcriptDocumentView.frame.size.width = clipWidth
         }
+    }
+}
+
+/// SwiftUI bridge hosting `PCodeTranscriptScrollView` with explicit `NSAppearance` forwarding.
+struct PCodeTranscriptRepresentable: NSViewRepresentable {
+    let sessionID: String
+    let turns: [PCodePeekTurn]
+    let theme: PCodeTranscriptTheme
+    let typography: PCodeTypography
+    let pinToBottom: Bool
+
+    init(
+        sessionID: String,
+        turns: [PCodePeekTurn],
+        theme: PCodeTranscriptTheme,
+        typography: PCodeTypography = .shared,
+        pinToBottom: Bool = false
+    ) {
+        self.sessionID = sessionID
+        self.turns = turns
+        self.theme = theme
+        self.typography = typography
+        self.pinToBottom = pinToBottom
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> PCodeTranscriptScrollView {
+        let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
+        let items = PCodeTranscriptItem.flatten(turns: turns)
+        context.coordinator.lastSessionID = sessionID
+        context.coordinator.lastTurnSignature = Self.turnSignature(turns)
+        context.coordinator.lastTheme = theme
+        context.coordinator.lastTypographySnapshot = typography.snapshot
+        context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
+        scrollView.transcriptDocumentView.setItems(items, pinToBottom: pinToBottom)
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: PCodeTranscriptScrollView, context: Context) {
+        let coord = context.coordinator
+        let sig = Self.turnSignature(turns)
+        let snap = typography.snapshot
+        let typoID = ObjectIdentifier(typography)
+
+        if coord.lastTypographyObjectID != typoID {
+            coord.lastTypographyObjectID = typoID
+            nsView.subscribeTypography(typography)
+        }
+
+        if coord.lastTheme != theme || coord.lastTypographySnapshot != snap {
+            coord.lastTheme = theme
+            coord.lastTypographySnapshot = snap
+            nsView.transcriptDocumentView.updateAppearance(
+                typography: snap,
+                theme: theme)
+        }
+
+        if coord.lastSessionID != sessionID || coord.lastTurnSignature != sig {
+            coord.lastSessionID = sessionID
+            coord.lastTurnSignature = sig
+            let items = PCodeTranscriptItem.flatten(turns: turns)
+            nsView.transcriptDocumentView.setItems(items, pinToBottom: pinToBottom)
+        }
+    }
+
+    private static func turnSignature(_ turns: [PCodePeekTurn]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(turns.count)
+        for turn in turns {
+            hasher.combine(turn.id)
+            hasher.combine(turn.prompt)
+            hasher.combine(turn.status.rawValue)
+            hasher.combine(turn.blocks.count)
+            for block in turn.blocks {
+                switch block {
+                case .markdown(let id, let text):
+                    hasher.combine(0)
+                    hasher.combine(id)
+                    hasher.combine(text)
+                case .tool(let call):
+                    hasher.combine(1)
+                    hasher.combine(call.id)
+                    hasher.combine(call.name)
+                    hasher.combine(call.detail)
+                    hasher.combine(call.command)
+                    hasher.combine(call.failed)
+                }
+            }
+        }
+        return hasher.finalize()
+    }
+
+    final class Coordinator {
+        var lastSessionID: String = ""
+        var lastTurnSignature: Int = 0
+        var lastTheme: PCodeTranscriptTheme?
+        var lastTypographySnapshot: PCodeTypographySnapshot?
+        var lastTypographyObjectID: ObjectIdentifier?
     }
 }

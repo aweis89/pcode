@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Textual
 
 /// Which session the Peek overlay is previewing.
 struct PCodePeekTarget: Equatable {
@@ -580,25 +579,14 @@ struct PCodePeekOverlay: View {
         return Color(nsColor: base.blended(withFraction: fraction, of: target) ?? .windowBackgroundColor)
     }
 
-    private var codeBackground: Color {
-        let base = NSColor(ghostty.config.backgroundColor)
-        let fraction: CGFloat = base.isLightColor ? 0.06 : 0.28
-        return Color(nsColor: base.blended(withFraction: fraction, of: .black) ?? .textBackgroundColor)
-    }
-
-    private var textForeground: Color {
-        ghostty.config.foregroundColor
-    }
-
     private var transcriptColorScheme: ColorScheme {
         NSColor(ghostty.config.backgroundColor).isLightColor ? .light : .dark
     }
 
-    private var promptBackground: Color {
-        let base = NSColor(ghostty.config.backgroundColor)
-        let target: NSColor = base.isLightColor ? .black : .white
-        let fraction: CGFloat = base.isLightColor ? 0.06 : 0.11
-        return Color(nsColor: base.blended(withFraction: fraction, of: target) ?? .controlBackgroundColor)
+    private var transcriptTheme: PCodeTranscriptTheme {
+        PCodeTranscriptTheme.make(
+            background: NSColor(ghostty.config.backgroundColor),
+            foreground: NSColor(ghostty.config.foregroundColor))
     }
 
     var body: some View {
@@ -825,147 +813,14 @@ struct PCodePeekOverlay: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .loaded(let turns):
-            // Opens at the top. Don't anchor or scroll to the bottom: Textual views
-            // settle their heights after appearing, so the lazy stack's estimate
-            // lands past the content and long transcripts open blank.
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(turns) { turn in
-                        turnView(turn)
-                    }
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
-                .textSelection(.enabled)
-            }
-            .id(target.sessionID ?? "")
+            PCodeTranscriptRepresentable(
+                sessionID: target.sessionID ?? "",
+                turns: turns,
+                theme: transcriptTheme,
+                typography: typography,
+                pinToBottom: false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    private func turnView(_ turn: PCodePeekTurn) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // User prompt
-            HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(turn.side ? Color.orange.opacity(0.8) : Color.accentColor)
-                    .frame(width: 3)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(turn.side ? "/btw" : "You")
-                        .font(typography.proseFont(scale: 0.82, weight: typography.weight.emphasisWeight))
-                        .foregroundStyle(turn.side ? Color.orange : Color.accentColor)
-                    Text(turn.prompt)
-                        .font(typography.proseFont())
-                        .foregroundStyle(textForeground)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(promptBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            // Assistant response & tool summaries in transcript order
-            if !turn.blocks.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(turn.blocks) { block in
-                        switch block {
-                        case .markdown(_, let text):
-                            markdownView(text)
-                        case .tool(let call):
-                            toolCallView(call)
-                        }
-                    }
-                }
-                .padding(.leading, 4)
-            }
-
-            if turn.status != .complete {
-                statusBadge(turn.status)
-                    .padding(.leading, 4)
-            }
-        }
-    }
-
-    /// One assistant message as a single `StructuredText`, so a drag selects across its
-    /// paragraphs, lists, headings and tables. An unclosed fence in a running turn needs
-    /// no repair: CommonMark runs it to the end of the message as a code block.
-    private func markdownView(_ text: String) -> some View {
-        StructuredText(markdown: text)
-            .font(typography.proseFont())
-            .foregroundStyle(textForeground)
-            .textual.structuredTextStyle(
-                PCodePeekMarkdownStyle(
-                    codeBackground: codeBackground,
-                    inheritInlineCodeFont: typography.style == .mono,
-                    baseSize: CGFloat(typography.size),
-                    codeFamilyAvailable: typography.isCodeFamilyAvailable,
-                    inlineCodeScale: typography.inlineCodeScale,
-                    codeBlockFont: typography.codeFont(scale: typography.codeBlockScale),
-                    codeLabelFont: typography.codeFont(scale: 0.78, weight: .medium),
-                    emphasisWeight: typography.weight.emphasisWeight,
-                    baseWeight: typography.weight.fontWeight
-                )
-            )
-            .textual.textSelection(.enabled)
-            // SwiftUI's own selection (enabled on the scroll content) would fight Textual's overlay.
-            .textSelection(.disabled)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func toolCallView(_ call: PCodePeekToolCall) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: call.failed ? "xmark.circle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(call.failed ? Color.red : Color.secondary.opacity(0.8))
-            Text(call.name)
-                .font(typography.codeFont(scale: 0.84, weight: typography.weight.emphasisWeight))
-                .foregroundStyle(.secondary)
-            let summary = call.summaryText
-            if !summary.isEmpty {
-                Text(summary)
-                    .font(typography.codeFont(scale: 0.84))
-                    .foregroundStyle(.secondary.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 4)
-            if let elapsed = call.formattedElapsed {
-                Text(elapsed)
-                    .font(typography.codeFont(scale: 0.78))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-    }
-
-    private func statusBadge(_ status: PCodePeekTurn.Status) -> some View {
-        let label: String
-        let color: Color
-        switch status {
-        case .running:
-            label = "In progress"
-            color = .accentColor
-        case .cancelled:
-            label = "Cancelled"
-            color = .orange
-        case .failed:
-            label = "Failed"
-            color = .red
-        case .complete:
-            label = "Complete"
-            color = .secondary
-        }
-        return Text(label)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.14))
-            .clipShape(Capsule())
     }
 
     private var footer: some View {
