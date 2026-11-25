@@ -176,10 +176,11 @@ final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
         }
         // The ids are plain by now.
         // Tells the viewer we draw its key footer, so it leaves its own key line out.
-        var env = ["PCODE_NATIVE_HINTS=1"]
-        if docked { env.append("PCODE_DOCKED=1") }
         return PCode.pythonCommand(
-            python, module: "pcode.btw_tail", args: [host, thread], env: env)
+            python,
+            module: "pcode.btw_tail",
+            args: [host, thread],
+            env: ["PCODE_NATIVE_HINTS=1", "PCODE_DOCKED=\(docked ? 1 : 0)"])
     }
 
     /// A command that only shows `text`; the embedded API waits after every

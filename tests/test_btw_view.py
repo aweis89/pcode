@@ -785,11 +785,17 @@ def test_docked_btw_drops_prefix_tint_and_main_conversation_chrome(monkeypatch):
             # Seed main-conversation chrome: status, tasks, command output, queued prompt, title.
             app.activity.prompt_state = "running"
             app.activity.attach_tasks = True
-            app.activity.plan = [{"content": "step one", "status": "in_progress"}]
+            app.activity.plan = [
+                {"content": f"step {i}", "status": "in_progress" if i == 0 else "pending"}
+                for i in range(6)
+            ]
+            app.activity.tasks_max_height = 8
             app.activity.queued_prompts = ["follow up"]
             app.activity.command_outputs["c1"] = CommandOutput("c1", "ls", "out\n")
             app.activity.edit_previews["e1"] = EditPreview("e1", "a.py", "+line")
             app.transcript.live_edits = True
+            layout.command_waiting = True
+            layout.layout()
 
             # Closed: normal docked chrome is shown.
             assert not layout.btw_docked()
@@ -797,6 +803,7 @@ def test_docked_btw_drops_prefix_tint_and_main_conversation_chrome(monkeypatch):
             assert layout.badge_on_toolbar()
             assert layout.plan_attached()
             assert layout.queue_rows()
+            closed_root_height = layout.root.preferred_height(100, 40).preferred
 
             # Open while docked: prefix stays normal, btw.reply tint is omitted,
             # and main-conversation chrome is hidden.
@@ -804,7 +811,9 @@ def test_docked_btw_drops_prefix_tint_and_main_conversation_chrome(monkeypatch):
             assert layout.btw_docked()
             assert fragment_list_to_text(session.message()) == "❯ "
             assert wrap.prefix_width == 2
-            session.default_buffer.set_document(Document("hello\nworld"), bypass_readonly=True)
+            session.default_buffer.set_document(
+                Document("line1\nline2\nline3\nline4"), bypass_readonly=True
+            )
             assert session.prompt_continuation(2, 1, False) == [("class:prompt", "· ")]
 
             frame = layout.editor_frame()
@@ -813,13 +822,23 @@ def test_docked_btw_drops_prefix_tint_and_main_conversation_chrome(monkeypatch):
             assert layout.idle_title() == []
             assert not layout.top_row_filled()
             assert layout.top_gap() == 0
+            assert layout.plan_rows() == []
             assert not layout.plan_attached()
+            assert layout.tasks_height() == 0
             assert layout.band_rows() == []
             assert layout.activity_height() == 0
             assert layout.queue_rows() == []
             assert layout.preview_layout() is None
+            assert not layout.command_waiting
             assert not layout.toolbar_shown()
             assert not layout.badge_on_toolbar()
+            # Hidden main tasks must not clamp a multi-line /btw draft under `tasks_max_height`.
+            assert layout.frame_height() == 6
+            # Root height shrinks down to just the editor box (no toolbar/activity/queue).
+            session.default_buffer.set_document(Document(""), bypass_readonly=True)
+            open_root_height = layout.root.preferred_height(100, 40).preferred
+            assert open_root_height == 3
+            assert open_root_height < closed_root_height
 
             # Closing restores normal docked chrome.
             close(app.activity)

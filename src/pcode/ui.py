@@ -3792,6 +3792,9 @@ class PromptLayout:
         """
         activity, transcript = self.activity, self.transcript
         if transcript is None or self.btw_docked():
+            if self.btw_docked():
+                self.command_waiting = False
+                self.live_delta.forget()
             return None
         edits = transcript.live_edit_previews and activity.edit_previews
         if not edits:
@@ -3907,6 +3910,8 @@ class PromptLayout:
         return settled
 
     def plan_rows(self):
+        if self.btw_docked():
+            return []
         live = self.preview_layout()
         return live[0] if live is not None else self.base_plan_rows()
 

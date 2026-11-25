@@ -293,7 +293,8 @@ private struct PCodeDockCard: View {
             .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: Self.cornerRadius)
-                    .strokeBorder(ghostty.config.splitDividerColor, lineWidth: inDrawer ? 1 : 0)
+                    .strokeBorder(inDrawer ? ghostty.config.splitDividerColor : .clear, lineWidth: 1)
+                    .allowsHitTesting(false)
             )
             .background(
                 RoundedRectangle(cornerRadius: Self.cornerRadius)

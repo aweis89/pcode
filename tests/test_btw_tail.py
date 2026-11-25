@@ -59,8 +59,16 @@ def test_the_drawer_footer_lists_the_editor_keys_and_is_sent_only_when_it_change
     two = notify(view, out, "asides", [state(status="answered"), state(id="b2", thread="t2")])
     assert "pcode;hints" in two
     assert [hint.label for hint in view.footer()] == ["Reply in editor", "Next thread", "Close"]
-    # Docked inside the drawer, the editor is right underneath, so "Reply in editor" is omitted.
-    view.docked = True
+
+
+def test_docked_drawer_footer_omits_reply_in_editor(monkeypatch):
+    monkeypatch.setenv("PCODE_DOCKED", "1")
+    view, out = tail()
+    one = notify(view, out, "asides", [state(status="answered")])
+    assert one.endswith(hints_apc(view.footer()).decode())
+    assert [hint.label for hint in view.footer()] == ["Close"]
+    two = notify(view, out, "asides", [state(status="answered"), state(id="b2", thread="t2")])
+    assert "pcode;hints" in two
     assert [hint.label for hint in view.footer()] == ["Next thread", "Close"]
 
 
