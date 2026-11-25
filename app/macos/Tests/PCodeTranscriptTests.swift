@@ -857,10 +857,26 @@ struct PCodeTranscriptTests {
             Issue.record("Expected updated tool call")
         }
 
-        // EditPreview morphs into EditCompleted under the same item ID (`edit-e1`)
+        // ToolStarted + EditPreview + EditCompleted + ToolSummary coalesce into ONE collapsible diff row under `call-e1`
+        reducer.apply(.toolStarted(callID: "e1", parentCallID: "", name: "edit_file", detail: "a.py", command: "", purpose: ""), reveal: false)
         reducer.apply(.editPreview(callID: "e1", path: "a.py", text: "+x = 1", kind: "edit"), reveal: false)
-        reducer.apply(.editCompleted(callID: "e1", parentCallID: "", path: "a.py", operation: "edit", patch: "@@ -1 +1 @@\n-x = 0\n+x = 1", added: 1, removed: 1, truncated: false), reveal: false)
+        reducer.apply(.editCompleted(callID: "e1", parentCallID: "", path: "a.py", operation: "edited", patch: "@@ -1 +1 @@\n-x = 0\n+x = 1", added: 1, removed: 1, truncated: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "e1", parentCallID: "", name: "edit_file", detail: "a.py", command: "", failed: false, elapsedSeconds: 0.04, error: "", result: "Edited a.py.", isBackgroundJob: false), reveal: false)
         #expect(doc.items.filter { $0.kind == .diff }.count == 1)
+        #expect(doc.indexOfItem(id: "call-e1") != nil)
+        if let idx = doc.indexOfItem(id: "call-e1"),
+           case .diff(let diffPayload, let isExpanded) = doc.items[idx].payload
+        {
+            #expect(!isExpanded)
+            #expect(diffPayload.toolName == "edit_file")
+            #expect(diffPayload.added == 1 && diffPayload.removed == 1)
+            #expect(diffPayload.patch.contains("+x = 1"))
+            doc.toggleExpansionForAccessibility(id: "call-e1")
+            #expect(doc.isItemExpanded(id: "call-e1"))
+            #expect(doc.plainTextForCopy(at: idx).contains("+x = 1"))
+        } else {
+            Issue.record("Expected coalesced collapsible diff row for call-e1")
+        }
 
         // PlanUpdated upserts single card; PlanPreview(nil) restores authoritative plan instead of deleting it!
         reducer.apply(.planUpdated(items: [

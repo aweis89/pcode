@@ -59,7 +59,7 @@ struct PCodeTranscriptItem: Identifiable {
         case codeBlock(language: String?, code: String, fullCopyCode: String, showHeader: Bool, groupID: String?)
         case table(PCodeMarkdownTable)
         case tool(PCodePeekToolCall, isExpanded: Bool)
-        case diff(PCodeDiffPayload)
+        case diff(PCodeDiffPayload, isExpanded: Bool)
         case thinking(text: String, isExpanded: Bool)
         case plan([PCodePlanItem])
         case status(PCodePeekTurn.Status)
@@ -109,8 +109,8 @@ struct PCodeTranscriptItem: Identifiable {
         case .tool(let call, _):
             let summary = call.summaryText
             return summary.isEmpty ? call.name : "\(call.name) \(summary)"
-        case .diff(let diff):
-            return "\(diff.path)\n\(diff.patch)"
+        case .diff(let diff, let isExpanded):
+            return isExpanded ? "\(diff.path)\n\(diff.patch)" : PCodeDiffCardView.summaryLine(for: diff)
         case .thinking(let text, _):
             return text
         case .plan(let items):
@@ -179,7 +179,7 @@ struct PCodeTranscriptItem: Identifiable {
                 removed: 0,
                 isPreview: false,
                 truncated: false,
-                depth: 0))
+                depth: 0), isExpanded: false)
         case .thinking:
             self.payload = .thinking(text: plainText, isExpanded: false)
         case .plan:
@@ -555,11 +555,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         itemIndexByID[id]
     }
 
-    /// Return whether an existing `.tool` or `.thinking` item is currently expanded by the user.
+    /// Return whether an existing `.tool`, `.diff`, or `.thinking` item is currently expanded by the user.
     func isItemExpanded(id: String) -> Bool {
         guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return false }
         switch items[idx].payload {
-        case .tool(_, let isExpanded), .thinking(_, let isExpanded):
+        case .tool(_, let isExpanded), .diff(_, let isExpanded), .thinking(_, let isExpanded):
             return isExpanded
         default:
             return false
@@ -1156,17 +1156,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     self?.toggleToolExpansion(id: item.id)
                 })
 
-        case (let view as PCodeDiffCardView, .diff(let payload)):
-            let attr = cachedDiffAttributedString(for: item.id, payload: payload)
-            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+        case (let view as PCodeDiffCardView, .diff(let payload, let isExpanded)):
+            let attr = isExpanded
+                ? cachedDiffAttributedString(for: item.id, payload: payload)
+                : NSAttributedString()
+            let localSel = isExpanded ? selection?.localRange(forItem: index, utf16Length: attr.length) : nil
             return view.configure(
                 payload: payload,
+                isExpanded: isExpanded,
                 attributedPatch: attr,
                 width: width,
                 typography: typography,
                 theme: theme,
                 documentView: self,
-                selectedRange: localSel)
+                selectedRange: localSel,
+                onToggle: { [weak self] in
+                    self?.toggleDiffExpansion(id: item.id)
+                })
 
         case (let view as PCodeThinkingCardView, .thinking(let text, let isExpanded)):
             let attr = cachedThinkingAttributedString(for: item.id, text: text, isExpanded: isExpanded)
@@ -1222,6 +1228,41 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         invalidateSearchIndex()
         mountViews(in: visibleRect)
         // If collapsing a long tool card from its bottom button, unpin and keep its top visible.
+        if isExpanded, let scrollView = enclosingScrollView, layoutEngine.entries.indices.contains(index) {
+            let entry = layoutEngine.entries[index]
+            let vis = scrollView.documentVisibleRect
+            if entry.yOffset < vis.minY {
+                unpinFromBottom()
+                let targetY = max(-scrollView.contentInsets.top, entry.yOffset - 12)
+                isApplyingDocumentHeight = true
+                scrollView.contentView.scroll(to: CGPoint(x: 0, y: targetY))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+                lastClipOriginY = scrollView.contentView.bounds.origin.y
+                isApplyingDocumentHeight = false
+                mountViews(in: visibleRect)
+            }
+        }
+    }
+
+    private func toggleDiffExpansion(id: String) {
+        guard let index = itemIndexByID[id],
+              items.indices.contains(index),
+              case .diff(let payload, let isExpanded) = items[index].payload
+        else { return }
+        if !isExpanded {
+            stickyBottom.unpinForUserAction()
+        }
+        notifySearchContentWillChange()
+        removeAttributedCache(for: id)
+        items[index] = PCodeTranscriptItem(
+            id: id,
+            payload: .diff(payload, isExpanded: !isExpanded),
+            spacingAfter: items[index].spacingAfter,
+            revision: items[index].revision &+ 1,
+            depth: items[index].depth)
+        invalidateSearchIndex()
+        mountViews(in: visibleRect)
+        // If collapsing a long diff card from its bottom button, unpin and keep its top visible.
         if isExpanded, let scrollView = enclosingScrollView, layoutEngine.entries.indices.contains(index) {
             let entry = layoutEngine.entries[index]
             let vis = scrollView.documentVisibleRect
@@ -1703,12 +1744,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             height: entry.height)]
     }
 
-    /// Accessibility helper to toggle expandable `.tool` or `.thinking` rows.
+    /// Accessibility helper to toggle expandable `.tool`, `.diff`, or `.thinking` rows.
     func toggleExpansionForAccessibility(id: String) {
         guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return }
         switch items[idx].payload {
         case .tool:
             toggleToolExpansion(id: id)
+        case .diff:
+            toggleDiffExpansion(id: id)
         case .thinking:
             toggleThinkingExpansion(id: id)
         default:
@@ -1765,8 +1808,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return table.plainText
         case .tool(let call, let isExpanded):
             return cachedToolAttributedString(for: item.id, call: call, isExpanded: isExpanded).string
-        case .diff(let payload):
-            return cachedDiffAttributedString(for: item.id, payload: payload).string
+        case .diff(let payload, let isExpanded):
+            return isExpanded
+                ? cachedDiffAttributedString(for: item.id, payload: payload).string
+                : PCodeDiffCardView.summaryLine(for: payload)
         case .thinking(let text, let isExpanded):
             return cachedThinkingAttributedString(for: item.id, text: text, isExpanded: isExpanded).string
         case .plan(let planItems):
@@ -1851,9 +1896,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .table(let table):
             let rowCount = table.rows.count + (table.headers.isEmpty ? 0 : 1)
             return CGFloat(max(1, rowCount)) * (typography.lineHeight(scale: 0.92) + 14)
-        case .diff(let diff):
+        case .diff(let diff, let isExpanded):
+            guard isExpanded else { return PCodeDiffCardView.headerHeight }
             let lineCount = max(1, min(200, diff.patch.split(separator: "\n", omittingEmptySubsequences: false).count))
-            return PCodeDiffCardView.headerHeight + 16 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
+            return PCodeDiffCardView.headerHeight + 40 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
         case .thinking:
             return 34
         case .plan(let planItems):

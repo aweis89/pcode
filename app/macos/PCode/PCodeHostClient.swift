@@ -7,7 +7,8 @@ struct PCodePlanItem: Equatable {
     let status: String
 }
 
-/// Structured diff payload (`EditPreview` morphs into `EditCompleted` under the same `call_id`).
+/// Structured diff payload (`EditPreview` morphs into `EditCompleted` under the same `call_id`,
+/// coalescing with the matching `edit_file` / `write_file` tool call).
 struct PCodeDiffPayload: Equatable {
     let callID: String
     let path: String
@@ -18,6 +19,55 @@ struct PCodeDiffPayload: Equatable {
     let isPreview: Bool
     let truncated: Bool
     let depth: Int
+    let toolName: String
+    let failed: Bool
+    let elapsedSeconds: Double?
+
+    init(
+        callID: String,
+        path: String,
+        operation: String,
+        patch: String,
+        added: Int,
+        removed: Int,
+        isPreview: Bool,
+        truncated: Bool,
+        depth: Int,
+        toolName: String = "",
+        failed: Bool = false,
+        elapsedSeconds: Double? = nil
+    ) {
+        self.callID = callID
+        self.path = path
+        self.operation = operation
+        self.patch = patch
+        self.added = added
+        self.removed = removed
+        self.isPreview = isPreview
+        self.truncated = truncated
+        self.depth = depth
+        self.toolName = toolName
+        self.failed = failed
+        self.elapsedSeconds = elapsedSeconds
+    }
+
+    var displayToolName: String {
+        if !toolName.isEmpty { return toolName }
+        return operation.isEmpty ? "edit_file" : operation
+    }
+
+    var formattedElapsed: String? {
+        guard let elapsedSeconds, elapsedSeconds > 0 else { return nil }
+        if elapsedSeconds < 1 {
+            return String(format: "%.2fs", elapsedSeconds)
+        }
+        if elapsedSeconds < 60 {
+            return String(format: "%.1fs", elapsedSeconds)
+        }
+        let mins = Int(elapsedSeconds) / 60
+        let secs = Int(elapsedSeconds) % 60
+        return "\(mins)m\(secs)s"
+    }
 }
 
 /// Unified domain event decoded from both saved `transcript.jsonl` (flat fields)
@@ -247,6 +297,7 @@ final class PCodeTranscriptEventReducer {
     private var activePlanItemID: String?
     private var lastAuthoritativePlan: [PCodePlanItem] = []
     private var toolCallsByID: [String: PCodePeekToolCall] = [:]
+    private var diffsByCallID: [String: PCodeDiffPayload] = [:]
     private var toolDepthByID: [String: Int] = [:]
     private var pendingChildrenByParent: [String: [PCodeTranscriptItem]] = [:]
 
@@ -267,6 +318,7 @@ final class PCodeTranscriptEventReducer {
         activePlanItemID = nil
         lastAuthoritativePlan.removeAll()
         toolCallsByID.removeAll()
+        diffsByCallID.removeAll()
         toolDepthByID.removeAll()
         pendingChildrenByParent.removeAll()
     }
@@ -371,6 +423,36 @@ final class PCodeTranscriptEventReducer {
             finishActiveStreamIfNeeded(in: doc, reveal: reveal)
             toolCounter += 1
             let key = callID.isEmpty ? "anon-\(toolCounter)" : callID
+            let itemID = "call-\(key)"
+            // If an `EditCompleted` / `EditPreview` diff already owns this `call_id`, merge
+            // tool name / status / elapsed onto the collapsible diff row instead of replacing it.
+            if let existingDiff = diffsByCallID[key] {
+                let merged = PCodeDiffPayload(
+                    callID: existingDiff.callID,
+                    path: existingDiff.path,
+                    operation: existingDiff.operation,
+                    patch: existingDiff.patch,
+                    added: existingDiff.added,
+                    removed: existingDiff.removed,
+                    isPreview: existingDiff.isPreview,
+                    truncated: existingDiff.truncated,
+                    depth: existingDiff.depth,
+                    toolName: name.isEmpty ? existingDiff.toolName : name,
+                    failed: failed,
+                    elapsedSeconds: elapsed ?? existingDiff.elapsedSeconds)
+                diffsByCallID[key] = merged
+                let item = PCodeTranscriptItem(
+                    id: itemID,
+                    payload: .diff(merged, isExpanded: doc.isItemExpanded(id: itemID)),
+                    spacingAfter: 5,
+                    depth: merged.depth)
+                insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
+                if !callID.isEmpty {
+                    flushOrphans(forParentCallID: callID, reveal: reveal, in: doc)
+                }
+                return
+            }
+
             let existing = toolCallsByID[key]
             let mergedDetail: String
             if !detail.isEmpty {
@@ -390,7 +472,6 @@ final class PCodeTranscriptEventReducer {
                 output: result ?? existing?.output ?? "")
             toolCallsByID[key] = call
             let depth = toolDepthByID[key] ?? (parentCallID.isEmpty ? 0 : 1)
-            let itemID = "call-\(key)"
             let item = PCodeTranscriptItem(
                 id: itemID,
                 payload: .tool(call, isExpanded: doc.isItemExpanded(id: itemID)),
@@ -427,6 +508,9 @@ final class PCodeTranscriptEventReducer {
         case .editPreview(let callID, let path, let text, let kind):
             guard kind == "edit", !path.isEmpty else { return }
             let depth = toolDepthByID[callID] ?? 0
+            let existingTool = toolCallsByID[callID]
+            let existingDiff = diffsByCallID[callID]
+            let itemID = "call-\(callID)"
             let payload = PCodeDiffPayload(
                 callID: callID,
                 path: path,
@@ -436,11 +520,15 @@ final class PCodeTranscriptEventReducer {
                 removed: 0,
                 isPreview: true,
                 truncated: false,
-                depth: depth)
+                depth: depth,
+                toolName: existingTool?.name ?? existingDiff?.toolName ?? "edit_file",
+                failed: existingTool?.failed ?? existingDiff?.failed ?? false,
+                elapsedSeconds: existingTool?.elapsedSeconds ?? existingDiff?.elapsedSeconds)
+            diffsByCallID[callID] = payload
             let item = PCodeTranscriptItem(
-                id: "edit-\(callID)",
-                payload: .diff(payload),
-                spacingAfter: 8,
+                id: itemID,
+                payload: .diff(payload, isExpanded: doc.isItemExpanded(id: itemID)),
+                spacingAfter: 5,
                 depth: depth)
             doc.upsertItem(item, reveal: reveal)
 
@@ -449,6 +537,9 @@ final class PCodeTranscriptEventReducer {
             toolCounter += 1
             let key = callID.isEmpty ? "edit-\(toolCounter)" : callID
             let depth = parentCallID.isEmpty ? (toolDepthByID[key] ?? 0) : 1
+            let existingTool = toolCallsByID[key]
+            let existingDiff = diffsByCallID[key]
+            let itemID = "call-\(key)"
             let payload = PCodeDiffPayload(
                 callID: key,
                 path: path,
@@ -458,11 +549,15 @@ final class PCodeTranscriptEventReducer {
                 removed: removed,
                 isPreview: false,
                 truncated: truncated,
-                depth: depth)
+                depth: depth,
+                toolName: existingTool?.name ?? existingDiff?.toolName ?? "",
+                failed: existingTool?.failed ?? existingDiff?.failed ?? false,
+                elapsedSeconds: existingTool?.elapsedSeconds ?? existingDiff?.elapsedSeconds)
+            diffsByCallID[key] = payload
             let item = PCodeTranscriptItem(
-                id: "edit-\(key)",
-                payload: .diff(payload),
-                spacingAfter: 8,
+                id: itemID,
+                payload: .diff(payload, isExpanded: doc.isItemExpanded(id: itemID)),
+                spacingAfter: 5,
                 depth: depth)
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
 

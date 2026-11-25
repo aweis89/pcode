@@ -1276,42 +1276,79 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
     let scrollView = PCodeHorizontalBlockScrollView()
     let textView = PCodeTextKit2BlockView()
     private let headerView = NSView()
+    private let iconView = NSImageView()
+    private let toolLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
     private let statsLabel = NSTextField(labelWithString: "")
     private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
+    private let toggleButton = NSButton()
+    private let headerTapButton = NSButton()
+    private let bottomCollapseButton = NSButton()
     private let dividerLayer = CALayer()
+    private let bottomDivider = CALayer()
 
     private var patchToCopy: String = ""
+    private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
+    private var lastIsExpanded: Bool = false
 
-    var primaryTextView: PCodeTextKit2BlockView? { textView }
-    var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    var primaryTextView: PCodeTextKit2BlockView? { scrollView.isHidden ? nil : textView }
+    var selectableTextLength: Int { scrollView.isHidden ? 0 : (textView.textContentStorage.attributedString?.length ?? 0) }
     override var isFlipped: Bool { true }
 
     static let headerHeight: CGFloat = 28
+    private static let bottomCollapseBarHeight: CGFloat = 24
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         headerView.wantsLayer = true
         headerView.layer?.addSublayer(dividerLayer)
-        for label in [pathLabel, statsLabel] {
+        iconView.imageScaling = .scaleProportionallyDown
+
+        for label in [toolLabel, pathLabel, statsLabel] {
             label.isEditable = false
             label.isSelectable = false
             label.drawsBackground = false
             label.isBezeled = false
             label.lineBreakMode = .byTruncatingMiddle
         }
+
+        headerTapButton.isBordered = false
+        headerTapButton.title = ""
+        headerTapButton.target = self
+        headerTapButton.action = #selector(togglePressed)
+
         copyButton.target = self
         copyButton.action = #selector(copyPatchPressed)
 
+        toggleButton.isBordered = false
+        toggleButton.title = ""
+        toggleButton.target = self
+        toggleButton.action = #selector(togglePressed)
+
+        headerView.addSubview(headerTapButton)
+        headerView.addSubview(iconView)
+        headerView.addSubview(toolLabel)
         headerView.addSubview(pathLabel)
         headerView.addSubview(statsLabel)
         headerView.addSubview(copyButton)
+        headerView.addSubview(toggleButton)
         addSubview(headerView)
 
         scrollView.documentView = textView
         addSubview(scrollView)
+
+        layer?.addSublayer(bottomDivider)
+        bottomDivider.isHidden = true
+
+        bottomCollapseButton.isBordered = false
+        bottomCollapseButton.bezelStyle = .inline
+        bottomCollapseButton.imagePosition = .imageLeading
+        bottomCollapseButton.target = self
+        bottomCollapseButton.action = #selector(togglePressed)
+        bottomCollapseButton.isHidden = true
+        addSubview(bottomCollapseButton)
     }
 
     @available(*, unavailable)
@@ -1330,11 +1367,34 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         textView.inkSweepFrontier = nil
         scrollView.resetScrollOrigin()
         copyButton.cancelCopiedFlash()
+        onToggle = nil
+        bottomCollapseButton.isHidden = true
+        bottomDivider.isHidden = true
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyLayerColors()
+    }
+
+    static func diffLineCount(for payload: PCodeDiffPayload) -> Int {
+        var s = payload.patch[...]
+        if s.last?.isNewline == true {
+            s = s.dropLast()
+        }
+        guard !s.isEmpty else { return 0 }
+        return s.split(separator: "\n", omittingEmptySubsequences: false).count
+    }
+
+    static func summaryLine(for payload: PCodeDiffPayload) -> String {
+        var parts = [payload.displayToolName, payload.path]
+        if payload.added > 0 || payload.removed > 0 {
+            parts.append("+\(payload.added) −\(payload.removed)")
+        }
+        if let elapsed = payload.formattedElapsed {
+            parts.append("(\(elapsed))")
+        }
+        return parts.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     static func attributedPatch(
@@ -1385,59 +1445,109 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
 
     func configure(
         payload: PCodeDiffPayload,
+        isExpanded: Bool,
         attributedPatch: NSAttributedString,
         width: CGFloat,
         typography: PCodeTypographySnapshot,
         theme: PCodeTranscriptTheme,
         documentView: PCodeTranscriptDocumentView?,
-        selectedRange: NSRange?
+        selectedRange: NSRange?,
+        onToggle: @escaping () -> Void
     ) -> CGFloat {
         scrollView.transcriptDocumentView = documentView
         patchToCopy = payload.patch
+        self.onToggle = onToggle
         lastTheme = theme
 
+        let canExpand = !payload.patch.isEmpty
         let padX: CGFloat = 12
         let padY: CGFloat = 8
-        let contentWidth = max(1, width - padX * 2)
-        let codeFont = typography.codeNSFont(scale: typography.codeBlockScale)
-        // Measure only the capped display text (<= 200 lines) rather than scanning huge full patches.
-        let widest = PCodeCodeBlockView.widestLineWidth(in: attributedPatch.string, font: codeFont)
-        let layoutWidth = max(contentWidth, ceil(widest) + 12)
-        let textHeight = attributedPatch.length > 0
-            ? textView.configure(attributedText: attributedPatch, width: layoutWidth)
-            : 0
-        textView.selectedRange = selectedRange
-        textView.frame = CGRect(x: 0, y: 0, width: layoutWidth, height: textHeight)
+
+        let symCfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+        let symbolName = payload.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
+        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: payload.failed ? "Failed" : "Succeeded")?
+            .withSymbolConfiguration(symCfg)
+        iconView.contentTintColor = payload.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
+        iconView.frame = CGRect(x: 9, y: floor((Self.headerHeight - 12) * 0.5), width: 12, height: 12)
 
         headerView.frame = CGRect(x: 0, y: 0, width: width, height: Self.headerHeight)
+        headerTapButton.isHidden = !canExpand
+        headerTapButton.frame = headerView.bounds
+
+        toolLabel.stringValue = payload.displayToolName
+        toolLabel.font = typography.codeNSFont(scale: 0.84, weight: typography.weight.nsEmphasisWeight)
+        toolLabel.textColor = payload.failed ? .systemRed : theme.secondaryForeground
+        toolLabel.sizeToFit()
+
         pathLabel.stringValue = payload.isPreview ? "\(payload.path) (preview)" : payload.path
-        pathLabel.font = typography.codeNSFont(scale: 0.80, weight: .medium)
-        pathLabel.textColor = theme.foreground
+        pathLabel.font = typography.codeNSFont(scale: 0.82)
+        pathLabel.textColor = isExpanded ? theme.foreground : theme.secondaryForeground.withAlphaComponent(0.88)
         pathLabel.sizeToFit()
 
         let statsAttr = NSMutableAttributedString()
         if payload.added > 0 {
             statsAttr.append(NSAttributedString(
                 string: "+\(payload.added)",
-                attributes: [.font: typography.codeNSFont(scale: 0.76, weight: .semibold), .foregroundColor: NSColor.systemGreen]))
+                attributes: [.font: typography.codeNSFont(scale: 0.78, weight: .semibold), .foregroundColor: NSColor.systemGreen]))
         }
         if payload.removed > 0 {
             if statsAttr.length > 0 { statsAttr.append(NSAttributedString(string: " ")) }
             statsAttr.append(NSAttributedString(
                 string: "−\(payload.removed)",
-                attributes: [.font: typography.codeNSFont(scale: 0.76, weight: .semibold), .foregroundColor: NSColor.systemRed]))
+                attributes: [.font: typography.codeNSFont(scale: 0.78, weight: .semibold), .foregroundColor: NSColor.systemRed]))
+        }
+        if let elapsed = payload.formattedElapsed {
+            let prefix = statsAttr.length > 0 ? "  " : ""
+            statsAttr.append(NSAttributedString(
+                string: "\(prefix)(\(elapsed))",
+                attributes: [
+                    .font: typography.codeNSFont(scale: 0.78),
+                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.62),
+                ]))
         }
         statsLabel.attributedStringValue = statsAttr
         statsLabel.sizeToFit()
 
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            copyButton.applyTheme(foreground: theme.secondaryForeground, background: .clear)
+        toggleButton.isHidden = !canExpand
+        if canExpand {
+            let chevron = isExpanded ? "chevron.down" : "chevron.right"
+            toggleButton.image = NSImage(systemSymbolName: chevron, accessibilityDescription: isExpanded ? "Collapse" : "Expand")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+            toggleButton.contentTintColor = theme.secondaryForeground
+            toggleButton.frame = CGRect(x: width - 22, y: floor((Self.headerHeight - 20) * 0.5), width: 18, height: 20)
         }
-        let btnW = max(54, copyButton.frame.width + 8)
+
+        let showBody = canExpand && isExpanded
+        copyButton.isHidden = !showBody
+        if showBody {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                copyButton.applyTheme(foreground: theme.secondaryForeground, background: .clear)
+            }
+        }
+        let toggleReserve: CGFloat = canExpand ? 26 : 10
+        let copyW: CGFloat = showBody ? max(54, copyButton.frame.width + 8) : 0
+        if showBody {
+            copyButton.frame = CGRect(
+                x: max(padX, width - toggleReserve - copyW - 4),
+                y: floor((Self.headerHeight - 20) * 0.5),
+                width: copyW,
+                height: 20)
+        }
+
+        let toolX: CGFloat = 26
+        let toolW = min(toolLabel.frame.width, 120)
+        toolLabel.frame = CGRect(
+            x: toolX,
+            y: floor((Self.headerHeight - toolLabel.frame.height) * 0.5),
+            width: toolW,
+            height: toolLabel.frame.height)
+
         let statsW = statsLabel.frame.width
-        let pathMaxW = max(40, width - padX - btnW - statsW - 24)
+        let rightReserve = toggleReserve + (showBody ? copyW + 8 : 0)
+        let pathX = toolLabel.frame.maxX + 8
+        let pathMaxW = max(40, width - pathX - statsW - rightReserve - 12)
         pathLabel.frame = CGRect(
-            x: padX,
+            x: pathX,
             y: floor((Self.headerHeight - pathLabel.frame.height) * 0.5),
             width: min(pathLabel.frame.width, pathMaxW),
             height: pathLabel.frame.height)
@@ -1446,29 +1556,75 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
             y: floor((Self.headerHeight - statsLabel.frame.height) * 0.5),
             width: statsW,
             height: statsLabel.frame.height)
-        copyButton.frame = CGRect(
-            x: max(padX, width - btnW - 8),
-            y: floor((Self.headerHeight - 20) * 0.5),
-            width: btnW,
-            height: 20)
+
+        dividerLayer.isHidden = !showBody
         dividerLayer.frame = CGRect(x: 0, y: Self.headerHeight - 1, width: width, height: 1)
 
-        let bodyVisible = textHeight > 0
-        scrollView.isHidden = !bodyVisible
+        if !showBody {
+            scrollView.isHidden = true
+            bottomCollapseButton.isHidden = true
+            bottomDivider.isHidden = true
+            applyLayerColors(isExpanded: false)
+            return Self.headerHeight
+        }
+
+        let contentWidth = max(1, width - padX * 2)
+        let codeFont = typography.codeNSFont(scale: typography.codeBlockScale)
+        let widest = PCodeCodeBlockView.widestLineWidth(in: attributedPatch.string, font: codeFont)
+        let layoutWidth = max(contentWidth, ceil(widest) + 12)
+        let textHeight = attributedPatch.length > 0
+            ? textView.configure(attributedText: attributedPatch, width: layoutWidth)
+            : 0
+        textView.selectedRange = selectedRange
+        textView.frame = CGRect(x: 0, y: 0, width: layoutWidth, height: textHeight)
+
+        scrollView.isHidden = textHeight <= 0
         scrollView.frame = CGRect(x: padX, y: Self.headerHeight + padY, width: contentWidth, height: textHeight)
-        applyLayerColors()
-        return bodyVisible ? (Self.headerHeight + textHeight + padY * 2) : Self.headerHeight
+
+        let contentBottom = Self.headerHeight + (textHeight > 0 ? textHeight + padY * 2 : 0)
+        let lineCount = Self.diffLineCount(for: payload)
+        let collapseTitle = lineCount > 1 ? " Collapse (\(lineCount) lines)" : " Collapse"
+        bottomCollapseButton.isHidden = false
+        bottomDivider.isHidden = false
+        bottomCollapseButton.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: "Collapse")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        bottomCollapseButton.contentTintColor = theme.secondaryForeground
+        bottomCollapseButton.attributedTitle = NSAttributedString(
+            string: collapseTitle,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: theme.secondaryForeground,
+            ])
+        bottomCollapseButton.frame = CGRect(
+            x: 8,
+            y: contentBottom + 1,
+            width: max(1, width - 16),
+            height: Self.bottomCollapseBarHeight - 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bottomDivider.frame = CGRect(x: 8, y: contentBottom, width: max(0, width - 16), height: 1)
+        CATransaction.commit()
+
+        applyLayerColors(isExpanded: true)
+        return contentBottom + Self.bottomCollapseBarHeight
     }
 
-    private func applyLayerColors() {
+    private func applyLayerColors(isExpanded: Bool? = nil) {
+        if let isExpanded { lastIsExpanded = isExpanded }
         guard let theme = lastTheme else { return }
+        let expanded = lastIsExpanded
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = theme.codeBackground.cgColor
-            layer?.cornerRadius = 8
-            layer?.borderWidth = 1
+            layer?.backgroundColor = (expanded ? theme.codeBackground : theme.toolBackground).cgColor
+            layer?.cornerRadius = expanded ? 8 : 5
+            layer?.borderWidth = expanded ? 1 : 0
             layer?.borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
             dividerLayer.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.10).cgColor
+            bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
         }
+    }
+
+    @objc private func togglePressed() {
+        onToggle?()
     }
 
     @objc private func copyPatchPressed() {

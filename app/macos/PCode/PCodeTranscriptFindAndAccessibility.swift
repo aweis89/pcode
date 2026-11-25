@@ -369,8 +369,9 @@ extension PCodeTranscriptDocumentView {
             let state = isExpanded ? "expanded" : "collapsed"
             let expandable = call.summaryText.count > 90 || call.summaryText.contains("\n") || !call.output.isEmpty
             return (.group, "Tool call", "\(call.name) (\(state))", expandable)
-        case .diff(let payload):
-            return (.group, "Diff", "Diff for \(payload.path)", false)
+        case .diff(let payload, let isExpanded):
+            let state = isExpanded ? "expanded" : "collapsed"
+            return (.group, "Diff", "\(payload.displayToolName) \(payload.path) (\(state))", !payload.patch.isEmpty)
         case .thinking(_, let isExpanded):
             let state = isExpanded ? "expanded" : "collapsed"
             return (.group, "Thinking", "Thinking (\(state))", true)
