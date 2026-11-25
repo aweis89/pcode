@@ -3004,31 +3004,26 @@ class TerminalOutput:
         """SPIKE: ``written``, for pcode's pane with the editor docked, with its glide.
 
         The pane holds only scrollback, so its cursor sits on the row after
-        the last one written (`Dock.pane_row`) and that row is blank: the
-        glide region is the whole pane, that last row its hidden bottom.
+        the last one written (`Dock.pane_row`) and that row is blank. The
+        rows scroll in a region that stops above the docked card
+        (`Dock.reserve`), so that row is the last above the card, while the
+        glide region is the whole pane, its last row (under the card) the
+        hidden bottom: rows gliding in come up from under the card.
         The rows, the region, the glide and the reveals go out as one
         synchronized frame, so no frame shows the rows unglided.
         """
         rows = written.count("\n")
         pane_rows = docked.pane_rows()
+        # A replay cleared and homed the pane: its scroll region goes again first.
+        written = docked.homed() + written if rebuilt else written
         before = docked.pane_row
-        docked.wrote(rows, homed=rebuilt)
+        docked.wrote(rows)
         if rebuilt:
             self._native_backlog = 0.0
         if not glide or before is None or rows == 0 or pane_rows < 2:
             return written
-        columns = max(1, self._screen_size().columns)
         now = monotonic()
-        head = SYNC_START
-        key = (pane_rows, columns)
-        # Re-sent every second, as `_declare` does, in case the terminal dropped it.
-        if (
-            self._docked_declared is None
-            or self._docked_declared[0] != key
-            or now - self._docked_declared[1] >= 1.0
-        ):
-            self._docked_declared = (key, now)
-            head += smooth_scroll.declaration(pane_rows - 1, columns)
+        head = SYNC_START + self._docked_declaration(docked, now)
         bottom = pane_rows - 1
         scrolled = max(0, before + rows - bottom)
         end_row = min(bottom, before + rows) - 1
@@ -3059,6 +3054,36 @@ class TerminalOutput:
                 flags = smooth_scroll.REVEAL_SWEEP if prose else smooth_scroll.REVEAL_CURTAIN
                 tail += smooth_scroll.reveal(start, count, flags=flags)
         return head + written + tail + SYNC_END
+
+    def _docked_declaration(self, docked, now: float) -> str:
+        """SPIKE: the docked glide region over pcode's whole pane, when it is due."""
+        columns = max(1, self._screen_size().columns)
+        raw = docked.raw_pane_rows()
+        key = (raw, columns)
+        # Re-sent every second, as `_declare` does, in case the terminal dropped it.
+        if (
+            self._docked_declared is not None
+            and self._docked_declared[0] == key
+            and now - self._docked_declared[1] < 1.0
+        ):
+            return ""
+        self._docked_declared = (key, now)
+        return smooth_scroll.declaration(raw - 1, columns)
+
+    def _docked_room(self, rows: int) -> tuple[str, str]:
+        """SPIKE: the glide for ``rows`` the pane scrolls to make room for the
+        docked card growing (`Dock.glide`): the text before and after the scroll.
+
+        A plain advance, like any scroll of a few rows; while a batch glide
+        runs, the terminal adds the rows to it, and so does pcode's estimate.
+        """
+        docked = dock.active()
+        if not self.docked_glide or docked is None or rows <= 0:
+            return "", ""
+        now = monotonic()
+        if self._drain_native_backlog(now) > 0:
+            self._native_backlog += rows
+        return self._docked_declaration(docked, now), smooth_scroll.advance(rows)
 
     def _native_batch_cap(self) -> int:
         """Most rows one handoff may write.
@@ -3325,7 +3350,8 @@ class TerminalOutput:
                 # history too; replay must clear those just like width reflow.
                 current = self._screen_size()
                 if dock.active() is not None and current.columns == size.columns:
-                    # SPIKE: the dock growing shortens the pane; only a width change reflows.
+                    # SPIKE: docked, the pane holds only scrollback, which a
+                    # height change doesn't rewrap; only a width change reflows.
                     current = size
                 if current != size:
                     size, resized_at = current, monotonic()
@@ -5207,8 +5233,12 @@ def create_prompt(
             # leaving the cursor parked at the top in between. Full screen
             # needs no erase: repaint whole, at once, as one frame.
             if not app._is_running or app.output.get_size() == app.renderer._last_size:
-                # Only pcode's own pane resized (the card growing): the dock's
-                # grid is fixed, and already shows the right frame.
+                # Only pcode's own pane resized (its window): the dock's grid
+                # is fixed, and already shows the right frame. The resize
+                # reset the pane's scroll region, so look now, which sets it
+                # again as soon as the cursor's row is in.
+                if (docked := dock.active()) is not None:
+                    docked.pane_rows()
                 return
             # Home and clear first: `reset` assumes the cursor is at the top
             # left, and a paint from wherever it really is doubles the layout.
@@ -5346,11 +5376,12 @@ class Transcript:
             )
             output.gliding = output.paced and self.smooth_scroll == "auto" and glide_supported()
             output.typed = output.paced and self.paced_scrollback == "typed"
-            if dock.active() is not None:
+            if (docked := dock.active()) is not None:
                 # SPIKE: the glide moves to pcode's own pane (`docked_glide`);
                 # without it, typing would draw into the live panel, on the dock.
                 output.docked_glide = output.gliding
                 output.gliding = False
+                docked.glide = output._docked_room
                 if not output.docked_glide:
                     output.typed = False
             output.marks = self.console.is_terminal and marks_supported()
