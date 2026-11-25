@@ -123,6 +123,22 @@ def test_job_count_round_trips_in_host_snapshot_and_updates():
         assert terminal.activity.job_count == count
 
 
+def test_cancel_stays_unanswered_until_the_host_sends_anything():
+    class Peer:
+        def notify(self, *args):
+            pass
+
+    terminal = RemoteController(View(), Activity())
+    terminal.peer = Peer()
+    terminal.cancel()
+    first = terminal.cancel_sent
+    assert first is not None
+    terminal.cancel()
+    assert terminal.cancel_sent == first  # Silence counts from the oldest unanswered cancel.
+    terminal.receive("state", ({},), {})
+    assert terminal.cancel_sent is None
+
+
 def test_records_can_stop_where_a_running_turn_began(tmp_path):
     session = SavedSession.create("test", tmp_path, tmp_path / "sessions")
     try:

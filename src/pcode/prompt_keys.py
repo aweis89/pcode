@@ -28,6 +28,8 @@ class PromptCallbacks:
     """What the prompt asks of the app. Any may be absent; its key then does less."""
 
     on_cancel: Callable | None = None
+    # Ctrl+D while busy; `on_cancel` when absent.
+    on_busy_exit: Callable | None = None
     on_effort: Callable | None = None
     on_model: Callable | None = None
     on_panel: Callable | None = None
@@ -430,10 +432,11 @@ def _editing_keys(
         return keys
 
     on_cancel = callbacks.on_cancel
+    on_busy_exit = callbacks.on_busy_exit or on_cancel
 
     @keys.add("c-d", filter=Condition(lambda: activity.busy))
     def interrupt_turn(event):
-        on_cancel()
+        on_busy_exit()
 
     @keys.add("c-c")
     def interrupt(event):

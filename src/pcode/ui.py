@@ -4924,6 +4924,7 @@ def create_prompt(
     on_submit=None,
     on_command=None,
     on_cancel=None,
+    on_busy_exit=None,
     on_effort=None,
     on_model=None,
     on_panel=None,
@@ -4948,6 +4949,7 @@ def create_prompt(
     activity = activity or Activity()
     callbacks = PromptCallbacks(
         on_cancel=on_cancel,
+        on_busy_exit=on_busy_exit,
         on_effort=on_effort,
         on_model=on_model,
         on_panel=on_panel,

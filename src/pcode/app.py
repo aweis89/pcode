@@ -138,6 +138,9 @@ BRANCH_POLL_SECONDS = 30
 HOST_POLL_SECONDS = 2
 """How often an attached terminal looks at the other hosts, for the footer and notices."""
 
+HOST_CANCEL_GRACE = 2.0
+"""Seconds of host silence after a cancel before Ctrl+D detaches rather than cancels again."""
+
 
 class _PopupSuperseded(Exception):
     """Another popup opened after this command was queued."""
@@ -3136,6 +3139,11 @@ class PreviewApp:
         def cancel():
             """Ctrl+C. Before the host answers, it drops what was typed ahead for it."""
             if not early:
+                if self.host_unresponsive():
+                    self.transcript.warning(
+                        f"The session host {self.runtime.id} is not answering. "
+                        "Ctrl+D detaches this terminal and leaves it running."
+                    )
                 self.cancel()
                 return
             commands = [text for kind, text, _ in early if kind == "command"]
@@ -3148,6 +3156,14 @@ class PreviewApp:
             if prompts:
                 self.transcript.flash(f"Cleared {prompts} queued message(s).")
             self.activity.busy = False
+
+        def busy_exit():
+            """Ctrl+D while busy: cancels, or leaves a host that ignored the last cancel."""
+            if early or not self.host_unresponsive():
+                cancel()
+                return
+            self.detach("")
+            session.app.exit()
 
         def submit(text, *, mode_override: str | None = None):
             text = text.strip()
@@ -3201,6 +3217,7 @@ class PreviewApp:
             on_interrupt_submit=lambda text: submit(text, mode_override="interrupt"),
             on_command=submit,
             on_cancel=cancel,
+            on_busy_exit=busy_exit,
             on_panel=self.set_show_activity,
             on_thinking=self.show_thinking,
             on_commands=lambda: self.show_commands(""),
@@ -3365,6 +3382,15 @@ class PreviewApp:
             await output.flush(drain=True)
             self.transcript.output = None
         self.print_resume_hint()
+
+    def host_unresponsive(self) -> bool:
+        """Whether the host has said nothing for a while since this terminal's cancel.
+
+        A hung host keeps its socket open, so it never counts as gone, and
+        Ctrl+C or Ctrl+D would only send more cancels it never reads.
+        """
+        sent = getattr(self.controller, "cancel_sent", None) if self.hosted else None
+        return sent is not None and time.monotonic() - sent >= HOST_CANCEL_GRACE
 
     def cancel(self) -> None:
         """Ctrl+C, for whichever controller this terminal is showing now."""

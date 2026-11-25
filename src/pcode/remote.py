@@ -259,6 +259,9 @@ class RemoteController:
         self.host_stopped = False
         # The host that carries the session on, when it stopped to restart.
         self.successor: str | None = None
+        # When the oldest cancel the host has not reacted to went out: anything
+        # the host sends clears it, so one that stays set means a hung host.
+        self.cancel_sent: float | None = None
         # One per command sent and not yet answered by `after_command`, oldest
         # first: the host runs them in order and reports each exactly once.
         self._command_waits: list = []
@@ -344,6 +347,7 @@ class RemoteController:
     # What the host sends
 
     def receive(self, name: str, args, kwargs):
+        self.cancel_sent = None
         if name == "state":
             for field, value in args[0].items():
                 self.apply_field(field, value)
@@ -459,6 +463,8 @@ class RemoteController:
     def cancel(self) -> None:
         # The host drops queued commands, some without an `after_command`.
         self._end_command_waits()
+        if self.cancel_sent is None:
+            self.cancel_sent = time.monotonic()
         self.peer.notify("cancel")
 
     def set_thinking(self, mode: str) -> None:
