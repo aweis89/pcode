@@ -23,7 +23,7 @@ if [ -n "$current" ]; then
         *"-g$lock"* | *"-g$(echo "$lock" | cut -c1-7)"*) ;;
         *) echo "  maybe stale: built from a fork commit other than app/ghostty.lock" ;;
     esac
-    newer=$(find app -newer "$bin" -type f \( -name '*.swift' -o -name ghostty.lock \) | head -n 1)
+    newer=$(find app -newer "$bin" -type f \( -name '*.swift' -o -name ghostty.lock -o -name AppIcon.icns \) | head -n 1)
     [ -n "$newer" ] && echo "  STALE: $newer changed after this build (run 'make app')"
 fi
 

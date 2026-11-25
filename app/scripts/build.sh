@@ -28,6 +28,7 @@
 # Launch: builds/current/Contents/MacOS/ghostty
 set -eu
 
+caller=$(pwd)
 cd "$(dirname "$0")/../.."
 repo=$(pwd)
 
@@ -38,7 +39,9 @@ case "${1:-}" in
     --out)
         install=0
         out=${2:?usage: build.sh --out <path>.app}
-        case "$out" in /*) ;; *) out="$(pwd)/$out" ;; esac
+        # It is replaced whole (rm -rf), so only ever a bundle path.
+        case "$out" in *.app) ;; *) echo "error: --out takes a <path>.app" >&2; exit 2 ;; esac
+        case "$out" in /*) ;; *) out="$caller/$out" ;; esac
         ;;
     "") ;;
     *) echo "usage: build.sh [--no-install | --out <path>.app]" >&2; exit 2 ;;
@@ -58,14 +61,16 @@ if [ -n "${GHOSTTY_SRC:-}" ]; then
     src=$GHOSTTY_SRC
 else
     # tmp/ is shared by every worktree (it is a symlink there), so one clone
-    # and one zig cache serve them all; builds take turns.
+    # and one zig cache serve them all; a second build at once is refused.
     src=tmp/ghostty
     mkdir -p tmp
     if ! mkdir tmp/ghostty.building 2>/dev/null; then
         echo "error: another build is using $src (remove tmp/ghostty.building if none is)" >&2
         exit 1
     fi
-    trap 'rmdir "$repo/tmp/ghostty.building"' EXIT INT TERM
+    trap 'rmdir "$repo/tmp/ghostty.building" 2>/dev/null || true' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     if [ ! -d "$src/.git" ]; then
         git clone --quiet --filter=blob:none --no-checkout "$url" "$src"
     fi

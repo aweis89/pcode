@@ -88,11 +88,15 @@ app-build: ## Build Pcode.app without installing it (any checkout)
 	app/scripts/build.sh --no-install
 
 app-test: ## Run Pcode.app's Swift unit tests (after make app or app-build)
+	@# Holds build.sh's lock on the shared tmp/ghostty, so a build can't switch it mid-test.
+	@if [ -z "$${GHOSTTY_SRC:-}" ]; then mkdir tmp/ghostty.building 2>/dev/null || { echo 'a build is using tmp/ghostty' >&2; exit 1; }; fi; \
+	trap '[ -n "$${GHOSTTY_SRC:-}" ] || rmdir tmp/ghostty.building' EXIT; \
 	cd $${GHOSTTY_SRC:-tmp/ghostty}/macos && xcodebuild test -scheme Ghostty -only-testing:GhosttyTests/PCodeCompletionTests -only-testing:GhosttyTests/PCodePickMatchTests -only-testing:GhosttyTests/PCodePickStyleTests
 
-app-lock: ## Point app/ghostty.lock at a pushed fork branch or commit (make app-lock [REF=pcode-smooth])
+app-lock: ## Point app/ghostty.lock at a fork branch, or a full commit SHA (not checked; must be pushed) (make app-lock [REF=pcode-smooth])
 	@ref=$${REF:-pcode-smooth}; \
-	sha=$$(git ls-remote $(GHOSTTY_FORK_URL) "refs/heads/$$ref" | cut -f1); \
+	heads=$$(git ls-remote $(GHOSTTY_FORK_URL) "refs/heads/$$ref") || { echo 'git ls-remote on the fork failed' >&2; exit 1; }; \
+	sha=$$(printf '%s' "$$heads" | cut -f1); \
 	case "$$ref" in *[!0-9a-f]*) ;; *) [ $${#ref} = 40 ] && sha=$$ref ;; esac; \
 	if [ -z "$$sha" ]; then echo "no branch $$ref on the fork (pass a full commit SHA, or push it first)" >&2; exit 1; fi; \
 	printf '%s\n' "$$sha" > app/ghostty.lock; echo "app/ghostty.lock -> $$sha ($$ref)"
@@ -103,8 +107,8 @@ app-status: ## Show whether running Pcode.app builds are current
 app-restart: ## Quit running Pcode.app builds and reopen builds/current with the same sessions
 	app/scripts/restart.sh
 
-app-prune: ## Trash old builds/ bundles, keeping current and any running one
-	app/scripts/prune.sh
+app-prune: ## Trash old builds/ bundles, keeping current and any running one (ARGS=--dry-run)
+	app/scripts/prune.sh $(ARGS)
 
 obsidian-plugin: ## Build, install and enable the Obsidian bridge plugin in a vault (make obsidian-plugin VAULT=~/vaults/personal)
 	@test -n "$(VAULT)" || { echo 'usage: make obsidian-plugin VAULT=path/to/vault' >&2; exit 1; }

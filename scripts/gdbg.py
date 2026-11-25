@@ -6,7 +6,7 @@ Points are window content points from the top-left; `--cell COL ROW` with
 `-s SURFACE` targets the middle of a terminal cell instead. Surface IDs are
 the 8-character prefixes `dump` prints. Stdlib only: run it with `python3 -I`.
 
-    gdbg.py launch --app ~/p/ghostty-x/builds/current --command /tmp/run.sh
+    gdbg.py launch --app /tmp/mytest/PcodeMytest.app --command /tmp/run.sh
     gdbg.py dump                   # windows, terminals, frames, focus
     gdbg.py snap                   # PNG of the front window; open it with read_file
     gdbg.py key ctrl+a '\\'         # keystrokes to the focused terminal
