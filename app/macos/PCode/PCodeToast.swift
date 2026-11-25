@@ -63,11 +63,45 @@ final class PCodeToast: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
-    /// The cursor's cell in the terminal view, top-left origin, in points.
-    func cursorCell() -> CGRect? { surfaceView?.pcodeCursorCell }
+    /// Placement of the active editor in the pane's coordinates (top-left origin):
+    /// the cursor cell, the horizontal column to center the toast in, and the
+    /// minimum bottom clearance above a docked card's top border.
+    struct Placement {
+        let cursor: CGRect?
+        let minX: CGFloat
+        let width: CGFloat
+        let minBottomGap: CGFloat
+    }
+
+    /// Where the active editor sits in the pane, in points.
+    ///
+    /// With a dock shown, uses the dock's cursor and card bounds in this
+    /// terminal's coordinates so toasts center over the docked card (including
+    /// inside `/btw`) and clear its rounded border.
+    func placement(in size: CGSize) -> Placement {
+        guard let surfaceView else {
+            return Placement(cursor: nil, minX: 0, width: size.width, minBottomGap: 0)
+        }
+        guard let dock = surfaceView.existingPCodeDock, dock.ready, let editor = dock.surface,
+              editor.window != nil, editor.window === surfaceView.window
+        else {
+            return Placement(cursor: surfaceView.pcodeCursorCell, minX: 0, width: size.width, minBottomGap: 0)
+        }
+        let docked = editor.convert(editor.bounds, to: nil)
+        let pane = surfaceView.convert(surfaceView.bounds, to: nil)
+        let cursor = editor.pcodeCursorCell?.offsetBy(dx: docked.minX - pane.minX, dy: pane.maxY - docked.maxY)
+        let cell = editor.cellSize.height > 0 ? editor.cellSize.height : surfaceView.cellSize.height
+        let surfaceRows = editor.surfaceSize.map { Int($0.rows) }
+        let cardTop = cell > 0
+            ? PCodeDock.bottomMargin + PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows)
+            : 0
+        let x = max(0, min(docked.minX - pane.minX, size.width))
+        let width = max(0, min(docked.width, size.width - x))
+        return Placement(cursor: cursor, minX: x, width: width > 0 ? width : size.width, minBottomGap: cardTop)
+    }
 }
 
-/// The toast, centered over the pane just above pcode's editor box, or near
+/// The toast, centered over the active editor just above its box, or near
 /// the bottom when the cursor is unknown.
 struct PCodeToastLayer: View {
     @EnvironmentObject var ghostty: Ghostty.App
@@ -85,6 +119,7 @@ struct PCodeToastLayer: View {
             let bounds = toast.surfaceView?.bounds.size ?? geometry.size
             let size = CGSize(
                 width: min(geometry.size.width, bounds.width), height: min(geometry.size.height, bounds.height))
+            let place = toast.placement(in: size)
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 if let shown = toast.shown {
@@ -92,9 +127,12 @@ struct PCodeToastLayer: View {
                         .id(shown.id)
                         .transition(.opacity.combined(with: .offset(y: 6)))
                 }
-                Color.clear.frame(height: Self.bottomGap(toast.shown, cursor: toast.cursorCell(), in: size))
+                Color.clear.frame(
+                    height: Self.bottomGap(
+                        toast.shown, cursor: place.cursor, minBottomGap: place.minBottomGap, in: size))
             }
-            .frame(width: size.width, height: size.height)
+            .frame(width: place.width, height: size.height)
+            .offset(x: place.minX)
             .animation(.easeOut(duration: 0.18), value: toast.shown)
         }
         .allowsHitTesting(false)
@@ -121,11 +159,14 @@ struct PCodeToastLayer: View {
     }
 
     /// Points from the pane's bottom to the toast's: above the editor box's top row.
-    static func bottomGap(_ shown: PCodeToast.Shown?, cursor: CGRect?, in size: CGSize) -> CGFloat {
-        guard let shown, let cursor else { return fallbackBottom }
+    static func bottomGap(
+        _ shown: PCodeToast.Shown?, cursor: CGRect?, minBottomGap: CGFloat = 0, in size: CGSize
+    ) -> CGFloat {
+        guard let shown, let cursor else { return max(fallbackBottom, minBottomGap + margin) }
         let top = cursor.minY - CGFloat(shown.rowsAbove) * cursor.height - margin
-        // Kept on screen: never below the pane, never off its top.
-        return max(margin, min(size.height - top, size.height - 2 * cursor.height))
+        let floor = max(margin, minBottomGap > 0 ? minBottomGap + margin : margin)
+        // Kept on screen: never below the editor card, never off the pane's top.
+        return max(floor, min(size.height - top, size.height - 2 * cursor.height))
     }
 
     /// The toast's own scheme: its background is the terminal's, not the system's.

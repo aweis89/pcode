@@ -322,7 +322,15 @@ def test_the_editor_replies_to_the_open_thread():
     # The conversation's own commands close it, as their output goes there.
     assert app.btw_submit("/help") is None
     assert app.activity.btw_thread is None
+    # Unknown slash commands (e.g. a mistyped /summarize) stay in the thread
+    # with the draft intact so the typo can be fixed in place.
     open_thread(app.activity, second.thread)
+    assert app.btw_submit("") is None
+    assert app.btw_submit("   ") is None
+    for unknown in ("/summerize", "/summerize\nkeep decisions", "/"):
+        assert app.btw_submit(unknown) is True
+        assert app.activity.btw_thread == second.thread
+    assert "Unknown command: /summerize" in app.transcript.console.file.getvalue()
     assert app.btw_submit("/close") is False
     assert app.activity.btw_thread is None
 
@@ -344,11 +352,26 @@ def test_merge_from_the_thread_keeps_it_and_goes_back():
         app.activity.busy = False
         # A preview has no tree to keep it in; pretend it does.
         app.controller.check_bridge = lambda thread, action="merge": second
-        assert app.btw_submit("/summarize keep decisions") is False
+        assert app.btw_submit("/summarize\nkeep decisions") is False
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert kept == [(second.thread, "summary", "keep decisions")]
         assert app.activity.btw_thread is None
+
+        # An async failure while the drawer is open flashes and keeps it open.
+        flashed = []
+        app.transcript.flash = flashed.append
+
+        async def fail_keep(thread, action, instructions=""):
+            raise ValueError("thread vanished")
+
+        app.controller.keep_thread = fail_keep
+        open_thread(app.activity, second.thread)
+        assert app.btw_submit("/summarize") is False
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert app.activity.btw_thread == second.thread
+        assert flashed == ["thread vanished"]
 
     asyncio.run(run())
 
@@ -839,6 +862,27 @@ def test_docked_btw_drops_prefix_tint_and_main_conversation_chrome(monkeypatch):
             open_root_height = layout.root.preferred_height(100, 40).preferred
             assert open_root_height == 3
             assert open_root_height < closed_root_height
+
+            # While the open /btw thread is answering, the docked editor shows a
+            # status bar with spinner, phase, and elapsed time on its top border.
+            monkeypatch.setattr(app.transcript, "frame_shade", lambda: "#202020")
+            second.status = "running"
+            second.activity = "Thinking"
+            assert layout.frame_shaded()
+            assert layout.btw_running_aside() is second
+            assert layout.top_row_filled()
+            assert layout.top_gap() == 1
+            assert layout.needs_animation()
+            status_text = fragment_list_to_text(layout.btw_status_border().content.text())
+            assert "Thinking" in status_text
+            running_height = layout.root.preferred_height(100, 40).preferred
+            assert running_height == 4
+            second.status = "answered"
+            second.activity = ""
+            assert layout.btw_running_aside() is None
+            assert not layout.top_row_filled()
+            assert layout.top_gap() == 0
+            assert layout.root.preferred_height(100, 40).preferred == 3
 
             # Closing restores normal docked chrome.
             close(app.activity)
