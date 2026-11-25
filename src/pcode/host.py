@@ -19,6 +19,7 @@ queries, and receives view calls.
 
 import argparse
 import asyncio
+import contextlib
 import itertools
 import json
 import os
@@ -79,6 +80,7 @@ HOST_CALLS = frozenset(
         "stop_if_idle",
         "restart",
         "asides_read",
+        "continue_interrupted",
     }
 )
 
@@ -299,6 +301,15 @@ class _Client:
         `interrupt` restarts a busy host too, continuing its turn (see `SessionHost.restart`).
         """
         return self.host.restart(interrupt=bool(interrupt))
+
+    def continue_interrupted(self) -> None:
+        """A terminal moved its session here mid-turn (`/detach`): continue that turn.
+
+        Sent only once the terminal has connected, ahead of what was typed
+        during the move, so a host that failed to come up never runs it.
+        """
+        self.host.touch(self)
+        self.host.continue_when_ready()
 
 
 class HostView:
@@ -1091,18 +1102,39 @@ class SessionHost:
         print(f"restarting mid-work as {self.successor}", file=sys.stderr, flush=True)
         try:
             interrupted = await controller.settle_for_handoff()
-            # A command is its sender's, and that terminal goes with this host.
-            _commands, messages = controller.take_typed()
-            self.carry = {"continue": interrupted, "messages": messages}
+            commands, messages = controller.take_typed()
+            # A command is its sender's, and that terminal goes with this host:
+            # the successor names them rather than running them for nobody.
+            self.carry = {"continue": interrupted, "messages": messages, "commands": commands}
         finally:
             self.stop()
+
+    def continue_when_ready(self) -> None:
+        """`/continue` the interrupted turn now, or as `boot` finishes if it is still starting."""
+        if self.controller.startup_pending:
+            self.carried = {**(self.carried or {}), "continue": True}
+        else:
+            self.take_over({"continue": True})
 
     def take_over(self, carry: dict) -> None:
         """Carry on from the host this one replaced mid-turn: its turn first, then its queue."""
         controller = self.controller
-        if carry.get("continue") and controller.startup_error is None:
+        messages = [tuple(message) for message in carry.get("messages") or ()]
+        if commands := carry.get("commands"):
+            controller.view.warning(
+                "Not run, as the host restarted before them; send again if still wanted: "
+                + ", ".join(commands)
+            )
+        if controller.startup_error is not None:
+            if messages:
+                controller.view.warning(
+                    "Not sent, as the agent did not start: "
+                    + " · ".join(text for text, _mode in messages)
+                )
+            return
+        if carry.get("continue"):
             controller.continue_interrupted()
-        for text, mode in carry.get("messages") or ():
+        for text, mode in messages:
             controller.submit(text, mode)
 
     async def stop_when_idle(
@@ -1411,12 +1443,17 @@ def start_successor(successor: dict) -> None:
     Spawned from here, it inherits this host's environment (a remote profile's
     is scrubbed already) and its remote profile.
     """
-    from pcode.remote import spawn_host
+    from pcode.remote import spawn_host, write_carry
 
     try:
         identity, _, log = spawn_host(**successor)
     except Exception as error:  # noqa: BLE001 - the log is the only reader.
         print(f"could not start the successor: {error_message(error)}", file=sys.stderr)
+        if carry := successor.get("carry"):
+            print(f"not carried on: {json.dumps(carry)}", file=sys.stderr, flush=True)
+            # Left for whoever asked for the restart to report (`remote.undelivered`).
+            with contextlib.suppress(OSError):
+                write_carry(carry, successor["identity"], host_dir())
         return
     print(f"restarted as {identity} (log: {log})", file=sys.stderr, flush=True)
 
@@ -1432,6 +1469,10 @@ def _idle_minutes(preferences: dict, settings: dict) -> int | None:
     return 0
 
 
+def _ignore_signal(signum, frame) -> None:
+    """A signal a host neither acts on nor dies of."""
+
+
 def main(argv: list[str] | None = None) -> None:
     import faulthandler
 
@@ -1441,8 +1482,9 @@ def main(argv: list[str] | None = None) -> None:
     # The terminal that started the host may close; the host outlives it.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
     # The terminal's "detach for an app restart" signal (dev/app-restart.md):
-    # meant for terminals, and a host's default action would be to die.
-    signal.signal(signal.SIGUSR2, signal.SIG_IGN)
+    # meant for terminals, and a host's default action would be to die. A
+    # handler, not SIG_IGN, which the commands a host runs would inherit.
+    signal.signal(signal.SIGUSR2, _ignore_signal)
     try:
         successor = asyncio.run(_serve(args))
     except Exception as error:  # noqa: BLE001 - the log is the only reader.
