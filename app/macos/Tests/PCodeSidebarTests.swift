@@ -49,4 +49,16 @@ struct PCodeSidebarTests {
         ))
         #expect(!PCodeSidebarLayout.isInsideRevealedZone(at: CGPoint(x: -1, y: 400), in: bounds, sidebarWidth: width))
     }
+
+    @Test func displayTitlePrefersLiveTitleOverSavedAndHandlesPlaceholders() {
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "", savedLabel: nil) == "New session")
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "👻", savedLabel: nil) == "New session")
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "👻", savedLabel: "Saved title") == "Saved title")
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "Renamed title", savedLabel: "Old title") == "Renamed title")
+        #expect(PCodeWorkspace.displayTitle(paneTitle: "  Trimmed title  ", savedLabel: nil) == "Trimmed title")
+        // Keep full saved title when OSC 0 live title is a truncated prefix of it.
+        let full = String(repeating: "a", count: 140)
+        let prefix = String(full.prefix(120))
+        #expect(PCodeWorkspace.displayTitle(paneTitle: prefix, savedLabel: full) == full)
+    }
 }

@@ -1105,10 +1105,45 @@ final class PCodeWorkspace: ObservableObject {
             info: info)
     }
 
+    /// Whether the workspace window is currently in native fullscreen (no traffic lights in the title bar).
+    @Published var isFullScreen = false
+    /// Height of the window's titlebar region in points (matches AppKit's traffic-light bar).
+    @Published var titlebarHeight: CGFloat = 28
+
+    /// Resolve the best display title for an open pane, preferring live terminal
+    /// titles (e.g. after `/rename` or auto-titling) while falling back to the
+    /// saved `session.json` label when the terminal still has Ghostty's placeholder
+    /// or a truncated prefix of a longer saved label.
+    static func displayTitle(paneTitle: String, savedLabel: String?) -> String {
+        let trimmedLive = paneTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isPlaceholder = trimmedLive.isEmpty || trimmedLive == "👻"
+        let trimmedSaved = savedLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let validSaved = (trimmedSaved?.isEmpty == false) ? trimmedSaved : nil
+
+        if !isPlaceholder {
+            // `TabTitle` truncates OSC 0 to 120 chars; keep the full saved label if live is just its prefix.
+            if let validSaved, validSaved.count > trimmedLive.count, validSaved.hasPrefix(trimmedLive) {
+                return validSaved
+            }
+            return trimmedLive
+        }
+        return validSaved ?? "New session"
+    }
+
+    func displayTitle(for pane: PCodeSessionPane) -> String {
+        Self.displayTitle(paneTitle: pane.title, savedLabel: info(for: pane)?.label)
+    }
+
+    func projectName(for pane: PCodeSessionPane) -> String {
+        let path = projectPath(for: pane)
+        if path == Self.normalizePath(NSHomeDirectory()) { return "~" }
+        let last = (path as NSString).lastPathComponent
+        return last.isEmpty ? path : last
+    }
+
     func peekTarget(for pane: PCodeSessionPane) -> PCodePeekTarget {
         let saved = info(for: pane)
-        let placeholder = pane.title.isEmpty || pane.title == "👻"
-        let title = saved?.label ?? (placeholder ? "New session" : pane.title)
+        let title = Self.displayTitle(paneTitle: pane.title, savedLabel: saved?.label)
         return PCodePeekTarget(
             sessionID: pane.sessionID,
             title: title,
@@ -1721,38 +1756,43 @@ struct PCodeWorkspaceView: View {
     // those lay glass (blur sampled every frame) over the terminal, which is
     // a scroll view, and make the window composite translucent layers.
     var body: some View {
-        ZStack {
-            GeometryReader { geometry in
-                let totalWidth = geometry.size.width
-                let sidebarWidth = workspace.effectiveSidebarWidth(in: totalWidth)
-                HStack(spacing: 0) {
-                    if !workspace.sidebarAutoHide {
-                        sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: false)
-                    }
-                    detailPane(peekLeadingInset: workspace.sidebarAutoHide && workspace.sidebarRevealed ? sidebarWidth : 0)
-                }
-                .overlay(alignment: .leading) {
-                    if workspace.sidebarAutoHide {
-                        ZStack(alignment: .leading) {
-                            Color.clear.allowsHitTesting(false)
-                            if workspace.sidebarRevealed {
-                                sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: true)
-                                    .onHover { workspace.sidebarHoverChanged($0) }
-                                    .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
-                                    .transition(.move(edge: .leading))
-                            }
+        VStack(spacing: 0) {
+            PCodeWindowTitleBar(workspace: workspace)
+                .zIndex(10)
+            ZStack {
+                GeometryReader { geometry in
+                    let totalWidth = geometry.size.width
+                    let sidebarWidth = workspace.effectiveSidebarWidth(in: totalWidth)
+                    HStack(spacing: 0) {
+                        if !workspace.sidebarAutoHide {
+                            sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: false)
                         }
-                        .clipped()
-                        .animation(.easeOut(duration: 0.18), value: workspace.sidebarRevealed)
+                        detailPane(peekLeadingInset: workspace.sidebarAutoHide && workspace.sidebarRevealed ? sidebarWidth : 0)
+                    }
+                    .overlay(alignment: .leading) {
+                        if workspace.sidebarAutoHide {
+                            ZStack(alignment: .leading) {
+                                Color.clear.allowsHitTesting(false)
+                                if workspace.sidebarRevealed {
+                                    sidebarWithHandle(width: sidebarWidth, totalWidth: totalWidth, floating: true)
+                                        .onHover { workspace.sidebarHoverChanged($0) }
+                                        .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
+                                        .transition(.move(edge: .leading))
+                                }
+                            }
+                            .clipped()
+                            .animation(.easeOut(duration: 0.18), value: workspace.sidebarRevealed)
+                        }
                     }
                 }
-            }
 
-            if workspace.showingDirectoryPicker {
-                PCodeDirectoryPickerOverlay(workspace: workspace)
-                    .transition(.opacity)
+                if workspace.showingDirectoryPicker {
+                    PCodeDirectoryPickerOverlay(workspace: workspace)
+                        .transition(.opacity)
+                }
             }
         }
+        .ignoresSafeArea(.container, edges: .top)
         // Keep workspace keyboard shortcuts mounted even when the sidebar is auto-hidden.
         .background {
             Group {
@@ -1799,7 +1839,7 @@ struct PCodeWorkspaceView: View {
             .padding(.leading, peekLeadingInset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ghostty.config.backgroundColor)
+        .background(ghostty.config.backgroundColor, ignoresSafeAreaEdges: [])
         .background(GeometryReader { proxy in
             Color.clear
                 .onAppear { workspace.detailSize = proxy.size }
@@ -2192,9 +2232,7 @@ private struct PCodePaneRow<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
-        // Ghostty's placeholder title until pcode sets one.
-        let placeholder = pane.title.isEmpty || pane.title == "👻"
-        let title = info?.label ?? (placeholder ? "New session" : pane.title)
+        let title = PCodeWorkspace.displayTitle(paneTitle: pane.title, savedLabel: info?.label)
         PCodeSessionRow(
             title: title,
             subtitle: info?.worktreeName ?? pane.worktreeName,
@@ -2688,6 +2726,136 @@ struct PCodeSessionPaneView: View {
     }
 }
 
+/// Custom opaque top title bar that sits in the window's traffic-light strip
+/// (`.fullSizeContentView` + hidden system title, no NSToolbar / no glass).
+/// Shows the active session's activity indicator, project/worktree context pill,
+/// and full session title with generous horizontal room.
+private struct PCodeWindowTitleBar: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    @ObservedObject var workspace: PCodeWorkspace
+
+    private var leadingClearance: CGFloat {
+        workspace.isFullScreen ? 16 : 78
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            ghostty.config.backgroundColor
+
+            Group {
+                if let pane = workspace.selectedPane {
+                    PCodeActiveSessionTitleContent(
+                        pane: pane,
+                        workspace: workspace,
+                        leadingClearance: leadingClearance
+                    )
+                    .id(pane.id)
+                } else {
+                    HStack {
+                        Spacer(minLength: leadingClearance)
+                        Text("pcode")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 16)
+                    }
+                    .onAppear { workspace.window?.title = "pcode" }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Rectangle()
+                .fill(ghostty.config.splitDividerColor.opacity(0.65))
+                .frame(height: 1)
+        }
+        .frame(height: workspace.titlebarHeight)
+        .allowsHitTesting(false)
+    }
+}
+
+/// Observes the active pane directly so title (`/rename`, auto-title) and activity
+/// changes refresh the title bar without re-rendering the whole workspace.
+private struct PCodeActiveSessionTitleContent: View {
+    @ObservedObject var pane: PCodeSessionPane
+    @ObservedObject var workspace: PCodeWorkspace
+    let leadingClearance: CGFloat
+
+    private var savedInfo: PCodeSessionInfo? {
+        workspace.info(for: pane)
+    }
+
+    private var title: String {
+        PCodeWorkspace.displayTitle(paneTitle: pane.title, savedLabel: savedInfo?.label)
+    }
+
+    private var projectName: String {
+        workspace.projectName(for: pane)
+    }
+
+    private var worktreeName: String? {
+        savedInfo?.worktreeName ?? pane.worktreeName
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: leadingClearance)
+
+            HStack(spacing: 7) {
+                PCodeActivityIndicator(activity: pane.activity, unseen: false)
+                    .frame(width: 10, height: 10)
+
+                HStack(spacing: 4) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary.opacity(0.85))
+                    Text(projectName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let worktreeName, !worktreeName.isEmpty {
+                        Text("/")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                        Text(worktreeName)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(.secondary.opacity(0.9))
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.07))
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                )
+                .fixedSize(horizontal: true, vertical: false)
+
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.primary.opacity(0.92))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+            }
+
+            Spacer(minLength: 16)
+        }
+        .onAppear { syncWindowTitle() }
+        .onChange(of: title) { _ in syncWindowTitle() }
+        .onChange(of: projectName) { _ in syncWindowTitle() }
+    }
+
+    private func syncWindowTitle() {
+        let full = "\(projectName) — \(title)"
+        if workspace.window?.title != full {
+            workspace.window?.title = full
+        }
+    }
+}
+
 /// The one workspace window.
 final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
     private static var instance: PCodeWorkspaceController?
@@ -2718,9 +2886,11 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         workspace = PCodeWorkspace(ghostty: ghostty)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         window.title = "pcode"
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
         // Opaque, in the terminal's own color, as Ghostty's windows are: the
         // window server then never blends anything under the terminal.
         window.titlebarAppearsTransparent = true
@@ -2747,6 +2917,10 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         workspace.window = window
+        let barHeight = window.frame.height - window.contentLayoutRect.height
+        if barHeight > 0 {
+            workspace.titlebarHeight = barHeight
+        }
         workspace.followAppearance()
         workspace.windowVisible = { [weak window] in
             window?.occlusionState.contains(.visible) ?? false
@@ -2782,6 +2956,20 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         }
         workspace.peek.dismiss(restoreFocus: false)
         workspace.sidebarWindowWillClose()
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        workspace.isFullScreen = true
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        workspace.isFullScreen = false
+        if let window {
+            let barHeight = window.frame.height - window.contentLayoutRect.height
+            if barHeight > 0 {
+                workspace.titlebarHeight = barHeight
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not restorable from a coder") }
