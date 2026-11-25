@@ -93,6 +93,11 @@ def marks_supported() -> bool:
     )
 
 
+def native_app() -> bool:
+    """Whether pcode is running inside the native Pcode macOS app."""
+    return drawer_supported() or popup_supported()
+
+
 def drawer_supported() -> bool:
     """Whether the startup probe found a terminal that opens pcode's drawer."""
     from pcode import drawer

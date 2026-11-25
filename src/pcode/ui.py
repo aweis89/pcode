@@ -3791,7 +3791,7 @@ class PromptLayout:
         circular dependency between frame_height and command_rows.
         """
         activity, transcript = self.activity, self.transcript
-        if transcript is None:
+        if transcript is None or self.btw_docked():
             return None
         edits = transcript.live_edit_previews and activity.edit_previews
         if not edits:
@@ -4028,6 +4028,8 @@ class PromptLayout:
         the bottom, so a shorter thought only moves the status row down a
         row, while held blank rows read as a gap between thought and tasks.
         """
+        if self.btw_docked():
+            return []
         attached = self.activity.attach_activity and self.activity.status_shown
         return self.thought_rows() if attached else []
 
@@ -4071,6 +4073,8 @@ class PromptLayout:
 
     @_per_render
     def queue_rows(self):
+        if self.btw_docked():
+            return []
         budget = min(4, max(1, self.size().rows // 4))
         return self.activity.queue_rows(budget)
 
@@ -4128,13 +4132,15 @@ class PromptLayout:
         return len(rows) + self.task_chrome() if rows else 0
 
     def plan_attached(self) -> bool:
-        return self.activity.attach_tasks and bool(self.plan_rows())
+        return not self.btw_docked() and self.activity.attach_tasks and bool(self.plan_rows())
 
     def attached_height(self) -> int:
         """Rows attached tasks add to the editor box: the tasks plus a divider."""
         return len(self.plan_rows()) + 1 if self.plan_attached() else 0
 
     def activity_height(self) -> int:
+        if self.btw_docked():
+            return 0
         rows = [] if self.activity.attach_tasks else self.plan_rows()
         commands = self.command_rows()
         return (
@@ -4232,7 +4238,7 @@ class PromptLayout:
 
     def startup_border_active(self, attached: bool | None = None) -> bool:
         """Whether the editor's top border is currently showing the startup animation."""
-        if not self.activity.startup_animating or self.activity.status_shown:
+        if self.btw_docked() or not self.activity.startup_animating or self.activity.status_shown:
             return False
         if attached is None:
             attached = self.plan_attached()
@@ -4469,7 +4475,7 @@ class PromptLayout:
                 lambda: panel_fragments(self.queue_rows(), self.size().columns - 1),
                 lambda: len(self.queue_rows()),
             ),
-            filter=Condition(lambda: bool(self.activity.queued_prompts)),
+            filter=Condition(lambda: bool(self.activity.queued_prompts) and not self.btw_docked()),
         )
 
     def glide_reserve(self) -> ConditionalContainer:
@@ -4537,6 +4543,8 @@ class PromptLayout:
         whether the turn worked; while a turn runs, the status row takes the
         border instead.
         """
+        if self.btw_docked():
+            return []
         # Corners, stub, a space either side, and at least one rule cell.
         # Shaded, `heading_border` draws it: the lead, a space, a rule cell, the corner.
         chrome = len(self.heading_lead()) + 3 if self.frame_shaded() else TITLE_CHROME + 1
@@ -4548,6 +4556,15 @@ class PromptLayout:
 
         return bool(current(self.activity))
 
+    def btw_docked(self) -> bool:
+        """Whether the editor is docked inside the native `/btw` drawer.
+
+        In that mode the card sits inside the drawer right under the thread,
+        so the extra `/btw` prefix/tint/header and main-conversation chrome
+        (status, tasks, command previews, toolbar) stay hidden.
+        """
+        return self.btw_active() and dock.active() is not None
+
     def btw_bar_height(self, attached: bool | None = None) -> int:
         """1 when an open `/btw` thread needs its own strip inside the editor box.
 
@@ -4555,7 +4572,7 @@ class PromptLayout:
         the top border carries a running status, startup label, or attached
         tasks, a 1-row strip above the prompt keeps the `/btw` target visible.
         """
-        if not self.btw_active():
+        if not self.btw_active() or self.btw_docked():
             return 0
         if self.activity.status_shown:
             return 1
@@ -4611,6 +4628,8 @@ class PromptLayout:
 
     def top_row_filled(self) -> bool:
         """Whether the editor's top row carries text: a status, tasks, or a title."""
+        if self.btw_docked():
+            return False
         return (
             self.activity.status_shown
             or bool(self.activity.startup_label)
@@ -4630,6 +4649,8 @@ class PromptLayout:
         bring dividers of their own. `preview_layout` passes `attached`, since
         asking `plan_attached` there would re-enter it.
         """
+        if self.btw_docked():
+            return 0
         if attached is None:
             attached = self.plan_attached()
         if self.btw_bar_height(attached=attached):
@@ -4710,17 +4731,19 @@ class PromptLayout:
         # The top border carries the running status, else the attached tasks'
         # heading. Attached tasks sit under it, and a divider separates them
         # from the text; frame_height counts both.
-        status = Condition(lambda: self.activity.status_shown)
+        status = Condition(lambda: self.activity.status_shown and not self.btw_docked())
         startup = Condition(self.startup_border_active)
         attached = Condition(self.plan_attached)
         shaded = Condition(self.frame_shaded)
-        btw = Condition(self.btw_active)
+        btw = Condition(lambda: self.btw_active() and not self.btw_docked())
         btw_top = btw & ~status & ~startup & ~attached
 
-        # Showing a /btw thread, the box takes the thread's colour: Enter goes
-        # to the thread, not the conversation.
+        # Showing a /btw thread inline, the box takes the thread's colour so it
+        # is clear Enter goes to the thread. Docked inside the drawer itself,
+        # the card keeps the drawer's normal style.
         editor_frame.container.style = lambda: (
-            "class:frame class:shaded" + (" class:btw.reply" if self.btw_active() else "")
+            "class:frame class:shaded"
+            + (" class:btw.reply" if self.btw_active() and not self.btw_docked() else "")
         )
         band = Condition(lambda: bool(self.band_rows()))
 
@@ -4772,9 +4795,13 @@ class PromptLayout:
         )
         return editor_frame
 
+    def toolbar_shown(self) -> bool:
+        """Whether the main conversation's bottom toolbar is shown."""
+        return self.session.bottom_toolbar is not None and not self.btw_docked()
+
     def badge_on_toolbar(self) -> bool:
         """Docked, the vi mode badge floats right on the status bar, not in the box."""
-        return dock.active() is not None and self.session.bottom_toolbar is not None
+        return dock.active() is not None and self.toolbar_shown()
 
     def bottom_toolbar(self) -> Container:
         session = self.session
@@ -4801,7 +4828,10 @@ class PromptLayout:
     def layout(self) -> Layout:
         children = [
             self.menu,
-            self.activity_panel(),
+            ConditionalContainer(
+                self.activity_panel(),
+                filter=Condition(lambda: not self.btw_docked()),
+            ),
             self.queued(),
             # This prompt can be only three rows tall. A float would inherit
             # that height and clip the menu, so reserve space only while open.
@@ -4812,7 +4842,12 @@ class PromptLayout:
         if self.transcript is not None and not docked:
             children[:0] = [self.typing(), self.glide_reserve(), Window()]
         if self.session.bottom_toolbar is not None:
-            children.append(self.bottom_toolbar())
+            children.append(
+                ConditionalContainer(
+                    self.bottom_toolbar(),
+                    filter=Condition(self.toolbar_shown),
+                )
+            )
         self.root = _MeasuredSplit(
             children,
             align=VerticalAlign.JUSTIFY if self.transcript and not docked else VerticalAlign.BOTTOM,
@@ -5147,6 +5182,12 @@ def create_prompt(
 
         return on_btw_close is not None and bool(current(activity))
 
+    def btw_inline_indicator() -> bool:
+        # In terminal/undocked mode, the main editor stays under the conversation,
+        # so the `btw ❯ ` prefix makes it clear Enter goes to the side thread.
+        # Docked, the card moves inside the drawer itself, so the prefix isn't needed.
+        return btw_replying() and dock.active() is None
+
     def thread_commands() -> tuple[tuple[str, str], ...]:
         from pcode.btw_view import THREAD_COMMANDS
 
@@ -5156,7 +5197,7 @@ def create_prompt(
         text = session.default_buffer.text
         if text.lstrip().startswith(SHELL_PREFIX):
             return [("class:prompt", SHELL_PROMPT_PREFIX)]
-        if btw_replying():
+        if btw_inline_indicator():
             return [("class:btw.prompt", BTW_PROMPT_PREFIX)]
         return [("class:prompt", PROMPT_PREFIX)]
 
@@ -5164,7 +5205,7 @@ def create_prompt(
         text = session.default_buffer.text
         if text.lstrip().startswith(SHELL_PREFIX):
             return get_cwidth(SHELL_PROMPT_PREFIX)
-        if btw_replying():
+        if btw_inline_indicator():
             return get_cwidth(BTW_PROMPT_PREFIX)
         return get_cwidth(PROMPT_PREFIX)
 
@@ -5173,7 +5214,7 @@ def create_prompt(
             return [("class:prompt", " " * width)]
         pad = max(0, width - get_cwidth(CONTINUATION_PREFIX))
         is_shell = session.default_buffer.text.lstrip().startswith(SHELL_PREFIX)
-        style = "class:btw.prompt" if btw_replying() and not is_shell else "class:prompt"
+        style = "class:btw.prompt" if btw_inline_indicator() and not is_shell else "class:prompt"
         return [(style, " " * pad + CONTINUATION_PREFIX)]
 
     kwargs.setdefault("color_depth", color_depth())

@@ -291,10 +291,19 @@ private struct PCodeDockCard: View {
         }
             .frame(height: PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows), alignment: .bottom)
             .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Self.cornerRadius)
+                    .strokeBorder(ghostty.config.splitDividerColor, lineWidth: inDrawer ? 1 : 0)
+            )
             .background(
                 RoundedRectangle(cornerRadius: Self.cornerRadius)
                     .fill(ghostty.config.backgroundColor)
-                    .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: -2))
+                    .shadow(
+                        color: inDrawer ? .clear : .black.opacity(0.28),
+                        radius: inDrawer ? 0 : 18,
+                        x: 0,
+                        y: inDrawer ? 0 : -2)
+            )
             .padding(.horizontal, PCodeDock.bottomMargin)
             .padding(.top, PCodeDock.topMargin)
             .padding(.bottom, PCodeDock.bottomMargin)

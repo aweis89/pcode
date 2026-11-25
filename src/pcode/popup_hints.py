@@ -129,7 +129,7 @@ POPUPS: dict[str, tuple[Entry, ...]] = {
     ),
     # /btw in Ghostty Smooth's drawer, answered from pcode's editor (`btw_tail`).
     "btw_drawer": (
-        enter("Reply in editor"),
+        enter("Reply in editor", when="!docked"),
         shortcut("\\", "Next thread", when="others"),
         esc("Close"),
     ),

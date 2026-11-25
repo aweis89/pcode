@@ -734,3 +734,97 @@ def test_btw_toolbar_shows_btw_reply_and_thread_model():
 
     close(app.activity)
     assert "steering" in fragment_list_to_text(app.toolbar())
+
+
+def test_native_app_helper_follows_drawer_and_popup_probes(monkeypatch):
+    from pcode import theme
+
+    monkeypatch.setattr(theme, "_drawer_protocol", None)
+    monkeypatch.setattr(theme, "_popup_protocol", None)
+    assert not theme.native_app()
+
+    monkeypatch.setattr(theme, "_drawer_protocol", 1)
+    assert theme.native_app()
+
+    monkeypatch.setattr(theme, "_drawer_protocol", None)
+    monkeypatch.setattr(theme, "_popup_protocol", 1)
+    assert theme.native_app()
+
+
+def test_docked_btw_drops_prefix_tint_and_main_conversation_chrome(monkeypatch):
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+    from prompt_toolkit.input import create_pipe_input
+
+    from pcode import dock
+    from pcode.commands import CommandRegistry
+    from pcode.runtime import CommandOutput, EditPreview
+    from pcode.ui import PromptLayout, create_prompt
+    from pcode.word_wrap import WordWrapProcessor
+
+    app, _ = seeded_app()
+    second = app.controller.asides.items[-1]
+    fake_dock = SimpleNamespace(layout_size=lambda size: size)
+    monkeypatch.setattr(dock, "_active", fake_dock)
+
+    async def check() -> None:
+        with create_pipe_input() as pipe:
+            output = DummyOutput()
+            output.get_size = lambda: Size(rows=40, columns=100)
+            session = create_prompt(
+                CommandRegistry(),
+                activity=app.activity,
+                on_btw_close=lambda: None,
+                bottom_toolbar=lambda: [("", "status bar")],
+                input=pipe,
+                output=output,
+            )
+            layout = PromptLayout(session, app.activity, app.transcript, session.shortcuts)
+            wrap = next(p for p in session.input_processors if isinstance(p, WordWrapProcessor))
+
+            # Seed main-conversation chrome: status, tasks, command output, queued prompt, title.
+            app.activity.prompt_state = "running"
+            app.activity.attach_tasks = True
+            app.activity.plan = [{"content": "step one", "status": "in_progress"}]
+            app.activity.queued_prompts = ["follow up"]
+            app.activity.command_outputs["c1"] = CommandOutput("c1", "ls", "out\n")
+            app.activity.edit_previews["e1"] = EditPreview("e1", "a.py", "+line")
+            app.transcript.live_edits = True
+
+            # Closed: normal docked chrome is shown.
+            assert not layout.btw_docked()
+            assert layout.toolbar_shown()
+            assert layout.badge_on_toolbar()
+            assert layout.plan_attached()
+            assert layout.queue_rows()
+
+            # Open while docked: prefix stays normal, btw.reply tint is omitted,
+            # and main-conversation chrome is hidden.
+            open_thread(app.activity, second.thread)
+            assert layout.btw_docked()
+            assert fragment_list_to_text(session.message()) == "❯ "
+            assert wrap.prefix_width == 2
+            session.default_buffer.set_document(Document("hello\nworld"), bypass_readonly=True)
+            assert session.prompt_continuation(2, 1, False) == [("class:prompt", "· ")]
+
+            frame = layout.editor_frame()
+            assert "class:btw.reply" not in frame.container.style()
+            assert layout.btw_bar_height() == 0
+            assert layout.idle_title() == []
+            assert not layout.top_row_filled()
+            assert layout.top_gap() == 0
+            assert not layout.plan_attached()
+            assert layout.band_rows() == []
+            assert layout.activity_height() == 0
+            assert layout.queue_rows() == []
+            assert layout.preview_layout() is None
+            assert not layout.toolbar_shown()
+            assert not layout.badge_on_toolbar()
+
+            # Closing restores normal docked chrome.
+            close(app.activity)
+            assert not layout.btw_docked()
+            assert layout.toolbar_shown()
+            assert layout.badge_on_toolbar()
+
+    asyncio.run(check())

@@ -59,6 +59,9 @@ def test_the_drawer_footer_lists_the_editor_keys_and_is_sent_only_when_it_change
     two = notify(view, out, "asides", [state(status="answered"), state(id="b2", thread="t2")])
     assert "pcode;hints" in two
     assert [hint.label for hint in view.footer()] == ["Reply in editor", "Next thread", "Close"]
+    # Docked inside the drawer, the editor is right underneath, so "Reply in editor" is omitted.
+    view.docked = True
+    assert [hint.label for hint in view.footer()] == ["Next thread", "Close"]
 
 
 def test_without_a_drawn_footer_the_keys_stay_under_the_heading():

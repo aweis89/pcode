@@ -50,6 +50,8 @@ OLD_HOST = "Unsupported drawer version."
 RESTART = "This session host's pcode predates this drawer: run /restart in pcode."
 # Set to 1 by a terminal that draws the drawer's key footer (popup protocol 4).
 NATIVE_HINTS = "PCODE_NATIVE_HINTS"
+# Set to 1 when the docked editor card sits inside the drawer itself.
+DOCKED = "PCODE_DOCKED"
 
 
 class Tail:
@@ -71,6 +73,7 @@ class Tail:
         # The footer last sent to the drawer (`footer`); None before the first.
         self._footer: list[Hint] | None = None
         self.native_hints = os.environ.get(NATIVE_HINTS) == "1"
+        self.docked = os.environ.get(DOCKED) == "1"
         # Read once: the preferences need not be read again at every notification.
         self._prefix = configured_prefix()
         # Pacing needs a loop to time its frames; without one, text lands at once.
@@ -129,7 +132,7 @@ class Tail:
         return hints(
             "btw_drawer",
             label=lambda key: shortcut_label(key, self._prefix),
-            state={"others": lambda: len(threads) > 1},
+            state={"others": lambda: len(threads) > 1, "docked": lambda: self.docked},
         )
 
     def _send_footer(self) -> None:

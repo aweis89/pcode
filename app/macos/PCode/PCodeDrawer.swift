@@ -163,20 +163,23 @@ final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
     }
 
     private func makeViewer(host: String, thread: String) -> Ghostty.SurfaceView? {
-        PCode.makeOverlaySurface(
-            over: surfaceView, command: Self.viewerCommand(host: host, thread: thread), owner: self)
+        let docked = surfaceView?.existingPCodeDock?.surface != nil
+        return PCode.makeOverlaySurface(
+            over: surfaceView, command: Self.viewerCommand(host: host, thread: thread, docked: docked), owner: self)
     }
 
     /// The viewer, run with the interpreter the session host runs on, so it
     /// is the same pcode; or a message, if the host cannot say which that is.
-    private static func viewerCommand(host: String, thread: String) -> String {
+    private static func viewerCommand(host: String, thread: String, docked: Bool) -> String {
         guard let python = PCode.entryPython(PCode.statePath("hosts/\(host).json")) else {
             return message("This session host's pcode predates the drawer: run /restart in pcode.")
         }
         // The ids are plain by now.
         // Tells the viewer we draw its key footer, so it leaves its own key line out.
+        var env = ["PCODE_NATIVE_HINTS=1"]
+        if docked { env.append("PCODE_DOCKED=1") }
         return PCode.pythonCommand(
-            python, module: "pcode.btw_tail", args: [host, thread], env: ["PCODE_NATIVE_HINTS=1"])
+            python, module: "pcode.btw_tail", args: [host, thread], env: env)
     }
 
     /// A command that only shows `text`; the embedded API waits after every
