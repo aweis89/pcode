@@ -3618,6 +3618,11 @@ def main() -> None:
     parser.add_argument("--demo", dest="theme_preview", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument(
+        "--delete-session",
+        metavar="ID",
+        help="Delete a saved session (refused while it is open) and exit",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="With --sessions: drop superseded step checkpoints and report the space freed",
@@ -3743,6 +3748,14 @@ def main() -> None:
         help="Also trace Python allocations (slower; requires --profile)",
     )
     args = parser.parse_args()
+    if args.delete_session:
+        from pcode.sessions import SessionError, delete_session
+
+        try:
+            delete_session(args.delete_session)
+        except SessionError as error:
+            sys.exit(f"pcode: {error}")
+        return
     if args.completions:
         from pcode.completion import install_hint, render
 
