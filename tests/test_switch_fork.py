@@ -410,8 +410,45 @@ def test_the_handoff_is_not_carried_to_the_host_as_typed(tmp_path):
     try:
         app.controller.command("/detach", HANDOFF_TAG)
         app.controller.command("/status")
-        commands, _ = app.controller.take_typed()
-        assert commands == ["/status"]
+        assert app.controller.take_typed() == [("/status", "command")]
+    finally:
+        saved.close()
+
+
+def test_a_move_carries_what_was_typed_in_the_order_it_was_typed(tmp_path):
+    saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
+    app = app_with(Busy(saved))
+    sent, here = [], []
+
+    class Host:
+        def submit(self, text, mode):
+            sent.append((text, mode))
+
+        def command(self, text, tag=None):
+            sent.append((text, "command"))
+
+    app._run_in_terminal = lambda text, tag: here.append(text)
+    controller = app.controller
+    try:
+        controller.command("/effort high")
+        controller.submit("first", "queue")
+        controller.command("/help")  # The terminal's own: run here, not in the host.
+        controller.submit("second", "steering")
+        controller.command("/compact")
+        unrun = []
+        app._carry_typed(controller, Host(), unrun)
+        assert sent == [
+            ("/effort high", "command"),
+            ("first", "queue"),
+            ("second", "steering"),
+            ("/compact", "command"),
+        ]
+        assert here == ["/help"] and unrun == []
+        # Exiting for an app restart, which would cancel it unrun: for the move to name.
+        app.app_restart_requested = True
+        controller.command("/help")
+        app._carry_typed(controller, Host(), unrun)
+        assert here == ["/help"] and unrun == ["/help"]
     finally:
         saved.close()
 

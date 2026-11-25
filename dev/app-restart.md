@@ -47,9 +47,12 @@ that were queued.
 
 What moves with the session: the interrupted turn (continued with `/continue`
 once the new host is connected, never before, so a host that fails to come up
-never runs it alongside this process), queued messages and slash commands, in
-order. A command already running when the signal lands is not waited for (a
-popup could hold it forever). A message whose turn had not reached the journal
+never runs it alongside this process), queued messages and slash commands,
+sent to the host in the order they were typed, the moment it is connected and
+before anything else in the move can fail. Queued commands the terminal runs
+itself (`/help`, `/attach`, `/new PROMPT`, ...) are not run: the exit would
+cancel them, so the warning names them instead. A command already running when
+the signal lands is not waited for (a popup could hold it forever). A message whose turn had not reached the journal
 yet goes back to the front of the queue rather than being continued. Commands
 queued in a host that restarts mid-turn are not run by its successor, which
 names them instead; should the successor fail to start, the error the restart

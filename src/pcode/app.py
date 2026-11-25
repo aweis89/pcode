@@ -43,6 +43,7 @@ from pcode.config import (
 )
 from pcode.config import USAGE as CONFIG_USAGE
 from pcode.controller import (
+    COMMAND_MODE,
     HANDOFF_TAG,
     MODEL_COMMANDS,
     SessionController,
@@ -160,6 +161,32 @@ NOTHING_TO_MOVE = (
 )
 
 
+def restore_signal_handler(loop, signum: int, previous) -> None:
+    """Undo `loop.add_signal_handler(signum, ...)`, putting `previous` back.
+
+    `remove_signal_handler` resets the default action on the way, which for
+    SIGUSR2 kills the process should one land just then, and blocking it here
+    covers this thread alone. So `previous` goes straight over the loop's
+    handler and only the loop's record of it is dropped: asyncio's Unix loop
+    keeps that in `_signal_handlers`. Any other loop takes the public route,
+    with the signal held off on this thread at least.
+    """
+    blocked = signal.pthread_sigmask(signal.SIG_BLOCK, {signum})
+    try:
+        handlers = getattr(loop, "_signal_handlers", None)
+        if not isinstance(handlers, dict) or signum not in handlers:
+            loop.remove_signal_handler(signum)
+            signal.signal(signum, previous)
+            return
+        signal.signal(signum, previous)
+        del handlers[signum]
+        if not handlers:  # As `remove_signal_handler`: the loop's wakeup fd goes too.
+            with suppress(ValueError, OSError):
+                signal.set_wakeup_fd(-1)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+
+
 class _PopupSuperseded(Exception):
     """Another popup opened after this command was queued."""
 
@@ -275,8 +302,10 @@ class PreviewApp:
         self._app_restart_task: asyncio.Task | None = None
         # Set once the session this terminal starts with is up (or failed to start).
         self._startup_done = asyncio.Event()
-        # The editor's Enter, so what was typed during a move reaches the host.
+        # The editor's Enter, for commands that send as if typed.
         self._submit_typed: Callable[[str], None] | None = None
+        # Queues a command (and its tag) the terminal runs itself, while the editor runs.
+        self._run_in_terminal: Callable[[str, object], None] | None = None
         # The host this terminal showed before the current one, for `/attach -`;
         # None after leaving a session that ran in this terminal.
         self.previous_host: str | None = None
@@ -2158,18 +2187,59 @@ class PreviewApp:
             ) from error
         finally:
             self.activity.end_wait(wait)
+        # At once, before anything below can fail or be cancelled (a quit
+        # mid-move): the host owns the session now, and nothing else would
+        # continue its turn or send what was typed for it. What the host shows
+        # meanwhile waits for `controller.start`.
+        if interrupted:
+            controller.continue_interrupted()
+        unrun: list[str] = []
+        self._carry_typed(self.controller, controller, unrun)
         where = (
             f"Moved mid-turn; continuing in the background host {identity}"
             if interrupted
             else f"Moved to background session {identity}"
         )
-        await self.adopt_controller(
-            controller,
-            welcome,
-            f"{where}: /detach or closing the terminal now leaves it running",
-            handed_off=True,
-            continue_turn=interrupted,
-        )
+        try:
+            await self.adopt_controller(
+                controller,
+                welcome,
+                f"{where}: /detach or closing the terminal now leaves it running",
+                handed_off=True,
+                unrun=unrun,
+            )
+        finally:
+            # After the replay, which would redraw it away.
+            if unrun:
+                self.transcript.warning(
+                    "Not run, as this terminal is exiting; run again in the new one if "
+                    "still wanted: " + ", ".join(unrun)
+                )
+
+    def _carry_typed(self, previous: SessionController, controller, unrun: list[str]) -> None:
+        """Send what was typed for `previous` on to the host it moved into, in order.
+
+        A command the terminal runs itself queues here, as a hosted terminal's
+        always does, unless this process is exiting for an app restart, which
+        would cancel it unrun: it goes in `unrun`, for the caller to name.
+        """
+        for text, mode in previous.take_typed():
+            if mode != COMMAND_MODE:
+                controller.submit(text, mode)
+            elif not runs_in_terminal(text):
+                controller.command(text, self._popup_generation)
+            elif self.app_restart_requested or self._run_in_terminal is None:
+                unrun.append(text)
+            else:
+                self._run_in_terminal(text, self._popup_generation)
+
+    @staticmethod
+    def _retire(previous: SessionController) -> None:
+        """The session left `previous` for a host: it runs nothing more here,
+        and nothing waits on it to."""
+        previous.running = False
+        previous.superseded = True
+        previous.handoff_idle.set()
 
     async def switch_session(self, output: TerminalOutput, session) -> None:
         """`/attach`: pick a running host (or start one) and show it in this terminal."""
@@ -2416,16 +2486,18 @@ class PreviewApp:
         *,
         handed_off: bool = False,
         preserve_welcome: bool = False,
-        continue_turn: bool = False,
+        unrun: list[str] | None = None,
     ) -> None:
         """Show the host behind `controller` in this terminal, leaving the current session.
 
         A session running in this process ends here (its journal keeps it for
-        /resume or `pcode -c`); another host keeps running. `continue_turn`
-        has the host continue the turn a move stopped, ahead of what was typed.
+        /resume or `pcode -c`); another host keeps running. `handed_off`: the
+        session moved into that host, which has its turn and what was typed
+        for it already (`_hand_to_host`); typed since goes there too, with
+        terminal commands that will not run collected in `unrun`.
         """
+        unrun = [] if unrun is None else unrun
         previous = self.controller
-        commands, messages = [], []
         if isinstance(previous, SessionController):
             # Handed off: the host now runs that same conversation.
             if not handed_off and (saved := getattr(previous.runtime, "session", None)):
@@ -2437,14 +2509,28 @@ class PreviewApp:
                 # Nothing saved to come back to, and the session last started
                 # in the background may be the one shown next.
                 self.previous_host = self.previous_session = None
-            await self.leave_controller(previous)
+            try:
+                await self.leave_controller(previous)
+            except BaseException:
+                if handed_off:
+                    # Cancelled (a quit) or failed: the host has the session all the same.
+                    self._carry_typed(previous, controller, unrun)
+                    self._retire(previous)
+                    self.transcript.warning(
+                        f"This session carries on in the background host {controller.id}; "
+                        f"reattach with: pcode --attach {controller.id}"
+                    )
+                    # Leaving it running, once what was sent to it has gone out.
+                    with suppress(Exception, asyncio.CancelledError):
+                        await asyncio.wait_for(controller.detach(), 2.0)
+                raise
             close = getattr(previous.runtime, "close", None)
             if close is not None:
                 close()
             # No await from here to the swap, so nothing typed falls between.
             if handed_off:
-                # Typed while it moved: meant for the session, which now runs there.
-                commands, messages = previous.take_typed()
+                # Typed while it was let go: meant for the session, which runs there.
+                self._carry_typed(previous, controller, unrun)
             else:
                 previous.clear_queue()  # Says what was dropped, as leaving it always has.
         else:
@@ -2456,8 +2542,7 @@ class PreviewApp:
         if isinstance(previous, SessionController):
             # Only now, while this terminal reads `running` from the new one:
             # the loop running this command ends once it has finished.
-            previous.running = False
-            previous.superseded = True
+            self._retire(previous)
         controller.on_closed = self.host_closed
         if forked := welcome.get("forked_from"):
             note += f" · continuing a copy of {forked}"
@@ -2492,13 +2577,6 @@ class PreviewApp:
             self.activity.begin_startup("Starting agent")
         elif self.activity.startup_label:
             self.activity.finish_startup(ok=controller.startup_error is None)
-        if continue_turn:
-            controller.continue_interrupted()
-        for text, mode in messages:
-            controller.submit(text, mode)
-        if self._submit_typed is not None:
-            for text in commands:
-                self._submit_typed(text)
         if self._host_watch is not None:
             self._host_watch()
         self.redraw()
@@ -3160,15 +3238,7 @@ class PreviewApp:
         try:
             await self._run_editor()
         finally:
-            # Removing it resets the default action, which would kill the
-            # process on its way out: hand back to what was there before,
-            # with the signal held off so none lands in between.
-            blocked = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR2})
-            try:
-                loop.remove_signal_handler(signal.SIGUSR2)
-                signal.signal(signal.SIGUSR2, previous)
-            finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+            restore_signal_handler(loop, signal.SIGUSR2, previous)
 
     async def _run_editor(self) -> None:
         # This frontend owns the terminal; suppress the framework's unsolicited banner.
@@ -3313,12 +3383,17 @@ class PreviewApp:
                     self.transcript.error(error_message(error, unexpected=f"{text} failed"))
                 await self.after_command()
 
+        def run_in_terminal(text, tag):
+            local.put_nowait((text, tag))
+
+        self._run_in_terminal = run_in_terminal
+
         def command(text, tag):
             # A host's terminal runs its own commands itself, even before the
             # host answers; in-process they keep their place in the session's queue.
             hosted = self.hosted or early is not None
             if hosted and runs_in_terminal(text):
-                local.put_nowait((text, tag))
+                run_in_terminal(text, tag)
             else:
                 self.controller.command(text, tag)
 

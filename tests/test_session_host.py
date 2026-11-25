@@ -31,6 +31,7 @@ from rich.console import Console
 
 from pcode.agent import create_coder
 from pcode.app import PreviewApp
+from pcode.controller import SessionController
 from pcode.host import MirroredActivity, SessionHost
 from pcode.host_protocol import (
     EVENT_TYPES,
@@ -1500,6 +1501,52 @@ def test_detach_mid_turn_continues_the_turn_in_the_host_ahead_of_the_queue(tmp_p
 
 
 @pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
+def test_a_move_that_fails_letting_go_here_still_continues_in_the_host(tmp_path, host_dir):
+    """Once the host is up it has the turn and the queue, whatever happens after."""
+
+    async def run():
+        output = StringIO()
+        script = Script()
+        app = local_app(tmp_path, script, output)
+        hosts: list[SessionHost] = []
+        left = []
+        leave = app.leave_controller
+
+        async def failing_leave(controller, **kwargs):
+            # The move's, not the exit's.
+            if isinstance(controller, SessionController) and not left:
+                left.append(controller)
+                raise RuntimeError("could not let go")
+            await leave(controller, **kwargs)
+
+        app.leave_controller = failing_leave
+
+        async def drive(pipe, seen):
+            await hang_with_a_queued_message(app, script, pipe, seen)
+            app.request_app_restart()
+
+        try:
+            spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
+            await run_local(app, output, drive, spawn)
+            shown = " ".join(output.getvalue().replace("▎", "").split())
+            assert "reattach with: pcode --attach cccc3333" in shown
+            host = hosts[0]
+            await until(lambda: "hang here" in host.script.gates)
+            host.script.release("hang here")
+            await until(lambda: asked(host.script) == ["hang here", "queued after"])
+            # Nothing ran here, and nothing here waits to.
+            assert asked(script) == ["hello here", "hang here"]
+            (previous,) = left
+            assert previous.superseded and not previous.running
+        finally:
+            for host in hosts:
+                await stop_host(host)
+            app.runtime.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.in_process("moves a session running in this terminal; hosted, there is none")
 def test_the_app_restart_signal_moves_a_local_session_to_a_host_then_exits(tmp_path, host_dir):
     """SIGUSR2: the process exits only once the host serves the session, and leaves it running."""
 
@@ -1511,12 +1558,19 @@ def test_the_app_restart_signal_moves_a_local_session_to_a_host_then_exits(tmp_p
 
         async def drive(pipe, seen):
             await hang_with_a_queued_message(app, script, pipe, seen)
+            # A terminal command waiting its turn: the exit would cancel it unrun.
+            app.controller.handoff_idle.clear()
+            app.controller.command("/help")
+            await until(lambda: app.controller.held_commands)
             os.kill(os.getpid(), signal.SIGUSR2)
 
         try:
             spawn = spawning(tmp_path, asyncio.get_running_loop(), hosts)
             await run_local(app, output, drive, spawn)
             host = hosts[0]
+            shown = " ".join(output.getvalue().replace("▎", "").split())
+            assert "Not run, as this terminal is exiting; run again in the new one" in shown
+            assert "still wanted: /help" in shown
             assert host.carry_received is None and app.detach_requested
             assert "keeps running in the background. Reattach: pcode --attach cccc3333" in (
                 output.getvalue()
@@ -1588,6 +1642,37 @@ def test_the_app_restart_signal_exits_past_an_open_popup(tmp_path, host_dir):
         app.runtime.close()
 
     asyncio.run(run())
+
+
+def test_the_app_restart_handler_is_handed_back_without_the_default_action(monkeypatch):
+    """The default kills the process, and another thread could take the signal then."""
+    from pcode.app import restore_signal_handler
+
+    def previous(signum, frame):
+        pass
+
+    installed = []
+    real = signal.signal
+
+    def recording(signum, handler):
+        installed.append(handler)
+        return real(signum, handler)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGUSR2, lambda: None)
+        monkeypatch.setattr(signal, "signal", recording)
+        restore_signal_handler(loop, signal.SIGUSR2, previous)
+        monkeypatch.undo()
+        assert installed == [previous]
+        assert signal.getsignal(signal.SIGUSR2) is previous
+        assert not loop.remove_signal_handler(signal.SIGUSR2)  # No longer the loop's.
+
+    before = signal.getsignal(signal.SIGUSR2)
+    try:
+        asyncio.run(run())
+    finally:
+        signal.signal(signal.SIGUSR2, before)
 
 
 @pytest.mark.in_process("exits a session running in this terminal")
@@ -1763,7 +1848,7 @@ def test_commands_wait_while_the_session_moves_and_go_with_it(tmp_path, host_dir
             await until(lambda: controller.held_commands)
             await asyncio.sleep(0.05)
             assert controller.held_commands and not controller.command_idle.is_set()
-            assert controller.take_typed() == (["/effort high"], [])
+            assert controller.take_typed() == [("/effort high", "command")]
             assert controller.command_idle.is_set()
             # Waiting, then run here once the move did not happen.
             controller.command("/effort high")
@@ -1792,12 +1877,28 @@ def test_a_move_puts_back_a_prompt_cancelled_before_its_turn_was_journaled(tmp_p
             reached.set()
             await asyncio.Event().wait()
 
+        class Owner:
+            def __init__(self):
+                self.told = []
+
+            def started(self):
+                self.told.append("started")
+
+            def dropped(self):
+                self.told.append("dropped")
+
+        owner = Owner()
         controller.run_turn = slow_start
         try:
-            controller.submit("first prompt", "queue")
+            controller.submit("first prompt", "queue", owner=owner)
             await asyncio.wait_for(reached.wait(), 5)
             assert await controller.settle_for_handoff() is False
-            assert controller.take_typed() == ([], [("first prompt", "queue")])
+            # Its sender had its result (started, then cancelled): put back without it.
+            assert controller.prompts._fetched is None
+            queued = list(controller.prompts._items._queue)
+            assert [(text, who) for _g, text, _m, who, _s in queued] == [("first prompt", None)]
+            assert owner.told == ["started"]
+            assert controller.take_typed() == [("first prompt", "queue")]
             assert script.requests == []
         finally:
             await stop_host(host)
@@ -1827,7 +1928,7 @@ def test_a_move_keeps_a_prompt_waiting_on_a_reload_from_starting(tmp_path, host_
             assert not settling.done(), "waits for the reload"
             release.set()
             assert await asyncio.wait_for(settling, 5) is False
-            assert controller.take_typed() == ([], [("after the reload", "queue")])
+            assert controller.take_typed() == [("after the reload", "queue")]
             assert script.requests == []
         finally:
             await stop_host(host)
