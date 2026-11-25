@@ -1262,7 +1262,7 @@ def remote_resume_workspace(info, workspace: Path, profile) -> Path:
     if Path(info.workspace).is_dir():
         return Path(info.workspace).resolve()
     print(f"workspace: {info.workspace} is gone; continuing in a new worktree", file=sys.stderr)
-    created, _ = _enter_worktree(workspace, True, always=True, base=profile.base)
+    created, _ = _enter_worktree(workspace, True, always=True, base=profile.base, owner=info.id)
     return created.resolve()
 
 
@@ -1279,7 +1279,9 @@ def fork_worktree(saved, workspace: Path) -> Path:
     base = worktree.head_commit(workspace)
     if base is None:
         return workspace
-    created, _ = _enter_worktree(workspace, saved.info.id[:8], always=True, base=base)
+    created, _ = _enter_worktree(
+        workspace, saved.info.id[:8], always=True, base=base, owner=saved.info.id
+    )
     created = created.resolve()
     saved.info.workspace = str(created)
     # Its own work starts here: /diffs and tidying on exit measure from it.
@@ -1372,6 +1374,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
     controller.save_sessions = not args.no_save
     controller._saved_session = saved
     controller._session_id = session_id
+    controller.worktree_owner = session_id
     controller.resuming = saved is not None
     controller._needs_runtime = True
     controller.startup_pending = True
@@ -1425,6 +1428,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
                 # Nobody chose to leave a session that stopped for being idle,
                 # so its branch waits to be resumed rather than merged.
                 merge=not host.idle_stopped,
+                owner=session_id or entry.session_id or None,
             )
     if host.successor is None:
         return None

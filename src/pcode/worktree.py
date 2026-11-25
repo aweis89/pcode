@@ -188,6 +188,31 @@ def create(repo: Path, name: str, base: str | None = None) -> Worktree:
     return Worktree(path=path, branch=name, main=main)
 
 
+# Beside git's own bookkeeping for the worktree (`.git/worktrees/<name>/`),
+# so it goes when the worktree does and never shows in `git status`.
+OWNER_FILE = "pcode-owner"
+
+
+def _owner_path(worktree: Worktree) -> Path | None:
+    result = _git(worktree.path, "rev-parse", "--path-format=absolute", "--git-dir", check=False)
+    return Path(result.stdout.strip()) / OWNER_FILE if result.returncode == 0 else None
+
+
+def claim(worktree: Worktree, owner: str) -> None:
+    """Record the session that created `worktree`; only it tidies the worktree on exit."""
+    if path := _owner_path(worktree):
+        path.write_text(owner + "\n")
+
+
+def owner_of(worktree: Worktree) -> str | None:
+    """The session that created `worktree`, or None for one made before owners were recorded."""
+    path = _owner_path(worktree)
+    try:
+        return (path.read_text().strip() or None) if path else None
+    except OSError:
+        return None
+
+
 def _exclude_worktrees_dir(main: Path) -> None:
     """Keep `.worktrees/` out of `git status` without touching the tracked .gitignore."""
     common = _git(main, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout
@@ -642,7 +667,9 @@ def session_scope(info) -> Path:
     return Path(info.project) if info.project else workspace
 
 
-def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True) -> bool:
+def leave_worktree(
+    workspace: Path, session, *, ask, notify, merge: bool = True, owner: str | None = None
+) -> bool:
     """Tidy a session worktree on the way out of it, never losing work.
 
     Untouched (clean, nothing unmerged): removed with its branch, no question;
@@ -653,12 +680,25 @@ def leave_worktree(workspace: Path, session, *, ask, notify, merge: bool = True)
     nobody is there to answer, and `merge=False` keeps unmerged commits even
     under `worktree_exit=merge`. Used at process exit and when a live session
     switches to another worktree of the same repository.
+
+    Only the session that created the worktree tidies it: one merely started
+    inside it (`-C`, a manual `--host`, another session root) leaves it
+    alone, clean or not, since a live session may still be working there.
+    `owner` is the session ID this process made the worktree for, which still
+    counts after `/new` swaps the session or when none was saved (`--no-save`,
+    or open elsewhere). A worktree made before owners were recorded keeps the
+    older rules.
     """
     import shutil
 
     try:
         linked = describe(workspace)
         if linked is None:
+            return False
+        creator = owner_of(linked)
+        mine = {owner, session.info.id if session is not None else None} - {None}
+        if creator is not None and creator not in mine:
+            notify(f"worktree: kept {linked.path}; session {creator[:8]} created it")
             return False
         ours = linked.branch.startswith(SESSION_WORKTREE_PREFIX)
         dirty = is_dirty(linked.path)

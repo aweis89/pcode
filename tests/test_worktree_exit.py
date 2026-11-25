@@ -336,3 +336,57 @@ def test_resume_refuses_another_repository_or_a_missing_directory(repo, tmp_path
     assert app.runtime is original
     assert app.workspace == created.path and created.path.exists()
     session.close()
+
+
+def test_worktree_created_by_another_session_is_never_tidied(repo, tmp_path):
+    """A process merely started inside another session's worktree leaves it alone.
+
+    Its own session root can't see the creator (`--session-dir`, `--no-save`),
+    so only the recorded owner protects a live session from losing its directory.
+    """
+    created = worktree.create(repo, "pcode-abc")
+    worktree.claim(created, "creator-session-id")
+    session = SavedSession.create("test:local", created.path, tmp_path / "elsewhere")
+    app = PreviewApp(workspace=created.path)
+    app.runtime = FakeRuntime(session)
+    out = leave(app)
+    assert "session creator- created it" in out
+    assert created.path.exists()
+    app.runtime = FakeRuntime(None)
+    leave(app)
+    assert created.path.exists()
+
+
+def test_owner_tidies_its_worktree_without_a_saved_session(repo, tmp_path):
+    """`--no-save`, or a session swapped by `/new`: the creating ID still owns it."""
+    created = worktree.create(repo, "pcode-abc")
+    worktree.claim(created, "creator-session-id")
+    app = PreviewApp(workspace=created.path)
+    app.runtime = FakeRuntime(None)
+    assert "removed untouched" in leave(app, owner="creator-session-id")
+    assert not created.path.exists()
+
+
+def test_owner_tidies_its_worktree_after_new(repo, tmp_path):
+    created, session, app = make(repo, tmp_path)
+    worktree.claim(created, "creator-session-id")  # `session` came later, from /new.
+    assert "removed untouched" in leave(app, owner="creator-session-id")
+    assert not created.path.exists()
+
+
+def test_enter_worktree_claims_it_for_the_new_session(repo, tmp_path, monkeypatch):
+    from pcode.app import _enter_worktree
+
+    monkeypatch.setattr(worktree, "run_setup", lambda *a, **k: None)
+    path, identity = _enter_worktree(repo, "named")
+    assert worktree.owner_of(worktree.describe(path)) == identity
+    path, _ = _enter_worktree(repo, "forked", always=True, owner="existing")
+    assert worktree.owner_of(worktree.describe(path)) == "existing"
+
+
+def test_owner_record_lives_outside_the_checkout(repo):
+    created = worktree.create(repo, "pcode-abc")
+    assert worktree.owner_of(created) is None
+    worktree.claim(created, "someone")
+    assert git(created.path, "status", "--porcelain") == ""
+    assert worktree.is_untouched(created)

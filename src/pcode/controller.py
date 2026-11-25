@@ -37,7 +37,7 @@ from pcode.aside import (
     summary_message,
 )
 from pcode.commands import Command, CommandRegistry
-from pcode.error_report import error_message
+from pcode.error_report import error_message, workspace_gone
 from pcode.jobs import OUTPUT_TAIL_BYTES, WATCHED_PREFIX, format_duration
 from pcode.logins import Logins
 from pcode.preferences import (
@@ -574,6 +574,9 @@ class SessionController:
         # Consumed by the first saved session so it shares its ID with the
         # worktree created for it; later `/new` sessions get their own.
         self._session_id: str | None = None
+        # The session ID this process's worktree was claimed for (never
+        # consumed): it still owns the worktree after `/new` swaps sessions.
+        self.worktree_owner: str | None = None
         self._saved_session = None
         self.resuming = False
         # Whether the resumed conversation is on screen already (a terminal
@@ -1701,7 +1704,9 @@ class SessionController:
                     self.activity.turn_outcome = "cancelled"
                     self.view.cancelled()
         except Exception as error:
-            self.view.error(error_message(error), title="Agent failed")
+            self.view.error(
+                workspace_gone(self.workspace) or error_message(error), title="Agent failed"
+            )
             self.activity.turn_outcome = "failed"
             success = False
         finally:
@@ -1871,7 +1876,9 @@ class SessionController:
         elif failure:
             from pcode.diagnostics import stale_install
 
-            self.view.error(error_message(failure), title="Agent failed")
+            self.view.error(
+                workspace_gone(self.workspace) or error_message(failure), title="Agent failed"
+            )
             if hint := stale_install():
                 self.view.warning(hint)
         if (cancelled or failure) and runtime.session:
@@ -3839,7 +3846,9 @@ class SessionController:
         if target != self.workspace:
             # The worktree being left is tidied like at exit, but nobody is
             # asked: unmerged work stays put with a note on how to get back.
-            leave_worktree(self.workspace, current, ask=None, notify=self.view.note)
+            leave_worktree(
+                self.workspace, current, ask=None, notify=self.view.note, owner=self.worktree_owner
+            )
         # Side questions settled so far belong in the session being left.
         await self.side_records_settled()
         close = getattr(self.runtime, "close", None)

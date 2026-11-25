@@ -408,6 +408,6 @@ def test_a_remote_session_whose_worktree_is_gone_resumes_in_a_new_one(tmp_path):
     repo, tree = git_worktree(tmp_path)
     profile = RemoteProfile()
     assert remote_resume_workspace(SimpleNamespace(workspace=str(tree)), repo, profile) == tree
-    gone = SimpleNamespace(workspace=str(repo / ".worktrees" / "removed"))
+    gone = SimpleNamespace(id="session-id", workspace=str(repo / ".worktrees" / "removed"))
     created = remote_resume_workspace(gone, repo, profile)
     assert created != repo and created.parent == repo / ".worktrees" and created.is_dir()

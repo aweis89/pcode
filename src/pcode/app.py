@@ -53,7 +53,7 @@ from pcode.controller import (
     runs_in_terminal,
 )
 from pcode.drafts import Drafts, default_dir
-from pcode.error_report import error_message
+from pcode.error_report import error_message, workspace_gone
 from pcode.kitty_spinner import KittySpinners
 from pcode.library_log import install as install_library_log
 from pcode.preferences import (
@@ -252,6 +252,7 @@ class PreviewApp:
         # Consumed by the first saved session so it shares its ID with the
         # worktree created for it; later `/new` sessions get their own.
         self._session_id = session_id
+        self.worktree_owner = session_id
         self.resuming = resume
         self.save_sessions = save or saved_session is not None
         self.workspace = (workspace or Path.cwd()).resolve()
@@ -629,6 +630,7 @@ class PreviewApp:
     _startup_error = _controller_attribute("startup_error")
     skill_command_names = _controller_attribute("skill_command_names")
     _session_id = _controller_attribute("_session_id")
+    worktree_owner = _controller_attribute("worktree_owner")
     _saved_session = _controller_attribute("_saved_session")
     _needs_runtime = _controller_attribute("_needs_runtime")
 
@@ -3840,7 +3842,9 @@ class PreviewApp:
             except Exception as error:
                 reply.settle()
                 self.controller.report_finished_jobs()
-                self.transcript.error(error_message(error), title="Agent failed")
+                self.transcript.error(
+                    workspace_gone(self.workspace) or error_message(error), title="Agent failed"
+                )
                 saved = getattr(self.runtime, "session", None)
                 if saved is not None:
                     self.transcript.note(f"Session and diagnostics: {saved.directory}")
@@ -4140,7 +4144,12 @@ def _select_project_root(argv: list[str]) -> None:
 
 
 def _enter_worktree(
-    workspace: Path, requested, *, always: bool = False, base: str | None = None
+    workspace: Path,
+    requested,
+    *,
+    always: bool = False,
+    base: str | None = None,
+    owner: str | None = None,
 ) -> tuple[Path, str | None]:
     """Create the session's worktree when asked to, returning (workspace, session id).
 
@@ -4151,6 +4160,8 @@ def _enter_worktree(
     linked worktree, or outside git, the workspace is left alone rather than
     nested. `always` (a remote host) makes one regardless, and fails outside
     git; `base` is the commit or branch it starts from, else the mainline.
+    The worktree is claimed for `owner`, an existing session moving in, or
+    else the new session ID returned, so only that session tidies it away.
     """
     from uuid import uuid4
 
@@ -4170,21 +4181,27 @@ def _enter_worktree(
     name = requested if isinstance(requested, str) else identity[:8]
     created = worktree.create(workspace, SESSION_WORKTREE_PREFIX + name, base)
     try:
+        worktree.claim(created, owner or identity)
         worktree.run_setup(created, stream=sys.stderr)
-    except worktree.WorktreeError:
+    except worktree.WorktreeError, OSError:
         worktree.remove(created, force=True)
         raise
     print(f"worktree: {created.path} (branch {created.branch})", file=sys.stderr)
     return created.path, identity
 
 
-def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
+def _leave_worktree_on_exit(app, ask=input, stream=None, owner: str | None = None) -> None:
     """`leave_worktree` for the process exit: notes go to stderr, and a deleted
-    session is dropped from the runtime so nothing writes to it afterwards."""
+    session is dropped from the runtime so nothing writes to it afterwards.
+    `owner` is the session ID a worktree was made for, should none be saved."""
     stream = stream or sys.stderr
     session = getattr(app.runtime, "session", None)
     deleted = leave_worktree(
-        app.workspace, session, ask=ask, notify=lambda text: print(text, file=stream)
+        app.workspace,
+        session,
+        ask=ask,
+        notify=lambda text: print(text, file=stream),
+        owner=owner,
     )
     if deleted:
         app.runtime.session = None
@@ -4492,7 +4509,11 @@ def _tidy_stopped_host(app) -> None:
             saved = None  # Open elsewhere again, or gone: leave the session to them.
     try:
         leave_worktree(
-            app.workspace, saved, ask=ask, notify=lambda text: print(text, file=sys.stderr)
+            app.workspace,
+            saved,
+            ask=ask,
+            notify=lambda text: print(text, file=sys.stderr),
+            owner=runtime.session_id or None,
         )
     finally:
         if saved is not None:
@@ -4741,7 +4762,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         )
         if args.print:
             ok = app.run_print(args.prompt)
-            _leave_worktree_on_exit(app, ask=None)
+            _leave_worktree_on_exit(app, ask=None, owner=session_id)
             if not ok:
                 parser.exit(1)
         else:
@@ -4751,7 +4772,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 # Moved to a host meanwhile (/detach, /attach): leave as a hosted terminal does.
                 _leave_host(app)
             else:
-                _leave_worktree_on_exit(app)
+                _leave_worktree_on_exit(app, owner=session_id)
     except Exception as error:
         parser.exit(2, error_message(error) + "\n")
     finally:

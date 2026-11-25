@@ -355,3 +355,30 @@ def test_print_shows_thinking_only_when_preferred(shown):
     app.activity.thinking_mode = "scrollback" if shown else "off"
     assert asyncio.run(app.run_print_async("go", stdout=StringIO()))
     assert ("visible reasoning" in transcript.getvalue()) is shown
+
+
+def test_failed_turn_in_a_deleted_workspace_names_the_missing_directory(tmp_path):
+    """A provider's own tool failing on a vanished cwd says why, not a generic failure."""
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+
+    class Runtime:
+        session = None
+        recovery_blocked = ""
+
+        async def stream(self, text):
+            workspace.rmdir()
+            yield TextDelta("")
+            raise RuntimeError("Unable to read current working directory")
+
+    transcript = StringIO()
+    app = PreviewApp(
+        model="test:local",
+        runtime=Runtime(),
+        workspace=workspace,
+        console=Console(file=transcript, color_system=None, width=200),
+    )
+    assert not asyncio.run(app.run_print_async("go", stdout=StringIO()))
+    printed = transcript.getvalue()
+    assert "no longer exists" in printed
+    assert str(workspace) in printed

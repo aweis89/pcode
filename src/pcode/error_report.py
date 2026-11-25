@@ -7,9 +7,28 @@ whose source tree is deleted underneath it (a worktree merged and removed from
 elsewhere) answers `No module named 'pcode.live'`, and because the failure
 happens in the handler it escapes, kills the task that was reporting, and
 loses the original error. Import from here instead of from `pcode.live`: this
-module has no imports of its own, so it is resident before anything goes
-wrong.
+module imports only the standard library, so it is resident before anything
+goes wrong.
 """
+
+import os
+
+
+def workspace_gone(workspace) -> str | None:
+    """Why nothing can run in `workspace` when it was deleted, else None.
+
+    Checked when a turn fails however it failed: a provider's own tools (the
+    `claude:` CLI's Bash) or a dropped stream never reach `WorkspaceGuard`, and
+    their errors ("Unable to read current working directory") hide the cause.
+    """
+    if workspace is None or os.path.isdir(workspace):
+        return None
+    return (
+        f"The workspace {workspace} no longer exists, so no tool can run in it. "
+        "It was deleted while this session was open, usually by a worktree removed "
+        "from elsewhere. Resume this conversation in another directory with "
+        "`pcode -C DIR --continue <session>`."
+    )
 
 
 def error_message(error: Exception, *, unexpected: str | None = None) -> str:

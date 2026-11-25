@@ -18,6 +18,8 @@ from pathlib import Path
 
 from pydantic_ai.capabilities import AbstractCapability
 
+from pcode.error_report import workspace_gone
+
 
 class WorkspaceGoneError(Exception):
     """The workspace directory disappeared; nothing in the run can recover.
@@ -28,14 +30,8 @@ class WorkspaceGoneError(Exception):
 
 def require_workspace(workspace: Path) -> None:
     """Raise `WorkspaceGoneError` unless tools can still run in `workspace`."""
-    if workspace.is_dir():
-        return
-    raise WorkspaceGoneError(
-        f"The workspace {workspace} no longer exists, so no tool can run in it. "
-        "It was deleted while this session was open, usually by a worktree removed "
-        "from elsewhere. Resume this conversation in another directory with "
-        "`pcode -C DIR --continue <session>`."
-    )
+    if gone := workspace_gone(workspace):
+        raise WorkspaceGoneError(gone)
 
 
 class WorkspaceGuard(AbstractCapability):
