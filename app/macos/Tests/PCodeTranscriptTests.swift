@@ -451,4 +451,292 @@ struct PCodeTranscriptTests {
         #expect(copied.contains("read_file  app/macos/PCode/PCodePeek.swift  (0.2s)"))
         #expect(copied.contains("In progress"))
     }
+
+    // MARK: - Phase 2: Live Streaming Pipeline
+
+    @Test func streamingDifferUsesOpenFenceFastPathAndHandlesChunking() {
+        var differ = PCodeStreamingMessageDiffer()
+
+        // 1. Initial prose
+        let d1 = differ.update(markdown: "Intro paragraph.\n\n")
+        #expect(!d1.usedOpenFenceFastPath)
+        #expect(d1.newBlocks.count == 1)
+
+        // 2. Enter an open swift code fence (first frame detects open fence via cmark-gfm)
+        let d2 = differ.update(markdown: "Intro paragraph.\n\n```swift\nlet a = 1\n")
+        #expect(!d2.usedOpenFenceFastPath)
+        #expect(d2.commonPrefixCount == 1) // intro prose unchanged
+        #expect(d2.newBlocks.count == 2)
+
+        // 3. Subsequent appends inside the open fence take the append-only fast path
+        let d3 = differ.update(markdown: "Intro paragraph.\n\n```swift\nlet a = 1\nlet b = 2\n")
+        #expect(d3.usedOpenFenceFastPath)
+        #expect(d3.commonPrefixCount == 1) // intro prose still unchanged
+        if case .codeBlock(let lang, let code, _, let idx, let total) = d3.newBlocks[1] {
+            #expect(lang == "swift")
+            #expect(code == "let a = 1\nlet b = 2")
+            #expect(idx == 0 && total == 1)
+        } else {
+            Issue.record("Expected codeBlock at index 1")
+        }
+
+        // 4. Streaming past 200 lines splits into 2 chunks on the fast path
+        let manyLines = (1...205).map { "let line_\($0) = \($0)" }.joined(separator: "\n")
+        let d4 = differ.update(markdown: "Intro paragraph.\n\n```swift\n\(manyLines)\n")
+        #expect(d4.usedOpenFenceFastPath)
+        #expect(d4.commonPrefixCount == 1)
+        #expect(d4.newBlocks.count == 3) // prose + chunk0 + chunk1
+
+        // 5. Closing the fence + adding trailing prose falls back cleanly to exact parse
+        let d5 = differ.update(markdown: "Intro paragraph.\n\n```swift\n\(manyLines)\n```\n\nDone!")
+        #expect(!d5.usedOpenFenceFastPath)
+        #expect(d5.newBlocks.count == 4) // prose + chunk0 + chunk1 + trailing prose
+        #expect(d5.commonPrefixCount == 3) // intro + both code chunks unchanged!
+    }
+
+    @Test @MainActor func textKit2SuffixOnlyUpdatePreservesPrefixAndMatchesFullText() {
+        let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 420, height: 100))
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14)]
+        let first = NSAttributedString(string: "Hello world", attributes: attrs)
+        let second = NSAttributedString(string: "Hello world, streaming tokens!", attributes: attrs)
+
+        #expect(PCodeTextKit2BlockView.commonAttributedPrefixLength(first, second) == 11)
+        let h1 = view.configure(attributedText: first, width: 420)
+        let h2 = view.configure(attributedText: second, width: 420)
+        #expect(h1 > 10)
+        #expect(h2 >= h1)
+        #expect(view.textContentStorage.attributedString?.string == "Hello world, streaming tokens!")
+    }
+
+    @Test @MainActor func streamingPreservesSelectionAndJumpToBottomPill() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 320)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+
+        doc.beginStreamingTurn(prompt: "Explain how streaming works")
+        doc.beginStreamingMessage(id: "msg-1")
+        doc.appendStreamingDelta("First settled paragraph with selectable words.\n\n")
+
+        // Select "settled paragraph" inside item 1 (prose block 0)
+        let proseIdx = 1
+        let rendered = doc.plainTextForCopy(at: proseIdx) as NSString
+        let targetRange = rendered.range(of: "settled paragraph")
+        #expect(targetRange.location != NSNotFound)
+
+        // Simulate user dragging a selection and scrolling up
+        doc.setItems(doc.items, pinToBottom: true)
+        doc.beginStreamingMessage(id: "msg-2")
+        doc.appendStreamingDelta("Keep this selected phrase intact.")
+        let streamIdx = doc.items.count - 1
+        let streamStr = doc.plainTextForCopy(at: streamIdx) as NSString
+        let selRange = streamStr.range(of: "selected phrase")
+        #expect(selRange.location != NSNotFound)
+
+        // Select "selected phrase" inside the streaming prose block
+        doc.setSelection(PCodeTranscriptSelection(
+            anchor: .init(itemIndex: streamIdx, utf16Offset: selRange.location),
+            focus: .init(itemIndex: streamIdx, utf16Offset: NSMaxRange(selRange))))
+        #expect(doc.selectedPlainText() == "selected phrase")
+
+        // Unpin (as if user scrolled up) and stream a fenced code block after the prose
+        doc.unpinFromBottom()
+        #expect(!scrollView.isJumpToBottomVisible)
+
+        doc.appendStreamingDelta("\n\n```swift\nlet x = 42\n")
+        doc.appendStreamingDelta("let y = 99\n")
+        #expect(doc.lastStreamingUpdateUsedOpenFenceFastPath)
+        #expect(doc.hasUnreadStreamingContent)
+        #expect(scrollView.isJumpToBottomVisible)
+        // Selection in the prose block survives live streaming completely intact!
+        #expect(doc.selectedPlainText() == "selected phrase")
+
+        // Clicking Jump to bottom re-pins and hides the pill
+        doc.scrollToBottomAndPin()
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+        #expect(!doc.hasUnreadStreamingContent)
+        #expect(!scrollView.isJumpToBottomVisible)
+
+        doc.finishStreamingMessage()
+        doc.finishStreamingTurn(status: .complete)
+        #expect(doc.selectedPlainText() == "selected phrase")
+    }
+
+    @Test @MainActor func streamingFourXReplayStressTest() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+
+        // Build a realistic tool-heavy multi-turn transcript (40 tool cards + prose + code + table)
+        var turns: [PCodePeekTurn] = []
+        for t in 0..<4 {
+            var blocks: [PCodePeekBlock] = []
+            for toolIdx in 0..<10 {
+                blocks.append(.tool(PCodePeekToolCall(
+                    id: t * 100 + toolIdx,
+                    name: toolIdx % 2 == 0 ? "read_file" : "run_command",
+                    detail: "app/macos/PCode/File\(toolIdx).swift",
+                    failed: false,
+                    elapsedSeconds: 0.15,
+                    command: toolIdx % 2 == 0 ? "" : "make app-test")))
+            }
+            blocks.append(.markdown(id: t * 100 + 50, text: """
+            ## Turn \(t + 1) Summary
+
+            Completed **\(10)** tool calls with `inline_code` and a snippet:
+
+            ```swift
+            struct Turn\(t) {
+                let count = 10
+            }
+            ```
+
+            | Metric | Value |
+            | --- | --- |
+            | Tools | 10 |
+            | Status | OK |
+            """))
+            turns.append(PCodePeekTurn(
+                id: t,
+                prompt: "Run verification pass \(t + 1)",
+                blocks: blocks,
+                status: .complete,
+                side: false))
+        }
+
+        let replayer = PCodeTranscriptStreamReplayer(
+            turns: turns,
+            documentView: doc,
+            speedMultiplier: 4.0,
+            chunkSize: 24)
+        replayer.runAllSynchronously()
+
+        // Each turn produces: 1 prompt + 10 tools + 1 prose + 1 codeBlock + 1 table = 14 items -> 56 total
+        #expect(doc.items.count == 56)
+        #expect(doc.layoutEngine.entries.count == 56)
+        #expect(doc.layoutEngine.totalHeight > 800)
+
+        // Verify yOffsets are strictly increasing
+        for i in 1..<doc.layoutEngine.entries.count {
+            #expect(doc.layoutEngine.entries[i].yOffset > doc.layoutEngine.entries[i - 1].yOffset)
+        }
+    }
+
+    @Test func streamingTextPacerSmoothsBurstsAndPreservesGraphemeClusters() {
+        var pacer = PCodeStreamingTextPacer(minCharsPerSecond: 120, maxCharsPerSecond: 2400, catchUpSeconds: 0.2)
+        let input = "Hello 👨‍👩‍👧‍👦 streaming world!"
+        pacer.enqueue(input)
+        #expect(pacer.hasPending)
+
+        var collected = ""
+        var ticks = 0
+        while pacer.hasPending && ticks < 200 {
+            if let chunk = pacer.drain(dt: 1.0 / 120.0) {
+                collected.append(chunk)
+            }
+            ticks += 1
+        }
+        #expect(collected == input)
+        #expect(ticks > 1) // smoothed over multiple 120Hz frames rather than dumped in 1 frame
+
+        // Huge burst accelerates up toward maxCharsPerSecond
+        pacer.enqueue(String(repeating: "a", count: 1000))
+        #expect(pacer.currentRate() >= 2000)
+        #expect(pacer.flushAll()?.count == 1000)
+        #expect(!pacer.hasPending)
+    }
+
+    @Test func smoothScrollGlideConvergesCriticallyDampedWithoutOvershoot() {
+        var glide = PCodeSmoothScrollGlide(stiffness: 220.0, maxOffset: 480.0)
+        glide.addOffset(60.0)
+        #expect(glide.isActive)
+        #expect(glide.remainingOffset == 60.0)
+
+        // Absorbing a shrink reduces remainingOffset without pulling viewport backward
+        glide.absorbShrink(15.0)
+        #expect(glide.remainingOffset == 45.0)
+
+        var prev = glide.remainingOffset
+        var ticks = 0
+        while glide.isActive && ticks < 240 {
+            let next = glide.step(dt: 1.0 / 120.0)
+            #expect(next >= 0) // never overshoots past bottom
+            #expect(next <= prev + 0.001) // monotonically approaches 0
+            prev = next
+            ticks += 1
+        }
+        #expect(!glide.isActive)
+        #expect(glide.remainingOffset == 0)
+        #expect(ticks > 5 && ticks < 180)
+    }
+
+    @Test @MainActor func textKit2KeepsTextStorageAttachedAndRespectsSurrogateBoundaries() {
+        let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 420, height: 100))
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14)]
+        let first = NSAttributedString(string: "Hi 😀", attributes: attrs)
+        let second = NSAttributedString(string: "Hi 😁", attributes: attrs)
+
+        // Shared high surrogate (0xD83D) must back up to offset 3 ("Hi "), not 4 (mid-surrogate).
+        #expect(PCodeTextKit2BlockView.commonAttributedPrefixLength(first, second) == 3)
+
+        _ = view.configure(attributedText: first, width: 420)
+        #expect(view.textContentStorage.textStorage != nil)
+        _ = view.configure(attributedText: second, width: 420)
+        #expect(view.textContentStorage.textStorage != nil)
+        #expect(view.textContentStorage.attributedString?.string == "Hi 😁")
+    }
+
+    @Test @MainActor func jumpToBottomPillWidthStaysStableAcrossRepeatedLayouts() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let w1 = scrollView.jumpToBottomButton.frame.width
+        scrollView.needsLayout = true
+        scrollView.layoutSubtreeIfNeeded()
+        scrollView.needsLayout = true
+        scrollView.layoutSubtreeIfNeeded()
+        #expect(abs(scrollView.jumpToBottomButton.frame.width - w1) < 0.5)
+    }
+
+    @Test func streamingDifferGuardsNestedAndIndentedFencesAndKeepsChunkZeroStable() {
+        var differ = PCodeStreamingMessageDiffer()
+
+        // Nested fence inside a list item followed by a new unclosed fence must not corrupt body.
+        let nested = "- ~~~\n  nested\n  ~~~\n\n```\nhello\n"
+        let d1 = differ.update(markdown: nested)
+        if case .codeBlock(_, let code, _, _, _) = d1.newBlocks.last {
+            #expect(code == "hello")
+        } else {
+            Issue.record("Expected trailing codeBlock")
+        }
+
+        // Indented opening fence stays on exact cmark-gfm path (no indentation jump).
+        var indentedDiffer = PCodeStreamingMessageDiffer()
+        _ = indentedDiffer.update(markdown: "  ```swift\n  let x = 1\n")
+        let dInd = indentedDiffer.update(markdown: "  ```swift\n  let x = 1\n  let y = 2\n")
+        #expect(!dInd.usedOpenFenceFastPath)
+
+        // Settled chunk 0 stays in commonPrefixCount when chunk 1 grows past 200 lines.
+        var chunkDiffer = PCodeStreamingMessageDiffer()
+        let lines202 = (1...202).map { "line_\($0)" }.joined(separator: "\n")
+        _ = chunkDiffer.update(markdown: "```swift\n\(lines202)\n")
+        let dGrow = chunkDiffer.update(markdown: "```swift\n\(lines202)\nline_203\n")
+        #expect(dGrow.usedOpenFenceFastPath)
+        #expect(dGrow.newBlocks.count == 2)
+        #expect(dGrow.commonPrefixCount == 1) // chunk 0 untouched while chunk 1 grows!
+    }
+
+    @Test func layoutEngineRatchetReleaseMarksUnmeasured() {
+        var engine = PCodeTranscriptLayoutEngine(topPadding: 0, bottomPadding: 0, backingScale: 2)
+        let idx = engine.append(id: "tail", height: 100, spacingAfter: 8, measured: true)
+        engine.setTailRatchet(at: idx, active: true)
+        #expect(engine.entries[idx].isMeasured)
+        engine.setTailRatchet(at: idx, active: false)
+        #expect(!engine.entries[idx].isMeasured)
+        #expect(engine.entries[idx].minHeight == 0)
+    }
 }

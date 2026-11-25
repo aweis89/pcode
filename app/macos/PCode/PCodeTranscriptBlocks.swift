@@ -389,6 +389,10 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
     private var highlightGeneration: UInt64 = 0
     private var highlightTask: Task<Void, Never>?
     private var lastTheme: PCodeTranscriptTheme?
+    private var lastHighlightedCode: String?
+    private var lastHighlightedLanguage: String?
+    private var lastHighlightedAttr: NSAttributedString?
+    private var lastHighlightedPaletteDark: Bool?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -437,6 +441,10 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
         highlightTask?.cancel()
         highlightTask = nil
         highlightGeneration &+= 1
+        lastHighlightedCode = nil
+        lastHighlightedLanguage = nil
+        lastHighlightedAttr = nil
+        lastHighlightedPaletteDark = nil
         scrollView.resetScrollOrigin()
         copyButton.cancelCopiedFlash()
     }
@@ -471,13 +479,39 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
 
         let initialAttr: NSAttributedString
         let needsAsyncHighlight: Bool
+        let isStreamingExtension: Bool
         if let cached = highlighter.cachedTokens(code: code, language: language) {
-            initialAttr = PCodePrismSyntaxHighlighter.attributedString(
+            let styled = PCodePrismSyntaxHighlighter.attributedString(
                 from: cached,
                 font: codeFont,
                 palette: palette,
                 lineHeight: lineHeight)
+            initialAttr = styled
+            lastHighlightedCode = code
+            lastHighlightedLanguage = language
+            lastHighlightedAttr = styled
+            lastHighlightedPaletteDark = theme.isDark
             needsAsyncHighlight = false
+            isStreamingExtension = false
+        } else if let prevCode = lastHighlightedCode,
+                  let prevAttr = lastHighlightedAttr,
+                  lastHighlightedLanguage == language,
+                  lastHighlightedPaletteDark == theme.isDark,
+                  code.hasPrefix(prevCode),
+                  code.count > prevCode.count
+        {
+            // Preserve the already-highlighted prefix while streaming new lines/chars
+            // so syntax colors don't flicker back to plain text on every 120Hz frame.
+            let suffix = String(code.dropFirst(prevCode.count))
+            let combined = NSMutableAttributedString(attributedString: prevAttr)
+            combined.append(PCodePrismSyntaxHighlighter.plainAttributedString(
+                code: suffix,
+                font: codeFont,
+                foreground: theme.foreground,
+                lineHeight: lineHeight))
+            initialAttr = combined
+            needsAsyncHighlight = true
+            isStreamingExtension = true
         } else {
             initialAttr = PCodePrismSyntaxHighlighter.plainAttributedString(
                 code: code,
@@ -485,6 +519,7 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
                 foreground: theme.foreground,
                 lineHeight: lineHeight)
             needsAsyncHighlight = true
+            isStreamingExtension = false
         }
 
         let horizontalPad: CGFloat = 12
@@ -533,6 +568,10 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
 
         if needsAsyncHighlight {
             highlightTask = Task { [weak self] in
+                if isStreamingExtension {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    guard !Task.isCancelled else { return }
+                }
                 let tokens = await highlighter.tokenize(code: code, language: language)
                 guard !Task.isCancelled else { return }
                 await MainActor.run { [weak self] in
@@ -542,6 +581,10 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
                         font: codeFont,
                         palette: palette,
                         lineHeight: lineHeight)
+                    self.lastHighlightedCode = code
+                    self.lastHighlightedLanguage = language
+                    self.lastHighlightedAttr = styled
+                    self.lastHighlightedPaletteDark = theme.isDark
                     _ = self.textView.configure(attributedText: styled, width: layoutWidth)
                     self.textView.needsDisplay = true
                 }

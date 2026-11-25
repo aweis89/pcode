@@ -292,11 +292,43 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var hoveredItemIndex: Int?
 
     // Frame-coalesced streaming state
-    private var pendingTailText: String?
+    private struct ActiveStreamingMessage {
+        let id: String
+        let baseItemIndex: Int
+        var differ: PCodeStreamingMessageDiffer
+        var pacer: PCodeStreamingTextPacer
+        var displayedMarkdown: String
+        var hasDirectMarkdownUpdate: Bool
+        var activeRatchetIndex: Int?
+    }
+
+    private var activeStream: ActiveStreamingMessage?
+    private var smoothGlide = PCodeSmoothScrollGlide()
+    private var lastDisplayLinkTimestamp: CFTimeInterval?
+    private var streamingTurnCounter: Int = 0
     private var displayLink: CADisplayLink?
     private var isDraggingSelection = false
     private var dragMoved = false
     private var trackingArea: NSTrackingArea?
+
+    /// True when new streaming content has arrived while the user is scrolled up.
+    private(set) var hasUnreadStreamingContent: Bool = false
+    /// Invoked whenever the floating "Jump to bottom" pill visibility should change.
+    var onJumpToBottomVisibilityChanged: ((Bool) -> Void)?
+    /// Exposed for tests/telemetry: whether the most recent streaming diff took the open-fence fast path.
+    var lastStreamingUpdateUsedOpenFenceFastPath: Bool {
+        activeStream?.differ.lastUpdateUsedOpenFenceFastPath ?? false
+    }
+    /// True while either the text pacer or the 120Hz smooth-scroll glide has active work.
+    var isStreamingAnimationActive: Bool {
+        (activeStream?.pacer.hasPending == true)
+            || (activeStream?.hasDirectMarkdownUpdate == true)
+            || smoothGlide.isActive
+    }
+    /// True while the 120Hz text pacer still has buffered characters waiting to be revealed.
+    var hasPacedStreamingBacklog: Bool {
+        activeStream?.pacer.hasPending == true
+    }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -357,7 +389,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         super.viewDidMoveToWindow()
         if let window {
             layoutEngine.backingScale = window.backingScaleFactor
-            if pendingTailText != nil {
+            if isStreamingAnimationActive {
                 ensureDisplayLinkRunning()
             }
         }
@@ -422,7 +454,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         items = newItems
         selection = nil
         hoveredItemIndex = nil
-        pendingTailText = nil
+        activeStream = nil
+        smoothGlide.reset()
+        setHasUnreadStreamingContent(false)
         attributedCache.removeAll(keepingCapacity: true)
         stopDisplayLink()
         recycleAllMountedViews()
@@ -441,7 +475,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         let width = max(1, enclosingScrollView?.contentSize.width ?? bounds.width)
         lastContentWidth = width
-        applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: pinToBottom)
+        applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: pinToBottom, allowSmoothGlide: false)
         if !pinToBottom, let scrollView = enclosingScrollView {
             let topOrigin = CGPoint(x: 0, y: -scrollView.contentInsets.top)
             isApplyingDocumentHeight = true
@@ -453,27 +487,235 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         mountViews(in: visibleRect)
     }
 
-    /// Enqueue a streaming text update for the tail item (coalesced to the next display frame).
-    func enqueueStreamingTailText(_ fullText: String) {
-        pendingTailText = fullText
-        if window != nil {
-            ensureDisplayLinkRunning()
-        } else {
-            pendingTailText = nil
-            applyStreamingTailText(fullText)
+    // MARK: - Live Streaming Pipeline
+
+    /// Start a new turn by appending the user prompt. Pass `forcePin: true` for user-submitted
+    /// prompts so the view re-pins to bottom, or `false` when replaying/streaming background turns.
+    func beginStreamingTurn(prompt: String, isSide: Bool = false, forcePin: Bool = true) {
+        finishStreamingMessage()
+        streamingTurnCounter += 1
+        let item = PCodeTranscriptItem(
+            id: "stream-turn-\(streamingTurnCounter)-prompt",
+            payload: .prompt(label: isSide ? "/btw" : "You", text: prompt, isSide: isSide),
+            spacingAfter: 10)
+        items.append(item)
+        layoutEngine.append(
+            id: item.id,
+            height: estimatedHeight(for: item),
+            spacingAfter: item.spacingAfter,
+            measured: false)
+        if forcePin {
+            stickyBottom.pinToBottom()
+            setHasUnreadStreamingContent(false)
+        } else if stickyBottom.mode == .userScrolledUp {
+            setHasUnreadStreamingContent(true)
+        }
+        mountViews(in: visibleRect)
+    }
+
+    /// Begin streaming a new assistant Markdown message at the tail of the transcript.
+    func beginStreamingMessage(id: String) {
+        finishStreamingMessage()
+        activeStream = ActiveStreamingMessage(
+            id: id,
+            baseItemIndex: items.count,
+            differ: PCodeStreamingMessageDiffer(),
+            pacer: PCodeStreamingTextPacer(),
+            displayedMarkdown: "",
+            hasDirectMarkdownUpdate: false,
+            activeRatchetIndex: nil)
+    }
+
+    /// Append a token delta to the active streaming message (paced at 120Hz via `CADisplayLink`).
+    func appendStreamingDelta(_ delta: String) {
+        guard !delta.isEmpty else { return }
+        if activeStream == nil {
+            beginStreamingMessage(id: "stream-msg-\(items.count)")
+        }
+        activeStream?.pacer.enqueue(delta)
+        scheduleStreamingFlush()
+    }
+
+    /// Replace the active streaming message's full Markdown text (coalesced to the next display frame).
+    func setStreamingMessageMarkdown(_ fullMarkdown: String) {
+        if activeStream == nil {
+            beginStreamingMessage(id: "stream-msg-\(items.count)")
+        }
+        activeStream?.pacer.reset()
+        activeStream?.displayedMarkdown = fullMarkdown
+        activeStream?.hasDirectMarkdownUpdate = true
+        scheduleStreamingFlush()
+    }
+
+    /// Finalize the active streaming message, draining any paced tail, releasing its ratchet,
+    /// and attaching Copy Markdown.
+    func finishStreamingMessage() {
+        if var stream = activeStream {
+            if let remaining = stream.pacer.flushAll() {
+                stream.displayedMarkdown.append(remaining)
+                stream.hasDirectMarkdownUpdate = true
+            }
+            activeStream = stream
+            if stream.hasDirectMarkdownUpdate {
+                flushStreamingMessage()
+            }
+        }
+        guard let stream = activeStream else {
+            if !smoothGlide.isActive { stopDisplayLink() }
+            return
+        }
+        if let ratchetIdx = stream.activeRatchetIndex {
+            layoutEngine.setTailRatchet(at: ratchetIdx, active: false)
+        }
+        // Attach full copyMarkdown to the first prose block and refresh `fullCopyCode`
+        // on any multi-chunk code blocks whose earlier chunks were kept untouched while streaming.
+        let blocks = stream.differ.blocks
+        let endIdx = min(items.count, stream.baseItemIndex + blocks.count)
+        if stream.baseItemIndex < endIdx {
+            var attachedCopyMarkdown = false
+            for idx in stream.baseItemIndex..<endIdx {
+                let localIdx = idx - stream.baseItemIndex
+                if !attachedCopyMarkdown,
+                   !stream.displayedMarkdown.isEmpty,
+                   case .prose(let md, let refDefs, _) = items[idx].payload
+                {
+                    items[idx] = PCodeTranscriptItem(
+                        id: items[idx].id,
+                        payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: stream.displayedMarkdown),
+                        spacingAfter: items[idx].spacingAfter,
+                        revision: items[idx].revision &+ 1)
+                    attachedCopyMarkdown = true
+                } else if case .codeBlock(let lang, let code, let oldFull, let showHeader, let groupID) = items[idx].payload,
+                          case .codeBlock(_, _, let latestFull, _, let totalChunks) = blocks[localIdx]
+                {
+                    let needsGroup = totalChunks > 1 ? (groupID ?? "\(stream.id)-code-\(localIdx)") : nil
+                    if oldFull != latestFull || groupID != needsGroup {
+                        items[idx] = PCodeTranscriptItem(
+                            id: items[idx].id,
+                            payload: .codeBlock(
+                                language: lang,
+                                code: code,
+                                fullCopyCode: latestFull,
+                                showHeader: showHeader,
+                                groupID: needsGroup),
+                            spacingAfter: items[idx].spacingAfter,
+                            revision: items[idx].revision &+ 1)
+                    }
+                }
+            }
+        }
+        activeStream = nil
+        mountViews(in: visibleRect)
+        if !smoothGlide.isActive {
+            stopDisplayLink()
         }
     }
 
-    /// Release the streaming tail height ratchet once the active turn finishes.
-    func finishStreamingTail() {
-        if let text = pendingTailText {
-            pendingTailText = nil
-            applyStreamingTailText(text)
+    /// Append a tool card to the live stream (finalizing any preceding open assistant message).
+    func appendStreamingToolCall(_ call: PCodePeekToolCall) {
+        finishStreamingMessage()
+        let item = PCodeTranscriptItem(
+            id: "stream-turn-\(streamingTurnCounter)-tool-\(call.id)-\(items.count)",
+            payload: .tool(call, isExpanded: false),
+            spacingAfter: 5)
+        items.append(item)
+        layoutEngine.append(
+            id: item.id,
+            height: estimatedHeight(for: item),
+            spacingAfter: item.spacingAfter,
+            measured: false)
+        if stickyBottom.mode == .userScrolledUp {
+            setHasUnreadStreamingContent(true)
         }
-        stopDisplayLink()
-        if let lastIdx = items.indices.last {
-            layoutEngine.setTailRatchet(at: lastIdx, active: false)
-            mountViews(in: visibleRect)
+        mountViews(in: visibleRect)
+    }
+
+    /// Finalize the current streaming turn with its terminal status.
+    func finishStreamingTurn(status: PCodePeekTurn.Status) {
+        finishStreamingMessage()
+        if status != .complete {
+            let item = PCodeTranscriptItem(
+                id: "stream-turn-\(streamingTurnCounter)-status-\(items.count)",
+                payload: .status(status),
+                spacingAfter: 14)
+            items.append(item)
+            layoutEngine.append(
+                id: item.id,
+                height: estimatedHeight(for: item),
+                spacingAfter: item.spacingAfter,
+                measured: false)
+            if stickyBottom.mode == .userScrolledUp {
+                setHasUnreadStreamingContent(true)
+            }
+        } else if let lastIdx = items.indices.last {
+            items[lastIdx] = items[lastIdx].withSpacingAfter(18)
+            layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 18)
+        }
+        mountViews(in: visibleRect)
+    }
+
+    /// Re-pin to bottom and scroll immediately (used by the floating "Jump to bottom" pill).
+    func scrollToBottomAndPin() {
+        smoothGlide.reset()
+        stickyBottom.pinToBottom()
+        setHasUnreadStreamingContent(false)
+        applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+        mountViews(in: visibleRect)
+    }
+
+    /// Explicitly unpin sticky-bottom tracking (e.g. Find jump or programmatic scroll-up).
+    func unpinFromBottom() {
+        smoothGlide.reset()
+        stickyBottom.unpinForUserAction()
+    }
+
+    /// Programmatically update the model-owned selection (e.g. Find or tests).
+    func setSelection(_ newSelection: PCodeTranscriptSelection?) {
+        selection = newSelection
+        updateMountedSelectionHighlights()
+    }
+
+    /// Legacy convenience wrapper: stream full Markdown into the last item (creating a stream if needed).
+    func enqueueStreamingTailText(_ fullText: String) {
+        if activeStream == nil {
+            if let lastIdx = items.indices.last {
+                activeStream = ActiveStreamingMessage(
+                    id: items[lastIdx].id,
+                    baseItemIndex: lastIdx,
+                    differ: PCodeStreamingMessageDiffer(),
+                    pacer: PCodeStreamingTextPacer(),
+                    displayedMarkdown: "",
+                    hasDirectMarkdownUpdate: false,
+                    activeRatchetIndex: lastIdx)
+            } else {
+                beginStreamingMessage(id: "stream-tail")
+            }
+        }
+        setStreamingMessageMarkdown(fullText)
+    }
+
+    /// Legacy convenience wrapper: release the streaming tail height ratchet once the turn finishes.
+    func finishStreamingTail() {
+        finishStreamingMessage()
+    }
+
+    private func setHasUnreadStreamingContent(_ value: Bool) {
+        guard hasUnreadStreamingContent != value else { return }
+        hasUnreadStreamingContent = value
+        onJumpToBottomVisibilityChanged?(value && stickyBottom.mode == .userScrolledUp)
+    }
+
+    private func scheduleStreamingFlush() {
+        if window != nil {
+            ensureDisplayLinkRunning()
+        } else {
+            // Headless / off-window mode: drain synchronously for deterministic tests.
+            if var stream = activeStream, let drained = stream.pacer.flushAll() {
+                stream.displayedMarkdown.append(drained)
+                stream.hasDirectMarkdownUpdate = true
+                activeStream = stream
+            }
+            flushStreamingMessage()
         }
     }
 
@@ -515,6 +757,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     // MARK: - Scroll Notifications (called by PCodeTranscriptScrollView)
 
     func handleWillStartLiveScroll() {
+        smoothGlide.reset()
         stickyBottom.didStartLiveScroll()
         lastClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
     }
@@ -531,6 +774,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     func handleDidEndLiveScroll() {
         guard let scrollView = enclosingScrollView else { return }
         stickyBottom.didEndLiveScroll(distanceFromBottom: distanceFromBottom(in: scrollView))
+        if stickyBottom.mode == .pinnedToBottom {
+            setHasUnreadStreamingContent(false)
+        }
     }
 
     func handleBoundsDidChange() {
@@ -544,6 +790,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let movedUp = originY < lastClipOriginY - 0.5
             let dist = distanceFromBottom(in: scrollView)
             stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
+            if movedUp && stickyBottom.mode == .userScrolledUp {
+                smoothGlide.reset()
+            }
+            if stickyBottom.mode == .pinnedToBottom {
+                setHasUnreadStreamingContent(false)
+            }
         }
         lastClipOriginY = originY
         mountViews(in: visibleRect)
@@ -552,7 +804,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     // MARK: - Mounting & Reuse Pool
 
     private func mountViews(in rect: NSRect, pass: Int = 0) {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else {
+            let clipHeight = enclosingScrollView?.contentView.bounds.height ?? 0
+            let targetHeight = max(layoutEngine.totalHeight, clipHeight)
+            if abs(bounds.height - targetHeight) > 0.5 {
+                applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: false, allowSmoothGlide: false)
+            }
+            return
+        }
         let contentWidth = max(1, bounds.width - Self.horizontalPadding * 2)
         let range = layoutEngine.visibleRange(in: rect)
 
@@ -769,7 +1028,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Atomic height + scroll-origin update wrapped in `CATransaction` (actions disabled):
     /// growing updates frame then origin; shrinking updates origin then frame to avoid clip clamping.
-    private func applyDocumentHeight(_ newHeight: CGFloat, scrollOriginDelta: CGFloat, pinIfNeeded: Bool) {
+    /// When `allowSmoothGlide` is true and pinned to bottom on-screen, absorbs downward growth into
+    /// `smoothGlide` so `CADisplayLink` glides `clipView.bounds.origin.y` smoothly at 120Hz.
+    private func applyDocumentHeight(
+        _ newHeight: CGFloat,
+        scrollOriginDelta: CGFloat,
+        pinIfNeeded: Bool,
+        allowSmoothGlide: Bool = true
+    ) {
         guard let scrollView = enclosingScrollView else {
             frame.size.height = newHeight
             return
@@ -779,11 +1045,30 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let targetHeight = max(newHeight, clipView.bounds.height)
         let rawOriginY: CGFloat
         if pinIfNeeded {
-            rawOriginY = PCodeStickyBottomState.bottomOriginY(
+            let targetBottomY = PCodeStickyBottomState.bottomOriginY(
                 documentHeight: targetHeight,
                 clipHeight: clipView.bounds.height,
                 topInset: scrollView.contentInsets.top,
                 bottomInset: scrollView.contentInsets.bottom)
+            let prevBottomY = PCodeStickyBottomState.bottomOriginY(
+                documentHeight: oldHeight,
+                clipHeight: clipView.bounds.height,
+                topInset: scrollView.contentInsets.top,
+                bottomInset: scrollView.contentInsets.bottom)
+            let deltaBottom = targetBottomY - prevBottomY
+            let growthDelta = targetBottomY - clipView.bounds.origin.y
+            if allowSmoothGlide && window != nil && (growthDelta > 0.5 || smoothGlide.isActive) {
+                if deltaBottom > 0.5 {
+                    smoothGlide.addOffset(deltaBottom)
+                    ensureDisplayLinkRunning()
+                } else if deltaBottom < -0.5 {
+                    smoothGlide.absorbShrink(-deltaBottom)
+                }
+                rawOriginY = targetBottomY - smoothGlide.remainingOffset
+            } else {
+                smoothGlide.reset()
+                rawOriginY = targetBottomY
+            }
         } else {
             rawOriginY = clipView.bounds.origin.y + scrollOriginDelta
         }
@@ -833,6 +1118,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     private func ensureDisplayLinkRunning() {
         guard displayLink == nil, window != nil else { return }
+        lastDisplayLinkTimestamp = nil
         let proxy = PCodeDisplayLinkProxy(target: self)
         let link = displayLink(target: proxy, selector: #selector(PCodeDisplayLinkProxy.tick(_:)))
         link.add(to: .main, forMode: .common)
@@ -842,28 +1128,219 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private func stopDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
+        lastDisplayLinkTimestamp = nil
     }
 
     fileprivate func handleDisplayLinkTick(_ sender: CADisplayLink) {
-        guard let text = pendingTailText else {
-            stopDisplayLink()
-            return
+        let now = sender.timestamp
+        let dt: TimeInterval
+        if let last = lastDisplayLinkTimestamp, now > last {
+            dt = min(max(now - last, 1.0 / 240.0), 0.1)
+        } else {
+            dt = 1.0 / 120.0
         }
-        pendingTailText = nil
-        applyStreamingTailText(text)
+        lastDisplayLinkTimestamp = now
+
+        // 1. Pace buffered streaming deltas smoothly on this display frame.
+        if var stream = activeStream {
+            if let drained = stream.pacer.drain(dt: dt) {
+                stream.displayedMarkdown.append(drained)
+                stream.hasDirectMarkdownUpdate = true
+                activeStream = stream
+            }
+            if activeStream?.hasDirectMarkdownUpdate == true {
+                flushStreamingMessage()
+            }
+        }
+
+        // 2. Step the 120Hz critically-damped spring smooth-scroll glide while pinned.
+        if smoothGlide.isActive {
+            if stickyBottom.shouldProgrammaticallyPin, let scrollView = enclosingScrollView {
+                let remaining = smoothGlide.step(dt: dt)
+                let clipView = scrollView.contentView
+                let targetBottomY = PCodeStickyBottomState.bottomOriginY(
+                    documentHeight: frame.size.height,
+                    clipHeight: clipView.bounds.height,
+                    topInset: scrollView.contentInsets.top,
+                    bottomInset: scrollView.contentInsets.bottom)
+                let desiredY = targetBottomY - remaining
+                let clamped = clipView.constrainBoundsRect(
+                    CGRect(origin: CGPoint(x: clipView.bounds.origin.x, y: desiredY), size: clipView.bounds.size))
+                if abs(clamped.origin.y - clipView.bounds.origin.y) > 0.1 {
+                    isApplyingDocumentHeight = true
+                    CATransaction.begin()
+                    CATransaction.setDisableActions(true)
+                    clipView.scroll(to: clamped.origin)
+                    scrollView.reflectScrolledClipView(clipView)
+                    CATransaction.commit()
+                    lastClipOriginY = clipView.bounds.origin.y
+                    isApplyingDocumentHeight = false
+                    mountViews(in: visibleRect)
+                }
+            } else {
+                smoothGlide.reset()
+            }
+        }
+
+        // Pause the display link as soon as both pacer and smooth-scroll glide settle.
+        if !isStreamingAnimationActive {
+            stopDisplayLink()
+        }
     }
 
-    private func applyStreamingTailText(_ text: String) {
-        guard let lastIdx = items.indices.last else { return }
-        let old = items[lastIdx]
-        attributedCache.removeValue(forKey: old.id)
-        items[lastIdx] = PCodeTranscriptItem(
-            id: old.id,
-            payload: .prose(markdown: text, referenceDefinitions: "", copyMarkdown: text),
-            spacingAfter: old.spacingAfter,
-            revision: old.revision &+ 1)
+    private func flushStreamingMessage() {
+        guard var stream = activeStream, stream.hasDirectMarkdownUpdate else {
+            if !isStreamingAnimationActive {
+                stopDisplayLink()
+            }
+            return
+        }
+        stream.hasDirectMarkdownUpdate = false
+
+        let diff = stream.differ.update(markdown: stream.displayedMarkdown)
+        let newBlockItems = Self.buildStreamingItems(messageID: stream.id, blocks: diff.newBlocks)
+
+        let base = stream.baseItemIndex
+        let oldEnd = items.count
+        let newEnd = base + newBlockItems.count
+        let diffStart = base + diff.commonPrefixCount
+
+        // Only mutate blocks at or after `commonPrefixCount` so earlier blocks keep their
+        // view identity, attributed cache, layout heights, and user text selection untouched.
+        let overlapEnd = min(oldEnd, newEnd)
+        if diffStart < overlapEnd {
+            for globalIdx in diffStart..<overlapEnd {
+                let localIdx = globalIdx - base
+                let candidate = newBlockItems[localIdx]
+                let existing = items[globalIdx]
+                attributedCache.removeValue(forKey: existing.id)
+
+                if existing.kind == candidate.kind {
+                    items[globalIdx] = PCodeTranscriptItem(
+                        id: existing.id,
+                        payload: candidate.payload,
+                        spacingAfter: candidate.spacingAfter,
+                        revision: existing.revision &+ 1)
+                    layoutEngine.updateSpacingAfter(at: globalIdx, spacingAfter: candidate.spacingAfter)
+                } else {
+                    if let oldView = mountedViews.removeValue(forKey: globalIdx) {
+                        oldView.resetForTranscriptReuse()
+                        oldView.removeFromSuperview()
+                        reusePools[oldView.itemKind, default: []].append(oldView)
+                    }
+                    appliedStates.removeValue(forKey: globalIdx)
+                    items[globalIdx] = candidate
+                    layoutEngine.replaceEntry(at: globalIdx, id: candidate.id, spacingAfter: candidate.spacingAfter)
+                }
+            }
+        }
+
+        // Append newly split trailing blocks (e.g. prose -> code block or code block chunk > 200 lines).
+        if newEnd > oldEnd {
+            for globalIdx in oldEnd..<newEnd {
+                let localIdx = globalIdx - base
+                let item = newBlockItems[localIdx]
+                items.append(item)
+                layoutEngine.append(
+                    id: item.id,
+                    height: estimatedHeight(for: item),
+                    spacingAfter: item.spacingAfter,
+                    measured: false)
+            }
+        } else if newEnd < oldEnd {
+            // Shrink trailing blocks if an incomplete Markdown construct collapsed.
+            for globalIdx in newEnd..<oldEnd {
+                attributedCache.removeValue(forKey: items[globalIdx].id)
+                if let oldView = mountedViews.removeValue(forKey: globalIdx) {
+                    oldView.resetForTranscriptReuse()
+                    oldView.removeFromSuperview()
+                    reusePools[oldView.itemKind, default: []].append(oldView)
+                }
+                appliedStates.removeValue(forKey: globalIdx)
+            }
+            items.removeSubrange(newEnd..<oldEnd)
+            layoutEngine.removeTail(from: newEnd)
+            clampSelectionToCurrentItems()
+        }
+
+        // Move tail ratchet to the active trailing block; release settled predecessor blocks.
+        let newTailIdx = newEnd > base ? (newEnd - 1) : nil
+        if let oldRatchet = stream.activeRatchetIndex, oldRatchet != newTailIdx {
+            layoutEngine.setTailRatchet(at: oldRatchet, active: false)
+        }
+        stream.activeRatchetIndex = newTailIdx
+        activeStream = stream
+
+        if stickyBottom.mode == .userScrolledUp {
+            setHasUnreadStreamingContent(true)
+        }
+
         mountViews(in: visibleRect)
-        layoutEngine.setTailRatchet(at: lastIdx, active: true)
+
+        if let tailIdx = newTailIdx, items.indices.contains(tailIdx) {
+            layoutEngine.setTailRatchet(at: tailIdx, active: true)
+        }
+    }
+
+    private func clampSelectionToCurrentItems() {
+        guard var sel = selection else { return }
+        guard !items.isEmpty else {
+            selection = nil
+            return
+        }
+        let maxIdx = items.count - 1
+        if sel.anchor.itemIndex > maxIdx {
+            let maxLen = (plainTextForCopy(at: maxIdx) as NSString).length
+            sel.anchor = .init(itemIndex: maxIdx, utf16Offset: maxLen)
+        }
+        if sel.focus.itemIndex > maxIdx {
+            let maxLen = (plainTextForCopy(at: maxIdx) as NSString).length
+            sel.focus = .init(itemIndex: maxIdx, utf16Offset: maxLen)
+        }
+        selection = sel.isEmpty ? nil : sel
+    }
+
+    private static func buildStreamingItems(
+        messageID: String,
+        blocks: [PCodeMarkdownBlock]
+    ) -> [PCodeTranscriptItem] {
+        var result: [PCodeTranscriptItem] = []
+        result.reserveCapacity(blocks.count)
+        var codeGroupCounter = 0
+        var activeCodeGroupID: String?
+
+        for (subIdx, block) in blocks.enumerated() {
+            switch block {
+            case .prose(let proseMD, let refDefs):
+                activeCodeGroupID = nil
+                result.append(PCodeTranscriptItem(
+                    id: "\(messageID)-b\(subIdx)",
+                    payload: .prose(markdown: proseMD, referenceDefinitions: refDefs, copyMarkdown: nil),
+                    spacingAfter: 8))
+            case .codeBlock(let lang, let code, let fullCode, let chunkIdx, let totalChunks):
+                if chunkIdx == 0 {
+                    activeCodeGroupID = "\(messageID)-code-\(codeGroupCounter)"
+                    codeGroupCounter += 1
+                }
+                let isLastChunk = (chunkIdx == totalChunks - 1)
+                result.append(PCodeTranscriptItem(
+                    id: "\(messageID)-b\(subIdx)",
+                    payload: .codeBlock(
+                        language: lang,
+                        code: code,
+                        fullCopyCode: fullCode,
+                        showHeader: chunkIdx == 0,
+                        groupID: totalChunks > 1 ? activeCodeGroupID : nil),
+                    spacingAfter: isLastChunk ? 10 : 0))
+            case .table(let table):
+                activeCodeGroupID = nil
+                result.append(PCodeTranscriptItem(
+                    id: "\(messageID)-b\(subIdx)",
+                    payload: .table(table),
+                    spacingAfter: 10))
+            }
+        }
+        return result
     }
 
     // MARK: - Model-Owned Cross-Item Selection & Copy
@@ -1101,12 +1578,69 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     }
 }
 
+/// Floating capsule button shown at bottom-center when scrolled up during live streaming.
+final class PCodeJumpToBottomButton: NSButton {
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        isBordered = false
+        bezelStyle = .inline
+        imagePosition = .noImage
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.borderWidth = 1
+        let dropShadow = NSShadow()
+        dropShadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+        dropShadow.shadowBlurRadius = 6
+        dropShadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow = dropShadow
+        applyTitle(foreground: .labelColor)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func applyTheme(_ theme: PCodeTranscriptTheme) {
+        let bg = theme.isDark
+            ? theme.background.blended(withFraction: 0.18, of: .white) ?? .windowBackgroundColor
+            : theme.background.blended(withFraction: 0.04, of: .black) ?? .windowBackgroundColor
+        let fg = theme.foreground
+        let border = theme.foreground.withAlphaComponent(theme.isDark ? 0.18 : 0.14)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = bg.cgColor
+            layer?.borderColor = border.cgColor
+            layer?.shadowColor = NSColor.black.cgColor
+        }
+        applyTitle(foreground: fg)
+    }
+
+    private func applyTitle(foreground: NSColor) {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        attributedTitle = NSAttributedString(
+            string: "↓  Jump to bottom",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: foreground,
+                .paragraphStyle: style,
+            ])
+        sizeToFit()
+    }
+}
+
 /// Native `NSScrollView` hosting `PCodeTranscriptDocumentView` with live-scroll observation
-/// (without overriding `scrollWheel`, preserving AppKit responsive scrolling).
+/// (without overriding `scrollWheel`, preserving AppKit responsive scrolling) and a floating
+/// "Jump to bottom" pill when scrolled up during live streaming.
 final class PCodeTranscriptScrollView: NSScrollView {
     let transcriptDocumentView: PCodeTranscriptDocumentView
+    let jumpToBottomButton = PCodeJumpToBottomButton()
     private var observers: [NSObjectProtocol] = []
     private var typographyCancellable: AnyCancellable?
+
+    var isJumpToBottomVisible: Bool { !jumpToBottomButton.isHidden }
 
     init(typography: PCodeTypography = .shared, theme: PCodeTranscriptTheme) {
         self.transcriptDocumentView = PCodeTranscriptDocumentView(
@@ -1122,6 +1656,20 @@ final class PCodeTranscriptScrollView: NSScrollView {
         documentView = transcriptDocumentView
         contentView.postsBoundsChangedNotifications = true
         appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+
+        jumpToBottomButton.isHidden = true
+        jumpToBottomButton.target = self
+        jumpToBottomButton.action = #selector(jumpToBottomPressed)
+        jumpToBottomButton.applyTheme(theme)
+        addSubview(jumpToBottomButton)
+
+        transcriptDocumentView.onJumpToBottomVisibilityChanged = { [weak self] visible in
+            guard let self else { return }
+            self.jumpToBottomButton.isHidden = !visible
+            if visible {
+                self.layoutJumpToBottomButton()
+            }
+        }
 
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(
@@ -1176,35 +1724,60 @@ final class PCodeTranscriptScrollView: NSScrollView {
         }
     }
 
+    func applyTheme(_ theme: PCodeTranscriptTheme) {
+        jumpToBottomButton.applyTheme(theme)
+    }
+
+    @objc private func jumpToBottomPressed() {
+        transcriptDocumentView.scrollToBottomAndPin()
+    }
+
     override func layout() {
         super.layout()
         let clipWidth = contentView.bounds.width
         if clipWidth > 0, abs(transcriptDocumentView.frame.width - clipWidth) > 0.5 {
             transcriptDocumentView.frame.size.width = clipWidth
         }
+        layoutJumpToBottomButton()
+    }
+
+    private func layoutJumpToBottomButton() {
+        let naturalWidth = ceil(jumpToBottomButton.fittingSize.width)
+        let width = max(136, naturalWidth + 24)
+        let height: CGFloat = 28
+        let x = floor((bounds.width - width) * 0.5)
+        let y: CGFloat = isFlipped ? (bounds.height - height - 14) : 14
+        jumpToBottomButton.frame = CGRect(x: x, y: y, width: width, height: height)
     }
 }
 
-/// SwiftUI bridge hosting `PCodeTranscriptScrollView` with explicit `NSAppearance` forwarding.
+/// SwiftUI bridge hosting `PCodeTranscriptScrollView` with explicit `NSAppearance` forwarding
+/// and optional live 4x streaming replay.
 struct PCodeTranscriptRepresentable: NSViewRepresentable {
     let sessionID: String
     let turns: [PCodePeekTurn]
     let theme: PCodeTranscriptTheme
     let typography: PCodeTypography
     let pinToBottom: Bool
+    let replayActive: Bool
+    let onReplayFinished: (() -> Void)?
 
     init(
         sessionID: String,
         turns: [PCodePeekTurn],
         theme: PCodeTranscriptTheme,
         typography: PCodeTypography = .shared,
-        pinToBottom: Bool = false
+        pinToBottom: Bool = false,
+        replayActive: Bool = false,
+        onReplayFinished: (() -> Void)? = nil
     ) {
         self.sessionID = sessionID
         self.turns = turns
         self.theme = theme
         self.typography = typography
         self.pinToBottom = pinToBottom
+        self.replayActive = replayActive
+        self.onReplayFinished = onReplayFinished
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1213,13 +1786,21 @@ struct PCodeTranscriptRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PCodeTranscriptScrollView {
         let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
-        let items = PCodeTranscriptItem.flatten(turns: turns)
         context.coordinator.lastSessionID = sessionID
         context.coordinator.lastTurnSignature = Self.turnSignature(turns)
         context.coordinator.lastTheme = theme
         context.coordinator.lastTypographySnapshot = typography.snapshot
         context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
-        scrollView.transcriptDocumentView.setItems(items, pinToBottom: pinToBottom)
+        context.coordinator.lastReplayActive = replayActive
+        if replayActive {
+            context.coordinator.startReplay(
+                turns: turns,
+                documentView: scrollView.transcriptDocumentView,
+                onComplete: onReplayFinished)
+        } else {
+            let items = PCodeTranscriptItem.flatten(turns: turns)
+            scrollView.transcriptDocumentView.setItems(items, pinToBottom: pinToBottom)
+        }
         return scrollView
     }
 
@@ -1240,14 +1821,38 @@ struct PCodeTranscriptRepresentable: NSViewRepresentable {
             nsView.transcriptDocumentView.updateAppearance(
                 typography: snap,
                 theme: theme)
+            nsView.applyTheme(theme)
         }
 
-        if coord.lastSessionID != sessionID || coord.lastTurnSignature != sig {
+        let contentChanged = (coord.lastSessionID != sessionID || coord.lastTurnSignature != sig)
+        let replayChanged = (coord.lastReplayActive != replayActive)
+
+        if contentChanged || replayChanged {
             coord.lastSessionID = sessionID
             coord.lastTurnSignature = sig
-            let items = PCodeTranscriptItem.flatten(turns: turns)
-            nsView.transcriptDocumentView.setItems(items, pinToBottom: pinToBottom)
+            coord.lastReplayActive = replayActive
+
+            if replayActive {
+                coord.replayCompletedNaturally = false
+                coord.startReplay(
+                    turns: turns,
+                    documentView: nsView.transcriptDocumentView,
+                    onComplete: onReplayFinished)
+            } else {
+                coord.stopReplay()
+                if contentChanged || !coord.replayCompletedNaturally {
+                    coord.replayCompletedNaturally = false
+                    let items = PCodeTranscriptItem.flatten(turns: turns)
+                    nsView.transcriptDocumentView.setItems(items, pinToBottom: pinToBottom)
+                } else {
+                    coord.replayCompletedNaturally = false
+                }
+            }
         }
+    }
+
+    static func dismantleNSView(_ nsView: PCodeTranscriptScrollView, coordinator: Coordinator) {
+        coordinator.stopReplay()
     }
 
     private static func turnSignature(_ turns: [PCodePeekTurn]) -> Int {
@@ -1283,5 +1888,34 @@ struct PCodeTranscriptRepresentable: NSViewRepresentable {
         var lastTheme: PCodeTranscriptTheme?
         var lastTypographySnapshot: PCodeTypographySnapshot?
         var lastTypographyObjectID: ObjectIdentifier?
+        var lastReplayActive: Bool = false
+        var replayCompletedNaturally: Bool = false
+        private var replayer: PCodeTranscriptStreamReplayer?
+
+        func startReplay(
+            turns: [PCodePeekTurn],
+            documentView: PCodeTranscriptDocumentView,
+            onComplete: (() -> Void)?
+        ) {
+            stopReplay()
+            replayCompletedNaturally = false
+            let r = PCodeTranscriptStreamReplayer(
+                turns: turns,
+                documentView: documentView,
+                speedMultiplier: 4.0,
+                chunkSize: 18,
+                onComplete: { [weak self] in
+                    self?.replayer = nil
+                    self?.replayCompletedNaturally = true
+                    onComplete?()
+                })
+            replayer = r
+            r.start()
+        }
+
+        func stopReplay() {
+            replayer?.stop()
+            replayer = nil
+        }
     }
 }
