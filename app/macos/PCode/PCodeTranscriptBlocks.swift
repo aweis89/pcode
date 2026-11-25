@@ -14,13 +14,69 @@ protocol PCodeTranscriptRowHosting: NSView {
     func setHovered(_ hovered: Bool)
     /// Reset transient state (scroll offsets, in-flight tasks, copy flash, selection) before pooling.
     func resetForTranscriptReuse()
+    /// Apply a compositor-only top-to-bottom curtain reveal mask (`nil` = fully revealed, `0...1` = revealing).
+    func setCurtainRevealProgress(_ progress: CGFloat?)
 }
 
 extension PCodeTranscriptRowHosting {
     func setHovered(_ hovered: Bool) {}
+
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        primaryTextView?.inkSweepFrontier = nil
+    }
+
+    func setCurtainRevealProgress(_ progress: CGFloat?) {
+        guard let layer else { return }
+        guard let progress else {
+            if layer.mask != nil {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.mask = nil
+                CATransaction.commit()
+            }
+            return
+        }
+
+        let clamped = min(max(0, progress), 1)
+        if clamped >= 1 {
+            setCurtainRevealProgress(nil)
+            return
+        }
+
+        let maskLayer: CAGradientLayer
+        if let existing = layer.mask as? CAGradientLayer {
+            maskLayer = existing
+        } else {
+            let created = CAGradientLayer()
+            created.colors = [
+                NSColor.white.withAlphaComponent(1.0).cgColor,
+                NSColor.white.withAlphaComponent(1.0).cgColor,
+                NSColor.white.withAlphaComponent(0.0).cgColor,
+            ]
+            created.startPoint = CGPoint(x: 0.5, y: 0.0)
+            created.endPoint = CGPoint(x: 0.5, y: 1.0)
+            layer.mask = created
+            maskLayer = created
+        }
+
+        let h = max(1, bounds.height)
+        // Soft 1.5-row (~30pt) feather matching Ghostty Smooth's curtain reveal.
+        let featherFrac = min(0.45, 30.0 / h)
+        let lead = min(1.0, clamped * (1.0 + featherFrac))
+        let solidEnd = max(0.0, lead - featherFrac)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        maskLayer.frame = bounds
+        maskLayer.locations = [
+            NSNumber(value: 0.0),
+            NSNumber(value: Double(solidEnd)),
+            NSNumber(value: Double(lead)),
+        ]
+        CATransaction.commit()
     }
 }
 
@@ -320,6 +376,8 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        textView.inkSweepFrontier = nil
         copyPayload = nil
         copyButton.cancelCopiedFlash()
     }
@@ -438,6 +496,8 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        textView.inkSweepFrontier = nil
         highlightTask?.cancel()
         highlightTask = nil
         highlightGeneration &+= 1
@@ -749,6 +809,7 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         setHovered(false)
         setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
         scrollView.resetScrollOrigin()
     }
 
@@ -980,6 +1041,17 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                     .paragraphStyle: style,
                 ]))
         }
+
+        // Lazy tool output rendering: only format/append output when expanded.
+        if isExpanded && !call.output.isEmpty {
+            out.append(NSAttributedString(
+                string: "\n" + call.output,
+                attributes: [
+                    .font: typography.codeNSFont(scale: 0.80),
+                    .foregroundColor: theme.foreground.withAlphaComponent(0.82),
+                    .paragraphStyle: style,
+                ]))
+        }
         return out
     }
 
@@ -995,7 +1067,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         self.onToggle = onToggle
         self.lastTheme = theme
         let summary = call.summaryText
-        let canExpand = summary.count > 90 || summary.contains("\n")
+        let canExpand = summary.count > 90 || summary.contains("\n") || !call.output.isEmpty
 
         let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
         let symbolName = call.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
@@ -1106,5 +1178,437 @@ final class PCodeStatusRowView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = selectedRange
         textView.frame = CGRect(x: 8, y: 3, width: textW, height: textH)
         return textH + 6
+    }
+}
+
+// MARK: - Diff Card Row (`EditPreview` / `EditCompleted`)
+
+final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
+    let itemKind: PCodeTranscriptItem.Kind = .diff
+    let scrollView = PCodeHorizontalBlockScrollView()
+    let textView = PCodeTextKit2BlockView()
+    private let headerView = NSView()
+    private let pathLabel = NSTextField(labelWithString: "")
+    private let statsLabel = NSTextField(labelWithString: "")
+    private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
+    private let dividerLayer = CALayer()
+
+    private var patchToCopy: String = ""
+    private var lastTheme: PCodeTranscriptTheme?
+
+    var primaryTextView: PCodeTextKit2BlockView? { textView }
+    var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    override var isFlipped: Bool { true }
+
+    static let headerHeight: CGFloat = 28
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        headerView.wantsLayer = true
+        headerView.layer?.addSublayer(dividerLayer)
+        for label in [pathLabel, statsLabel] {
+            label.isEditable = false
+            label.isSelectable = false
+            label.drawsBackground = false
+            label.isBezeled = false
+            label.lineBreakMode = .byTruncatingMiddle
+        }
+        copyButton.target = self
+        copyButton.action = #selector(copyPatchPressed)
+
+        headerView.addSubview(pathLabel)
+        headerView.addSubview(statsLabel)
+        headerView.addSubview(copyButton)
+        addSubview(headerView)
+
+        scrollView.documentView = textView
+        addSubview(scrollView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setSelectedRange(_ range: NSRange?) {
+        textView.selectedRange = range
+    }
+
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        textView.inkSweepFrontier = nil
+        scrollView.resetScrollOrigin()
+        copyButton.cancelCopiedFlash()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
+    static func attributedPatch(
+        for payload: PCodeDiffPayload,
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme
+    ) -> NSAttributedString {
+        let font = typography.codeNSFont(scale: typography.codeBlockScale)
+        let lh = typography.lineHeight(scale: typography.codeBlockScale)
+        let para = NSMutableParagraphStyle()
+        para.minimumLineHeight = lh
+        para.maximumLineHeight = lh
+
+        let addBg = NSColor.systemGreen.withAlphaComponent(theme.isDark ? 0.16 : 0.12)
+        let delBg = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.16 : 0.12)
+        let hunkColor = theme.accent.withAlphaComponent(0.85)
+        let addFg = theme.isDark ? NSColor(calibratedRed: 0.56, green: 0.90, blue: 0.62, alpha: 1) : NSColor(calibratedRed: 0.08, green: 0.45, blue: 0.18, alpha: 1)
+        let delFg = theme.isDark ? NSColor(calibratedRed: 0.98, green: 0.56, blue: 0.56, alpha: 1) : NSColor(calibratedRed: 0.65, green: 0.12, blue: 0.14, alpha: 1)
+
+        let out = NSMutableAttributedString()
+        let rawLines = payload.patch.split(separator: "\n", omittingEmptySubsequences: false)
+        let capped = rawLines.prefix(200)
+        for (idx, lineSub) in capped.enumerated() {
+            let line = String(lineSub) + (idx < capped.count - 1 ? "\n" : "")
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: theme.foreground,
+                .paragraphStyle: para,
+            ]
+            if lineSub.hasPrefix("+") && !lineSub.hasPrefix("+++") {
+                attrs[.foregroundColor] = addFg
+                attrs[.backgroundColor] = addBg
+            } else if lineSub.hasPrefix("-") && !lineSub.hasPrefix("---") {
+                attrs[.foregroundColor] = delFg
+                attrs[.backgroundColor] = delBg
+            } else if lineSub.hasPrefix("@@") {
+                attrs[.foregroundColor] = hunkColor
+            }
+            out.append(NSAttributedString(string: line, attributes: attrs))
+        }
+        if rawLines.count > 200 {
+            out.append(NSAttributedString(
+                string: "\n… (\(rawLines.count - 200) more diff lines)",
+                attributes: [.font: font, .foregroundColor: theme.secondaryForeground, .paragraphStyle: para]))
+        }
+        return out
+    }
+
+    func configure(
+        payload: PCodeDiffPayload,
+        attributedPatch: NSAttributedString,
+        width: CGFloat,
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme,
+        documentView: PCodeTranscriptDocumentView?,
+        selectedRange: NSRange?
+    ) -> CGFloat {
+        scrollView.transcriptDocumentView = documentView
+        patchToCopy = payload.patch
+        lastTheme = theme
+
+        let padX: CGFloat = 12
+        let padY: CGFloat = 8
+        let contentWidth = max(1, width - padX * 2)
+        let codeFont = typography.codeNSFont(scale: typography.codeBlockScale)
+        // Measure only the capped display text (<= 200 lines) rather than scanning huge full patches.
+        let widest = PCodeCodeBlockView.widestLineWidth(in: attributedPatch.string, font: codeFont)
+        let layoutWidth = max(contentWidth, ceil(widest) + 12)
+        let textHeight = attributedPatch.length > 0
+            ? textView.configure(attributedText: attributedPatch, width: layoutWidth)
+            : 0
+        textView.selectedRange = selectedRange
+        textView.frame = CGRect(x: 0, y: 0, width: layoutWidth, height: textHeight)
+
+        headerView.frame = CGRect(x: 0, y: 0, width: width, height: Self.headerHeight)
+        pathLabel.stringValue = payload.isPreview ? "\(payload.path) (preview)" : payload.path
+        pathLabel.font = typography.codeNSFont(scale: 0.80, weight: .medium)
+        pathLabel.textColor = theme.foreground
+        pathLabel.sizeToFit()
+
+        let statsAttr = NSMutableAttributedString()
+        if payload.added > 0 {
+            statsAttr.append(NSAttributedString(
+                string: "+\(payload.added)",
+                attributes: [.font: typography.codeNSFont(scale: 0.76, weight: .semibold), .foregroundColor: NSColor.systemGreen]))
+        }
+        if payload.removed > 0 {
+            if statsAttr.length > 0 { statsAttr.append(NSAttributedString(string: " ")) }
+            statsAttr.append(NSAttributedString(
+                string: "−\(payload.removed)",
+                attributes: [.font: typography.codeNSFont(scale: 0.76, weight: .semibold), .foregroundColor: NSColor.systemRed]))
+        }
+        statsLabel.attributedStringValue = statsAttr
+        statsLabel.sizeToFit()
+
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            copyButton.applyTheme(foreground: theme.secondaryForeground, background: .clear)
+        }
+        let btnW = max(54, copyButton.frame.width + 8)
+        let statsW = statsLabel.frame.width
+        let pathMaxW = max(40, width - padX - btnW - statsW - 24)
+        pathLabel.frame = CGRect(
+            x: padX,
+            y: floor((Self.headerHeight - pathLabel.frame.height) * 0.5),
+            width: min(pathLabel.frame.width, pathMaxW),
+            height: pathLabel.frame.height)
+        statsLabel.frame = CGRect(
+            x: pathLabel.frame.maxX + 8,
+            y: floor((Self.headerHeight - statsLabel.frame.height) * 0.5),
+            width: statsW,
+            height: statsLabel.frame.height)
+        copyButton.frame = CGRect(
+            x: max(padX, width - btnW - 8),
+            y: floor((Self.headerHeight - 20) * 0.5),
+            width: btnW,
+            height: 20)
+        dividerLayer.frame = CGRect(x: 0, y: Self.headerHeight - 1, width: width, height: 1)
+
+        let bodyVisible = textHeight > 0
+        scrollView.isHidden = !bodyVisible
+        scrollView.frame = CGRect(x: padX, y: Self.headerHeight + padY, width: contentWidth, height: textHeight)
+        applyLayerColors()
+        return bodyVisible ? (Self.headerHeight + textHeight + padY * 2) : Self.headerHeight
+    }
+
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = theme.codeBackground.cgColor
+            layer?.cornerRadius = 8
+            layer?.borderWidth = 1
+            layer?.borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
+            dividerLayer.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.10).cgColor
+        }
+    }
+
+    @objc private func copyPatchPressed() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(patchToCopy, forType: .string)
+        copyButton.flashCopied()
+    }
+}
+
+// MARK: - Thinking Card Row (Collapsed-by-Default Reasoning Preview)
+
+final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
+    let itemKind: PCodeTranscriptItem.Kind = .thinking
+    let textView = PCodeTextKit2BlockView()
+    private let toggleButton = NSButton()
+    private var onToggle: (() -> Void)?
+    private var lastTheme: PCodeTranscriptTheme?
+
+    var primaryTextView: PCodeTextKit2BlockView? { textView }
+    var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        addSubview(textView)
+        toggleButton.isBordered = false
+        toggleButton.title = ""
+        toggleButton.target = self
+        toggleButton.action = #selector(togglePressed)
+        addSubview(toggleButton)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setSelectedRange(_ range: NSRange?) {
+        textView.selectedRange = range
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
+    static func attributedText(
+        for text: String,
+        isExpanded: Bool,
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme
+    ) -> NSAttributedString {
+        let lh = typography.lineHeight(scale: 0.86)
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = lh
+        style.maximumLineHeight = lh
+
+        let out = NSMutableAttributedString()
+        out.append(NSAttributedString(
+            string: "Thinking",
+            attributes: [
+                .font: typography.proseNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight, italic: true),
+                .foregroundColor: theme.secondaryForeground,
+                .paragraphStyle: style,
+            ]))
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            let body: String
+            if isExpanded {
+                body = "\n" + trimmed
+            } else {
+                let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: true)
+                let preview = lines.suffix(2).joined(separator: " ")
+                body = "  " + (preview.count > 140 ? String(preview.prefix(140)) + "…" : preview)
+            }
+            out.append(NSAttributedString(
+                string: body,
+                attributes: [
+                    .font: typography.proseNSFont(scale: 0.86, italic: true),
+                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.78),
+                    .paragraphStyle: style,
+                ]))
+        }
+        return out
+    }
+
+    func configure(
+        isExpanded: Bool,
+        attributedText: NSAttributedString,
+        width: CGFloat,
+        theme: PCodeTranscriptTheme,
+        selectedRange: NSRange?,
+        onToggle: @escaping () -> Void
+    ) -> CGFloat {
+        self.onToggle = onToggle
+        self.lastTheme = theme
+        let padX: CGFloat = 12
+        let padY: CGFloat = 6
+        let textWidth = max(1, width - padX - 28)
+        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+        textView.selectedRange = selectedRange
+        textView.frame = CGRect(x: padX, y: padY, width: textWidth, height: textHeight)
+
+        let chevron = isExpanded ? "chevron.down" : "chevron.right"
+        toggleButton.image = NSImage(systemSymbolName: chevron, accessibilityDescription: isExpanded ? "Collapse" : "Expand")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        toggleButton.contentTintColor = theme.secondaryForeground
+        toggleButton.frame = CGRect(x: width - 22, y: 5, width: 18, height: 20)
+
+        applyLayerColors()
+        return max(28, textHeight + padY * 2)
+    }
+
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = theme.toolBackground.cgColor
+            layer?.cornerRadius = 6
+        }
+    }
+
+    @objc private func togglePressed() {
+        onToggle?()
+    }
+}
+
+// MARK: - Plan Card Row (`PlanUpdated` / `PlanPreview`)
+
+final class PCodePlanCardView: NSView, PCodeTranscriptRowHosting {
+    let itemKind: PCodeTranscriptItem.Kind = .plan
+    let textView = PCodeTextKit2BlockView()
+    private var lastTheme: PCodeTranscriptTheme?
+
+    var primaryTextView: PCodeTextKit2BlockView? { textView }
+    var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        addSubview(textView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setSelectedRange(_ range: NSRange?) {
+        textView.selectedRange = range
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
+    static func attributedText(
+        for items: [PCodePlanItem],
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme
+    ) -> NSAttributedString {
+        let lh = typography.lineHeight(scale: 0.88)
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = lh
+        style.maximumLineHeight = lh
+        style.paragraphSpacing = 3
+
+        let out = NSMutableAttributedString()
+        out.append(NSAttributedString(
+            string: "Plan\n",
+            attributes: [
+                .font: typography.proseNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight),
+                .foregroundColor: theme.accent,
+                .paragraphStyle: style,
+            ]))
+
+        for (idx, item) in items.enumerated() {
+            let (icon, color): (String, NSColor)
+            switch item.status.lowercased() {
+            case "completed", "done": (icon, color) = ("●", .systemGreen)
+            case "in_progress", "running": (icon, color) = ("◐", theme.accent)
+            case "failed", "error": (icon, color) = ("×", .systemRed)
+            default: (icon, color) = ("○", theme.secondaryForeground)
+            }
+            out.append(NSAttributedString(
+                string: "\(icon) ",
+                attributes: [.font: typography.codeNSFont(scale: 0.86), .foregroundColor: color, .paragraphStyle: style]))
+            let suffix = idx < items.count - 1 ? "\n" : ""
+            let isDone = ["completed", "done"].contains(item.status.lowercased())
+            out.append(NSAttributedString(
+                string: item.content + suffix,
+                attributes: [
+                    .font: typography.proseNSFont(scale: 0.88),
+                    .foregroundColor: isDone ? theme.secondaryForeground : theme.foreground,
+                    .paragraphStyle: style,
+                ]))
+        }
+        return out
+    }
+
+    func configure(
+        attributedText: NSAttributedString,
+        width: CGFloat,
+        theme: PCodeTranscriptTheme,
+        selectedRange: NSRange?
+    ) -> CGFloat {
+        lastTheme = theme
+        let padX: CGFloat = 12
+        let padY: CGFloat = 8
+        let textWidth = max(1, width - padX * 2)
+        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+        textView.selectedRange = selectedRange
+        textView.frame = CGRect(x: padX, y: padY, width: textWidth, height: textHeight)
+        applyLayerColors()
+        return textHeight + padY * 2
+    }
+
+    private func applyLayerColors() {
+        guard let theme = lastTheme else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = theme.promptBackground.cgColor
+            layer?.cornerRadius = 8
+            layer?.borderWidth = 1
+            layer?.borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
+        }
     }
 }

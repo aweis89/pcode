@@ -2988,3 +2988,62 @@ def test_the_drawer_viewer_draws_a_hosts_thread_in_its_own_terminal(tmp_path, ho
             await stop_host(host)
 
     asyncio.run(run())
+
+
+def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path, host_dir):
+    """Read-only transcript observers get history, catch-up, and live data calls."""
+    from pcode.host import TRANSCRIPT_OBSERVER_VERSION
+    from pcode.host_protocol import dumps, read_message
+
+    async def run():
+        host = await start_host("obs11111", tmp_path, Script())
+        try:
+            host.entry.unseen = True
+            # Buffer a data call and a terminal-only call before the observer connects.
+            host.emit("turn_event", (Message("buffered prose"),), {})
+            host.emit("redraw", (), {})
+
+            # Version mismatch returns an error cleanly.
+            bad_r, bad_w = await asyncio.open_unix_connection(str(host.socket))
+            bad_w.write(dumps({"type": "observe_transcript", "version": 999}))
+            await bad_w.drain()
+            err = await read_message(bad_r)
+            assert err["type"] == "error"
+            bad_w.close()
+
+            # Valid handshake receives ready snapshot without changing attached/unseen.
+            reader, writer = await asyncio.open_unix_connection(str(host.socket))
+            hello = {"type": "observe_transcript", "version": TRANSCRIPT_OBSERVER_VERSION}
+            writer.write(dumps(hello))
+            await writer.drain()
+            ready = await read_message(reader)
+            assert ready["type"] == "ready"
+            assert ready["version"] == TRANSCRIPT_OBSERVER_VERSION
+            assert ready["paced_scrollback"] in ("rows", "typed", "off")
+            methods = [c[0] for c in ready["calls"]]
+            assert "turn_event" in methods
+            assert "redraw" not in methods
+            assert host.entry.attached == 0
+            assert host.entry.unseen is True
+
+            # Live data calls forward; terminal-only calls (`redraw`, `flash`) are filtered out.
+            host.emit("redraw", (), {})
+            host.emit("turn_event", (TextDelta("hello live"),), {})
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert msg["type"] == "notify"
+            assert msg["method"] == "turn_event"
+            assert msg["args"][0]["$event"]["kind"] == "TextDelta"
+            assert msg["args"][0]["$event"]["fields"]["text"] == "hello live"
+
+            # Observer is read-only: RPC requests are refused with PermissionError.
+            req = {"type": "request", "id": 1, "method": "submit", "args": ["hi", "queue"]}
+            writer.write(dumps(req))
+            await writer.drain()
+            refused = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert refused["error"]["type"] == "PermissionError"
+
+            writer.close()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())

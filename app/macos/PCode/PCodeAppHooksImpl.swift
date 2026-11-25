@@ -167,8 +167,18 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         guard let info else { throw DebugCommands.Failure("no session to peek") }
         workspace.peek.peekFromMenu(workspace.peekTarget(for: info))
         let startReplay = (args["replay"] as? Bool) == true
+        if let speed = args["speed"] as? Double, speed > 0 {
+            workspace.peek.replaySpeed = speed
+        }
         workspace.peek.isReplaying = startReplay
-        finish(["showing": true, "live": false, "session": info.id, "title": info.label, "replaying": startReplay])
+        finish([
+            "showing": true,
+            "live": false,
+            "session": info.id,
+            "title": info.label,
+            "replaying": startReplay,
+            "speed": workspace.peek.replaySpeed,
+        ])
     }
 
     private static func sidebarCommand(_ args: [String: Any], _ finish: @escaping ([String: Any]) -> Void) throws {

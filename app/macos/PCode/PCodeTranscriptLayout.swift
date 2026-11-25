@@ -141,6 +141,56 @@ struct PCodeTranscriptLayoutEngine {
         }
     }
 
+    /// Insert a new entry at `index`, shifting trailing `yOffset`s and recomputing `totalHeight`.
+    @discardableResult
+    mutating func insert(
+        at index: Int,
+        id: String,
+        height: CGFloat,
+        spacingAfter: CGFloat,
+        measured: Bool = true
+    ) -> Int {
+        let clampedIndex = min(max(0, index), entries.count)
+        if clampedIndex == entries.count {
+            return append(id: id, height: height, spacingAfter: spacingAfter, measured: measured)
+        }
+        let y = entries[clampedIndex].yOffset
+        let h = roundToPixel(max(0, height))
+        let spacing = roundToPixel(max(0, spacingAfter))
+        let delta = h + spacing
+        entries.insert(
+            Entry(
+                id: id,
+                yOffset: y,
+                height: h,
+                spacingAfter: spacing,
+                isMeasured: measured,
+                minHeight: 0),
+            at: clampedIndex)
+        for i in (clampedIndex + 1)..<entries.count {
+            entries[i].yOffset += delta
+        }
+        totalHeight = roundToPixel(max(topPadding + bottomPadding, totalHeight + delta))
+        return clampedIndex
+    }
+
+    /// Remove the entry at `index`, shifting trailing `yOffset`s and recomputing `totalHeight`.
+    mutating func remove(at index: Int) {
+        guard entries.indices.contains(index) else { return }
+        let removed = entries.remove(at: index)
+        let delta = removed.height + removed.spacingAfter
+        if index < entries.count {
+            for i in index..<entries.count {
+                entries[i].yOffset -= delta
+            }
+        }
+        if let last = entries.last {
+            totalHeight = roundToPixel(last.yOffset + last.height + last.spacingAfter + bottomPadding)
+        } else {
+            totalHeight = roundToPixel(topPadding + bottomPadding)
+        }
+    }
+
     /// Remove all entries from `index..<entries.count` and recompute `totalHeight`.
     mutating func removeTail(from index: Int) {
         guard index >= 0, index < entries.count else { return }

@@ -63,6 +63,25 @@ IDLE_GRACE_SECONDS = 15.0
 OBSERVER_INTERVAL = 0.08
 SNAPSHOT_EVENTS = (CommandOutput, EditPreview)
 
+# Read-only transcript observer handshake version and the data-only view calls
+# forwarded to it (terminal-only calls like `redraw`, `flash`, pickers are excluded).
+TRANSCRIPT_OBSERVER_VERSION = 1
+TRANSCRIPT_OBSERVER_CALLS = frozenset(
+    {
+        "turn_started",
+        "turn_event",
+        "cancelled",
+        "after_turn",
+        "note",
+        "error",
+        "conversation_reset",
+        "replay_conversation",
+        "show_branch",
+        "session_changed",
+        "state",
+    }
+)
+
 # View calls that change what the conversation is, so a terminal attaching
 # later reads it from the journal instead of from the buffer.
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
@@ -512,6 +531,10 @@ class SessionHost:
         # Drawers watching the side questions (`pcode.drawer`): not terminals,
         # not connections, and allowed to call nothing.
         self.observers: set[Peer] = set()
+        # Read-only transcript observers (e.g. Pcode.app live transcript pane):
+        # receive settled history + catch-up calls + live data-only view calls
+        # without affecting `attached`, `unseen`, `_latest`, or the idle clock.
+        self.transcript_observers: set[Peer] = set()
         # Side questions changed since observers last heard, sent together
         # shortly after, so a streaming answer is not rendered per token.
         self._observed: dict[str, object] = {}
@@ -609,6 +632,9 @@ class SessionHost:
         if hello is not None and hello.get("type") == "observe":
             await self._observe(hello, reader, writer)
             return
+        if hello is not None and hello.get("type") == "observe_transcript":
+            await self._observe_transcript(hello, reader, writer)
+            return
         if hello is None or hello.get("type") != "hello":
             writer.close()
             return
@@ -677,6 +703,92 @@ class SessionHost:
             if counted:
                 self.connections += 1
             self.observers.discard(peer)
+            peer.close()
+
+    def _read_settled_history(self) -> list[dict]:
+        """Read settled transcript journal records up to `self.settled_end` as JSON dicts."""
+        session = getattr(self.controller.runtime, "session", None)
+        if session is None:
+            return []
+        path = session.directory / "transcript.jsonl"
+        if not path.is_file():
+            return []
+        limit = self.settled_end
+        records: list[dict] = []
+        skip_kinds = {"TextDelta", "ThinkingDelta"}
+        try:
+            with path.open("rb") as fh:
+                raw = fh.read() if limit is None else fh.read(max(0, limit))
+        except OSError:
+            return []
+        for line in raw.splitlines():
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("kind") not in skip_kinds:
+                records.append(obj)
+        return records
+
+    async def _observe_transcript(
+        self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Read-only live transcript observer (settled history + catch-up + live data calls).
+
+        Like `_observe`, does not count as an attached terminal, clear `unseen`, or
+        reset the idle clock. Builds the snapshot and registers before any `await` so
+        the merge of settled history, catch-up buffer, and live notifications is
+        exactly-once by construction.
+        """
+        from pcode.preferences import load_preferences
+        from pcode.rpc import encode
+
+        if hello.get("version") != TRANSCRIPT_OBSERVER_VERSION:
+            message = (
+                f"This session host speaks transcript observer version "
+                f"{TRANSCRIPT_OBSERVER_VERSION}, not {hello.get('version')}."
+            )
+            writer.write(dumps({"type": "error", "message": message}))
+            await writer.drain()
+            writer.close()
+            return
+
+        history = self._read_settled_history()
+        calls = [
+            [name, encode(list(args)), encode(kwargs)]
+            for name, args, kwargs in self.buffer
+            if name in TRANSCRIPT_OBSERVER_CALLS
+        ]
+        paced = load_preferences().get("paced_scrollback", "rows")
+        welcome = {
+            "type": "ready",
+            "version": TRANSCRIPT_OBSERVER_VERSION,
+            "id": self.entry.id,
+            "session_id": self.entry.session_id,
+            "title": self.entry.title,
+            "workspace": self.entry.workspace,
+            "model": self.controller.model or self.entry.model,
+            "state": self.entry.state,
+            "paced_scrollback": paced,
+            "history": history,
+            "calls": calls,
+        }
+        writer.write(dumps(welcome))
+        peer = Peer(reader, writer, object(), allowed=frozenset())
+        counted = False
+        try:
+            self.transcript_observers.add(peer)
+            self.connections -= 1
+            counted = True
+            await peer.serve()
+        except ValueError, ConnectionError:
+            pass
+        finally:
+            if counted:
+                self.connections += 1
+            self.transcript_observers.discard(peer)
             peer.close()
 
     def _notify_observers(self) -> None:
@@ -876,6 +988,9 @@ class SessionHost:
             self.own_jobs()
         for client in list(self.clients.values()):
             client.peer.notify(method, *args, **kwargs)
+        if method in TRANSCRIPT_OBSERVER_CALLS:
+            for peer in list(self.transcript_observers):
+                peer.notify(method, *args, **kwargs)
         if method in RESETS:
             return
         self._buffer(method, args, kwargs)
@@ -1195,6 +1310,9 @@ class SessionHost:
             self._observe_flush.cancel()
             self._notify_observers()
         for peer in list(self.observers):
+            peer.notify("host_closed")
+            peer.close()
+        for peer in list(self.transcript_observers):
             peer.notify("host_closed")
             peer.close()
         controller.cancel_all()
