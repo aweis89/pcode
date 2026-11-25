@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 from contextvars import ContextVar
+from copy import copy
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -22,8 +23,9 @@ from pydantic_ai.messages import UserPromptPart
 from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 from pydantic_ai_harness.sub_agents import SubAgents, SubAgentToolset
 
-# Private: `_crash_outcome` must return the record Harness's `_settle` reads.
-from pydantic_ai_harness.sub_agents._toolset import _Ended
+# Private: `_crash_outcome` must return the record Harness's `_settle` reads,
+# and `at_max_depth` enforces Harness's shared delegation-depth counter.
+from pydantic_ai_harness.sub_agents._toolset import _Ended, at_max_depth
 
 from pcode.delegation import ResumableAgent
 from pcode.error_report import error_message
@@ -52,6 +54,11 @@ _outcome: ContextVar[str | None] = ContextVar("isolated_delegation_outcome", def
 # Setup hooks run with no model watching and their output discarded, so a hang
 # is invisible until the user gives up. Room for a cold dependency install.
 SETUP_TIMEOUT_SECONDS = 900
+
+# Top-level run (1) plus up to three nested sub-agent layers (2, 3, 4).
+# Lets a parent spin up a work sub-agent (2) that spins up a review sub-agent (3)
+# and even one further helper (4, leaf) without unbounded recursion.
+MAX_DELEGATION_DEPTH = 4
 
 
 # Set for the session by a mode that wants every worker isolated (`/manager`)
@@ -171,25 +178,51 @@ def _worker_slots() -> asyncio.Semaphore | None:
 class WorkspaceSubAgents(SubAgents):
     workspace: Path
     worker_factory: Any
+    max_depth: int = MAX_DELEGATION_DEPTH
+    # True on sub-agents that can themselves delegate: each run gets its own
+    # WorkerHub (dotted ids like `w1.1`) and its own slot semaphore so nested
+    # workers never collide with siblings or deadlock on the parent's slots.
+    nested: bool = False
     worker_slots: asyncio.Semaphore | None = field(
         default_factory=_worker_slots, repr=False, compare=False
     )
     # The parent's workers; found by `worker_channel.hub_for(ctx)`.
     hub: WorkerHub = field(default_factory=WorkerHub, repr=False, compare=False)
 
+    async def for_run(self, ctx):
+        if at_max_depth(self.max_depth):
+            run = copy(self)
+            run._delegation_off = True
+            return run
+        if not self.nested:
+            return await super().for_run(ctx)
+        parent = current_worker()
+        prefix = f"{parent.id}." if parent is not None and parent.id else "w"
+        run = copy(self)
+        run.hub = WorkerHub(prefix=prefix)
+        run.worker_slots = _worker_slots()
+        run._per_run = True
+        run._run_toolset = run._make_toolset()
+        return run
+
     async def before_model_request(self, ctx, request_context):
         # A worker's question rides the parent's next request, like steering.
         request_context = await super().before_model_request(ctx, request_context)
+        if self._delegation_off:
+            return request_context
         for message in self.hub.take_questions():
             run_request(ctx, request_context).parts.append(UserPromptPart(message))
         return request_context
 
-    def get_toolset(self):
+    def _make_toolset(self):
+        if not self._has_delegates():
+            return None
         return WorkspaceSubAgentToolset(
             workspace=self.workspace,
             worker_factory=self.worker_factory,
             worker_slots=self.worker_slots,
             hub=self.hub,
+            allow_isolation=not self.nested,
             agents=self._by_name,
             forward_usage=self.forward_usage,
             inherit_tools=self.inherit_tools,
@@ -200,21 +233,38 @@ class WorkspaceSubAgents(SubAgents):
             contain_errors=self.contain_errors,
             call_counts=self._call_counts,
             models=self._menu,
+            max_depth=self.max_depth,
         )
 
-    def get_instructions(self):
-        return (super().get_instructions() or "") + (
-            "\nWorker workspace_mode defaults to auto: shared unless both worktree=on and "
-            "worker_isolation=on in the active workspace's config. worker_isolation defaults "
-            "to off; worktree alone never isolates workers. Isolation requires a clean tracked "
-            "parent checkout; commit a checkpoint first, never stash or silently switch modes. "
-            "Use shared explicitly for work that needs the live parent files; coordinate writes. "
-            "Specialized delegates retain their own tools and use shared mode. "
-            "Isolated results are branches, not changes to your checkout. Review them, then "
-            "task_worktree(action='integrate') into this parent branch and verify the combined "
-            "changes. task_worktree(action='list') recovers task IDs after a restart. "
-            "Never push worker branches or merge them directly into mainline. "
-            "Ask the user before a confirmed discard destroys unintegrated work."
+    def _render_instructions(self):
+        if self._delegation_off:
+            return None
+        base = super()._render_instructions()
+        if base is None:
+            return None
+        if self.nested:
+            extra = (
+                "\nNested sub-agents run in shared mode in this workspace; coordinate writes. "
+                "Specialized delegates retain their own tools and use shared mode."
+            )
+        else:
+            extra = (
+                "\nWorker workspace_mode defaults to auto: shared unless both worktree=on and "
+                "worker_isolation=on in the active workspace's config. worker_isolation defaults "
+                "to off; worktree alone never isolates workers. Isolation requires a clean tracked "
+                "parent checkout; commit a checkpoint first, never stash or silently switch modes. "
+                "Use shared explicitly for work that needs the live parent files; "
+                "coordinate writes. "
+                "Specialized delegates retain their own tools and use shared mode. "
+                "Isolated results are branches, not changes to your checkout. Review them, then "
+                "task_worktree(action='integrate') into this parent branch and verify the combined "
+                "changes. task_worktree(action='list') recovers task IDs after a restart. "
+                "Never push worker branches or merge them directly into mainline. "
+                "Ask the user before a confirmed discard destroys unintegrated work."
+            )
+        return (
+            base
+            + extra
             + PARENT_INSTRUCTIONS
             + (
                 # Harness's listing above reads as the only keys allowed.
@@ -227,13 +277,24 @@ class WorkspaceSubAgents(SubAgents):
 
 
 class WorkspaceSubAgentToolset(SubAgentToolset):
-    def __init__(self, *, workspace: Path, worker_factory, worker_slots, hub=None, **kwargs):
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        worker_factory,
+        worker_slots,
+        hub=None,
+        allow_isolation: bool = True,
+        **kwargs,
+    ):
         self.workspace = workspace
         self.worker_factory = worker_factory
         self.worker_slots = worker_slots
         self.hub = hub if hub is not None else WorkerHub()
+        self.allow_isolation = allow_isolation
         super().__init__(**kwargs)
-        self.add_function(self.task_worktree)
+        if allow_isolation:
+            self.add_function(self.task_worktree)
         # One tool, not four: the rarely used worker controls cost one schema.
         self.add_function(self.manage_worker)
 
@@ -405,9 +466,16 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
 
     async def _delegate(self, ctx, agent_name, task, workspace_mode, model):
         model = await self._add_model(ctx, agent_name, model)
-        isolated = workspace_mode == "isolated" or (
-            workspace_mode == "auto" and agent_name == "worker" and isolation_enabled()
-        )
+        if not self.allow_isolation:
+            if workspace_mode == "isolated":
+                raise ModelRetry(
+                    "Nested sub-agents run in shared mode; use workspace_mode='shared' or 'auto'."
+                )
+            isolated = False
+        else:
+            isolated = workspace_mode == "isolated" or (
+                workspace_mode == "auto" and agent_name == "worker" and isolation_enabled()
+            )
         handle = current_worker()
         if handle is not None and model:
             handle.model = model  # As run, not as typed.

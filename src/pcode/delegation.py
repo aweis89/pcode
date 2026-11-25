@@ -57,7 +57,7 @@ from pcode.tool_display import (
     target,
     tool_outcome,
 )
-from pcode.worker_channel import current_worker, notify
+from pcode.worker_channel import WorkerUpdate, current_worker, notify
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
 logger = logging.getLogger(__name__)
@@ -69,6 +69,8 @@ class ChildActivity(CapabilityEvent, namespace="pcode_delegation", name="activit
     child: ToolStarted | ToolSummary | None = None
     # The child's whole plan, sent only when it changed.
     plan: list[dict] | None = None
+    # Explicit delegate call id when forwarded from a nested sub-agent.
+    delegate_call_id: str = ""
 
 
 @dataclass(kw_only=True)
@@ -78,6 +80,8 @@ class ChildOutput(CapabilityEvent, namespace="pcode_delegation", name="output"):
     text: str
     thinking: bool = False
     start: bool = False
+    # Explicit delegate call id when forwarded from a nested sub-agent.
+    delegate_call_id: str = ""
 
 
 def _output(event) -> ChildOutput | None:
@@ -212,6 +216,42 @@ async def stream_child_activity(_ctx, events):
             if event.items != plan_items:
                 plan_items = event.items
                 await parent.emit(ChildActivity(activity=phase, plan=event.items))
+            continue
+        if isinstance(event, WorkerUpdate):
+            parent_id = parent.tool_call_id or ""
+            await parent.emit(replace(event, call_id=f"{parent_id}:{event.call_id}"))
+            continue
+        if isinstance(event, ChildActivity):
+            parent_id = parent.tool_call_id or ""
+            source_id = event.delegate_call_id or event.tool_call_id or ""
+            nested_id = f"{parent_id}:{source_id}" if source_id else parent_id
+            nested_child = (
+                replace(
+                    event.child,
+                    call_id=f"{parent_id}:{event.child.call_id}",
+                    parent_call_id=(
+                        f"{parent_id}:{event.child.parent_call_id}"
+                        if event.child.parent_call_id
+                        else parent_id
+                    ),
+                )
+                if event.child is not None
+                else None
+            )
+            await parent.emit(
+                ChildActivity(
+                    activity=event.activity,
+                    child=nested_child,
+                    plan=event.plan,
+                    delegate_call_id=nested_id,
+                )
+            )
+            continue
+        if isinstance(event, ChildOutput):
+            parent_id = parent.tool_call_id or ""
+            source_id = event.delegate_call_id or event.tool_call_id or ""
+            nested_id = f"{parent_id}:{source_id}" if source_id else parent_id
+            await parent.emit(replace(event, delegate_call_id=nested_id))
             continue
         if (output := _output(event)) is not None:
             await parent.emit(output)

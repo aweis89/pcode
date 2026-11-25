@@ -557,7 +557,7 @@ def test_worker_inherits_real_stdio_tools_and_discovery(tmp_path, stdio_server, 
             for part in message.parts
             if isinstance(part, ToolReturnPart)
         ]
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             if not results:
                 yield {
                     0: DeltaToolCall(

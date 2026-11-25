@@ -45,7 +45,7 @@ def test_real_parallel_children_are_correlated_streamed_and_inspectable(tmp_path
 
     async def model(messages, info):
         names = {t.name for t in info.function_tools}
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             if returns(messages):
                 yield "Parent answer"
             else:
@@ -112,7 +112,7 @@ def worker_runtime(tmp_path, child):
     """A real coder whose delegated workers answer from `child(messages, info)`."""
 
     async def model(messages, info):
-        if "delegate_task" in {t.name for t in info.function_tools}:
+        if "task_worktree" in {t.name for t in info.function_tools}:
             if returns(messages) or any(is_retry(p) for m in messages for p in m.parts):
                 yield "Parent answer"
             else:
@@ -609,7 +609,7 @@ def test_a_finished_delegate_leaves_its_siblings_running():
 def test_child_command_carries_what_it_ran(tmp_path):
     async def model(messages, info):
         names = {t.name for t in info.function_tools}
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             yield "Done" if returns(messages) else {0: delegate(0, "worker")}
         elif returns(messages):
             yield "Child done"
@@ -705,7 +705,7 @@ def _render(objects):
 def test_a_child_plan_reaches_the_parent_without_touching_its_plan(tmp_path):
     async def model(messages, info):
         names = {t.name for t in info.function_tools}
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             yield "Done" if returns(messages) else {0: delegate(0, "worker")}
         elif returns(messages):
             yield "Child done"
@@ -864,3 +864,174 @@ def test_an_extension_delegate_opts_in_to_showing_its_plan():
         ]
 
     asyncio.run(run())
+
+
+def test_delegate_row_shows_worker_id_in_parentheses():
+    with_purpose = ToolCall(
+        delegate_started("worker", "check tests", "c1", purpose="reviewing the fix"),
+        started=0.0,
+        worker_id="w7",
+    )
+    assert with_purpose.line(timed=False) == "» reviewing the fix (w7) · Starting"
+
+    named = ToolCall(
+        delegate_started("reviewer", "check tests", "c2", purpose="checking the diff"),
+        started=0.0,
+        worker_id="w3",
+    )
+    assert named.line(timed=False) == "» Reviewer: checking the diff (w3) · Starting"
+
+    without_purpose = ToolCall(
+        delegate_started("worker", "fix the bug", "c3"),
+        started=0.0,
+        worker_id="w2",
+    )
+    assert without_purpose.line(timed=False) == "» Worker (w2) · Starting · fix the bug"
+
+    anonymous = ToolCall(
+        delegate_started("worker", "fix the bug", "c4", purpose="reviewing the fix"),
+        started=0.0,
+    )
+    assert anonymous.line(timed=False) == "» reviewing the fix · Starting"
+
+
+def test_task_panel_nests_child_delegates_and_records_worker_ids():
+    history = ToolHistory()
+    history.record(delegate_started("worker", "build feature", "c1", purpose="building feature"))
+    assert history.record_worker("c1", "w1") is True
+    assert history.record_worker("c1", "w1") is False
+    history.record(
+        ToolStarted(
+            "delegate_task",
+            "worker",
+            "c1:c2",
+            parent_call_id="c1",
+            agent="worker",
+            task="review feature",
+            purpose="reviewing feature",
+        )
+    )
+    assert history.record_worker("c1:c2", "w1.1") is True
+
+    rows = task_panel_rows([{"content": "Ship it", "status": "in_progress"}], history, 10, "*")
+    texts = [text for _, text in rows]
+    assert texts[0] == "* Ship it"
+    assert texts[1].startswith("└── » building feature (w1) · ")
+    assert texts[2].startswith("    └── » reviewing feature (w1.1) · ")
+
+    # Settling the parent delegate clears its nested child delegate too.
+    history.record(ToolSummary("delegate_task", "done", call_id="c1"))
+    assert history.calls == []
+
+
+def test_nested_delegation_allows_three_levels_and_stops_at_leaf(tmp_path):
+    from pcode.agent import create_coder
+    from pcode.runtime import WorkerStatus
+
+    seen_tools: list[set[str]] = []
+
+    async def model(messages, info):
+        names = {t.name for t in info.function_tools}
+        if returns(messages):
+            yield f"depth-{len(seen_tools)} done"
+            return
+        seen_tools.append(names)
+        level = len(seen_tools)
+        if "delegate_task" in names:
+            yield {
+                0: DeltaToolCall(
+                    name="delegate_task",
+                    json_args=json.dumps(
+                        {
+                            "agent_name": "worker",
+                            "task": f"work at level {level}",
+                            "purpose": f"level {level} work",
+                        }
+                    ),
+                    tool_call_id=f"call-{level}",
+                )
+            }
+        else:
+            yield "leaf done"
+
+    runtime = AgentRuntime(
+        Agent(
+            FunctionModel(stream_function=model),
+            capabilities=[create_coder(tmp_path)],
+        )
+    )
+
+    async def run():
+        events = [e async for e in runtime.stream("Start")]
+        return events
+
+    events = asyncio.run(run())
+    # Level 1 (main), level 2 (w1), level 3 (w1.1), level 4 (w1.1.1, leaf).
+    assert len(seen_tools) == 4
+    assert {"delegate_task", "manage_worker", "task_worktree"} <= seen_tools[0]
+    assert {"delegate_task", "manage_worker"} <= seen_tools[1]
+    assert "task_worktree" not in seen_tools[1]
+    assert {"delegate_task", "manage_worker"} <= seen_tools[2]
+    assert "task_worktree" not in seen_tools[2]
+    assert "delegate_task" not in seen_tools[3]
+    assert "manage_worker" not in seen_tools[3]
+    assert "task_worktree" not in seen_tools[3]
+
+    worker_ids = {e.worker_id for e in events if isinstance(e, WorkerStatus)}
+    assert {"w1", "w1.1", "w1.1.1"} <= worker_ids
+
+
+def test_nested_worker_rejects_isolated_workspace_mode(tmp_path):
+    from pcode.agent import create_coder
+
+    retries: list[str] = []
+
+    async def model(messages, info):
+        names = {t.name for t in info.function_tools}
+        is_top = "task_worktree" in names
+        if is_top:
+            if returns(messages):
+                yield "top done"
+            else:
+                yield {
+                    0: DeltaToolCall(
+                        name="delegate_task",
+                        json_args=json.dumps({"agent_name": "worker", "task": "do work"}),
+                        tool_call_id="top-1",
+                    )
+                }
+            return
+        # Nested worker: first try isolated (expect retry), then report it.
+        for msg in messages:
+            for part in getattr(msg, "parts", ()):
+                if is_retry(part):
+                    retries.append(str(part.content))
+        if retries:
+            yield "nested handled retry"
+        else:
+            yield {
+                0: DeltaToolCall(
+                    name="delegate_task",
+                    json_args=json.dumps(
+                        {
+                            "agent_name": "worker",
+                            "task": "review",
+                            "workspace_mode": "isolated",
+                        }
+                    ),
+                    tool_call_id="nested-1",
+                )
+            }
+
+    runtime = AgentRuntime(
+        Agent(
+            FunctionModel(stream_function=model),
+            capabilities=[create_coder(tmp_path)],
+        )
+    )
+
+    async def run():
+        return [e async for e in runtime.stream("Go")]
+
+    asyncio.run(run())
+    assert any("shared mode" in r for r in retries)

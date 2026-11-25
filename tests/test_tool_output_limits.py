@@ -236,7 +236,7 @@ def test_real_worker_and_parent_share_retrievable_spills(tmp_path):
 
     async def model(messages, info):
         nonlocal child_handle
-        parent = "delegate_task" in {t.name for t in info.function_tools}
+        parent = "task_worktree" in {t.name for t in info.function_tools}
         parts = returns(messages)
         assert "read_tool_result" in {t.name for t in info.function_tools}
         if not parts:
@@ -289,7 +289,7 @@ def test_reduced_shell_keeps_handles_and_status(tmp_path, delegated, mode):
 
     async def model(messages, info):
         nonlocal observed_shell
-        parent = "delegate_task" in {t.name for t in info.function_tools}
+        parent = "task_worktree" in {t.name for t in info.function_tools}
         parts = returns(messages)
         if not parts:
             name = "delegate_task" if parent and delegated else "shell"

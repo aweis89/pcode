@@ -89,7 +89,11 @@ def test_a_delegation_runs_on_the_model_it_picks(tmp_path, monkeypatch):
     asyncio.run(run())
     # Any provider:model name is accepted; the menu only resolves some up front.
     assert seen["model"]["type"] == "string" and "enum" not in seen["model"]
-    assert "read_file" in seen["tools"] and "delegate_task" not in seen["tools"]
+    assert (
+        "read_file" in seen["tools"]
+        and "delegate_task" in seen["tools"]
+        and "task_worktree" not in seen["tools"]
+    )
     # The option's own settings (its defaults and saved /effort) reach the child.
     assert seen["settings"]["temperature"] == 0.5
     returned = [

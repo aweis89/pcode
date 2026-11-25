@@ -10,13 +10,15 @@ This adds what both sides need in between, for every delegating session:
 - The worker's final report and message history, kept so a later brief can
   include the report and a follow-up can resume the same worker.
 
-Workers are one level deep (a worker cannot delegate), so a worker's parent is
-always the top-level session. The `WorkerHub` belongs to the parent's
-`WorkspaceSubAgents`; `current_worker()` is the handle of the delegation the
-caller runs inside, set by `delegate_task` for the child's whole run. Once the
-hub is attached to a saved session, each finished worker is written to
-`<session>/workers/<id>.json` and read back on demand, so a follow-up or a
-report still works after a restart or resume.
+Workers can delegate up to three levels deep (main -> worker -> sub-worker ->
+leaf), so each delegating level owns a `WorkerHub`: the top-level session's
+hub issues `w1`, `w2`, ... and saves finished workers to
+`<session>/workers/<id>.json`, while a nested worker gets a per-run hub issuing
+dotted ids (`w1.1`, `w1.1.1`, ...). `current_worker()` is the handle of the
+delegation the caller runs inside, set by `delegate_task` for the child's whole
+run. Once the top-level hub is attached to a saved session, each finished
+worker is written to `<session>/workers/<id>.json` and read back on demand, so
+a follow-up or a report still works after a restart or resume.
 
 How a question reaches a parent that is blocked inside a foreground
 `delegate_task` is `BackgroundDelegation`'s job; see dev/manager-mode.md.
@@ -259,9 +261,10 @@ class WorkerHandle:
 
 
 class WorkerHub:
-    """The parent's workers by id and by delegate call. One per parent agent."""
+    """The parent's workers by id and by delegate call. One per delegating run."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, prefix: str = "w") -> None:
+        self._prefix = prefix
         self._handles: dict[str, WorkerHandle] = {}
         # By delegate call, including running workers detached by a session switch.
         self._by_call: dict[str, WorkerHandle] = {}
@@ -300,7 +303,7 @@ class WorkerHub:
     def get(self, worker_id: str) -> WorkerHandle | None:
         key = worker_id.strip()
         if key.isdigit():
-            key = f"w{key}"
+            key = f"{self._prefix}{key}"
         return self._handles.get(key) or self._load(key)
 
     def require(self, worker_id: str) -> WorkerHandle:
@@ -419,7 +422,10 @@ class WorkerHub:
         else:
             self._count += 1
             handle = WorkerHandle(
-                id=f"w{self._count}", call_id=call_id, agent=agent, directory=self._directory
+                id=f"{self._prefix}{self._count}",
+                call_id=call_id,
+                agent=agent,
+                directory=self._directory,
             )
             self._handles[handle.id] = handle
             self._trim()

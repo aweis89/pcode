@@ -306,27 +306,35 @@ class EventTranslator:
         )
 
     def on_child_output(self, event: ChildOutput) -> Iterator[Event]:
-        if event.tool_call_id in self.delegates:
+        target_id = event.delegate_call_id or event.tool_call_id
+        if target_id in self.delegates:
             yield ChildText(
-                event.tool_call_id,
+                target_id,
                 event.text,
                 thinking=event.thinking,
                 start=event.start,
             )
 
     def on_child_activity(self, event: ChildActivity) -> Iterator[Event]:
-        if start := self.delegates.get(event.tool_call_id):
+        target_id = event.delegate_call_id or event.tool_call_id
+        if start := self.delegates.get(target_id):
             if event.activity != start.activity:
                 start = replace(start, activity=event.activity)
-                self.delegates[event.tool_call_id] = start
+                self.delegates[target_id] = start
                 yield start
             if event.plan is not None:
-                yield ChildPlan(event.tool_call_id, event.plan)
+                yield ChildPlan(target_id, event.plan)
             if event.child is not None:
                 if isinstance(event.child, ToolStarted):
-                    self.child_tools[event.child.call_id] = event.child
+                    if event.child.name == "delegate_task":
+                        self.delegates[event.child.call_id] = event.child
+                    else:
+                        self.child_tools[event.child.call_id] = event.child
                 else:
-                    self.child_tools.pop(event.child.call_id, None)
+                    if event.child.name == "delegate_task":
+                        self.delegates.pop(event.child.call_id, None)
+                    else:
+                        self.child_tools.pop(event.child.call_id, None)
                 yield event.child
 
     def on_worker_update(self, event: WorkerUpdate) -> WorkerStatus:

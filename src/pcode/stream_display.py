@@ -185,9 +185,14 @@ def present_stream_event(event, *, output, transcript, activity, present) -> Non
     elif isinstance(event, ChildPlan):
         activity.tools.record_plan(event.call_id, event.items)
         activity.workers.record(event)
-    elif isinstance(event, ChildText | WorkerStatus):
-        # A worker's own prose and status feed `/agents`; the transcript never shows them.
+    elif isinstance(event, ChildText):
+        # A worker's own prose feeds `/agents`; the transcript never shows it.
         activity.workers.record(event)
+        return
+    elif isinstance(event, WorkerStatus):
+        activity.workers.record(event)
+        if event.worker_id and activity.tools.record_worker(event.call_id, event.worker_id):
+            output.app.invalidate()
         return
     elif isinstance(event, (ToolStarted, ToolSummary)):
         # Settled calls land in scrollback, so thinking and prose must be

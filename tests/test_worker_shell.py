@@ -45,7 +45,7 @@ def test_delegated_worker_reads_external_worktree_and_runs_shell(tmp_path):
         parts = [part for msg in messages for part in msg.parts]
         assert not any(is_retry(p) for p in parts)
         results = [str(p.content) for p in parts if isinstance(p, ToolReturnPart)]
-        if "delegate_task" in names:
+        if "task_worktree" in names:
             parent_calls += 1
             if parent_calls == 1:
                 yield {

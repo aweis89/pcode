@@ -75,10 +75,11 @@ CORE_TOOLS = (
     "grep_tool_result",
 )
 # Tools that belong only to the parent conversation, never to delegated workers.
+# `delegate_task` and `manage_worker` are allowed on workers when offered by the
+# worker's tool manager (bounded by `MAX_DELEGATION_DEPTH`), while `task_worktree`
+# stays top-level only.
 WORKER_EXCLUDED_TOOLS = frozenset(
     {
-        "delegate_task",
-        "manage_worker",
         "task_worktree",
         "advisor",
         "ask_host",
