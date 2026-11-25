@@ -381,6 +381,45 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         return ids
     }
 
+    /// Return the live Unix socket path (`hosts/<host_id>.sock`) for a running hosted session, if any.
+    static func hostSocketPath(forSessionID sessionID: String) -> String? {
+        guard !sessionID.isEmpty else { return nil }
+        struct Entry: Decodable {
+            let id: String
+            let pid: Int32
+            let session_id: String?
+        }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: hostRoot, includingPropertiesForKeys: nil) else {
+            return nil
+        }
+        let uid = Darwin.getuid()
+        let decoder = JSONDecoder()
+        for file in files where file.pathExtension == "json" {
+            var jsonStat = stat()
+            guard Darwin.lstat(file.path, &jsonStat) == 0,
+                  (jsonStat.st_mode & S_IFMT) == S_IFREG,
+                  jsonStat.st_uid == uid,
+                  let data = try? Data(contentsOf: file),
+                  let entry = try? decoder.decode(Entry.self, from: data),
+                  PCode.valid(entry.id, length: 1...64),
+                  entry.session_id == sessionID,
+                  entry.pid > 0,
+                  kill(entry.pid, 0) == 0,
+                  PCodeProcess.isPCodeOrHost(entry.pid)
+            else { continue }
+            let sockURL = hostRoot.appendingPathComponent("\(entry.id).sock")
+            var sockStat = stat()
+            if Darwin.lstat(sockURL.path, &sockStat) == 0,
+               (sockStat.st_mode & S_IFMT) == S_IFSOCK,
+               sockStat.st_uid == uid
+            {
+                return sockURL.path
+            }
+        }
+        return nil
+    }
+
     /// Of `ids`, sessions a Restart Pcode moved, those ready to reopen: held
     /// by a host, or unlocked on two checks half a second apart (not in the
     /// gap between the old pcode letting go and its host taking over).
@@ -823,6 +862,19 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     private var historyGeneration = 0
+
+    /// Non-destructive live AppKit transcript split pane alongside the Ghostty terminal.
+    @Published var liveTranscriptVisible: Bool = false
+    @Published var liveTranscriptFraction: CGFloat = 0.45
+
+    func toggleLiveTranscript() {
+        liveTranscriptVisible.toggle()
+        if !liveTranscriptVisible, let pane = selectedPane {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: pane.keyboardSurface)
+            }
+        }
+    }
 
     /// Folders explicitly added to the sidebar (may have no sessions yet).
     @Published var pinnedFolders: [String] = (UserDefaults.standard.stringArray(forKey: PCodeWorkspace.pinnedKey) ?? [])
@@ -1883,6 +1935,8 @@ struct PCodeWorkspaceView: View {
     @State private var isDropTargeted = false
     /// `workspace.sidebarWidth` when the current resize drag began.
     @State private var sidebarDragStart: CGFloat?
+    /// `workspace.liveTranscriptFraction` when the current transcript resize drag began.
+    @State private var transcriptDragStartFraction: CGFloat?
     /// Tracks macOS < 15 `NSCursor.resizeLeftRight` push state so pushes and pops stay balanced.
     @State private var resizeCursorPushed = false
 
@@ -1940,6 +1994,8 @@ struct PCodeWorkspaceView: View {
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("") { workspace.toggleSidebarAutoHide() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
+                Button("") { workspace.toggleLiveTranscript() }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
             }
             .opacity(0)
             .allowsHitTesting(false)
@@ -1959,8 +2015,58 @@ struct PCodeWorkspaceView: View {
     private var detailPane: some View {
         ZStack {
             if let pane = workspace.selectedPane {
-                PCodeSessionPaneView(pane: pane)
-                    .id(pane.id)
+                GeometryReader { geo in
+                    HStack(spacing: 0) {
+                        PCodeSessionPaneView(pane: pane)
+                            .id(pane.id)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        if workspace.liveTranscriptVisible {
+                            let maxTranscriptW = max(0, geo.size.width - 260)
+                            let desiredW = min(geo.size.width * 0.70, max(240, geo.size.width * workspace.liveTranscriptFraction))
+                            let clampedW = min(desiredW, maxTranscriptW)
+                            if clampedW >= 180 {
+                                Rectangle()
+                                    .fill(ghostty.config.splitDividerColor)
+                                    .frame(width: 1)
+                                    .overlay(
+                                        Color.clear
+                                            .frame(width: 9)
+                                            .contentShape(Rectangle())
+                                            .backport.pointerStyle(.resizeLeftRight)
+                                            .onTapGesture(count: 2) {
+                                                workspace.liveTranscriptFraction = 0.45
+                                            }
+                                            .onDisappear {
+                                                transcriptDragStartFraction = nil
+                                            }
+                                            .gesture(
+                                                DragGesture(coordinateSpace: .global)
+                                                    .onChanged { gesture in
+                                                        let start = transcriptDragStartFraction ?? workspace.liveTranscriptFraction
+                                                        if transcriptDragStartFraction == nil {
+                                                            transcriptDragStartFraction = start
+                                                        }
+                                                        let total = max(1, geo.size.width)
+                                                        let deltaFrac = -gesture.translation.width / total
+                                                        workspace.liveTranscriptFraction = min(0.70, max(0.25, start + deltaFrac))
+                                                    }
+                                                    .onEnded { _ in
+                                                        transcriptDragStartFraction = nil
+                                                    }
+                                            )
+                                    )
+                                    .zIndex(1)
+
+                                PCodeLiveTranscriptPaneView(pane: pane) {
+                                    workspace.toggleLiveTranscript()
+                                }
+                                .frame(width: clampedW)
+                                .transition(.identity)
+                            }
+                        }
+                    }
+                }
             } else {
                 Text("No session open").foregroundStyle(.secondary)
             }
@@ -2052,6 +2158,15 @@ struct PCodeWorkspaceView: View {
                 .font(.headline)
                 .lineLimit(1)
             Spacer(minLength: 4)
+            Button { workspace.toggleLiveTranscript() } label: {
+                if workspace.liveTranscriptVisible {
+                    Image(systemName: "doc.plaintext")
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Image(systemName: "doc.plaintext")
+                }
+            }
+            .help("Toggle Live Transcript pane alongside terminal (⌥⌘T)")
             Button { workspace.toggleShell() } label: { Image(systemName: "terminal") }
                 .help("Toggle the shell under this session (⌘J)")
             Button { workspace.openDirectoryPicker() } label: { Image(systemName: "folder.badge.plus") }
