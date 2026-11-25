@@ -503,7 +503,8 @@ so only the coloured icon (`✔` done, `↺` in progress, `○` pending, `–`
 cancelled) says where it stands; `task_style status` brings the shading back.
 Both apply immediately. Running
 [sub-agents](#delegated-sub-agents) appear beneath the active task with tree
-guides (`├──`, `└──`, `│`); with no active task, they appear unparented.
+guides (`├──`, `└──`, `│`). With tasks but none in progress, they appear
+unparented beneath the tasks; with no plan at all, they still get guides.
 Between turns the plan's heading (`Tasks 2/5`) takes the box's top border.
 A finished call gets its line in [scrollback](transcript.md).
 
