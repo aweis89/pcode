@@ -4177,17 +4177,24 @@ def _leave_worktree_on_exit(app, ask=input, stream=None) -> None:
 
 
 async def _stopping_provider_processes(main):
-    """Run `main`, then stop the `claude:` and `antigravity:` processes this loop started."""
-    from pcode import antigravity
-    from pcode.claude_sdk import shutdown
+    """Run `main`, then stop the `claude:` and `antigravity:` processes this loop started.
 
+    Both modules import the provider stack (a second or more), so they are
+    looked up only afterwards, and only if something loaded them: importing
+    them first held back the editor's first frame, and a module never
+    imported has started no processes to stop.
+    """
     try:
         return await main
     finally:
+        pool = sys.modules.get("pcode.claude_sdk.session_pool")
+        antigravity = sys.modules.get("pcode.antigravity")
         try:
-            await shutdown()
+            if pool is not None:
+                await pool.shutdown()
         finally:
-            await antigravity.shutdown()
+            if antigravity is not None:
+                await antigravity.shutdown()
 
 
 def forked_note(saved) -> str:

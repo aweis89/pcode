@@ -47,6 +47,31 @@ for name in ('pcode.sessions', 'pcode.agent', 'pcode.live', 'pcode.antigravity',
     )
 
 
+def test_provider_shutdown_wrapper_does_not_import_agent_stack():
+    # `PreviewApp.run` wraps the editor in this; importing the providers up
+    # front held the first frame back by a second or more.
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import asyncio, sys
+from pcode.app import _stopping_provider_processes
+
+async def editor():
+    for name in ('pcode.claude_sdk', 'pcode.antigravity', 'pydantic_ai'):
+        assert name not in sys.modules, name
+    return 'done'
+
+assert asyncio.run(_stopping_provider_processes(editor())) == 'done'
+""",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 @pytest.mark.parametrize("outcome", ["success", "cancel", "failure", "quit", "restore", "commands"])
 def test_editor_accepts_input_while_backend_starts(outcome):
     async def run():
