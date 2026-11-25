@@ -18,18 +18,30 @@ editor to erase and repaint around every committed row.
 Keys typed into pcode's own pane still reach the editor (`Dock.attach`), so
 clicking the transcript to select and copy never strands typing.
 
+The card overlays the bottom of pcode's pane rather than shortening it, so
+the editor growing never resizes (and reflows) the pane. pcode keeps the rows
+under the card clear instead (`Dock.reserve`): a scroll region down to the
+card's top edge, which, starting at row 0, still sends the rows scrolled out
+of it to scrollback. Growing scrolls the transcript up out of the card's way
+before the card is told to grow (`report_rows`); shrinking only widens the
+region and leaves the gap.
+
 Not wired up beyond what the spike needs: no probe (a terminal without docks
 costs a `CONNECT_TIMEOUT` wait at startup), no tmux, no tests.
 """
 
 import asyncio
+import fcntl
+import math
 import os
 import re
 import secrets
 import socket
+import struct
 import sys
 import termios
 import time
+from collections.abc import Callable
 from contextlib import suppress
 
 from prompt_toolkit.application import Application
@@ -44,6 +56,13 @@ from pcode.startup_input import TerminalReplyParser
 CONNECT_TIMEOUT = 3.0
 # Never ask for more of the pane than this.
 MAX_ROWS = 40
+# Rows of the dock's cells the card covers on top of the rows it shows (its
+# margins and padding): `PCodeDock.slackRows` in the app, kept in step.
+CARD_SLACK_ROWS = 2.0
+# The rows the app shows before pcode asks for any (`PCodeDock.rows`).
+INITIAL_ROWS = 3
+SYNC_START = "\x1b[?2026h"
+SYNC_END = "\x1b[?2026l"
 
 _active: "Dock | None" = None
 
@@ -59,6 +78,37 @@ def active() -> "Dock | None":
 
 def _apc(payload: str) -> str:
     return f"\x1b_pcode;{payload}\x1b\\"
+
+
+def _cell_height(fd: int) -> float | None:
+    """A terminal's row height in pixels, from its window size; None if it doesn't say.
+
+    Ghostty's pixel height is the grid's area less padding, so it includes the
+    part row left over under the grid: this errs high, by under a row's worth
+    spread over all rows.
+    """
+    try:
+        rows, _, _, pixels = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+    except OSError:
+        return None
+    return pixels / rows if rows and pixels else None
+
+
+def reserve_for(rows: int, pane_rows: int, ratio: float = 1.0) -> int:
+    """Pane rows a card showing ``rows`` dock rows covers, for a dock-to-pane
+    cell height ``ratio``: rounded up, and always leaving the pane two rows."""
+    covered = math.ceil((rows + CARD_SLACK_ROWS) * ratio - 1e-6)
+    return max(0, min(covered, pane_rows - 2))
+
+
+def _region(rows: int) -> str:
+    """A scroll region over the pane's first ``rows`` rows (DECSTBM; it homes the cursor)."""
+    return f"\x1b[1;{rows}r"
+
+
+def _row(row: int) -> str:
+    """The cursor to column 1 of 0-based ``row``."""
+    return f"\x1b[{row + 1};1H"
 
 
 # A cursor position report, taken out of pcode's pane's input while one is
@@ -104,6 +154,9 @@ class Dock:
         # pane's resizes pull rows out of scrollback and back, so after one
         # the row is asked again rather than guessed.
         self.pane_row: int | None = None
+        # While a report is out, the last known row moved on by the rows
+        # written since: a guess, for scrolling no further than needed.
+        self._row_hint: int | None = None
         self._pane_size: tuple[int, int] | None = None
         self._cpr_pending = False
         self._asked_at = 0.0
@@ -115,6 +168,18 @@ class Dock:
         self._requery = False
         # The start of a reply split across reads, held for the next one.
         self._cpr_tail = b""
+        # The rows at the bottom of the pane the card covers, kept clear by a
+        # scroll region over the rest (`_set_region`).
+        self.reserve = 0
+        # The pane's scroll region now: its height, or None while it has none
+        # (a resize resets it), until the cursor's row is known again. While
+        # set, the cursor is always inside it: below it, a newline at the
+        # pane's last row would scroll nothing and rows would overwrite.
+        self._region: int | None = None
+        # The transcript's glide for rows the pane scrolls to make room for
+        # the card: the text to send before and after the scroll
+        # (`TerminalOutput._docked_room`).
+        self.glide: Callable[[int], tuple[str, str]] | None = None
 
     # The editor's application, once it runs.
 
@@ -175,23 +240,125 @@ class Dock:
         # pcode's own pane shows no editor, so no cursor either.
         sys.stdout.write("\x1b[?25l")
         sys.stdout.flush()
+        # The reserve for the card's first rows; the region follows as soon as
+        # the cursor's row is in (`_answered`), before the first frame.
         self.pane_rows()
 
-    def pane_rows(self) -> int:
-        """pcode's pane's height; a new size asks where the cursor ended up."""
+    def raw_pane_rows(self) -> int:
+        """pcode's pane's whole height, card included; a new size asks where the cursor ended up."""
         try:
             size = os.get_terminal_size(sys.stdout.fileno())
         except OSError:
             return 0
         if (size.lines, size.columns) != self._pane_size:
             self._pane_size = (size.lines, size.columns)
+            # The terminal reset its scroll region with the resize, and the
+            # cell size may have changed with the font: set both again once
+            # the cursor's row is known.
+            self._region = None
+            self.reserve = reserve_for(self._rows or INITIAL_ROWS, size.lines, self._ratio())
             self.ask_cursor()
+            # The resize moved rows in and out of scrollback: no guess holds.
+            self._row_hint = None
         elif self._cpr_pending and time.monotonic() - self._asked_at >= CPR_TIMEOUT:
             self.ask_cursor()
         return size.lines
 
+    def pane_rows(self) -> int:
+        """The rows of pcode's pane above the card: where the transcript scrolls."""
+        raw = self.raw_pane_rows()
+        return raw - self.reserve if raw else 0
+
+    def _ratio(self) -> float:
+        """The dock's row height over the pane's; 1 when either terminal doesn't say."""
+        dock, pane = _cell_height(self.fd), _cell_height(sys.stdout.fileno())
+        return dock / pane if dock and pane else 1.0
+
+    def _bottom(self) -> int:
+        """The lowest row the pane's cursor can reach now."""
+        raw = self._pane_size[0] if self._pane_size else 1
+        return (self._region or raw) - 1
+
+    def _set_region(self) -> None:
+        """Set the scroll region above the card, the cursor's row known.
+
+        A cursor already under the card's edge (a resize, the first rows
+        before the region) scrolls the whole pane until it isn't.
+        """
+        if self.pane_row is None or not self._pane_size:
+            return
+        raw = self._pane_size[0]
+        height = raw - self.reserve
+        row = self.pane_row
+        out = ""
+        if row > height - 1:
+            lift = row - (height - 1)
+            out += "\x1b[r" + _row(raw - 1) + "\n" * lift
+            row -= lift
+        out += _region(height) + _row(row)
+        self.pane_row = row
+        self._region = height
+        sys.stdout.write(out)
+        sys.stdout.flush()
+
+    def _move_card_edge(self) -> None:
+        """Follow the card to its new height (``self._rows``) with the reserve.
+
+        Growing, the rows about to go under the card scroll up out of its way
+        first: a real scroll, which sends the top rows to scrollback and which
+        the transcript's glide animates. Shrinking only widens the region,
+        leaving a gap the next rows fill.
+        """
+        raw = self.raw_pane_rows()
+        if not raw:
+            return
+        reserve = reserve_for(self._rows, raw, self._ratio())
+        if reserve == self.reserve:
+            return
+        self.reserve = reserve
+        if self._region is None:
+            # Set once the cursor's row is in (`_answered`).
+            return
+        old, new = self._region, raw - reserve
+        row = self.pane_row
+        lift = 0
+        if row is not None:
+            if new < old and (lift := max(0, row - (new - 1))):
+                out = _row(old - 1) + "\n" * lift
+            else:
+                out = ""
+            self.pane_row = row - lift
+            out += _region(new) + _row(self.pane_row)
+        elif new < old:
+            # Where the cursor is isn't known (a report is out), but it is
+            # inside the region. Scroll as far as the last known row, moved on
+            # by the rows written since, says it must go (all the way, as if
+            # at the bottom, without one) and take it up as far; then ask
+            # again. Were the guess short, the reply lands below the region
+            # and `_answered` lifts it.
+            hint = old - 1 if self._row_hint is None else self._row_hint
+            lift = max(0, hint - (new - 1))
+            if self._row_hint is not None:
+                self._row_hint -= lift
+            out = ""
+            if lift:
+                out = "\x1b7" + _row(old - 1) + "\n" * lift + f"\x1b8\x1b[{lift}A"
+            out += "\x1b7" + _region(new) + "\x1b8"
+        else:
+            out = "\x1b7" + _region(new) + "\x1b8"
+        self._region = new
+        if lift and self.glide is not None:
+            before, after = self.glide(lift)
+            out = SYNC_START + before + out + after + SYNC_END
+        sys.stdout.write(out)
+        sys.stdout.flush()
+        if row is None and new < old:
+            self.ask_cursor()
+
     def ask_cursor(self) -> None:
         """Ask the pane for its cursor row; the answer comes in with typing."""
+        if self.pane_row is not None:
+            self._row_hint = self.pane_row
         self.pane_row = None
         if self._cpr_pending:
             if time.monotonic() - self._asked_at < CPR_TIMEOUT:
@@ -229,18 +396,33 @@ class Dock:
         if self._stale_reply:
             self._stale_reply = False
             return
-        rows = self._pane_size[0] if self._pane_size else row + 1
-        self.pane_row = min(rows - 1, row + self._written_since_ask)
+        if self._region is not None and row > self._region - 1:
+            # Below the region pcode set: the terminal dropped it (a resize
+            # not seen yet, a reset, a child's `ESC[r`), so newlines now
+            # scroll the whole pane, under the card. Set it again from here.
+            self._region = None
+        bottom = self._bottom() if self._pane_size else row
+        self.pane_row = min(bottom, row + self._written_since_ask)
+        if self._pane_size and self._region != self._pane_size[0] - self.reserve:
+            self._set_region()
 
-    def wrote(self, rows: int, *, homed: bool = False) -> None:
-        """pcode wrote ``rows`` rows to its pane, after homing the cursor if ``homed``."""
-        if homed:
-            self.pane_row = 0
-            self._stale_reply = self._cpr_pending
+    def homed(self) -> str:
+        """The pane was just cleared and homed (a replay): the region to set again after."""
+        self.pane_row = 0
+        self._stale_reply = self._cpr_pending
+        if not self._pane_size:
+            return ""
+        self._region = self._pane_size[0] - self.reserve
+        return _region(self._region) + _row(0)
+
+    def wrote(self, rows: int) -> None:
+        """pcode wrote ``rows`` rows to its pane."""
         if self.pane_row is not None and self._pane_size:
-            self.pane_row = min(self._pane_size[0] - 1, self.pane_row + rows)
+            self.pane_row = min(self._bottom(), self.pane_row + rows)
         elif self._cpr_pending:
             self._written_since_ask += rows
+            if self._row_hint is not None:
+                self._row_hint = min(self._bottom(), self._row_hint + rows)
 
     def _bridge_spoke(self) -> None:
         try:
@@ -254,18 +436,24 @@ class Dock:
                 asyncio.get_running_loop().remove_reader(self.connection.fileno())
             return
         if RESIZED in data and self.app is not None and self.app.is_running:
+            # The dock's cell size may have changed (its font), and the card's
+            # height with it: the reserve follows.
+            self._move_card_edge()
             self.app._on_resize()
 
     def layout_size(self, size: Size) -> Size:
         """The size the layout budgets its rows against: the dock's width, the
-        whole pane's height (pcode's own rows and the card's shown rows), but
-        never more than the dock's grid, which the terminal keeps at a fixed
-        height and only shows the bottom of."""
+        whole pane's height less the card's margins (the card overlays the
+        pane), but never more than the dock's grid, which the terminal keeps
+        at a fixed height and only shows the bottom of."""
         try:
             pane = os.get_terminal_size(sys.stdout.fileno()).lines
         except OSError:
             return size
-        return Size(rows=min(size.rows, pane + self._rows), columns=size.columns)
+        # In the dock's rows, whose cells may differ from the pane's: no more
+        # than a card the pane fits (`reserve_for` never has to cut it short).
+        budget = max(1, math.floor((pane - 2) / self._ratio() - CARD_SLACK_ROWS))
+        return Size(rows=min(size.rows, budget), columns=size.columns)
 
     def report_rows(self, app: Application) -> None:
         """Ask the terminal for as many rows as the layout wants, after each render."""
@@ -287,6 +475,8 @@ class Dock:
             app.invalidate()
         if wanted != self._rows:
             self._rows = wanted
+            # The pane makes room first, so the card never covers a row.
+            self._move_card_edge()
             app.output.write_raw(_apc(f"dock-rows;{wanted}"))
             app.output.flush()
 
@@ -306,9 +496,13 @@ class Dock:
                     termios.tcflush(main, termios.TCIFLUSH)
                 termios.tcsetattr(main, termios.TCSANOW, self._termios)
         # The transcript's glide region (`Transcript._docked_frame`) hides the
-        # pane's last row; the pane is about to be an ordinary terminal again.
+        # pane's last row, and the scroll region stops above the card; the
+        # pane is about to be an ordinary terminal again. DECSTBM homes the
+        # cursor, so it is saved around it.
         sys.stdout.write(
-            smooth_scroll.region_off(smooth_scroll.REGION_ID) + "\x1b[?25h" + _apc("dock-close")
+            smooth_scroll.region_off(smooth_scroll.REGION_ID)
+            + "\x1b7\x1b[r\x1b8\x1b[?25h"
+            + _apc("dock-close")
         )
         sys.stdout.flush()
         with suppress(OSError):

@@ -92,6 +92,12 @@ launch. `--json` prints the raw reply.
   Compile errors are hidden behind zig's "exit 65". To see them, run
   `xcodebuild -target Ghostty -configuration ReleaseLocal -arch arm64 build SYMROOT=/tmp/x | grep error:`
   in `macos/`.
+- **The workspace window ignores `--command`.** With workspace mode on (the
+  default), the window resumes a session by running `$PCODE_COMMAND`, and
+  `launch` passes your environment on. Run from inside a pcode session, that
+  is the parent's own pcode, not your worktree's: check with
+  `pgrep -fl bin/pcode`. Export `PCODE_COMMAND=<worktree>/.venv/bin/pcode`
+  (plus `PCODE_DOCK=1` for the dock) before `launch`.
 - **Shared worktrees collide.** Another session may be building and
   relaunching in the same Ghostty worktree. Commit only your own paths
   (`git commit <paths>`, never `-a`), and use your own `APP_NAME`, bundle ID
