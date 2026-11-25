@@ -184,3 +184,29 @@ def test_live_rows_are_erased_exactly_and_an_unchanged_frame_writes_nothing():
     assert out.getvalue().startswith("\x1b[1A" + ERASE_DOWN), "both live rows taken back"
     # Nothing new, and the frame still pending: nothing to write.
     assert notify(view, out, "aside_changed", state(answer=answer, activity="Answering")) == ""
+
+
+def test_resized_ignores_height_only_changes_and_redraws_on_width_change():
+    view, out, frames = paced_tail("typed")
+    notify(view, out, "asides", [state(answer="Hello world.", status="answered")])
+    out.seek(0)
+    out.truncate()
+
+    # Same width (height-only resize): does not schedule a redraw or clear scrollback.
+    view.resized()
+    assert frames.due is None
+    assert out.getvalue() == ""
+
+    # Width changes: schedules a debounced whole redraw at the new width.
+    view.console._width = 80
+    view.resized()
+    assert frames.due is not None
+    written = "".join(frames.run(out))
+    assert written.startswith(CLEAR) and "Hello world." in written
+
+    # Subsequent height-only resize at the new width is again a no-op.
+    out.seek(0)
+    out.truncate()
+    view.resized()
+    assert frames.due is None
+    assert out.getvalue() == ""

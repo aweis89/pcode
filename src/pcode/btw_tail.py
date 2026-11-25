@@ -82,6 +82,8 @@ class Tail:
         self._typed = 0
         self._pacer = Pacer()
         self._frame: asyncio.TimerHandle | None = None
+        self._width = console.width
+        self._redraw: asyncio.TimerHandle | None = None
         # Rows under the text, never wrapped (a row being typed, the status
         # row): erased before anything more is written. Kept as written, so a
         # frame that changes nothing writes nothing.
@@ -146,6 +148,10 @@ class Tail:
             if entries is None:
                 # A whole redraw lands at once, as a rebuilt screen does in the
                 # conversation; it covers whatever was still queued.
+                if self._redraw is not None:
+                    self._redraw.cancel()
+                    self._redraw = None
+                self._width = self.console.width
                 self.console.file.write(CLEAR)
                 self._live = []
                 self.hold()
@@ -182,6 +188,30 @@ class Tail:
         if self._frame is not None:
             self._frame.cancel()
             self._frame = None
+
+    def resized(self) -> None:
+        """Schedule a whole redraw when the terminal's width changes.
+
+        Height-only resizes (such as the docked editor growing below the viewer)
+        leave scrollback intact instead of clearing and jumping to the bottom.
+        """
+        if self.console.width == self._width and self._redraw is None:
+            return
+        if self._redraw is not None:
+            self._redraw.cancel()
+            self._redraw = None
+        if self.loop is None:
+            self.draw(whole=True)
+            return
+        # Rows queued at the old width would wrap and spoil the erase; the
+        # redraw writes them whole at the new one.
+        self.hold()
+
+        def finish() -> None:
+            self._redraw = None
+            self.draw(whole=True)
+
+        self._redraw = self.loop.call_later(RESIZE_SETTLE, finish)
 
     def _tick(self) -> None:
         """One paced frame; another is timed while rows wait."""
@@ -269,18 +299,7 @@ async def run(host: str, thread: str) -> None:
     loop = asyncio.get_running_loop()
     tail = Tail(thread, console, transcript, loop)
 
-    redraw: asyncio.TimerHandle | None = None
-
-    def resized() -> None:
-        nonlocal redraw
-        if redraw is not None:
-            redraw.cancel()
-        # Rows queued at the old width would wrap and spoil the erase; the
-        # redraw writes them whole at the new one.
-        tail.hold()
-        redraw = loop.call_later(RESIZE_SETTLE, lambda: tail.draw(whole=True))
-
-    loop.add_signal_handler(signal.SIGWINCH, resized)
+    loop.add_signal_handler(signal.SIGWINCH, tail.resized)
     try:
         with _keys(loop):
             # Shown until the drawer closes, which ends this process: a host
