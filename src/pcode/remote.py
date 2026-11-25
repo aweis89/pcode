@@ -565,11 +565,15 @@ def spawn_host(
     directory: Path | None = None,
     profile: RemoteProfile | None = None,
     identity: str | None = None,
+    carry: dict | None = None,
 ) -> tuple[str, subprocess.Popen, Path]:
     """Start a host from this process, so it inherits this terminal's environment.
 
     With a remote `profile` it inherits only the allowlisted part of it, always
-    works in a fresh worktree, and runs under the profile's limits.
+    works in a fresh worktree, and runs under the profile's limits. `carry` is
+    what the process it replaces mid-turn hands over (`SessionHost.take_over`):
+    `{"continue": bool, "messages": [[text, mode], ...]}`, passed in a private
+    file rather than on its command line, where `ps` would show the messages.
     """
     directory = directory or host_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -587,6 +591,13 @@ def spawn_host(
         "--workspace",
         str(workspace),
     ]
+    if carry:
+        # Not `.json`: `list_hosts` reads every one of those as a host's entry.
+        handover = directory / f"{identity}.carry"
+        fd = os.open(handover, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as file:
+            json.dump(carry, file)
+        argv += ["--carry", str(handover)]
     if resume:
         argv += ["--resume", resume]
         if fork:
@@ -753,10 +764,16 @@ async def stop_if_idle(
 
 
 TOO_OLD_TO_RESTART = "it predates restarting from elsewhere; /restart it in its own terminal"
+# How long a host restarting mid-turn may take to let go: it finishes compaction first.
+INTERRUPT_TIMEOUT = 300.0
 
 
 async def restart_entry(
-    entry: HostEntry, directory: Path | None = None, *, timeout: float = 30.0
+    entry: HostEntry,
+    directory: Path | None = None,
+    *,
+    timeout: float | None = None,
+    interrupt: bool = False,
 ) -> tuple[str, str]:
     """Restart another host on the pcode installed now: (successor's ID, "") or ("", why not).
 
@@ -764,9 +781,18 @@ async def restart_entry(
     environment, not this caller's (another project's credentials, say). A
     host older than the call is skipped rather than restarted from here. Returns
     once the successor has written its entry, so it can be attached to.
+    `interrupt` restarts a busy host as well, continuing its turn in the
+    successor; a host older than that is asked plainly, and skipped if busy.
     """
+    if timeout is None:
+        timeout = INTERRUPT_TIMEOUT if interrupt else 30.0
     try:
-        answer = await request_host(entry, "restart")
+        try:
+            answer = await request_host(entry, "restart", *((True,) if interrupt else ()))
+        except RemoteError as error:
+            if not (interrupt and error.type_name == "TypeError"):
+                raise
+            answer = await request_host(entry, "restart")
     except RemoteError as error:
         if error.type_name != "PermissionError":
             raise
@@ -790,10 +816,12 @@ async def restart_entry(
     return successor, ""
 
 
-async def restart_and_report(entry: HostEntry) -> tuple[str, bool]:
+async def restart_and_report(entry: HostEntry, *, interrupt: bool = False) -> tuple[str, bool]:
     """`restart_entry` as one line to show, and whether it is an error."""
     try:
-        successor, skipped = await restart_entry(entry)
+        successor, skipped = await (
+            restart_entry(entry, interrupt=True) if interrupt else restart_entry(entry)
+        )
     except (OSError, ValueError, HostError, RemoteError) as error:
         # Usually gone since it was listed (stopped itself, or crashed).
         return f"Could not restart {entry.id}: {error}", True
