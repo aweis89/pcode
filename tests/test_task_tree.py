@@ -100,7 +100,12 @@ def test_without_an_active_task_only_the_delegate_children_have_guides(task_tree
         "├── * Read the code",
         "└── ○ Test the fix",
     ]
-    assert task_panel_rows([], history, 10, "*") == rows[3:]
+    # With no tasks at all, the delegates branch from the status row instead.
+    assert [text for _, text in task_panel_rows([], history, 10, "*")] == [
+        "└── » Worker · 0.0s · Working · Fix it",
+        "    ├── * Read the code",
+        "    └── ○ Test the fix",
+    ]
 
 
 @pytest.mark.parametrize("width", [1, 4, 8, 12, 40, 80])

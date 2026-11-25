@@ -755,11 +755,11 @@ def test_a_delegate_shows_its_plan_but_not_its_calls():
     history.record(ToolStarted("read_file", "child.py", "parent:child", parent_call_id="parent"))
     history.record(ToolStarted("grep", "newest", "status-row"))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
-    assert rows[0].startswith("» Worker · ") and " · Starting · fix it" in rows[0]
+    assert rows[0].startswith("└── » Worker · ") and " · Starting · fix it" in rows[0]
     assert rows[1:] == [
-        "├── ✔ Read the code",
-        "├── * Fix the bug",
-        "└── ○ Run the tests",
+        "    ├── ✔ Read the code",
+        "    ├── * Fix the bug",
+        "    └── ○ Run the tests",
     ]
     # The plan stays, and keeps updating, once the calls have settled.
     history.record(ToolSummary("read_file", "child.py", call_id="parent:child"))
@@ -774,9 +774,9 @@ def test_a_delegate_shows_its_plan_but_not_its_calls():
         ],
     )
     assert [text for _, text in task_panel_rows([], history, 10, "*")][1:] == [
-        "├── ✔ Fix the bug",
-        "├── * Run the tests",
-        "└── ○ Report back",
+        "    ├── ✔ Fix the bug",
+        "    ├── * Run the tests",
+        "    └── ○ Report back",
     ]
 
 
@@ -787,10 +787,10 @@ def test_a_delegate_row_leads_with_its_purpose_and_names_only_other_agents():
         history.record(delegate_started(agent, purpose, call_id, purpose=purpose))
     rows = [text for _, text in task_panel_rows([], history, 10, "*")]
     assert rows == [
-        "» w purpose · 0.0s · Starting",
-        "» Reviewer: r purpose · 0.0s · Starting",
+        "├── » w purpose · 0.0s · Starting",
+        "├── » Reviewer: r purpose · 0.0s · Starting",
         # Saved before delegates recorded their agent: only workers existed.
-        "» old purpose · 0.0s · Starting",
+        "└── » old purpose · 0.0s · Starting",
     ]
 
 
@@ -805,7 +805,7 @@ def test_a_long_purpose_leaves_the_delegate_rows_clock_and_state_in_80_columns()
     history = ToolHistory()
     history.record(delegate_started("worker", "fix · test", "w", purpose="fix · test"))
     assert [t for _, t in task_panel_rows([], history, 5, "*")] == [
-        "» fix – test · 0.0s · Starting"
+        "└── » fix – test · 0.0s · Starting"
     ]
 
 

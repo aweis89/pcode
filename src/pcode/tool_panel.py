@@ -402,6 +402,10 @@ def task_panel_rows(
         nodes.append(node)
         if index == active:
             node.children = agent_nodes
+    if not steps:
+        # No task to hang them from: branch them from the status row above,
+        # as they would from an active task, so they still read as children.
+        return _tree_rows(agent_nodes, "")
     if active is None or active not in steps:
         nodes.extend(agent_nodes)
     return _tree_rows(nodes)
