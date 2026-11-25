@@ -29,10 +29,11 @@ final class PCodeTextLayoutFragment: NSTextLayoutFragment {
         context.saveGState()
         defer { context.restoreGState() }
 
-        // 1. Thematic break (horizontal rule)
+        // 1. Thematic break (horizontal rule spanning full column width)
         if let ruleColor = paragraph.attribute(.pcodeThematicBreak, at: 0, effectiveRange: nil) as? NSColor {
             let y = origin.y + layoutFragmentFrame.height * 0.5
-            let rect = CGRect(x: origin.x, y: y, width: layoutFragmentFrame.width, height: 1)
+            let width = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
+            let rect = CGRect(x: origin.x, y: y, width: width, height: 1)
             context.setFillColor(ruleColor.cgColor)
             context.fill(rect)
             return
@@ -52,15 +53,14 @@ final class PCodeTextLayoutFragment: NSTextLayoutFragment {
         }
 
         // 3. Inline code rounded background pills
+        // `NSTextLineFragment.locationForCharacter(at:)` expects paragraph-relative indices.
         for line in textLineFragments {
             let lineRange = line.characterRange
             guard lineRange.length > 0, lineRange.location + lineRange.length <= paragraph.length else { continue }
             paragraph.enumerateAttribute(.pcodeInlineCodeFill, in: lineRange, options: []) { value, runRange, _ in
                 guard let fill = value as? NSColor, runRange.length > 0 else { return }
-                let startInLine = runRange.location - lineRange.location
-                let endInLine = startInLine + runRange.length
-                let startPt = line.locationForCharacter(at: startInLine)
-                let endPt = line.locationForCharacter(at: endInLine)
+                let startPt = line.locationForCharacter(at: runRange.location)
+                let endPt = line.locationForCharacter(at: runRange.location + runRange.length)
                 let minX = min(startPt.x, endPt.x)
                 let maxX = max(startPt.x, endPt.x)
                 guard maxX > minX else { return }
@@ -136,10 +136,11 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         let widthChanged = abs(lastLayoutWidth - clampedWidth) > 0.25
 
         if textChanged {
+            let immutableCopy = (attributedText.copy() as? NSAttributedString) ?? attributedText
             textContentStorage.performEditingTransaction {
-                textContentStorage.attributedString = attributedText
+                textContentStorage.attributedString = immutableCopy
             }
-            lastAttributedString = attributedText
+            lastAttributedString = immutableCopy
         }
         if widthChanged || textChanged {
             textContainer.size = CGSize(width: clampedWidth, height: 0)
@@ -196,7 +197,7 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         }
     }
 
-    /// Map a point in this view's flipped coordinate space to a UTF-16 offset in the text.
+    /// Map a point in this view's flipped coordinate space to a UTF-16 caret offset in the text.
     func utf16Offset(at point: CGPoint) -> Int {
         let totalLength = (textContentStorage.attributedString?.length) ?? 0
         guard totalLength > 0 else { return 0 }
@@ -221,31 +222,71 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         for line in fragment.textLineFragments {
             let lineBounds = line.typographicBounds
             if localY <= lineBounds.maxY || line === fragment.textLineFragments.last {
-                let idx = line.characterIndex(for: CGPoint(x: localX - lineBounds.origin.x, y: localY - lineBounds.origin.y))
+                let ptInLine = CGPoint(x: localX - lineBounds.origin.x, y: localY - lineBounds.origin.y)
+                var idx = line.characterIndex(for: ptInLine)
+                let fraction = line.fractionOfDistanceThroughGlyph(for: ptInLine)
+                if fraction >= 0.5, idx < NSMaxRange(line.characterRange) {
+                    idx += 1
+                }
                 return min(max(0, baseOffset + idx), totalLength)
             }
         }
         return min(max(0, baseOffset), totalLength)
     }
 
-    /// Return an `http`/`https` link URL at `point`, if any.
+    /// Return an `http`/`https` link URL strictly under `point`, ignoring margins and trailing whitespace.
     func linkURL(at point: CGPoint) -> URL? {
-        guard let attr = textContentStorage.attributedString, attr.length > 0 else { return nil }
-        let offset = utf16Offset(at: point)
-        guard offset >= 0, offset < attr.length else { return nil }
-        let raw = attr.attribute(.link, at: offset, effectiveRange: nil)
-        let url: URL?
-        if let u = raw as? URL {
-            url = u
-        } else if let s = raw as? String {
-            url = URL(string: s)
-        } else {
-            url = nil
+        guard bounds.contains(point),
+              let attr = textContentStorage.attributedString,
+              attr.length > 0
+        else { return nil }
+
+        textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+        guard let fragment = textLayoutManager.textLayoutFragment(for: point),
+              fragment.layoutFragmentFrame.contains(point)
+        else { return nil }
+
+        let fragOrigin = fragment.layoutFragmentFrame.origin
+        let localPt = CGPoint(x: point.x - fragOrigin.x, y: point.y - fragOrigin.y)
+        let baseOffset = textContentStorage.offset(
+            from: textLayoutManager.documentRange.location,
+            to: fragment.rangeInElement.location)
+
+        for line in fragment.textLineFragments {
+            let lineBounds = line.typographicBounds
+            guard lineBounds.contains(localPt) else { continue }
+            let ptInLine = CGPoint(x: localPt.x - lineBounds.origin.x, y: localPt.y - lineBounds.origin.y)
+            let idx = line.characterIndex(for: ptInLine)
+            guard NSLocationInRange(idx, line.characterRange) else { return nil }
+            let offset = baseOffset + idx
+            guard offset >= 0, offset < attr.length else { return nil }
+            let raw = attr.attribute(.link, at: offset, effectiveRange: nil)
+            let url: URL?
+            if let u = raw as? URL {
+                url = u
+            } else if let s = raw as? String {
+                url = URL(string: s)
+            } else {
+                url = nil
+            }
+            guard let url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+                return nil
+            }
+            return url
         }
-        guard let url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-            return nil
+        return nil
+    }
+
+    /// Bounding rect (in this view's coordinates) of a UTF-16 range, useful for testing and menus.
+    func boundingRect(forUTF16 range: NSRange) -> CGRect? {
+        guard range.length > 0, let textRange = textRange(fromUTF16: range) else { return nil }
+        textLayoutManager.ensureLayout(for: textLayoutManager.documentRange)
+        var union: CGRect?
+        textLayoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, rect, _, _ in
+            union = union.map { $0.union(rect) } ?? rect
+            return true
         }
-        return url
+        return union
     }
 
     private func textRange(fromUTF16 range: NSRange) -> NSTextRange? {

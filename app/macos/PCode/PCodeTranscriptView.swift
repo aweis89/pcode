@@ -131,6 +131,23 @@ struct PCodeTranscriptItem: Identifiable {
     }
 }
 
+/// Weak target proxy so `CADisplayLink` never creates a retain cycle with `PCodeTranscriptDocumentView`.
+private final class PCodeDisplayLinkProxy: NSObject {
+    weak var target: PCodeTranscriptDocumentView?
+
+    init(target: PCodeTranscriptDocumentView) {
+        self.target = target
+    }
+
+    @objc func tick(_ sender: CADisplayLink) {
+        guard let target else {
+            sender.invalidate()
+            return
+        }
+        target.handleDisplayLinkTick(sender)
+    }
+}
+
 /// Reusable item container view for virtualized rows in `PCodeTranscriptDocumentView`.
 private final class PCodeTranscriptRowView: NSView {
     let kind: PCodeTranscriptItem.Kind
@@ -179,18 +196,20 @@ private final class PCodeTranscriptRowView: NSView {
         textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
 
         let totalHeight = textHeight + insets.top + insets.bottom
-        switch kind {
-        case .prompt:
-            layer?.backgroundColor = theme.promptBackground.cgColor
-            layer?.cornerRadius = 8
-            accentBar.layer?.backgroundColor = (item.isSidePrompt ? NSColor.systemOrange : theme.accent).cgColor
-            accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
-        case .tool:
-            layer?.backgroundColor = theme.toolBackground.cgColor
-            layer?.cornerRadius = 5
-        case .prose, .status:
-            layer?.backgroundColor = nil
-            layer?.cornerRadius = 0
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            switch kind {
+            case .prompt:
+                layer?.backgroundColor = theme.promptBackground.cgColor
+                layer?.cornerRadius = 8
+                accentBar.layer?.backgroundColor = (item.isSidePrompt ? NSColor.systemOrange : theme.accent).cgColor
+                accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
+            case .tool:
+                layer?.backgroundColor = theme.toolBackground.cgColor
+                layer?.cornerRadius = 5
+            case .prose, .status:
+                layer?.backgroundColor = nil
+                layer?.cornerRadius = 0
+            }
         }
         return totalHeight
     }
@@ -198,7 +217,7 @@ private final class PCodeTranscriptRowView: NSView {
 
 /// Flipped, virtualized AppKit document view supporting responsive scrolling (`prepareContent(in:)`),
 /// bare TextKit 2 rendering, model-owned cross-item selection, and frame-coalesced streaming.
-final class PCodeTranscriptDocumentView: NSView {
+final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     static let horizontalPadding: CGFloat = 18
 
     private(set) var items: [PCodeTranscriptItem] = []
@@ -211,9 +230,9 @@ final class PCodeTranscriptDocumentView: NSView {
 
     private var mountedViews: [Int: PCodeTranscriptRowView] = [:]
     private var reusePools: [PCodeTranscriptItem.Kind: [PCodeTranscriptRowView]] = [:]
-    private let measurer = PCodeTextKit2BlockView()
     private var lastContentWidth: CGFloat = 0
     private var lastClipOriginY: CGFloat = 0
+    private var isApplyingDocumentHeight = false
 
     // Frame-coalesced streaming state
     private var pendingTailText: String?
@@ -231,6 +250,7 @@ final class PCodeTranscriptDocumentView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
+        autoresizingMask = [.width]
     }
 
     @available(*, unavailable)
@@ -240,6 +260,29 @@ final class PCodeTranscriptDocumentView: NSView {
 
     deinit {
         stopDisplayLink()
+    }
+
+    /// Own all mouse events directly so cross-item drag selection keeps receiving
+    /// `mouseDragged`/`mouseUp` even if the starting row recycles offscreen during autoscroll.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            stopDisplayLink()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window {
+            layoutEngine.backingScale = window.backingScaleFactor
+            if pendingTailText != nil {
+                ensureDisplayLinkRunning()
+            }
+        }
     }
 
     override func updateTrackingAreas() {
@@ -254,11 +297,21 @@ final class PCodeTranscriptDocumentView: NSView {
         trackingArea = area
     }
 
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if linkURL(at: point) != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            NSCursor.iBeam.set()
+        }
+    }
+
     /// Replace all transcript items (e.g. when opening Peek or loading history).
     func setItems(_ newItems: [PCodeTranscriptItem], pinToBottom: Bool) {
         items = newItems
         selection = nil
         pendingTailText = nil
+        stopDisplayLink()
         recycleAllMountedViews()
 
         layoutEngine.backingScale = window?.backingScaleFactor ?? 2
@@ -282,7 +335,26 @@ final class PCodeTranscriptDocumentView: NSView {
     /// Enqueue a streaming text update for the tail item (coalesced to the next display frame).
     func enqueueStreamingTailText(_ fullText: String) {
         pendingTailText = fullText
-        ensureDisplayLinkRunning()
+        if window != nil {
+            ensureDisplayLinkRunning()
+        } else {
+            // Off-window/headless: apply immediately so pending state is never dropped.
+            pendingTailText = nil
+            applyStreamingTailText(fullText)
+        }
+    }
+
+    /// Release the streaming tail height ratchet once the active turn finishes.
+    func finishStreamingTail() {
+        if let text = pendingTailText {
+            pendingTailText = nil
+            applyStreamingTailText(text)
+        }
+        stopDisplayLink()
+        if let lastIdx = items.indices.last {
+            layoutEngine.setTailRatchet(at: lastIdx, active: false)
+            mountViews(in: visibleRect)
+        }
     }
 
     /// Update typography or theme, invalidating heights while preserving the top-visible scroll anchor.
@@ -290,7 +362,9 @@ final class PCodeTranscriptDocumentView: NSView {
         let needsRemeasure = newTypography != typography
         typography = newTypography
         theme = newTheme
-        appearance = NSAppearance(named: newTheme.isDark ? .darkAqua : .aqua)
+        let nsAppearance = NSAppearance(named: newTheme.isDark ? .darkAqua : .aqua)
+        appearance = nsAppearance
+        enclosingScrollView?.appearance = nsAppearance
 
         if needsRemeasure {
             layoutEngine.invalidateAllMeasurements()
@@ -338,6 +412,10 @@ final class PCodeTranscriptDocumentView: NSView {
     func handleBoundsDidChange() {
         guard let scrollView = enclosingScrollView else { return }
         let originY = scrollView.contentView.bounds.origin.y
+        if isApplyingDocumentHeight {
+            lastClipOriginY = originY
+            return
+        }
         if !stickyBottom.isLiveScrolling {
             let movedUp = originY < lastClipOriginY - 0.5
             let dist = distanceFromBottom(in: scrollView)
@@ -349,7 +427,7 @@ final class PCodeTranscriptDocumentView: NSView {
 
     // MARK: - Mounting & Reuse Pool
 
-    private func mountViews(in rect: NSRect) {
+    private func mountViews(in rect: NSRect, pass: Int = 0) {
         guard !items.isEmpty else { return }
         let contentWidth = max(1, bounds.width - Self.horizontalPadding * 2)
         let range = layoutEngine.visibleRange(in: rect)
@@ -400,18 +478,23 @@ final class PCodeTranscriptDocumentView: NSView {
                 height: entry.height)
         }
 
-        if abs(bounds.height - layoutEngine.totalHeight) > 0.5 || abs(accumulatedScrollDelta) > 0.5 {
+        let clipHeight = enclosingScrollView?.contentView.bounds.height ?? 0
+        let targetHeight = max(layoutEngine.totalHeight, clipHeight)
+        if abs(bounds.height - targetHeight) > 0.5 || abs(accumulatedScrollDelta) > 0.5 {
             applyDocumentHeight(
                 layoutEngine.totalHeight,
                 scrollOriginDelta: accumulatedScrollDelta,
                 pinIfNeeded: stickyBottom.shouldProgrammaticallyPin)
+            // Bounded second pass if height shrink or bottom-pin shift exposed new rows.
+            if pass < 1, layoutEngine.visibleRange(in: visibleRect) != range {
+                mountViews(in: visibleRect, pass: pass + 1)
+            }
         }
     }
 
     private func remountVisibleViews() {
-        let range = layoutEngine.visibleRange(in: visibleRect)
-        for idx in range {
-            mountedViews[idx]?.needsDisplay = true
+        for (_, rowView) in mountedViews {
+            rowView.textView.needsDisplay = true
         }
         mountViews(in: visibleRect)
     }
@@ -436,40 +519,53 @@ final class PCodeTranscriptDocumentView: NSView {
     /// growing updates frame then origin; shrinking updates origin then frame to avoid clip clamping.
     private func applyDocumentHeight(_ newHeight: CGFloat, scrollOriginDelta: CGFloat, pinIfNeeded: Bool) {
         guard let scrollView = enclosingScrollView else {
-            frame.size.height = max(frame.size.height, newHeight)
+            frame.size.height = newHeight
             return
         }
         let clipView = scrollView.contentView
         let oldHeight = frame.size.height
         let targetHeight = max(newHeight, clipView.bounds.height)
-        let targetOriginY: CGFloat
+        let rawOriginY: CGFloat
         if pinIfNeeded {
-            targetOriginY = PCodeStickyBottomState.bottomOriginY(
+            rawOriginY = PCodeStickyBottomState.bottomOriginY(
                 documentHeight: targetHeight,
                 clipHeight: clipView.bounds.height,
                 topInset: scrollView.contentInsets.top,
                 bottomInset: scrollView.contentInsets.bottom)
         } else {
-            targetOriginY = clipView.bounds.origin.y + scrollOriginDelta
+            rawOriginY = clipView.bounds.origin.y + scrollOriginDelta
+        }
+
+        isApplyingDocumentHeight = true
+        defer {
+            isApplyingDocumentHeight = false
+            lastClipOriginY = clipView.bounds.origin.y
         }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if targetHeight >= oldHeight {
             frame.size = CGSize(width: clipView.bounds.width, height: targetHeight)
-            if abs(targetOriginY - clipView.bounds.origin.y) > 0.25 {
-                clipView.scroll(to: CGPoint(x: clipView.bounds.origin.x, y: targetOriginY))
+            let clamped = clipView.constrainBoundsRect(
+                CGRect(origin: CGPoint(x: clipView.bounds.origin.x, y: rawOriginY), size: clipView.bounds.size))
+            if abs(clamped.origin.y - clipView.bounds.origin.y) > 0.25 {
+                clipView.scroll(to: clamped.origin)
                 scrollView.reflectScrolledClipView(clipView)
             }
         } else {
-            if abs(targetOriginY - clipView.bounds.origin.y) > 0.25 {
-                clipView.scroll(to: CGPoint(x: clipView.bounds.origin.x, y: targetOriginY))
+            let maxOriginY = PCodeStickyBottomState.bottomOriginY(
+                documentHeight: targetHeight,
+                clipHeight: clipView.bounds.height,
+                topInset: scrollView.contentInsets.top,
+                bottomInset: scrollView.contentInsets.bottom)
+            let clampedY = min(max(-scrollView.contentInsets.top, rawOriginY), maxOriginY)
+            if abs(clampedY - clipView.bounds.origin.y) > 0.25 {
+                clipView.scroll(to: CGPoint(x: clipView.bounds.origin.x, y: clampedY))
                 scrollView.reflectScrolledClipView(clipView)
             }
             frame.size = CGSize(width: clipView.bounds.width, height: targetHeight)
         }
         CATransaction.commit()
-        lastClipOriginY = clipView.bounds.origin.y
     }
 
     private func distanceFromBottom(in scrollView: NSScrollView) -> CGFloat {
@@ -484,8 +580,9 @@ final class PCodeTranscriptDocumentView: NSView {
     // MARK: - DisplayLink Coalesced Streaming
 
     private func ensureDisplayLinkRunning() {
-        guard displayLink == nil else { return }
-        let link = displayLink(target: self, selector: #selector(handleDisplayLink(_:)))
+        guard displayLink == nil, window != nil else { return }
+        let proxy = PCodeDisplayLinkProxy(target: self)
+        let link = displayLink(target: proxy, selector: #selector(PCodeDisplayLinkProxy.tick(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -495,7 +592,7 @@ final class PCodeTranscriptDocumentView: NSView {
         displayLink = nil
     }
 
-    @objc private func handleDisplayLink(_ sender: CADisplayLink) {
+    fileprivate func handleDisplayLinkTick(_ sender: CADisplayLink) {
         guard let text = pendingTailText else {
             stopDisplayLink()
             return
@@ -516,8 +613,9 @@ final class PCodeTranscriptDocumentView: NSView {
             isFailed: old.isFailed,
             elapsedText: old.elapsedText,
             spacingAfter: old.spacingAfter)
-        layoutEngine.setTailRatchet(at: lastIdx, active: true)
+        // Measure first (via mountViews when visible), then ratchet so we lock measured height.
         mountViews(in: visibleRect)
+        layoutEngine.setTailRatchet(at: lastIdx, active: true)
     }
 
     // MARK: - Model-Owned Cross-Item Selection & Copy
@@ -560,6 +658,16 @@ final class PCodeTranscriptDocumentView: NSView {
         }
     }
 
+    func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) {
+            return selection.map { !$0.isEmpty } ?? false
+        }
+        if item.action == #selector(selectAll(_:)) {
+            return !items.isEmpty
+        }
+        return false
+    }
+
     @objc func copy(_ sender: Any?) {
         guard let selection, !selection.isEmpty else { return }
         let copied = selection.extractText(itemCount: items.count) { idx in
@@ -594,7 +702,10 @@ final class PCodeTranscriptDocumentView: NSView {
     }
 
     private func linkURL(at docPoint: CGPoint) -> URL? {
-        guard let idx = layoutEngine.itemIndex(atY: docPoint.y), let rowView = mountedViews[idx] else { return nil }
+        guard let idx = layoutEngine.itemIndex(atY: docPoint.y),
+              let rowView = mountedViews[idx],
+              rowView.frame.contains(docPoint)
+        else { return nil }
         let localPt = rowView.textView.convert(docPoint, from: self)
         return rowView.textView.linkURL(at: localPt)
     }
@@ -750,6 +861,14 @@ final class PCodeTranscriptScrollView: NSScrollView {
     deinit {
         for obs in observers {
             NotificationCenter.default.removeObserver(obs)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let clipWidth = contentView.bounds.width
+        if clipWidth > 0, abs(transcriptDocumentView.frame.width - clipWidth) > 0.5 {
+            transcriptDocumentView.frame.size.width = clipWidth
         }
     }
 }

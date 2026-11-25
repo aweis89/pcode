@@ -218,16 +218,16 @@ final class PCodeTypography: ObservableObject {
     var snapshotPublisher: AnyPublisher<PCodeTypographySnapshot, Never> {
         let available = codeFamilyAvailable
         return Publishers.CombineLatest3($style, $size, $weight)
-            .dropFirst()
             .map { style, size, weight in
                 PCodeTypographySnapshot(
                     style: style,
-                    size: size,
+                    size: Self.clampSize(size),
                     weight: weight,
                     codeFamilyAvailable: available)
             }
             .removeDuplicates()
-            .debounce(for: .zero, scheduler: RunLoop.main)
+            .dropFirst()
+            .debounce(for: .zero, scheduler: DispatchQueue.main)
             .eraseToAnyPublisher()
     }
 

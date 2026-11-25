@@ -174,19 +174,39 @@ struct PCodeTranscriptTests {
     // MARK: - Bare TextKit 2 Block View
 
     @Test @MainActor func textKit2BlockMeasuresHeightAndFiltersLinks() {
-        let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 320, height: 100))
+        let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 420, height: 100))
+        let httpsRange = NSRange(location: 6, length: 19)
+        let fileRange = NSRange(location: 29, length: 18)
         let attr = NSMutableAttributedString(string: "Click https://example.com or file:///etc/passwd")
         attr.addAttribute(.font, value: NSFont.systemFont(ofSize: 14), range: NSRange(location: 0, length: attr.length))
-        attr.addAttribute(.link, value: URL(string: "https://example.com")!, range: NSRange(location: 6, length: 19))
-        attr.addAttribute(.link, value: URL(string: "file:///etc/passwd")!, range: NSRange(location: 29, length: 18))
+        attr.addAttribute(.link, value: URL(string: "https://example.com")!, range: httpsRange)
+        attr.addAttribute(.link, value: URL(string: "file:///etc/passwd")!, range: fileRange)
 
-        let height = view.measureHeight(for: attr, width: 320)
+        let height = view.measureHeight(for: attr, width: 420)
         #expect(height > 14)
         view.frame.size.height = height
 
-        // Offset at top-left should be 0.
+        // Offset at top-left should be 0 and have no link.
         #expect(view.utf16Offset(at: CGPoint(x: 1, y: 4)) == 0)
-        // Non-http(s) links are never returned.
         #expect(view.linkURL(at: CGPoint(x: 1, y: 4)) == nil)
+
+        // Clicking inside the https:// link returns it.
+        if let httpsRect = view.boundingRect(forUTF16: httpsRange) {
+            let mid = CGPoint(x: httpsRect.midX, y: httpsRect.midY)
+            #expect(view.linkURL(at: mid) == URL(string: "https://example.com"))
+        } else {
+            Issue.record("Expected non-nil bounding rect for https link")
+        }
+
+        // Clicking inside the file:// link is rejected (http/https only).
+        if let fileRect = view.boundingRect(forUTF16: fileRange) {
+            let mid = CGPoint(x: fileRect.midX, y: fileRect.midY)
+            #expect(view.linkURL(at: mid) == nil)
+        } else {
+            Issue.record("Expected non-nil bounding rect for file link")
+        }
+
+        // Clicking past the end of the line (empty trailing margin) returns nil.
+        #expect(view.linkURL(at: CGPoint(x: 415, y: 4)) == nil)
     }
 }
