@@ -123,7 +123,7 @@ def test_job_count_round_trips_in_host_snapshot_and_updates():
         assert terminal.activity.job_count == count
 
 
-def test_cancel_stays_unanswered_until_the_host_sends_anything():
+def test_cancel_stays_unanswered_until_the_host_is_idle():
     class Peer:
         def notify(self, *args):
             pass
@@ -134,8 +134,11 @@ def test_cancel_stays_unanswered_until_the_host_sends_anything():
     first = terminal.cancel_sent
     assert first is not None
     terminal.cancel()
-    assert terminal.cancel_sent == first  # Silence counts from the oldest unanswered cancel.
-    terminal.receive("state", ({},), {})
+    assert terminal.cancel_sent == first  # Counted from the oldest unanswered cancel.
+    # A host stuck in its turn can still report other things.
+    terminal.receive("state", ({"job_count": 1, "busy": True},), {})
+    assert terminal.cancel_sent == first
+    terminal.receive("state", ({"busy": False},), {})
     assert terminal.cancel_sent is None
 
 

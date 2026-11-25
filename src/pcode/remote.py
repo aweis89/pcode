@@ -259,8 +259,9 @@ class RemoteController:
         self.host_stopped = False
         # The host that carries the session on, when it stopped to restart.
         self.successor: str | None = None
-        # When the oldest cancel the host has not reacted to went out: anything
-        # the host sends clears it, so one that stays set means a hung host.
+        # When the oldest cancel that has not stopped the host's work went out.
+        # Only `busy` going false clears it: a host can be stuck in a turn yet
+        # still send job and state updates.
         self.cancel_sent: float | None = None
         # One per command sent and not yet answered by `after_command`, oldest
         # first: the host runs them in order and reports each exactly once.
@@ -347,7 +348,6 @@ class RemoteController:
     # What the host sends
 
     def receive(self, name: str, args, kwargs):
-        self.cancel_sent = None
         if name == "state":
             for field, value in args[0].items():
                 self.apply_field(field, value)
@@ -385,6 +385,8 @@ class RemoteController:
     def apply_field(self, name: str, value) -> None:
         if name not in SESSION_FIELDS:
             return
+        if name == "busy" and not value:
+            self.cancel_sent = None
         if name == "prompt_state" and value != getattr(self.activity, name):
             # Autohiding the task list is this terminal's preference, applied here.
             if value == "running":

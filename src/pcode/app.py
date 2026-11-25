@@ -138,8 +138,8 @@ BRANCH_POLL_SECONDS = 30
 HOST_POLL_SECONDS = 2
 """How often an attached terminal looks at the other hosts, for the footer and notices."""
 
-HOST_CANCEL_GRACE = 2.0
-"""Seconds of host silence after a cancel before Ctrl+D detaches rather than cancels again."""
+HOST_CANCEL_GRACE = 5.0
+"""Seconds a host may stay busy after a cancel before Ctrl+D detaches rather than cancels again."""
 
 
 class _PopupSuperseded(Exception):
@@ -3136,12 +3136,18 @@ class PreviewApp:
             else:
                 self.controller.command(text, tag)
 
+        # The unanswered cancel the "has not stopped" warning was shown for.
+        warned_cancel: float | None = None
+
         def cancel():
             """Ctrl+C. Before the host answers, it drops what was typed ahead for it."""
+            nonlocal warned_cancel
             if not early:
-                if self.host_unresponsive():
+                sent = self.controller.cancel_sent if self.host_unresponsive() else None
+                if sent is not None and sent != warned_cancel:
+                    warned_cancel = sent
                     self.transcript.warning(
-                        f"The session host {self.runtime.id} is not answering. "
+                        f"The session host {self.runtime.id} has not stopped. "
                         "Ctrl+D detaches this terminal and leaves it running."
                     )
                 self.cancel()
@@ -3384,10 +3390,10 @@ class PreviewApp:
         self.print_resume_hint()
 
     def host_unresponsive(self) -> bool:
-        """Whether the host has said nothing for a while since this terminal's cancel.
+        """Whether the host is still busy a while after this terminal's cancel.
 
         A hung host keeps its socket open, so it never counts as gone, and
-        Ctrl+C or Ctrl+D would only send more cancels it never reads.
+        Ctrl+C or Ctrl+D would only send more cancels it ignores.
         """
         sent = getattr(self.controller, "cancel_sent", None) if self.hosted else None
         return sent is not None and time.monotonic() - sent >= HOST_CANCEL_GRACE
