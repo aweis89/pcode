@@ -3556,8 +3556,9 @@ class PreviewApp:
                 submit(self.initial_prompt)
             if docked is not None:
                 docked.attach(session.app, on_theme=self.follow_appearance)
-            if self.app_restart_requested:
-                # Signalled before the editor ran: act on it now.
+            if self.app_restart_requested and self._app_restart_task is None:
+                # Signalled before the editor ran: act on it now (once: the
+                # editor's future exists a moment before this runs).
                 self._app_restart_task = session.app.create_background_task(self._app_restart())
 
         try:
@@ -3583,7 +3584,7 @@ class PreviewApp:
             if self._kitty_spinners is not None:
                 self._kitty_spinners.close(session.app.output.write_raw, session.app.output.flush)
                 self._kitty_spinners = None
-            await self.leave_controller(self.controller)
+            await self.leave_controller(self.controller, flush=True)
             if thread_view is not None:
                 # Close any open thread, and with it the drawer.
                 self.close_btw()
@@ -3624,13 +3625,16 @@ class PreviewApp:
             )
         ]
 
-    async def leave_controller(self, controller) -> None:
-        """Stop showing `controller`: detach from a host, or end an in-process session."""
+    async def leave_controller(self, controller, *, flush: bool = False) -> None:
+        """Stop showing `controller`: detach from a host, or end an in-process session.
+
+        `flush` (exiting) waits a moment for what was sent to a host to go out.
+        """
         if self.hosted and controller is self.controller:
             # Leave before the loop shuts down, so the connection closing
             # reads as this terminal detaching, not the host dying.
             detach = getattr(controller, "detach", None)
-            if detach is None:
+            if not flush or detach is None:
                 controller.close()
                 return
             # And let what was sent go out (a move's continue and typed
