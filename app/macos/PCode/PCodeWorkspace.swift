@@ -787,12 +787,13 @@ final class PCodeWorkspace: ObservableObject {
     var selectedPane: PCodeSessionPane? { panes.first { $0.id == selected } }
 
     /// Reopen the sessions open at last quit, and every session a background
-    /// host holds, or start a fresh one.
+    /// host holds; if none reopen, stays on the inline project launcher.
     func restore() {
         // Not into a window that is quitting to restart (a Dock click while
         // its panes close): the relaunched app reopens them. Nor twice.
         guard !restarting, !restoring else { return }
         restoring = true
+        hasRestored = true
         let saved = UserDefaults.standard.stringArray(forKey: Self.openKey) ?? []
         let marked = Self.restartMarker()
         let selectedID = UserDefaults.standard.string(forKey: Self.selectedKey)
@@ -813,6 +814,8 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     private var restoring = false
+    /// True once initial startup restore has run (so later Dock clicks don't force-reopen closed hosts).
+    private(set) var hasRestored = false
 
     private func reopen(
         saved: [String], marked: Set<String>, ready: Set<String>,
@@ -1381,15 +1384,17 @@ final class PCodeWorkspace: ObservableObject {
         }
     }
 
-    func addFolder(_ path: String) {
+    @discardableResult
+    func addFolder(_ path: String) -> Bool {
         let normalized = Self.normalizePath(path)
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: normalized, isDirectory: &isDir), isDir.boolValue else { return }
+        guard FileManager.default.fileExists(atPath: normalized, isDirectory: &isDir), isDir.boolValue else { return false }
         hiddenFolders.remove(normalized)
         collapsedFolders.remove(normalized)
         if !pinnedFolders.contains(normalized) {
             pinnedFolders.insert(normalized, at: 0)
         }
+        return true
     }
 
     func removeFolder(_ path: String) {
@@ -1437,7 +1442,10 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     func open(_ info: PCodeSessionInfo, select shouldSelect: Bool = true) {
-        if shouldSelect { peek.dismiss(restoreFocus: false) }
+        if shouldSelect {
+            peek.dismiss(restoreFocus: false)
+            showingDirectoryPicker = false
+        }
         if let pane = panes.first(where: { $0.sessionID == info.id }) {
             if shouldSelect { select(pane) }
             return
@@ -1763,7 +1771,13 @@ final class PCodeWorkspace: ObservableObject {
         saveOpen()
         reloadHistory()
         if selected == pane.id {
-            if panes.isEmpty { selected = nil } else { select(panes[min(index, panes.count - 1)]) }
+            if panes.isEmpty {
+                selected = nil
+                showingDirectoryPicker = false
+                launcherFocusTrigger += 1
+            } else {
+                select(panes[min(index, panes.count - 1)])
+            }
         }
     }
 
@@ -2463,7 +2477,7 @@ private struct PCodeSessionRow<Actions: View>: View {
     }
 }
 
-/// Owns the local keyDown monitor for `PCodeDirectoryPickerOverlay` so it always cleans up on `deinit`.
+/// Owns the local keyDown monitor for `PCodeProjectLauncher` so it cleans up on teardown.
 private final class PCodePickerKeyMonitor: ObservableObject {
     private var monitor: Any?
     var handler: ((NSEvent) -> NSEvent?)?
@@ -2505,6 +2519,7 @@ private struct PCodeProjectLauncher: View {
 
     @StateObject private var keyMonitor = PCodePickerKeyMonitor()
     @State private var query = ""
+    @State private var cachedPathSuggestions: [String] = []
     @State private var selectedIndex = 0
     @State private var hoveredID: String?
     @State private var isDropTargeted = false
@@ -2517,14 +2532,13 @@ private struct PCodeProjectLauncher: View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return base }
 
-        if PCodePathCompleter.isPathQuery(trimmed) {
+        if PCodePathCompleter.isPathQuery(query) {
             let knownByPath = Dictionary(base.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
             let home = PCodeWorkspace.normalizePath(NSHomeDirectory())
-            let suggestions = PCodePathCompleter.directorySuggestions(for: trimmed, home: home)
             var result: [PCodeDirectoryCandidate] = []
             var seen: Set<String> = []
 
-            for path in suggestions where seen.insert(path).inserted {
+            for path in cachedPathSuggestions where seen.insert(path).inserted {
                 if let known = knownByPath[path] {
                     result.append(known)
                 } else {
@@ -2551,6 +2565,14 @@ private struct PCodeProjectLauncher: View {
                 PCodePickMatch.casefold(candidate.path),
             ]
             return PCodePickMatch.matches(texts, terms: terms, fuzzy: true)
+        }
+    }
+
+    private func refreshPathSuggestions(for newQuery: String) {
+        if PCodePathCompleter.isPathQuery(newQuery) {
+            cachedPathSuggestions = PCodePathCompleter.directorySuggestions(for: newQuery)
+        } else if !cachedPathSuggestions.isEmpty {
+            cachedPathSuggestions = []
         }
     }
 
@@ -2599,7 +2621,8 @@ private struct PCodeProjectLauncher: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }
-        .onChange(of: query) { _ in
+        .onChange(of: query) { newQuery in
+            refreshPathSuggestions(for: newQuery)
             selectedIndex = 0
         }
         .onChange(of: items.count) { count in
@@ -2615,6 +2638,7 @@ private struct PCodeProjectLauncher: View {
             }
         }
         .onAppear {
+            refreshPathSuggestions(for: query)
             selectedIndex = 0
             DispatchQueue.main.async { searchFocused = true }
             keyMonitor.handler = handleKeyEvent
@@ -2846,8 +2870,9 @@ private struct PCodeProjectLauncher: View {
     }
 
     private func pinCandidate(_ item: PCodeDirectoryCandidate) {
-        workspace.addFolder(item.path)
-        showStatus("Pinned \(item.name) to sidebar")
+        if workspace.addFolder(item.path) {
+            showStatus("Pinned \(item.name) to sidebar")
+        }
         searchFocused = true
     }
 
@@ -2871,11 +2896,13 @@ private struct PCodeProjectLauncher: View {
             return
         }
         query = result.completed
+        refreshPathSuggestions(for: result.completed)
         searchFocused = true
         let cursorLocation = result.completed.utf16.count
         DispatchQueue.main.async {
             if let editor = workspace.window?.firstResponder as? NSTextView {
-                editor.setSelectedRange(NSRange(location: cursorLocation, length: 0))
+                let safeLocation = min(cursorLocation, (editor.string as NSString).length)
+                editor.setSelectedRange(NSRange(location: safeLocation, length: 0))
             }
         }
     }
@@ -2910,10 +2937,14 @@ private struct PCodeProjectLauncher: View {
     }
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
-        // Let modal sheets (like NSOpenPanel) and other windows handle their own keys.
-        guard event.window === workspace.window, event.window?.attachedSheet == nil else { return event }
-        // In inline mode, step aside if an overlay is active or a session became selected.
-        if mode == .inline && (workspace.showingDirectoryPicker || workspace.selectedPane != nil) {
+        // Let modal sheets (like NSOpenPanel), Peek, and other windows handle their own keys.
+        guard event.window === workspace.window,
+              event.window?.attachedSheet == nil,
+              !workspace.peek.isShowing
+        else { return event }
+        // In inline mode, only intercept while the launcher search field has focus
+        // (so keyboard navigation in the sidebar List stays untouched).
+        if mode == .inline && (workspace.showingDirectoryPicker || workspace.selectedPane != nil || !searchFocused) {
             return event
         }
         // Don't hijack keys during IME composition.
@@ -3252,11 +3283,13 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         return controller
     }
 
-    /// Show the window, starting its sessions the first time.
+    /// Show the window, restoring sessions once on first open.
     static func show(_ ghostty: Ghostty.App) {
         let controller = shared(ghostty)
-        if controller.workspace.panes.isEmpty && !controller.workspace.showingDirectoryPicker {
+        if !controller.workspace.hasRestored {
             controller.workspace.restore()
+        } else if controller.workspace.panes.isEmpty && !controller.workspace.showingDirectoryPicker {
+            controller.workspace.reloadHistory()
             controller.workspace.launcherFocusTrigger += 1
         }
         controller.showWindow(nil)

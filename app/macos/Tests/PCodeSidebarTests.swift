@@ -133,5 +133,20 @@ struct PCodeSidebarTests {
         // Directory suggestions put exact match first, followed by matching subdirectories
         let suggestions = PCodePathCompleter.directorySuggestions(for: "~/p/pcode", home: homePath, fileManager: fm)
         #expect(suggestions == ["\(homePath)/p/pcode", "\(homePath)/p/pcode-docs"])
+
+        // Case-insensitive exact match preserves canonical on-disk casing without duplicates
+        try fm.createDirectory(at: pDir.appendingPathComponent("MixedCase"), withIntermediateDirectories: true)
+        let canonical = PCodePathCompleter.directorySuggestions(for: "~/p/mixedcase", home: homePath, fileManager: fm)
+        #expect(canonical == ["\(homePath)/p/MixedCase"])
+
+        // Trailing spaces are preserved when completing spaced directory names
+        try fm.createDirectory(at: pDir.appendingPathComponent("My App"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: pDir.appendingPathComponent("MyOther"), withIntermediateDirectories: true)
+        let spaced = PCodePathCompleter.complete(query: "~/p/My ", home: homePath, fileManager: fm)
+        #expect(spaced == .init(completed: "~/p/My App/", isUnique: true))
+
+        // Unexpanded ~user without slash does not probe /~user
+        #expect(PCodePathCompleter.split("~nonexistentuserxyz", home: homePath) == nil)
+        #expect(PCodePathCompleter.directorySuggestions(for: "~nonexistentuserxyz", home: homePath, fileManager: fm).isEmpty)
     }
 }

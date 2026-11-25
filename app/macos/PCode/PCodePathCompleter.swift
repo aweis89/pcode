@@ -9,10 +9,21 @@ enum PCodePathCompleter {
         let isUnique: Bool
     }
 
+    /// Strip leading whitespace and newlines while preserving trailing spaces
+    /// (so queries like `~/Library/Application ` can distinguish `Application Support`).
+    private static func cleanQuery(_ query: String) -> String {
+        let noNewlines = query.replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        guard let firstNonSpace = noNewlines.firstIndex(where: { !$0.isWhitespace }) else {
+            return ""
+        }
+        return String(noNewlines[firstNonSpace...])
+    }
+
     /// True when `query` looks like an explicit filesystem path (`/` or `~`).
     static func isPathQuery(_ query: String) -> Bool {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.hasPrefix("/") || trimmed.hasPrefix("~")
+        let cleaned = cleanQuery(query)
+        return cleaned.hasPrefix("/") || cleaned.hasPrefix("~")
     }
 
     /// Format `expandedPath` back into `~/` form when `preserveTilde` is true and the path is under `home`.
@@ -44,22 +55,25 @@ enum PCodePathCompleter {
         _ query: String,
         home: String = PCodeWorkspace.normalizePath(NSHomeDirectory())
     ) -> (parent: String, prefix: String, preserveTilde: Bool, isBareTilde: Bool)? {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("/") || trimmed.hasPrefix("~") else { return nil }
+        let cleaned = cleanQuery(query)
+        guard cleaned.hasPrefix("/") || cleaned.hasPrefix("~") else { return nil }
 
-        let preserveTilde = trimmed.hasPrefix("~")
-        if trimmed == "~" {
+        let preserveTilde = cleaned.hasPrefix("~")
+        if cleaned == "~" {
             return (home, "", true, true)
         }
 
         let expanded: String
-        if trimmed.hasPrefix("~/") {
-            expanded = home + String(trimmed.dropFirst(1))
-        } else if trimmed.hasPrefix("~") {
-            expanded = (trimmed as NSString).expandingTildeInPath
+        if cleaned.hasPrefix("~/") {
+            expanded = home + String(cleaned.dropFirst(1))
+        } else if cleaned.hasPrefix("~") {
+            expanded = (cleaned as NSString).expandingTildeInPath
         } else {
-            expanded = trimmed
+            expanded = cleaned
         }
+
+        // Unexpanded `~unknown` has no leading `/` and should not probe `/~unknown`.
+        guard expanded.hasPrefix("/") else { return nil }
 
         if expanded.hasSuffix("/") {
             let parent = PCodeWorkspace.normalizePath(expanded)
@@ -102,8 +116,8 @@ enum PCodePathCompleter {
 
     /// Directory suggestions to show in the Command Center for a path query.
     ///
-    /// Includes the exact directory first (if `query` already points to an existing directory),
-    /// followed by matching subdirectories.
+    /// Preserves canonical on-disk casing (avoiding duplicate rows on case-insensitive APFS)
+    /// and places any exact directory match first, followed by matching subdirectories.
     static func directorySuggestions(
         for query: String,
         home: String = PCodeWorkspace.normalizePath(NSHomeDirectory()),
@@ -113,6 +127,24 @@ enum PCodePathCompleter {
         guard let parts = split(query, home: home) else { return [] }
         var results: [String] = []
         var seen: Set<String> = []
+
+        // When typing a child name (not `.` or `..`), pull canonical names from `parent`
+        // so case-insensitive filesystems never produce both `desktop` and `Desktop`.
+        if !parts.isBareTilde && !parts.prefix.isEmpty && parts.prefix != "." && parts.prefix != ".." {
+            var childMatches = matchingSubdirectories(
+                in: parts.parent,
+                prefix: parts.prefix,
+                limit: limit,
+                fileManager: fileManager
+            )
+            if let exactIdx = childMatches.firstIndex(where: {
+                ($0 as NSString).lastPathComponent.compare(parts.prefix, options: .caseInsensitive) == .orderedSame
+            }) {
+                let exact = childMatches.remove(at: exactIdx)
+                childMatches.insert(exact, at: 0)
+            }
+            return childMatches
+        }
 
         let exactPath: String
         if parts.isBareTilde || parts.prefix.isEmpty {
@@ -154,15 +186,15 @@ enum PCodePathCompleter {
         home: String = PCodeWorkspace.normalizePath(NSHomeDirectory()),
         fileManager: FileManager = .default
     ) -> CompletionResult? {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = cleanQuery(query)
 
-        if !isPathQuery(trimmed) {
+        if !isPathQuery(cleaned) {
             guard let selectedPath, !selectedPath.isEmpty else { return nil }
             let formatted = formatPath(selectedPath, home: home, preserveTilde: true, trailingSlash: true)
             return CompletionResult(completed: formatted, isUnique: true)
         }
 
-        guard let parts = split(trimmed, home: home) else { return nil }
+        guard let parts = split(cleaned, home: home) else { return nil }
         if parts.isBareTilde {
             return CompletionResult(completed: "~/", isUnique: true)
         }
@@ -170,7 +202,7 @@ enum PCodePathCompleter {
         let matches = matchingSubdirectories(
             in: parts.parent,
             prefix: parts.prefix,
-            limit: 200,
+            limit: .max,
             fileManager: fileManager
         )
 
@@ -205,7 +237,7 @@ enum PCodePathCompleter {
                     preserveTilde: parts.preserveTilde,
                     trailingSlash: true
                 )
-                if formatted != trimmed {
+                if formatted != cleaned {
                     return CompletionResult(completed: formatted, isUnique: true)
                 }
             }
