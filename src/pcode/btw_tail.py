@@ -234,7 +234,10 @@ class Tail:
         live = []
         if typed and self.rows:
             live.append(_typed_part(self.rows[0].text, typed) + CLOSE_ROW)
-        status = plain(self.note or self._progress(self.shown()))
+        # Docked, the editor card below draws the running answer's status bar with
+        # its spinner and clock, so only connection notes stay in scrollback here.
+        progress = "" if self.docked else self._progress(self.shown())
+        status = plain(self.note or progress)
         if status:
             # One row, never wrapped: erasing it takes back exactly that row.
             row = Text(f"  {status}", style="pcode.muted", no_wrap=True, overflow="ellipsis")

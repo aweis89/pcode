@@ -72,6 +72,15 @@ def test_docked_drawer_footer_omits_reply_in_editor(monkeypatch):
     assert [hint.label for hint in view.footer()] == ["Next thread", "Close"]
 
 
+def test_docked_drawer_omits_scrollback_progress_but_keeps_notes(monkeypatch):
+    monkeypatch.setenv("PCODE_DOCKED", "1")
+    view, out = tail()
+    drawn = notify(view, out, "asides", [state(activity="Answering")])
+    assert "Answering…" not in drawn
+    closed = notify(view, out, "host_closed")
+    assert "The session host stopped." in closed
+
+
 def test_without_a_drawn_footer_the_keys_stay_under_the_heading():
     view, out = tail(native_hints=False)
     drawn = notify(view, out, "asides", [state(status="answered")])

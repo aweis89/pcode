@@ -64,7 +64,20 @@ final class PCodeToast: ObservableObject {
     }
 
     /// The cursor's cell in the terminal view, top-left origin, in points.
-    func cursorCell() -> CGRect? { surfaceView?.pcodeCursorCell }
+    ///
+    /// With a dock shown, reads the dock's cursor in this terminal's coordinates
+    /// so toasts sit above the docked editor card (including inside `/btw`).
+    func cursorCell() -> CGRect? {
+        guard let surfaceView else { return nil }
+        guard let dock = surfaceView.existingPCodeDock, dock.ready, let editor = dock.surface else {
+            return surfaceView.pcodeCursorCell
+        }
+        guard let cell = editor.pcodeCursorCell else { return nil }
+        let docked = editor.convert(editor.bounds, to: nil)
+        let pane = surfaceView.convert(surfaceView.bounds, to: nil)
+        // Window coordinates have a bottom-left origin; the cell's is top-left.
+        return cell.offsetBy(dx: docked.minX - pane.minX, dy: pane.maxY - docked.maxY)
+    }
 }
 
 /// The toast, centered over the pane just above pcode's editor box, or near

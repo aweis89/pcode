@@ -2763,7 +2763,9 @@ class PreviewApp:
 
         if not current(self.activity):
             return None
-        name, _, argument = text.partition(" ")
+        parts = text.split(maxsplit=1)
+        name = parts[0]
+        argument = parts[1] if len(parts) > 1 else ""
         if shell_command(text) is not None:
             # A `!command` runs in the shell, as ever.
             self.close_btw()
@@ -2796,10 +2798,15 @@ class PreviewApp:
                 try:
                     await self.controller.keep_thread(thread, action, argument.strip())
                 except ValueError as error:
+                    if self.activity.btw_thread == thread:
+                        self.transcript.flash(str(error))
                     self.transcript.warning(str(error))
                     return
                 except Exception as error:
-                    self.transcript.error(error_message(error, unexpected=f"{name} failed"))
+                    message = error_message(error, unexpected=f"{name} failed")
+                    if self.activity.btw_thread == thread:
+                        self.transcript.flash(message)
+                    self.transcript.error(message)
                     return
                 if self.activity.btw_thread == thread:
                     self.close_btw()
@@ -2809,6 +2816,11 @@ class PreviewApp:
             task.add_done_callback(self._btw_tasks.discard)
             return False
         if name not in ("/copy", "/links", "/btw", "/side"):
+            # Unknown slash commands (like a mistyped /summarize) stay in the
+            # thread with the draft intact instead of closing the drawer.
+            if self.registry.find(name) is None:
+                self.transcript.flash(f"Unknown command: {name}")
+                return True
             self.close_btw()
         return None
 

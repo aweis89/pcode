@@ -4571,6 +4571,44 @@ class PromptLayout:
         """
         return self.btw_active() and dock.active() is not None
 
+    def btw_running_aside(self):
+        """The open `/btw` thread's newest question while its answer is running."""
+        if not self.btw_docked():
+            return None
+        from pcode.btw_view import current
+
+        thread = current(self.activity)
+        return thread[-1] if thread and thread[-1].running else None
+
+    def btw_status_border(self) -> Window:
+        """The docked `/btw` editor's top border while the open thread is answering.
+
+        Matches the main editor's status bar (`status_border`): spinner, phase,
+        detail, and elapsed clock on the shaded header strip.
+        """
+
+        def fragments():
+            columns = self.size().columns
+            if columns < 2:
+                return []
+            aside = self.btw_running_aside()
+            if aside is None:
+                return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
+            phase, detail = status_parts(aside.activity)
+            line = StatusLine(phase, detail, elapsed=aside.elapsed)
+            lead = self.heading_lead()
+            status = line.fragments(self.aside_spinner_mark(), columns - 3 - len(lead), rule=True)
+            if not status:
+                return [("class:frame.border", "┌" + "─" * max(0, columns - 2) + "┐")]
+            used = len(lead) + sum(cell_len(text) for _, text in status)
+            return [
+                ("class:frame.border", lead),
+                *status,
+                ("class:frame.border", f" {'─' * max(0, columns - used - 2)}┐"),
+            ]
+
+        return Window(FormattedTextControl(fragments, show_cursor=False), height=1)
+
     def btw_bar_height(self, attached: bool | None = None) -> int:
         """1 when an open `/btw` thread needs its own strip inside the editor box.
 
@@ -4635,7 +4673,7 @@ class PromptLayout:
     def top_row_filled(self) -> bool:
         """Whether the editor's top row carries text: a status, tasks, or a title."""
         if self.btw_docked():
-            return False
+            return self.btw_running_aside() is not None
         return (
             self.activity.status_shown
             or bool(self.activity.startup_label)
@@ -4656,7 +4694,7 @@ class PromptLayout:
         asking `plan_attached` there would re-enter it.
         """
         if self.btw_docked():
-            return 0
+            return int(self.frame_shaded() and self.btw_running_aside() is not None)
         if attached is None:
             attached = self.plan_attached()
         if self.btw_bar_height(attached=attached):
@@ -4738,11 +4776,13 @@ class PromptLayout:
         # heading. Attached tasks sit under it, and a divider separates them
         # from the text; frame_height counts both.
         status = Condition(lambda: self.activity.status_shown and not self.btw_docked())
+        btw_status = Condition(lambda: self.btw_running_aside() is not None)
         startup = Condition(self.startup_border_active)
         attached = Condition(self.plan_attached)
         shaded = Condition(self.frame_shaded)
         btw = Condition(lambda: self.btw_active() and not self.btw_docked())
         btw_top = btw & ~status & ~startup & ~attached
+        idle_top = ~attached & ~status & ~btw_status & ~startup & ~btw_top
 
         # Showing a /btw thread inline, the box takes the thread's colour so it
         # is clear Enter goes to the thread. Docked inside the drawer itself,
@@ -4773,20 +4813,18 @@ class PromptLayout:
                 HSplit(
                     [
                         ConditionalContainer(self.status_border(), filter=status),
+                        ConditionalContainer(self.btw_status_border(), filter=btw_status),
                         ConditionalContainer(self.startup_border(), filter=startup),
                         ConditionalContainer(self.plan_heading_border(), filter=attached & ~status),
                         ConditionalContainer(
                             self.heading_border(self.btw_heading),
                             filter=btw_top,
                         ),
-                        ConditionalContainer(
-                            top,
-                            filter=~attached & ~status & ~startup & ~btw_top & ~shaded,
-                        ),
+                        ConditionalContainer(top, filter=idle_top & ~shaded),
                         # Shaded, the session's name lines up with the prompt chevron.
                         ConditionalContainer(
                             self.heading_border(self.idle_title),
-                            filter=~attached & ~status & ~startup & ~btw_top & shaded,
+                            filter=idle_top & shaded,
                         ),
                         self.band_body(side),
                     ],
@@ -4873,6 +4911,7 @@ class PromptLayout:
             # A toast fades by itself.
             or (activity.notice_shown and not self.native_toasts)
             or activity.asides_running
+            or self.btw_running_aside() is not None
             or bool(activity.waits)
             or (activity.tasks_shown and activity.tools.animating)
             # Nothing else may redraw when a waiting command preview is due.
