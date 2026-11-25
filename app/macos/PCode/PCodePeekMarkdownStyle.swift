@@ -97,7 +97,7 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             )
             .textual.blockSpacing(.fontScaled(top: 0.2, bottom: 0.7))
         }
@@ -105,21 +105,26 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
 
     struct Table: StructuredText.TableStyle {
         func makeBody(configuration: Configuration) -> some View {
-            configuration.label
-                .textual.tableCellSpacing(horizontal: 1, vertical: 1)
-                .textual.tableOverlay { layout in
-                    Canvas { context, _ in
-                        for divider in layout.dividers() {
-                            context.fill(Path(divider), with: .color(PCodePeekMarkdownStyle.hairline))
+            // Wide tables scroll sideways (up to 1.5x the card) instead of wrapping word by word.
+            Overflow { state in
+                configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textual.tableOverlay { layout in
+                        Canvas { context, _ in
+                            for divider in layout.dividers() {
+                                context.fill(Path(divider), with: .color(PCodePeekMarkdownStyle.hairline))
+                            }
                         }
                     }
-                }
-                .padding(1)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .stroke(PCodePeekMarkdownStyle.hairline, lineWidth: 1)
-                )
-                .textual.blockSpacing(.fontScaled(top: 0, bottom: 0.7))
+                    .padding(1)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .strokeBorder(PCodePeekMarkdownStyle.hairline, lineWidth: 1)
+                    )
+                    .frame(maxWidth: state.containerWidth.map { $0 * 1.5 }, alignment: .leading)
+            }
+            .textual.tableCellSpacing(horizontal: 1, vertical: 1)
+            .textual.blockSpacing(.fontScaled(top: 0, bottom: 0.7))
         }
     }
 

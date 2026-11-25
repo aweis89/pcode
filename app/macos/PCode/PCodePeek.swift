@@ -830,6 +830,9 @@ struct PCodePeekOverlay: View {
                 }
                 // The card is drawn on the terminal's background, so markdown colors follow it.
                 .environment(\.colorScheme, transcriptColorScheme)
+                // Markdown and code cards settle their heights a frame or two after
+                // appearing, so a one-off scrollTo can land short; the anchor keeps up.
+                .defaultScrollAnchor(.bottom)
                 .id(target.sessionID ?? "")
                 .onAppear {
                     DispatchQueue.main.async {
