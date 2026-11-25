@@ -43,6 +43,14 @@ else
     echo "warning: $icns missing; keeping Ghostty's icon" >&2
 fi
 
+# Bundled fonts (e.g. JetBrains Mono) for app-owned SwiftUI typography.
+fonts_dir="$here/fonts"
+if [ -d "$fonts_dir" ] && find "$fonts_dir" -maxdepth 1 \( -name '*.ttf' -o -name '*.otf' \) | grep -q .; then
+    mkdir -p "$app/Contents/Resources/Fonts"
+    find "$fonts_dir" -maxdepth 1 \( -name '*.ttf' -o -name '*.otf' \) -exec cp {} "$app/Contents/Resources/Fonts/" \;
+    pb "Set :ATSApplicationFontsPath Fonts" 2>/dev/null || pb "Add :ATSApplicationFontsPath string Fonts"
+fi
+
 # Plain ad-hoc: this drops the hardened runtime and entitlements, which only
 # matter for notarization. Adding `-o runtime` would need --entitlements
 # macos/GhosttyReleaseLocal.entitlements too, or TCC prompts break.

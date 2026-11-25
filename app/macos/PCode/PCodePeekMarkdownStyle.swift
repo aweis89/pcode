@@ -4,29 +4,36 @@ import Textual
 /// Compact Textual style for Peek transcripts: a preview card, not a full-page document.
 ///
 /// Colors are `primary`-relative so they follow the `colorScheme` Peek sets from the
-/// terminal background; only the code-card fill comes from the caller, to match the
-/// overlay's existing chrome.
+/// terminal background; fonts come from `PCodeTypography` so inline code and fenced blocks
+/// stay in the app's bundled monospace font instead of falling back to SF Mono.
 struct PCodePeekMarkdownStyle: StructuredText.Style {
     let codeBackground: Color
+    let inlineCodeFont: Font
+    let codeBlockFont: Font
+    let codeLabelFont: Font
+    let emphasisWeight: Font.Weight
+    let baseWeight: Font.Weight
 
     var inlineStyle: InlineStyle {
         InlineStyle()
-            .code(.monospaced, .fontScale(0.9), .backgroundColor(Self.inlineCodeFill))
-            .strong(.fontWeight(.semibold))
+            .code(.font(inlineCodeFont), .backgroundColor(Self.inlineCodeFill))
+            .strong(.fontWeight(emphasisWeight))
             .link(.foregroundColor(Color.accentColor))
     }
 
-    var headingStyle: Heading { Heading() }
+    var headingStyle: Heading { Heading(emphasisWeight: emphasisWeight) }
     var paragraphStyle: Paragraph { Paragraph() }
     var blockQuoteStyle: BlockQuote { BlockQuote() }
-    var codeBlockStyle: CodeBlock { CodeBlock(background: codeBackground) }
+    var codeBlockStyle: CodeBlock {
+        CodeBlock(background: codeBackground, codeFont: codeBlockFont, labelFont: codeLabelFont)
+    }
     var listItemStyle: StructuredText.DefaultListItemStyle { .default(markerSpacing: .fontScaled(0.4)) }
     var unorderedListMarker: StructuredText.HierarchicalSymbolListMarker {
         .hierarchical(.disc, .circle, .square)
     }
     var orderedListMarker: StructuredText.DecimalListMarker { .decimal }
     var tableStyle: Table { Table() }
-    var tableCellStyle: TableCell { TableCell() }
+    var tableCellStyle: TableCell { TableCell(emphasisWeight: emphasisWeight, baseWeight: baseWeight) }
     var thematicBreakStyle: ThematicBreak { ThematicBreak() }
 
     static let inlineCodeFill = DynamicColor(
@@ -35,13 +42,14 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
     static let hairline = Color.primary.opacity(0.12)
 
     struct Heading: StructuredText.HeadingStyle {
+        let emphasisWeight: Font.Weight
         private static let fontScales: [CGFloat] = [1.3, 1.15, 1.05, 1, 1, 1]
 
         func makeBody(configuration: Configuration) -> some View {
             let level = min(max(configuration.headingLevel, 1), 6)
             configuration.label
                 .textual.fontScale(Self.fontScales[level - 1])
-                .fontWeight(.semibold)
+                .fontWeight(emphasisWeight)
                 .foregroundStyle(level >= 4 ? Color.secondary : Color.primary)
                 .textual.blockSpacing(.fontScaled(top: 0.9, bottom: 0.35))
         }
@@ -50,7 +58,7 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
     struct Paragraph: StructuredText.ParagraphStyle {
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
-                .textual.lineSpacing(.fontScaled(0.15))
+                .textual.lineSpacing(.fontScaled(0.18))
                 .textual.blockSpacing(.fontScaled(top: 0, bottom: 0.6))
         }
     }
@@ -71,12 +79,14 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
 
     struct CodeBlock: StructuredText.CodeBlockStyle {
         let background: Color
+        let codeFont: Font
+        let labelFont: Font
 
         func makeBody(configuration: Configuration) -> some View {
             VStack(alignment: .leading, spacing: 0) {
                 if let language = configuration.languageHint, !language.isEmpty {
                     Text(language)
-                        .font(.caption2.monospaced())
+                        .font(labelFont)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 10)
                         .padding(.top, 6)
@@ -84,10 +94,9 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
                 // Overflow scrolls long lines horizontally (Textual's default overflow mode).
                 Overflow {
                     configuration.label
+                        .font(codeFont)
                         .textual.lineSpacing(.fontScaled(0.2))
-                        .textual.fontScale(0.9)
                         .fixedSize(horizontal: false, vertical: true)
-                        .monospaced()
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                 }
@@ -129,9 +138,12 @@ struct PCodePeekMarkdownStyle: StructuredText.Style {
     }
 
     struct TableCell: StructuredText.TableCellStyle {
+        let emphasisWeight: Font.Weight
+        let baseWeight: Font.Weight
+
         func makeBody(configuration: Configuration) -> some View {
             configuration.label
-                .fontWeight(configuration.row == 0 ? .semibold : .regular)
+                .fontWeight(configuration.row == 0 ? emphasisWeight : baseWeight)
                 .padding(.vertical, 4)
                 .padding(.horizontal, 8)
                 .textual.lineSpacing(.fontScaled(0.15))

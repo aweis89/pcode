@@ -569,17 +569,22 @@ private struct PCodePeekScrollShield: NSViewRepresentable {
 struct PCodePeekOverlay: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var peek: PCodePeekController
+    @ObservedObject private var typography = PCodeTypography.shared
     let resolveLivePane: (UUID) -> PCodeSessionPane?
     let onOpen: (PCodePeekTarget) -> Void
 
     private var cardBackground: Color {
         Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.07, of: .white) ?? .windowBackgroundColor)
+            withFraction: 0.05, of: .white) ?? .windowBackgroundColor)
     }
 
     private var codeBackground: Color {
         Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.25, of: .black) ?? .textBackgroundColor)
+            withFraction: 0.28, of: .black) ?? .textBackgroundColor)
+    }
+
+    private var textForeground: Color {
+        ghostty.config.foregroundColor
     }
 
     private var transcriptColorScheme: ColorScheme {
@@ -588,7 +593,7 @@ struct PCodePeekOverlay: View {
 
     private var promptBackground: Color {
         Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.13, of: .white) ?? .controlBackgroundColor)
+            withFraction: 0.11, of: .white) ?? .controlBackgroundColor)
     }
 
     var body: some View {
@@ -687,6 +692,7 @@ struct PCodePeekOverlay: View {
                 footer
             }
             .background(cardBackground)
+            .environment(\.colorScheme, transcriptColorScheme)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -842,11 +848,11 @@ struct PCodePeekOverlay: View {
                     .frame(width: 3)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(turn.side ? "/btw" : "You")
-                        .font(.caption.weight(.semibold))
+                        .font(typography.proseFont(scale: 0.82, weight: typography.weight.emphasisWeight))
                         .foregroundStyle(turn.side ? Color.orange : Color.accentColor)
                     Text(turn.prompt)
-                        .font(.body)
-                        .foregroundStyle(.primary)
+                        .font(typography.proseFont())
+                        .foregroundStyle(textForeground)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -883,9 +889,18 @@ struct PCodePeekOverlay: View {
     /// no repair: CommonMark runs it to the end of the message as a code block.
     private func markdownView(_ text: String) -> some View {
         StructuredText(markdown: text)
-            .font(.body)
-            .foregroundStyle(.primary.opacity(0.92))
-            .textual.structuredTextStyle(PCodePeekMarkdownStyle(codeBackground: codeBackground))
+            .font(typography.proseFont())
+            .foregroundStyle(textForeground)
+            .textual.structuredTextStyle(
+                PCodePeekMarkdownStyle(
+                    codeBackground: codeBackground,
+                    inlineCodeFont: typography.codeFont(scale: typography.inlineCodeScale),
+                    codeBlockFont: typography.codeFont(scale: typography.codeBlockScale),
+                    codeLabelFont: typography.codeFont(scale: 0.78, weight: .medium),
+                    emphasisWeight: typography.weight.emphasisWeight,
+                    baseWeight: typography.weight.fontWeight
+                )
+            )
             .textual.textSelection(.enabled)
             // SwiftUI's own selection (enabled on the scroll content) would fight Textual's overlay.
             .textSelection(.disabled)
@@ -898,12 +913,12 @@ struct PCodePeekOverlay: View {
                 .font(.system(size: 10))
                 .foregroundStyle(call.failed ? Color.red : Color.secondary.opacity(0.8))
             Text(call.name)
-                .font(.system(.caption, design: .monospaced).weight(.medium))
+                .font(typography.codeFont(scale: 0.84, weight: typography.weight.emphasisWeight))
                 .foregroundStyle(.secondary)
             let summary = call.summaryText
             if !summary.isEmpty {
                 Text(summary)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(typography.codeFont(scale: 0.84))
                     .foregroundStyle(.secondary.opacity(0.85))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -911,7 +926,7 @@ struct PCodePeekOverlay: View {
             Spacer(minLength: 4)
             if let elapsed = call.formattedElapsed {
                 Text(elapsed)
-                    .font(.caption2.monospacedDigit())
+                    .font(typography.codeFont(scale: 0.78))
                     .foregroundStyle(.tertiary)
             }
         }
@@ -952,11 +967,90 @@ struct PCodePeekOverlay: View {
             Text("⌥ + hover sidebar to peek")
             Text("scroll to read")
             Text("esc close")
-            Spacer()
+            Spacer(minLength: 8)
+            typographyControls
         }
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    private var typographyControls: some View {
+        HStack(spacing: 8) {
+            // Style preset toggle: Sans + Mono vs Mono
+            HStack(spacing: 2) {
+                ForEach(PCodeTypography.Style.allCases) { option in
+                    let selected = typography.style == option
+                    Button {
+                        typography.style = option
+                    } label: {
+                        Text(option.label)
+                            .font(.caption2.weight(selected ? .semibold : .regular))
+                            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(selected ? Color.accentColor.opacity(0.18) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(2)
+            .background(Color.primary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            // Weight cycle button: Regular -> Medium -> Semibold -> Bold
+            Button {
+                let all = PCodeTypography.Weight.allCases
+                if let idx = all.firstIndex(of: typography.weight) {
+                    typography.weight = all[(idx + 1) % all.count]
+                }
+            } label: {
+                Text(typography.weight.label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("Cycle font weight (Regular / Medium / Semibold / Bold)")
+
+            // Size stepper: - 14pt +
+            HStack(spacing: 2) {
+                Button {
+                    typography.decreaseSize()
+                } label: {
+                    Text("−")
+                        .font(.caption2.weight(.semibold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(typography.size <= PCodeTypography.minSize)
+
+                Text("\(Int(typography.size))pt")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .frame(minWidth: 28)
+
+                Button {
+                    typography.increaseSize()
+                } label: {
+                    Text("+")
+                        .font(.caption2.weight(.semibold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(typography.size >= PCodeTypography.maxSize)
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(Color.primary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
     }
 }
