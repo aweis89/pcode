@@ -43,18 +43,79 @@ enum PCodeWorkspaceMode {
         return "/bin/zsh"
     }
 
+    /// True when `directory` or any ancestor contains a `.envrc` file.
+    static func hasEnvrc(in directory: String, fileManager: FileManager = .default) -> Bool {
+        var current = URL(fileURLWithPath: directory).standardizedFileURL
+        while true {
+            let envrc = current.appendingPathComponent(".envrc").path
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: envrc, isDirectory: &isDir), !isDir.boolValue {
+                return true
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path {
+                return false
+            }
+            current = parent
+        }
+    }
+
+    /// Locate an executable named `name` on a colon-separated `PATH`.
+    static func findExecutable(
+        _ name: String,
+        inPath path: String,
+        fileManager: FileManager = .default
+    ) -> String? {
+        for dir in path.split(separator: ":") where !dir.isEmpty {
+            let candidate = URL(fileURLWithPath: String(dir))
+                .appendingPathComponent(name)
+                .path
+            var isDir: ObjCBool = false
+            if fileManager.fileExists(atPath: candidate, isDirectory: &isDir),
+               !isDir.boolValue,
+               fileManager.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
     /// `pcode` with `args`, through a login shell: an app launched from the
     /// Dock gets launchd's bare PATH, where a Homebrew or `uv tool` pcode is
     /// not, so only the user's own shell setup finds it.
-    static func shellCommand(_ args: [String]) -> String {
-        let inner = "exec " + ([command] + args.map(PCode.shellQuoted)).joined(separator: " ")
-        return "\(PCode.shellQuoted(loginShell)) -l -c \(PCode.shellQuoted(inner))"
+    ///
+    /// When `useDirenv` is true, goes through `direnv exec <directory>` if
+    /// `direnv` is available on the login shell's PATH: direnv's shell hook
+    /// only fires at an interactive prompt, so a direct command would miss
+    /// `.envrc` (or keep a stale `DIRENV_DIR`).
+    static func shellCommand(
+        _ args: [String],
+        directory: String? = nil,
+        useDirenv: Bool = false,
+        shell: String = loginShell,
+        command: String = command
+    ) -> String {
+        let cmdParts = ([command] + args.map(PCode.shellQuoted)).joined(separator: " ")
+        let inner: String
+        if useDirenv, let directory {
+            let direnvCmd = "exec direnv exec \(PCode.shellQuoted(directory)) \(cmdParts)"
+            let plainCmd = "exec \(cmdParts)"
+            if URL(fileURLWithPath: shell).lastPathComponent == "fish" {
+                inner = "if type -q direnv; \(direnvCmd); else; \(plainCmd); end"
+            } else {
+                inner = "if command -v direnv >/dev/null 2>&1; then \(direnvCmd); else \(plainCmd); fi"
+            }
+        } else {
+            inner = "exec \(cmdParts)"
+        }
+        return "\(PCode.shellQuoted(shell)) -l -c \(PCode.shellQuoted(inner))"
     }
 
     /// Cached login-shell environment and resolved `pcode` executable so
     /// subsequent panes skip spawning `zsh -l` (~450ms per pane).
-    private struct CachedShellEnv {
+    struct CachedShellEnv {
         let commandPath: String
+        let direnvPath: String?
         let env: [String: String]
     }
 
@@ -150,26 +211,67 @@ enum PCodeWorkspaceMode {
                 env["PATH"] = "\(path):\(exeDir)"
             }
 
+            let effectivePath = env["PATH"] ?? baseEnv["PATH"] ?? ""
+            let direnvPath = findExecutable("direnv", inPath: effectivePath)
+
             cacheLock.lock()
-            cachedEnv = CachedShellEnv(commandPath: resolvedPath, env: env)
+            cachedEnv = CachedShellEnv(commandPath: resolvedPath, direnvPath: direnvPath, env: env)
             cacheLock.unlock()
         }
     }
 
     /// Direct command + cached login-shell env once ready, else the login-shell fallback.
-    static func launchConfig(_ args: [String]) -> (command: String, env: [String: String]) {
+    static func launchConfig(
+        _ args: [String],
+        directory: String
+    ) -> (command: String, env: [String: String]) {
         warmLoginShellCache()
         cacheLock.lock()
         let cached = cachedEnv
         cacheLock.unlock()
+        return buildLaunchConfig(
+            args,
+            directory: directory,
+            cached: cached,
+            baseEnvironment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    static func buildLaunchConfig(
+        _ args: [String],
+        directory: String,
+        cached: CachedShellEnv?,
+        baseEnvironment: [String: String],
+        shell: String = loginShell,
+        command: String = command,
+        fileManager: FileManager = .default
+    ) -> (command: String, env: [String: String]) {
+        let hasDirenvDir = !(cached?.env["DIRENV_DIR"] ?? baseEnvironment["DIRENV_DIR"] ?? "").isEmpty
+        let shouldUseDirenv = hasDirenvDir || hasEnvrc(in: directory, fileManager: fileManager)
+
         guard let cached,
-              FileManager.default.isExecutableFile(atPath: cached.commandPath) else {
-            return (shellCommand(args), [:])
+              fileManager.isExecutableFile(atPath: cached.commandPath) else {
+            return (
+                shellCommand(
+                    args,
+                    directory: directory,
+                    useDirenv: shouldUseDirenv,
+                    shell: shell,
+                    command: command
+                ),
+                [:]
+            )
         }
         // Pass through `env --` so `exec -l` doesn't prepend `-` to argv[0] of
         // a venv-backed Python entry point, and paths with `=` aren't parsed as
         // variable assignments.
-        let parts = ["/usr/bin/env", "--", PCode.shellQuoted(cached.commandPath)] + args.map(PCode.shellQuoted)
+        var parts = ["/usr/bin/env", "--"]
+        if shouldUseDirenv,
+           let direnvPath = cached.direnvPath,
+           fileManager.isExecutableFile(atPath: direnvPath) {
+            parts += [PCode.shellQuoted(direnvPath), "exec", PCode.shellQuoted(directory)]
+        }
+        parts += [PCode.shellQuoted(cached.commandPath)] + args.map(PCode.shellQuoted)
         return (parts.joined(separator: " "), cached.env)
     }
 }
@@ -1604,12 +1706,6 @@ final class PCodeWorkspace: ObservableObject {
         sessionID: String?
     ) -> PCodeSessionPane? {
         guard let app = ghostty.app else { return nil }
-        var config = Ghostty.SurfaceConfiguration()
-        let launch = PCodeWorkspaceMode.launchConfig(args)
-        config.command = launch.command
-        for (key, value) in launch.env {
-            config.environmentVariables[key] = value
-        }
         let fm = FileManager.default
         let isDir: (String) -> Bool = { path in
             var flag: ObjCBool = false
@@ -1627,6 +1723,12 @@ final class PCodeWorkspace: ObservableObject {
             let home = Self.normalizePath(NSHomeDirectory())
             resolvedDir = home
             resolvedProject = home
+        }
+        var config = Ghostty.SurfaceConfiguration()
+        let launch = PCodeWorkspaceMode.launchConfig(args, directory: resolvedDir)
+        config.command = launch.command
+        for (key, value) in launch.env {
+            config.environmentVariables[key] = value
         }
         config.workingDirectory = resolvedDir
         // The docked editor (PCodeDock) is what the workspace shows under each session.
