@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -34,6 +35,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
         }
     }
 
+    private static let maxTailLineBytes = 16 * 1024 * 1024
+
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published var paceMode: PCodeStreamingPaceMode = PCodeStreamingPaceMode.loadDefaultFromPreferences()
 
@@ -41,17 +44,19 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private var reducer: PCodeTranscriptEventReducer?
     private weak var documentView: PCodeTranscriptDocumentView?
     private var attachedSessionID: String?
+    private var attachGeneration: UInt64 = 0
 
     // Local journal tailing state (fallback when session is not hosted)
     private var tailSource: DispatchSourceFileSystemObject?
     private var tailFD: Int32 = -1
     private var tailOffset: UInt64 = 0
+    private var tailInode: UInt64 = 0
+    private var tailDev: Int32 = 0
     private var tailLineRemainder = Data()
-    private var tailSessionPath: String?
     private var hostRetryTimer: Timer?
 
     deinit {
-        detach()
+        detach(publishState: false)
     }
 
     func attach(sessionID: String?, documentView: PCodeTranscriptDocumentView) {
@@ -59,7 +64,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
         if attachedSessionID == normalized && self.documentView === documentView {
             return
         }
-        detach()
+        detach(publishState: false)
+        attachGeneration &+= 1
+        let gen = attachGeneration
         self.documentView = documentView
         self.attachedSessionID = normalized
         documentView.paceMode = paceMode
@@ -69,25 +76,29 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
         guard let sid = normalized, PCode.valid(sid, length: 1...64) else {
             documentView.setItems([], pinToBottom: true)
-            connectionState = .waiting
+            setConnectionState(.waiting)
             return
         }
 
         if let sockPath = PCodeSessionInfo.hostSocketPath(forSessionID: sid) {
-            connectToHost(socketPath: sockPath, sessionID: sid, documentView: documentView, reducer: newReducer)
+            connectToHost(socketPath: sockPath, sessionID: sid, generation: gen, documentView: documentView, reducer: newReducer)
         } else {
-            startJournalTail(sessionID: sid, documentView: documentView, reducer: newReducer)
+            startJournalTail(sessionID: sid, generation: gen, documentView: documentView, reducer: newReducer)
         }
     }
 
-    func detach() {
+    func detach(publishState: Bool = true) {
+        attachGeneration &+= 1
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
         socketClient.close()
         stopJournalTail()
         reducer = nil
+        documentView = nil
         attachedSessionID = nil
-        connectionState = .idle
+        if publishState {
+            setConnectionState(.idle)
+        }
     }
 
     func applyPaceMode(_ mode: PCodeStreamingPaceMode) {
@@ -95,19 +106,25 @@ final class PCodeLiveTranscriptController: ObservableObject {
         documentView?.paceMode = mode
     }
 
+    private func setConnectionState(_ newState: ConnectionState) {
+        guard connectionState != newState else { return }
+        connectionState = newState
+    }
+
     // MARK: - Hosted Session (Unix Socket Observer)
 
     private func connectToHost(
         socketPath: String,
         sessionID: String,
+        generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
-        connectionState = .waiting
+        setConnectionState(.waiting)
         socketClient.connect(
             socketPath: socketPath,
             onReady: { [weak self, weak documentView] welcome in
-                guard let self, let documentView, self.attachedSessionID == sessionID else { return }
+                guard let self, let documentView, self.attachGeneration == generation else { return }
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
                 documentView.setItems([], pinToBottom: true)
@@ -119,27 +136,26 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     reducer.apply(event, reveal: false)
                 }
                 documentView.scrollToBottomAndPin()
-                self.connectionState = .connectedHost(hostID: welcome.hostID)
+                self.setConnectionState(.connectedHost(hostID: welcome.hostID))
             },
             onEvent: { [weak self] event in
-                guard let self, self.attachedSessionID == sessionID else { return }
+                guard let self, self.attachGeneration == generation else { return }
                 reducer.apply(event, reveal: true)
             },
             onError: { [weak self, weak documentView] message in
-                guard let self, self.attachedSessionID == sessionID else { return }
-                // Fall back cleanly to journal tailing if host socket closed or refused.
+                guard let self, self.attachGeneration == generation else { return }
                 if let documentView {
-                    self.startJournalTail(sessionID: sessionID, documentView: documentView, reducer: reducer)
+                    self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
                 } else {
-                    self.connectionState = .error(message)
+                    self.setConnectionState(.error(message))
                 }
             },
             onClosed: { [weak self, weak documentView] in
-                guard let self, self.attachedSessionID == sessionID else { return }
+                guard let self, self.attachGeneration == generation else { return }
                 if let documentView {
-                    self.startJournalTail(sessionID: sessionID, documentView: documentView, reducer: reducer)
+                    self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
                 } else {
-                    self.connectionState = .waiting
+                    self.setConnectionState(.waiting)
                 }
             })
     }
@@ -148,75 +164,110 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
     private func startJournalTail(
         sessionID: String,
+        generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
         stopJournalTail()
         let dir = PCodeSessionInfo.root.appendingPathComponent(sessionID)
         let path = dir.appendingPathComponent("transcript.jsonl").path
-        tailSessionPath = path
+        guard Self.isSafeOwnedDirectory(dir.path) else {
+            setConnectionState(.error("Invalid session directory."))
+            return
+        }
+
         tailOffset = 0
+        tailInode = 0
+        tailDev = 0
         tailLineRemainder.removeAll(keepingCapacity: true)
 
         documentView.setItems([], pinToBottom: true)
         reducer.reset()
-        connectionState = .tailingJournal
+        setConnectionState(.tailingJournal)
 
-        // Initial settled load (no reveal animation).
-        readNewJournalBytes(atPath: path, reveal: false, reducer: reducer)
-        documentView.scrollToBottomAndPin()
+        // Load settled history off the main thread (skipping historical TextDelta/ThinkingDelta
+        // so large sessions never stall the UI), then arm kqueue and drain any tail delta.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak documentView] in
+            let initial = Self.readSettledInitialJournal(atPath: path)
+            DispatchQueue.main.async {
+                guard let self, let documentView, self.attachGeneration == generation else { return }
+                self.tailOffset = initial.offset
+                self.tailInode = initial.inode
+                self.tailDev = initial.dev
+                for event in initial.events {
+                    reducer.apply(event, reveal: false)
+                }
+                documentView.scrollToBottomAndPin()
 
-        // Watch for appends via kqueue (`DispatchSourceFileSystemObject`) + light poll fallback
-        // for newly created files or host promotion.
-        openTailWatcher(atPath: path, sessionID: sessionID, documentView: documentView, reducer: reducer)
+                // Arm kqueue watcher first, then drain any bytes written during initial load.
+                self.openTailWatcher(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
+                self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
+                self.startHostPromotionTimer(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
+            }
+        }
     }
 
     private func openTailWatcher(
         atPath path: String,
         sessionID: String,
+        generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
-        let fd = Darwin.open(path, O_EVTONLY)
-        if fd >= 0 {
-            tailFD = fd
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: fd,
-                eventMask: [.write, .extend, .rename, .delete],
-                queue: .main)
-            source.setEventHandler { [weak self] in
-                guard let self, self.attachedSessionID == sessionID else { return }
-                self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
+        stopTailSourceOnly()
+        guard Self.isSafeOwnedRegularFile(path) else { return }
+        let fd = Darwin.open(path, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        tailFD = fd
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .extend, .rename, .delete],
+            queue: .main)
+        source.setEventHandler { [weak self, weak documentView] in
+            guard let self, let documentView, self.attachGeneration == generation else { return }
+            let flags = source.data
+            if flags.contains(.rename) || flags.contains(.delete) {
+                self.openTailWatcher(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
             }
-            source.setCancelHandler { [fd] in
-                Darwin.close(fd)
-            }
-            source.resume()
-            tailSource = source
-        } else {
-            // File may not exist yet on a brand-new session; poll briefly until created or hosted.
-            let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self, weak documentView] _ in
-                guard let self, let documentView, self.attachedSessionID == sessionID else { return }
-                if let sockPath = PCodeSessionInfo.hostSocketPath(forSessionID: sessionID) {
-                    self.stopJournalTail()
-                    self.connectToHost(socketPath: sockPath, sessionID: sessionID, documentView: documentView, reducer: reducer)
-                    return
-                }
-                if FileManager.default.fileExists(atPath: path) {
-                    self.hostRetryTimer?.invalidate()
-                    self.hostRetryTimer = nil
-                    self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
-                    self.openTailWatcher(atPath: path, sessionID: sessionID, documentView: documentView, reducer: reducer)
-                }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            hostRetryTimer = timer
+            self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
         }
+        source.setCancelHandler { [fd] in
+            Darwin.close(fd)
+        }
+        source.resume()
+        tailSource = source
     }
 
-    private func stopJournalTail() {
+    private func startHostPromotionTimer(
+        atPath path: String,
+        sessionID: String,
+        generation: UInt64,
+        documentView: PCodeTranscriptDocumentView,
+        reducer: PCodeTranscriptEventReducer
+    ) {
         hostRetryTimer?.invalidate()
-        hostRetryTimer = nil
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self, weak documentView] t in
+            guard let self, let documentView, self.attachGeneration == generation else {
+                t.invalidate()
+                return
+            }
+            if let sockPath = PCodeSessionInfo.hostSocketPath(forSessionID: sessionID) {
+                t.invalidate()
+                self.hostRetryTimer = nil
+                self.stopJournalTail()
+                self.connectToHost(socketPath: sockPath, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
+                return
+            }
+            if self.tailSource == nil && Self.isSafeOwnedRegularFile(path) {
+                self.openTailWatcher(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
+                self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hostRetryTimer = timer
+    }
+
+    private func stopTailSourceOnly() {
         if let source = tailSource {
             source.cancel()
             tailSource = nil
@@ -225,9 +276,79 @@ final class PCodeLiveTranscriptController: ObservableObject {
             Darwin.close(tailFD)
             tailFD = -1
         }
+    }
+
+    private func stopJournalTail() {
+        hostRetryTimer?.invalidate()
+        hostRetryTimer = nil
+        stopTailSourceOnly()
         tailOffset = 0
+        tailInode = 0
+        tailDev = 0
         tailLineRemainder.removeAll(keepingCapacity: true)
-        tailSessionPath = nil
+    }
+
+    private static func isSafeOwnedDirectory(_ path: String) -> Bool {
+        var st = stat()
+        guard Darwin.lstat(path, &st) == 0 else { return false }
+        return (st.st_mode & S_IFMT) == S_IFDIR && st.st_uid == Darwin.getuid()
+    }
+
+    private static func isSafeOwnedRegularFile(_ path: String) -> Bool {
+        var st = stat()
+        guard Darwin.lstat(path, &st) == 0 else { return false }
+        return (st.st_mode & S_IFMT) == S_IFREG && st.st_uid == Darwin.getuid()
+    }
+
+    private static func readSettledInitialJournal(
+        atPath path: String
+    ) -> (events: [PCodeHostEvent], offset: UInt64, inode: UInt64, dev: Int32) {
+        guard isSafeOwnedRegularFile(path) else { return ([], 0, 0, 0) }
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return ([], 0, 0, 0) }
+        defer { Darwin.close(fd) }
+
+        var st = stat()
+        guard Darwin.fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == Darwin.getuid()
+        else { return ([], 0, 0, 0) }
+
+        let size = max(0, Int(st.st_size))
+        guard size > 0 else { return ([], 0, st.st_ino, st.st_dev) }
+
+        var data = Data(count: size)
+        var totalRead = 0
+        data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            while totalRead < size {
+                let n = Darwin.read(fd, base.advanced(by: totalRead), size - totalRead)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    break
+                }
+                if n == 0 { break }
+                totalRead += n
+            }
+        }
+        data.count = totalRead
+
+        // Decode settled records only (skip TextDelta/ThinkingDelta so initial load is O(N) and fast).
+        let skipKinds: Set<String> = ["TextDelta", "ThinkingDelta"]
+        var events: [PCodeHostEvent] = []
+        var scan = 0
+        while scan < data.count, let nl = data[scan...].firstIndex(of: 0x0A) {
+            let line = data[scan..<nl]
+            scan = nl + 1
+            guard !line.isEmpty,
+                  let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let kind = obj["kind"] as? String,
+                  !skipKinds.contains(kind),
+                  let event = PCodeHostEventDecoder.decodeJournalRecord(obj)
+            else { continue }
+            events.append(event)
+        }
+        return (events, UInt64(scan), st.st_ino, st.st_dev)
     }
 
     private func readNewJournalBytes(
@@ -235,41 +356,73 @@ final class PCodeLiveTranscriptController: ObservableObject {
         reveal: Bool,
         reducer: PCodeTranscriptEventReducer
     ) {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return }
-        defer { try? handle.close() }
-        do {
-            let endOffset = try handle.seekToEnd()
-            if endOffset < tailOffset {
-                // File truncated/rewritten; restart from 0.
-                tailOffset = 0
-                tailLineRemainder.removeAll(keepingCapacity: true)
-                reducer.reset()
-                documentView?.setItems([], pinToBottom: true)
-            }
-            guard endOffset > tailOffset else { return }
-            try handle.seek(toOffset: tailOffset)
-            let chunk = try handle.readToEnd() ?? Data()
-            tailOffset += UInt64(chunk.count)
-            guard !chunk.isEmpty else { return }
+        guard Self.isSafeOwnedRegularFile(path) else { return }
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
 
-            tailLineRemainder.append(chunk)
-            var scan = 0
-            while scan < tailLineRemainder.count,
-                  let nl = tailLineRemainder[scan...].firstIndex(of: 0x0A)
-            {
-                let line = tailLineRemainder[scan..<nl]
-                scan = nl + 1
-                guard !line.isEmpty,
-                      let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                      let event = PCodeHostEventDecoder.decodeJournalRecord(obj)
-                else { continue }
-                reducer.apply(event, reveal: reveal)
+        var st = stat()
+        guard Darwin.fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == Darwin.getuid()
+        else { return }
+
+        let fileSize = UInt64(max(0, st.st_size))
+        let replaced = (tailInode != 0 && (st.st_ino != tailInode || st.st_dev != tailDev))
+        if replaced || fileSize < tailOffset {
+            tailOffset = 0
+            tailInode = st.st_ino
+            tailDev = st.st_dev
+            tailLineRemainder.removeAll(keepingCapacity: true)
+            reducer.reset()
+            documentView?.setItems([], pinToBottom: true)
+        } else if tailInode == 0 {
+            tailInode = st.st_ino
+            tailDev = st.st_dev
+        }
+
+        guard fileSize > tailOffset else { return }
+        guard Darwin.lseek(fd, off_t(tailOffset), SEEK_SET) >= 0 else { return }
+
+        let toRead = Int(min(fileSize - tailOffset, UInt64(Self.maxTailLineBytes)))
+        var chunk = Data(count: toRead)
+        var got = 0
+        chunk.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            while got < toRead {
+                let n = Darwin.read(fd, base.advanced(by: got), toRead - got)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    break
+                }
+                if n == 0 { break }
+                got += n
             }
-            if scan > 0 {
-                tailLineRemainder.removeSubrange(0..<scan)
-            }
-        } catch {
-            // Ignore transient read errors while pcode is writing.
+        }
+        chunk.count = got
+        tailOffset += UInt64(got)
+        guard !chunk.isEmpty else { return }
+
+        tailLineRemainder.append(chunk)
+        if tailLineRemainder.count > Self.maxTailLineBytes {
+            tailLineRemainder.removeAll(keepingCapacity: true)
+            return
+        }
+
+        var scan = 0
+        while scan < tailLineRemainder.count,
+              let nl = tailLineRemainder[scan...].firstIndex(of: 0x0A)
+        {
+            let line = tailLineRemainder[scan..<nl]
+            scan = nl + 1
+            guard !line.isEmpty,
+                  let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let event = PCodeHostEventDecoder.decodeJournalRecord(obj)
+            else { continue }
+            reducer.apply(event, reveal: reveal)
+        }
+        if scan > 0 {
+            tailLineRemainder.removeSubrange(0..<scan)
         }
     }
 }
@@ -292,7 +445,11 @@ private struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         context.coordinator.lastTypographySnapshot = typography.snapshot
         context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
         context.coordinator.controller = controller
-        controller.attach(sessionID: sessionID, documentView: scrollView.transcriptDocumentView)
+        let sid = sessionID
+        DispatchQueue.main.async { [weak controller, weak doc = scrollView.transcriptDocumentView] in
+            guard let controller, let doc else { return }
+            controller.attach(sessionID: sid, documentView: doc)
+        }
         return scrollView
     }
 
@@ -311,17 +468,28 @@ private struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
             nsView.transcriptDocumentView.updateAppearance(typography: snap, theme: theme)
             nsView.applyTheme(theme)
         }
-        controller.attach(sessionID: sessionID, documentView: nsView.transcriptDocumentView)
+        let sid = sessionID
+        if coord.lastRequestedSessionID != sid {
+            coord.lastRequestedSessionID = sid
+            DispatchQueue.main.async { [weak controller, weak doc = nsView.transcriptDocumentView] in
+                guard let controller, let doc else { return }
+                controller.attach(sessionID: sid, documentView: doc)
+            }
+        }
     }
 
     static func dismantleNSView(_ nsView: PCodeTranscriptScrollView, coordinator: Coordinator) {
-        coordinator.controller?.detach()
+        let controller = coordinator.controller
+        DispatchQueue.main.async {
+            controller?.detach()
+        }
     }
 
     final class Coordinator {
         var lastTheme: PCodeTranscriptTheme?
         var lastTypographySnapshot: PCodeTypographySnapshot?
         var lastTypographyObjectID: ObjectIdentifier?
+        var lastRequestedSessionID: String?
         weak var controller: PCodeLiveTranscriptController?
     }
 }
@@ -357,9 +525,6 @@ struct PCodeLiveTranscriptPaneView: View {
         }
         .background(ghostty.config.backgroundColor)
         .environment(\.colorScheme, colorScheme)
-        .onDisappear {
-            controller.detach()
-        }
     }
 
     private var header: some View {

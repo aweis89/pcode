@@ -216,8 +216,10 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         }
         let workspace = controller.workspace
         if let visible = args["visible"] as? Bool {
-            workspace.liveTranscriptVisible = visible
-        } else {
+            if visible != workspace.liveTranscriptVisible {
+                workspace.toggleLiveTranscript()
+            }
+        } else if (args["toggle"] as? Bool) == true || args["fraction"] == nil {
             workspace.toggleLiveTranscript()
         }
         if let fraction = args["fraction"] as? Double {

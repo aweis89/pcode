@@ -270,17 +270,27 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         guard let files = try? fm.contentsOfDirectory(at: hostRoot, includingPropertiesForKeys: nil) else {
             return nil
         }
+        let uid = Darwin.getuid()
         let decoder = JSONDecoder()
         for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
+            var jsonStat = stat()
+            guard Darwin.lstat(file.path, &jsonStat) == 0,
+                  (jsonStat.st_mode & S_IFMT) == S_IFREG,
+                  jsonStat.st_uid == uid,
+                  let data = try? Data(contentsOf: file),
                   let entry = try? decoder.decode(Entry.self, from: data),
+                  PCode.valid(entry.id, length: 1...64),
                   entry.session_id == sessionID,
                   entry.pid > 0,
                   kill(entry.pid, 0) == 0,
                   PCodeProcess.isPCodeOrHost(entry.pid)
             else { continue }
             let sockURL = hostRoot.appendingPathComponent("\(entry.id).sock")
-            if fm.fileExists(atPath: sockURL.path) {
+            var sockStat = stat()
+            if Darwin.lstat(sockURL.path, &sockStat) == 0,
+               (sockStat.st_mode & S_IFMT) == S_IFSOCK,
+               sockStat.st_uid == uid
+            {
                 return sockURL.path
             }
         }
@@ -736,6 +746,11 @@ final class PCodeWorkspace: ObservableObject {
 
     func toggleLiveTranscript() {
         liveTranscriptVisible.toggle()
+        if !liveTranscriptVisible, let pane = selectedPane {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: pane.keyboardSurface)
+            }
+        }
     }
 
     /// Folders explicitly added to the sidebar (may have no sessions yet).
@@ -1884,40 +1899,48 @@ struct PCodeWorkspaceView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         if workspace.liveTranscriptVisible {
-                            Rectangle()
-                                .fill(ghostty.config.splitDividerColor)
-                                .frame(width: 1)
-                                .overlay(
-                                    Color.clear
-                                        .frame(width: 9)
-                                        .contentShape(Rectangle())
-                                        .backport.pointerStyle(.resizeLeftRight)
-                                        .onTapGesture(count: 2) {
-                                            workspace.liveTranscriptFraction = 0.45
-                                        }
-                                        .gesture(
-                                            DragGesture(coordinateSpace: .global)
-                                                .onChanged { gesture in
-                                                    let start = transcriptDragStartFraction ?? workspace.liveTranscriptFraction
-                                                    if transcriptDragStartFraction == nil {
-                                                        transcriptDragStartFraction = start
+                            let maxTranscriptW = max(0, geo.size.width - 260)
+                            let desiredW = min(geo.size.width * 0.70, max(240, geo.size.width * workspace.liveTranscriptFraction))
+                            let clampedW = min(desiredW, maxTranscriptW)
+                            if clampedW >= 180 {
+                                Rectangle()
+                                    .fill(ghostty.config.splitDividerColor)
+                                    .frame(width: 1)
+                                    .overlay(
+                                        Color.clear
+                                            .frame(width: 9)
+                                            .contentShape(Rectangle())
+                                            .backport.pointerStyle(.resizeLeftRight)
+                                            .onTapGesture(count: 2) {
+                                                workspace.liveTranscriptFraction = 0.45
+                                            }
+                                            .onDisappear {
+                                                transcriptDragStartFraction = nil
+                                            }
+                                            .gesture(
+                                                DragGesture(coordinateSpace: .global)
+                                                    .onChanged { gesture in
+                                                        let start = transcriptDragStartFraction ?? workspace.liveTranscriptFraction
+                                                        if transcriptDragStartFraction == nil {
+                                                            transcriptDragStartFraction = start
+                                                        }
+                                                        let total = max(1, geo.size.width)
+                                                        let deltaFrac = -gesture.translation.width / total
+                                                        workspace.liveTranscriptFraction = min(0.70, max(0.25, start + deltaFrac))
                                                     }
-                                                    let total = max(1, geo.size.width)
-                                                    let deltaFrac = -gesture.translation.width / total
-                                                    workspace.liveTranscriptFraction = min(0.70, max(0.25, start + deltaFrac))
-                                                }
-                                                .onEnded { _ in
-                                                    transcriptDragStartFraction = nil
-                                                }
-                                        )
-                                )
-                                .zIndex(1)
+                                                    .onEnded { _ in
+                                                        transcriptDragStartFraction = nil
+                                                    }
+                                            )
+                                    )
+                                    .zIndex(1)
 
-                            PCodeLiveTranscriptPaneView(pane: pane) {
-                                workspace.toggleLiveTranscript()
+                                PCodeLiveTranscriptPaneView(pane: pane) {
+                                    workspace.toggleLiveTranscript()
+                                }
+                                .frame(width: clampedW)
+                                .transition(.identity)
                             }
-                            .frame(width: max(300, min(geo.size.width * 0.70, geo.size.width * workspace.liveTranscriptFraction)))
-                            .transition(.identity)
                         }
                     }
                 }
