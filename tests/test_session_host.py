@@ -871,6 +871,34 @@ def test_kill_hosts_idle_asks_each_idle_host_and_reports_what_it_did(host_dir, m
     assert "No session hosts are running." in capsys.readouterr().out
 
 
+def test_kill_hosts_stops_hosts_at_once_not_one_after_another(host_dir, monkeypatch, capsys):
+    """Each host can take a while to tear down; a dozen in a row looked like a hang."""
+    from pcode.app import main
+
+    for identity in ("idle0001", "idle0002", "idle0003"):
+        entry = HostEntry(id=identity, pid=os.getpid(), model="test", workspace="/")
+        entry.state = "idle"
+        write_entry(entry)
+    stopping = set()
+    overlapped = []
+
+    async def stop_if_idle(entry):
+        stopping.add(entry.id)
+        await asyncio.sleep(0.05)
+        overlapped.append(len(stopping))
+        return ""
+
+    monkeypatch.setattr("pcode.remote.stop_if_idle", stop_if_idle)
+    monkeypatch.setattr(sys, "argv", ["pcode", "--kill-hosts", "idle"])
+    main()
+    assert overlapped == [3, 3, 3]
+    output = capsys.readouterr()
+    assert output.out.count("Stopped idle000") == 3
+    assert "Stopping 3 session host(s)" in output.err
+    for entry in list_hosts():
+        remove_entry(entry.id)
+
+
 def test_a_host_stops_as_if_idle_with_a_terminal_attached_unless_busy(tmp_path, host_dir):
     async def run():
         host = await start_host("aaaa1111", tmp_path, Script())
@@ -2873,6 +2901,35 @@ def test_a_terminal_whose_host_restarted_elsewhere_says_where_it_went():
     app.host_closed()
     assert "restarting on the current pcode as bbbb2222" in output.getvalue()
     assert "/attach bbbb2222" in output.getvalue()
+
+
+def test_an_app_pane_exits_when_its_host_is_stopped_elsewhere():
+    """`pcode --kill-hosts` stops a host an app pane shows: the pane's pcode exits so it closes."""
+
+    class Host:
+        remote = True
+        id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+
+    app = PreviewApp(model="m", runtime=Host(), console=Console(file=StringIO(), width=200))
+    app.editor_only = True
+    app.controller.host_stopped = True
+    app.host_closed()
+    assert not app.running and app.session_over
+
+
+def test_an_app_pane_whose_host_vanished_says_so_in_the_editor():
+    """Its transcript goes nowhere, so a crashed host is reported where the pane shows text."""
+
+    class Host:
+        remote = True
+        id, pid, session_id, lost = "aaaa1111", 4242, "session-1", False
+
+    app = PreviewApp(model="m", runtime=Host(), console=Console(file=StringIO(), width=200))
+    app.editor_only = True
+    app.activity.busy = True
+    app.host_closed()
+    assert app.running and not app.activity.busy
+    assert "aaaa1111 has exited" in app.activity.notice
 
 
 def test_restart_lets_the_host_start_its_successor_and_attaches_to_it(monkeypatch, host_dir):

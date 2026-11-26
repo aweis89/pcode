@@ -2352,7 +2352,11 @@ class PreviewApp:
         if self.session_over or self.restarting:
             return  # Expected: this terminal is on its way out, or to the successor.
         runtime = self.runtime
-        if successor := getattr(self.controller, "successor", None):
+        successor = getattr(self.controller, "successor", None)
+        if self.editor_only and not successor:
+            self._app_host_closed(runtime)
+            return
+        if successor:
             self.transcript.warning(
                 f"The session host {runtime.id} is restarting on the current pcode as "
                 f"{successor}: /attach {successor} shows it once it is up."
@@ -2365,6 +2369,27 @@ class PreviewApp:
         self.activity.busy = False
         if self.activity.startup_label:
             self.activity.finish_startup(ok=False)
+        self.redraw()
+
+    def _app_host_closed(self, runtime) -> None:
+        """`host_closed` in a Pcode.app pane, whose transcript goes nowhere.
+
+        Stopped on purpose (`pcode --kill-hosts`, the sidebar, another
+        terminal's /stop): exit, so the app closes the pane and the session
+        drops back to its recent list. Gone without a word (crashed, killed):
+        keep the pane and say so in the editor, the one place this shows text;
+        otherwise the pane sits there with no host and an empty transcript.
+        """
+        if getattr(self.controller, "host_stopped", False):
+            self.session_ended()
+            return
+        self.activity.busy = False
+        if self.activity.startup_label:
+            self.activity.finish_startup(ok=False)
+        self.activity.flash(
+            f"The session host {runtime.id} has exited. /resume reopens a session here.",
+            seconds=24 * 3600,
+        )
         self.redraw()
 
     async def stop_other_host(self, entry) -> None:
@@ -4346,26 +4371,36 @@ def _kill_hosts(which: str, entries: list, code: str) -> None:
         for entry in entries
         if which in ("all", "idle") or (which == "stale" and entry.stale(code))
     ]
-    for entry in chosen:
+
+    async def stop(entry) -> None:
         try:
             if which == "idle" and entry.state != "idle":
                 # Running a turn, or starting, says so in its entry; the host checks the rest.
                 busy = "it is starting up" if entry.state == "starting" else "a turn is running"
             elif which == "idle":
-                busy = asyncio.run(stop_if_idle(entry))
-            elif not asyncio.run(stop_entry(entry)):
+                busy = await stop_if_idle(entry)
+            elif not await stop_entry(entry):
                 raise HostError("it was told to stop but is still running after 30 s")
             else:
                 busy = ""
         except (OSError, ValueError, HostError, RemoteError) as error:
             # Usually gone since it was listed (stopped itself, or crashed).
-            print(f"Could not stop {entry.id}: {error}", file=sys.stderr)
-            continue
+            print(f"Could not stop {entry.id}: {error}", file=sys.stderr, flush=True)
+            return
         if busy:
-            print(f"Skipped {entry.id}  {entry.label()}: {busy}")
+            print(f"Skipped {entry.id}  {entry.label()}: {busy}", flush=True)
         else:
-            print(f"Stopped {entry.id}  {entry.label()}")
-    if not chosen:
+            print(f"Stopped {entry.id}  {entry.label()}", flush=True)
+
+    async def stop_all() -> None:
+        # All at once: each may take up to 30 s to tear down, which one after
+        # another looked like a hang with a dozen hosts.
+        await asyncio.gather(*(stop(entry) for entry in chosen))
+
+    if chosen:
+        print(f"Stopping {len(chosen)} session host(s)…", file=sys.stderr, flush=True)
+        asyncio.run(stop_all())
+    else:
         print("No stale session hosts." if which == "stale" else "No session hosts are running.")
 
 
