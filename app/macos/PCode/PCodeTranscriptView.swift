@@ -213,7 +213,6 @@ struct PCodeTranscriptItem: Identifiable {
                 switch block {
                 case .markdown(let blockID, let text):
                     let parsed = PCodeTranscriptMarkdown.parseBlocks(text)
-                    var attachedCopy = false
                     var codeGroupCounter = 0
                     var activeCodeGroupID: String?
 
@@ -221,14 +220,12 @@ struct PCodeTranscriptItem: Identifiable {
                         switch mdBlock {
                         case .prose(let proseMD, let refDefs):
                             activeCodeGroupID = nil
-                            let copyPayload = attachedCopy ? nil : text
-                            attachedCopy = true
                             result.append(PCodeTranscriptItem(
                                 id: "turn-\(turn.id)-md-\(blockID)-\(subIdx)",
                                 payload: .prose(
                                     markdown: proseMD,
                                     referenceDefinitions: refDefs,
-                                    copyMarkdown: copyPayload),
+                                    copyMarkdown: text),
                                 spacingAfter: 8))
                         case .codeBlock(let lang, let code, let fullCode, let chunkIdx, let totalChunks):
                             if chunkIdx == 0 {
@@ -342,7 +339,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         var settler: PCodeMarkdownSettler
         var emittedBlockCount: Int
         var codeGroupCounter: Int
-        var attachedCopyMarkdownItemID: String?
     }
 
     private var activeStream: ActiveStreamingMessage?
@@ -355,6 +351,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var isDraggingSelection = false
     private var dragMoved = false
     private var trackingArea: NSTrackingArea?
+
+    /// Where Copy puts text; tests swap in a private pasteboard.
+    var pasteboard: NSPasteboard = .general
 
     /// Reveal style matching pcode's `paced_scrollback` preference (`typed`, `rows`, `off`).
     var paceMode: PCodeStreamingPaceMode = PCodeStreamingPaceMode.loadDefaultFromPreferences()
@@ -717,8 +716,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             id: id,
             settler: PCodeMarkdownSettler(),
             emittedBlockCount: 0,
-            codeGroupCounter: 0,
-            attachedCopyMarkdownItemID: nil)
+            codeGroupCounter: 0)
     }
 
     /// Append a token delta to the active streaming message. Only settled top-level blocks
@@ -747,21 +745,29 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             commitSettledBlocks(remaining, reveal: reveal)
         }
         guard let finalStream = activeStream else { return }
-        // Attach full copyMarkdown to the first prose block of the finalized message.
-        if let firstProseID = finalStream.attachedCopyMarkdownItemID,
-           let idx = itemIndexByID[firstProseID],
-           !finalStream.settler.fullMarkdown.isEmpty,
-           case .prose(let md, let refDefs, _) = items[idx].payload
-        {
-            items[idx] = PCodeTranscriptItem(
-                id: firstProseID,
-                payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: finalStream.settler.fullMarkdown),
-                spacingAfter: items[idx].spacingAfter,
-                revision: items[idx].revision &+ 1,
-                depth: items[idx].depth)
+        // Every prose block of the finished message offers the whole answer's Markdown,
+        // so its Copy button shows wherever in the answer the pointer is.
+        let fullMarkdown = finalStream.settler.fullMarkdown
+        if !fullMarkdown.isEmpty {
+            for blockIndex in 0..<finalStream.emittedBlockCount {
+                let itemID = Self.streamingItemID(messageID: finalStream.id, blockIndex: blockIndex)
+                guard let idx = itemIndexByID[itemID],
+                      case .prose(let md, let refDefs, _) = items[idx].payload
+                else { continue }
+                items[idx] = PCodeTranscriptItem(
+                    id: itemID,
+                    payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: fullMarkdown),
+                    spacingAfter: items[idx].spacingAfter,
+                    revision: items[idx].revision &+ 1,
+                    depth: items[idx].depth)
+            }
         }
         activeStream = nil
         mountViews(in: visibleRect)
+    }
+
+    private static func streamingItemID(messageID: String, blockIndex: Int) -> String {
+        "\(messageID)-b\(blockIndex)"
     }
 
     private func commitSettledBlocks(_ blocks: [PCodeMarkdownBlock], reveal: Bool) {
@@ -773,14 +779,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         for block in blocks {
             let subIdx = stream.emittedBlockCount
             stream.emittedBlockCount += 1
-            let itemID = "\(stream.id)-b\(subIdx)"
+            let itemID = Self.streamingItemID(messageID: stream.id, blockIndex: subIdx)
 
             switch block {
             case .prose(let proseMD, let refDefs):
                 activeCodeGroupID = nil
-                if stream.attachedCopyMarkdownItemID == nil {
-                    stream.attachedCopyMarkdownItemID = itemID
-                }
                 appended.append(PCodeTranscriptItem(
                     id: itemID,
                     payload: .prose(markdown: proseMD, referenceDefinitions: refDefs, copyMarkdown: nil),
@@ -1158,6 +1161,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 selectedRange: localSel)
 
         case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, let copyMarkdown)):
+            view.pasteboard = pasteboard
             let attr = cachedProseAttributedString(for: item.id, markdown: markdown, referenceDefinitions: refDefs)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
             return view.configure(
@@ -1677,6 +1681,18 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             onReturnFocusToComposer?()
             return
         }
+        // Ghostty leaves Edit > Copy without a key equivalent whenever the copy binding is
+        // `performable` (its default), so Cmd+C arrives here as a plain key press.
+        if mods == .command, let key = event.charactersIgnoringModifiers?.lowercased() {
+            if key == "c" {
+                copy(nil)
+                return
+            }
+            if key == "a" {
+                selectAll(nil)
+                return
+            }
+        }
         if mods.contains(.command) || mods.contains(.control) {
             super.keyDown(with: event)
             return
@@ -1697,6 +1713,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         if item.action == #selector(selectAll(_:)) {
             return !items.isEmpty
+        }
+        if item.action == #selector(copyAnswerMarkdown(_:)) {
+            return true
         }
         if item.action == #selector(performFindPanelAction(_:)),
            let finder = textFinder,
@@ -1832,9 +1851,47 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     @objc func copy(_ sender: Any?) {
         let copied = selectedPlainText()
         guard !copied.isEmpty else { return }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(copied, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(copied, forType: .string)
+    }
+
+    /// Right-click menu: Copy for the selection, the whole answer's Markdown when the
+    /// pointer is on an answer's prose, and Select All.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        copyItem.target = self
+        menu.addItem(copyItem)
+        if let markdown = answerMarkdown(at: convert(event.locationInWindow, from: nil)) {
+            let answerItem = NSMenuItem(
+                title: "Copy Answer as Markdown",
+                action: #selector(copyAnswerMarkdown(_:)),
+                keyEquivalent: "")
+            answerItem.target = self
+            answerItem.representedObject = markdown
+            menu.addItem(answerItem)
+        }
+        menu.addItem(.separator())
+        let selectAllItem = NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+        selectAllItem.target = self
+        menu.addItem(selectAllItem)
+        return menu
+    }
+
+    /// The Markdown source of the answer whose prose is at `docPoint`, if any.
+    func answerMarkdown(at docPoint: CGPoint) -> String? {
+        guard let idx = layoutEngine.itemIndex(atY: docPoint.y),
+              items.indices.contains(idx),
+              case .prose(_, _, let copyMarkdown) = items[idx].payload,
+              let copyMarkdown, !copyMarkdown.isEmpty
+        else { return nil }
+        return copyMarkdown
+    }
+
+    @objc func copyAnswerMarkdown(_ sender: Any?) {
+        guard let markdown = (sender as? NSMenuItem)?.representedObject as? String else { return }
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
     }
 
     override func selectAll(_ sender: Any?) {
@@ -2216,6 +2273,8 @@ final class PCodeTranscriptScrollView: NSScrollView {
     /// Optional predicate gating `⌘F`/`⌘G`/`⌘⇧G` so the scroll view never steals shortcuts
     /// from overlays, `/btw` drawer, or the `⌘J` bottom shell.
     var canHandleFindShortcut: (() -> Bool)?
+    /// Whether the docked composer has a selection of its own (it then keeps Cmd+C).
+    var composerHasSelection: (() -> Bool)?
 
     var isJumpToBottomVisible: Bool { !jumpToBottomButton.isHidden }
 
@@ -2338,6 +2397,18 @@ final class PCodeTranscriptScrollView: NSScrollView {
         transcriptDocumentView.scrollToBottomAndPin()
     }
 
+    /// Whether Cmd+C should copy the transcript's selection although the keyboard is
+    /// elsewhere (the composer): typing after selecting moves the keyboard there and
+    /// leaves the highlight, which must stay copyable. The composer's own selection wins.
+    func copiesSelectionForComposer(firstResponder: NSResponder?) -> Bool {
+        guard transcriptDocumentView.selection.map({ !$0.isEmpty }) ?? false else { return false }
+        if let view = firstResponder as? NSView, view === self || view.isDescendant(of: self) {
+            // The document view copies from its own `keyDown`.
+            return false
+        }
+        return !(composerHasSelection?() ?? false)
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard !isHiddenOrHasHiddenAncestor, let window, window.isKeyWindow else {
             return super.performKeyEquivalent(with: event)
@@ -2355,6 +2426,10 @@ final class PCodeTranscriptScrollView: NSScrollView {
         }
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if flags == .command, let chars = event.charactersIgnoringModifiers?.lowercased() {
+            if chars == "c", copiesSelectionForComposer(firstResponder: window.firstResponder) {
+                transcriptDocumentView.copy(nil)
+                return true
+            }
             if chars == "f", textFinder.validateAction(.showFindInterface) {
                 textFinder.performAction(.showFindInterface)
                 return true

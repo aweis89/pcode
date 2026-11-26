@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import GhosttyKit
 import SwiftUI
 
 /// Drives a live `PCodeTranscriptDocumentView` alongside the Ghostty terminal for the
@@ -472,6 +473,9 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         scrollView.transcriptDocumentView.onReturnFocusToComposer = {
             guard let composer else { return }
             Ghostty.moveFocus(to: composer)
+        }
+        scrollView.composerHasSelection = { [weak composer] in
+            composer?.surface.map(ghostty_surface_has_selection) ?? false
         }
         scrollView.canHandleFindShortcut = { [weak scrollView, weak composer] in
             guard let scrollView,
