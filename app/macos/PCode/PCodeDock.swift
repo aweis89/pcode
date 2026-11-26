@@ -155,7 +155,6 @@ struct PCodeDockedSurface: View {
     @ObservedObject var surfaceView: Ghostty.SurfaceView
     @ObservedObject var dock: PCodeDock
     @ObservedObject var drawer: PCodeDrawer
-    @ObservedObject private var transcriptMode = PCodeNativeTranscriptMode.shared
     @State private var sessionID: String?
     var isSplit: Bool
 
@@ -185,12 +184,11 @@ struct PCodeDockedSurface: View {
                     surfaceView: surfaceView, drawer: drawer, isSplit: isSplit,
                     drawsDrawer: false)
 
-                // Native AppKit live transcript replacing the terminal scrollback layer
-                // while keeping the underlying Ghostty surface alive for PTY/OSC/dock.
+                // The native AppKit transcript, the session's only view. It covers the
+                // terminal, which stays underneath as pcode's pty and message channel.
                 // Only shown while the docked composer card is active so undocked inline
                 // editors or exited shells underneath are never hidden.
                 if !isSplit,
-                   transcriptMode.enabled,
                    let docked = dock.surface,
                    dock.ready,
                    let sid = surfaceView.pcodeSession ?? sessionID,

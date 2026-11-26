@@ -865,21 +865,6 @@ final class PCodeWorkspace: ObservableObject {
 
     private var historyGeneration = 0
 
-    /// Whether the main session window renders the native AppKit transcript (true)
-    /// or falls back to the raw Ghostty terminal scrollback (false).
-    @Published var liveTranscriptVisible: Bool = PCodeNativeTranscriptMode.shared.enabled
-
-    func toggleLiveTranscript() {
-        let next = !PCodeNativeTranscriptMode.shared.enabled
-        PCodeNativeTranscriptMode.shared.enabled = next
-        liveTranscriptVisible = next
-        if let pane = selectedPane {
-            DispatchQueue.main.async {
-                Ghostty.moveFocus(to: pane.keyboardSurface)
-            }
-        }
-    }
-
     /// Folders explicitly added to the sidebar (may have no sessions yet).
     @Published var pinnedFolders: [String] = (UserDefaults.standard.stringArray(forKey: PCodeWorkspace.pinnedKey) ?? [])
         .map(PCodeWorkspace.normalizePath) {
@@ -1831,9 +1816,9 @@ final class PCodeWorkspace: ObservableObject {
         config.workingDirectory = resolvedDir
         // The docked editor (PCodeDock) is what the workspace shows under each session.
         config.environmentVariables["PCODE_DOCK"] = "1"
-        // Signal to pcode's Python UI whether the Swift native transcript is active
-        // so terminal-only editor rows (tool rows, live command previews) stay suppressed.
-        config.environmentVariables["PCODE_NATIVE_TRANSCRIPT"] = PCodeNativeTranscriptMode.shared.enabled ? "1" : "0"
+        // Tell pcode the native transcript renders the session, so it leaves out
+        // the editor rows only a terminal needs (tool rows, live command previews).
+        config.environmentVariables["PCODE_NATIVE_TRANSCRIPT"] = "1"
         // Suppress macOS `login(1)` "Last login:" banner in pcode session panes.
         config.environmentVariables["PCODE_HUSH_LOGIN"] = "1"
         config.waitAfterCommand = false
@@ -2020,8 +2005,6 @@ struct PCodeWorkspaceView: View {
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("") { workspace.toggleSidebarAutoHide() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
-                Button("") { workspace.toggleLiveTranscript() }
-                    .keyboardShortcut("t", modifiers: [.command, .option])
             }
             .opacity(0)
             .allowsHitTesting(false)
@@ -2136,17 +2119,6 @@ struct PCodeWorkspaceView: View {
                 .font(.headline)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Button { workspace.toggleLiveTranscript() } label: {
-                if workspace.liveTranscriptVisible {
-                    Image(systemName: "doc.plaintext")
-                        .foregroundStyle(Color.accentColor)
-                } else {
-                    Image(systemName: "doc.plaintext")
-                }
-            }
-            .help(workspace.liveTranscriptVisible
-                ? "Switch to raw terminal scrollback (⌥⌘T)"
-                : "Switch to native transcript view (⌥⌘T)")
             Button { workspace.toggleShell() } label: { Image(systemName: "terminal") }
                 .help("Toggle the shell under this session (⌘J)")
             Button { workspace.openDirectoryPicker() } label: { Image(systemName: "folder.badge.plus") }

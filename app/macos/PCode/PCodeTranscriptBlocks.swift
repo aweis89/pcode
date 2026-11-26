@@ -197,6 +197,10 @@ final class PCodeHorizontalBlockScrollView: NSScrollView {
     override func mouseUp(with event: NSEvent) {
         transcriptDocumentView?.mouseUp(with: event)
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        transcriptDocumentView?.menu(for: event)
+    }
 }
 
 /// Small, borderless action button used for "Copy" / "Copy Markdown" inside transcript blocks.
@@ -342,8 +346,10 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
 final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .prose
     let textView = PCodeTextKit2BlockView()
-    private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
+    private let copyButton = PCodeBlockActionButton(title: "Copy answer", symbol: "doc.on.doc")
     private var copyPayload: String?
+    /// Where the button puts the answer; the document view passes its own.
+    var pasteboard: NSPasteboard = .general
     private var lastTheme: PCodeTranscriptTheme?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
@@ -355,6 +361,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         wantsLayer = true
         addSubview(textView)
         copyButton.isHidden = true
+        copyButton.toolTip = "Copy the whole answer as Markdown"
         copyButton.target = self
         copyButton.action = #selector(copyMarkdownPressed)
         addSubview(copyButton)
@@ -386,7 +393,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         super.viewDidChangeEffectiveAppearance()
         if let theme = lastTheme {
             effectiveAppearance.performAsCurrentDrawingAppearance {
-                copyButton.applyTheme(foreground: theme.secondaryForeground, background: theme.toolBackground)
+                copyButton.applyTheme(foreground: theme.secondaryForeground, background: theme.codeBackground)
             }
         }
     }
@@ -407,9 +414,10 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
 
         effectiveAppearance.performAsCurrentDrawingAppearance {
+            // Opaque: the button sits over the end of the block's first line.
             copyButton.applyTheme(
                 foreground: theme.secondaryForeground,
-                background: theme.toolBackground)
+                background: theme.codeBackground)
         }
         let btnSize = CGSize(width: max(54, copyButton.frame.width + 10), height: 20)
         copyButton.frame = CGRect(
@@ -425,9 +433,8 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
 
     @objc private func copyMarkdownPressed() {
         guard let copyPayload, !copyPayload.isEmpty else { return }
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(copyPayload, forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(copyPayload, forType: .string)
         copyButton.flashCopied()
     }
 }
