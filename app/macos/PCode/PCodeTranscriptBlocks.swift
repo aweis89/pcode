@@ -1681,6 +1681,16 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
                     .paragraphStyle: style,
                 ]))
         }
+        if payload.runningCount > 0 {
+            out.append(NSAttributedString(string: " · ", attributes: sepAttrs))
+            out.append(NSAttributedString(
+                string: "\(payload.runningCount) running",
+                attributes: [
+                    .font: headFont,
+                    .foregroundColor: theme.accent,
+                    .paragraphStyle: style,
+                ]))
+        }
 
         let categories = payload.categoryCounts
         if !categories.isEmpty {
@@ -1707,20 +1717,92 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
                 }
             }
         }
+        for entry in payload.windowEntries {
+            out.append(NSAttributedString(string: "\n", attributes: sepAttrs))
+            appendWindowRow(entry, to: out, font: bodyFont, style: style, theme: theme)
+        }
         return out
     }
+
+    /// One window row: a status glyph, then the call on a single line. Every row must stay
+    /// exactly one line, or the window's fixed height would clip it.
+    private static func appendWindowRow(
+        _ entry: PCodeToolGroupEntry,
+        to out: NSMutableAttributedString,
+        font: NSFont,
+        style: NSParagraphStyle,
+        theme: PCodeTranscriptTheme
+    ) {
+        let glyph: String
+        let glyphColor: NSColor
+        if entry.isRunning {
+            glyph = "◌"
+            glyphColor = theme.accent
+        } else if entry.failed {
+            glyph = "✗"
+            glyphColor = .systemRed
+        } else {
+            glyph = "✓"
+            glyphColor = NSColor.systemGreen.withAlphaComponent(theme.isDark ? 0.80 : 0.75)
+        }
+        let name: String
+        var detail: String
+        switch entry.content {
+        case .tool(let call):
+            name = call.displayName
+            detail = call.summaryText
+            if let elapsed = call.formattedElapsed { detail += "  \(elapsed)" }
+        case .diff(let diff):
+            name = diff.displayToolName
+            detail = PCodeDiffCardView.summaryLine(for: diff)
+            if detail.hasPrefix(name) { detail = String(detail.dropFirst(name.count)) }
+        }
+        let oneLine = detail
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        out.append(NSAttributedString(
+            string: "\(glyph) ",
+            attributes: [.font: font, .foregroundColor: glyphColor, .paragraphStyle: style]))
+        out.append(NSAttributedString(
+            string: name,
+            attributes: [
+                .font: font,
+                .foregroundColor: theme.foreground.withAlphaComponent(0.84),
+                .paragraphStyle: style,
+            ]))
+        if !oneLine.isEmpty {
+            out.append(NSAttributedString(
+                string: " \(oneLine)",
+                attributes: [
+                    .font: font,
+                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.88),
+                    .paragraphStyle: style,
+                ]))
+        }
+    }
+
+    /// Height of a collapsed nested-call window: the summary row plus one line per shown
+    /// call. It depends only on how many calls are shown, which never decreases.
+    static func windowHeight(rowCount: Int, lineHeight: CGFloat) -> CGFloat {
+        rowHeight + CGFloat(rowCount) * lineHeight + windowBottomPad
+    }
+
+    private static let windowBottomPad: CGFloat = 4
 
     func configure(
         payload: PCodeToolGroupPayload,
         attributedText: NSAttributedString,
         width: CGFloat,
+        lineHeight: CGFloat,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?,
         onToggle: @escaping () -> Void
     ) -> CGFloat {
         let wasConfigured = hasConfigured
         let expansionChanged = wasConfigured && (lastIsExpanded != payload.isExpanded)
-        let shouldPulse = wasConfigured && (payload.absorbPulse > lastAbsorbPulse)
+        // A window shows each settle as a row changing in place; no pulse needed.
+        let shouldPulse = wasConfigured && payload.windowRows == nil && (payload.absorbPulse > lastAbsorbPulse)
 
         self.onToggle = onToggle
         self.lastTheme = theme
@@ -1730,7 +1812,11 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         self.hasConfigured = true
 
         let cfg = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .medium)
-        if payload.failedCount > 0 {
+        if payload.runningCount > 0 {
+            iconView.image = NSImage(systemSymbolName: "circle.dotted", accessibilityDescription: "Tools running")?
+                .withSymbolConfiguration(cfg)
+            iconView.contentTintColor = theme.accent
+        } else if payload.failedCount > 0 {
             iconView.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: "Some tools failed")?
                 .withSymbolConfiguration(cfg)
             iconView.contentTintColor = .systemRed
@@ -1749,16 +1835,27 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         let topPad: CGFloat = 5
         let bottomPad: CGFloat = 5
         let textWidth = max(1, width - leftPad - rightControlsWidth)
-        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+        let measuredHeight = textView.configure(attributedText: attributedText, width: textWidth)
         textView.selectedRange = selectedRange
-        let totalHeight = max(Self.rowHeight, textHeight + topPad + bottomPad)
-        textView.frame = CGRect(
-            x: leftPad,
-            y: floor((totalHeight - textHeight) * 0.5),
-            width: textWidth,
-            height: textHeight)
+        let windowRowCount = payload.windowEntries.count
+        let totalHeight: CGFloat
+        let textHeight: CGFloat
+        let textY: CGFloat
+        if windowRowCount > 0 {
+            // Fixed by row count, never by measured text, so a long call can't resize it.
+            totalHeight = Self.windowHeight(rowCount: windowRowCount, lineHeight: lineHeight)
+            textHeight = CGFloat(windowRowCount + 1) * lineHeight
+            textY = floor((Self.rowHeight - lineHeight) * 0.5)
+        } else {
+            totalHeight = max(Self.rowHeight, measuredHeight + topPad + bottomPad)
+            textHeight = measuredHeight
+            textY = floor((totalHeight - textHeight) * 0.5)
+        }
+        textView.frame = CGRect(x: leftPad, y: textY, width: textWidth, height: textHeight)
+        // Controls line up with the summary row, which is the whole card unless windowed.
+        let headerHeight = windowRowCount > 0 ? Self.rowHeight : totalHeight
 
-        iconView.frame = CGRect(x: 9, y: floor((totalHeight - 12) * 0.5), width: 12, height: 12)
+        iconView.frame = CGRect(x: 9, y: floor((headerHeight - 12) * 0.5), width: 12, height: 12)
 
         if let elapsedText {
             elapsedLabel.stringValue = elapsedText
@@ -1767,7 +1864,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
             elapsedLabel.isHidden = false
             elapsedLabel.frame = CGRect(
                 x: max(leftPad, width - chevronWidth - elapsedWidth - 4),
-                y: floor((totalHeight - 15) * 0.5),
+                y: floor((headerHeight - 15) * 0.5),
                 width: elapsedWidth,
                 height: 15)
         } else {
@@ -1777,7 +1874,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
 
         chevronView.contentTintColor = theme.secondaryForeground.withAlphaComponent(0.85)
         let chevSize: CGFloat = 16
-        let chevOrigin = CGPoint(x: width - 22, y: floor((totalHeight - chevSize) * 0.5))
+        let chevOrigin = CGPoint(x: width - 22, y: floor((headerHeight - chevSize) * 0.5))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         chevronContainer.frame = CGRect(origin: chevOrigin, size: CGSize(width: chevSize, height: chevSize))
