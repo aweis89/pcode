@@ -460,11 +460,27 @@ def test_session_host_on_with_a_model_is_hosted(monkeypatch, tmp_path):
     hosted.assert_called_once()
 
 
+def test_explicit_host_without_a_model_needs_one_in_a_terminal(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(sys, "argv", ["pcode", "--host", "--no-worktree", "-C", str(tmp_path)])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.delenv("PCODE_EDITOR_ONLY", raising=False)
+    with (
+        patch("pcode.project_trust.prompt_trust"),
+        patch("pcode.app.load_preferences", return_value={}),
+        patch("pcode.remote.spawn_host", side_effect=AssertionError("spawned")),
+        pytest.raises(SystemExit),
+    ):
+        main()
+    assert "ValueError" in capsys.readouterr().err  # As before 48a73eed.
+
+
 def test_explicit_host_without_a_model_starts_a_preview_host(monkeypatch, tmp_path):
     # Pcode.app runs every pane as `pcode --host`, model or not.
     monkeypatch.setattr(sys, "argv", ["pcode", "--host", "--no-worktree", "-C", str(tmp_path)])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("PCODE_EDITOR_ONLY", "1")
     monkeypatch.setenv("PCODE_HOST_ID", "0123abcd")
     hosts = Path(tempfile.mkdtemp(dir="/tmp"))  # Socket paths have a short limit.
     monkeypatch.setenv("PCODE_HOST_DIR", str(hosts))

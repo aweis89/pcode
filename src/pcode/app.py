@@ -4463,6 +4463,12 @@ def _run_hosted(args: argparse.Namespace) -> None:
             )
         prompt_trust(workspace, ask=ask)
         model = saved_model or args.model or load_preferences().get("model")
+        from pcode.dock import editor_only_requested
+
+        # Pcode.app's panes are always hosted and pick a model with /model in the
+        # host's preview; a terminal asking for a host still needs one up front.
+        if not model and not editor_only_requested():
+            raise ValueError("A session host needs a model: pass -m or set a default with /model.")
         identity, process, log = spawn_host(
             identity=app_host_id(),
             model=model,
