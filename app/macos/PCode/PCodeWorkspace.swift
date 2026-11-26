@@ -546,6 +546,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     private var hostSubscription: AnyCancellable?
     private var keySubscription: AnyCancellable?
     private var dockReadySubscription: AnyCancellable?
+    private var inputSubscription: AnyCancellable?
     private var progressSubscription: AnyCancellable?
     private var readyFallbackWork: DispatchWorkItem?
     private var readySafetyWork: DispatchWorkItem?
@@ -613,6 +614,12 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
                 self.resolve()
             }
         dockReadySubscription = surface.pcodeDock.$ready
+            .filter { $0 }
+            .first()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.markReady() }
+        // pcode asks the user something before its editor starts: show it now.
+        inputSubscription = surface.pcodeDock.$needsInput
             .filter { $0 }
             .first()
             .receive(on: DispatchQueue.main)

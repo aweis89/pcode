@@ -23,6 +23,9 @@ def restore_stdin() -> None:
 
 def ask(prompt: str) -> str:
     restore_stdin()
+    from pcode import dock
+
+    dock.show_startup_input()
     return input(prompt)
 
 

@@ -324,7 +324,7 @@ extension Ghostty.SurfaceView {
             pcodeCompletion.handle(payload)
         case "toast":
             pcodeToast.handle(payload)
-        case "ready", "dock-rows":
+        case "ready", "dock-rows", "startup-input":
             pcodeDock.handle(payload)
         default:
             pcodeDrawer.handle(payload)

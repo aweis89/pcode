@@ -17,6 +17,9 @@ import SwiftUI
 final class PCodeDock: NSObject, ObservableObject {
     @Published private(set) var ready = false
     @Published private(set) var rows = 3
+    /// pcode waits on the user before its editor starts (`pcode;startup-input`):
+    /// the trust prompt or a held startup error, which the boot cover must not hide.
+    @Published private(set) var needsInput = false
 
     static let maxRows = 40
     /// The dock's terminal is always this tall and never resizes; the card
@@ -136,8 +139,13 @@ final class PCodeDock: NSObject, ObservableObject {
         switch parts.first {
         case "ready":
             guard !ready else { return }
-            ready = true
+            // Never animated: each frame from full height to the card would resize the grid.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { ready = true }
             if let surfaceView { Ghostty.moveFocus(to: surfaceView) }
+        case "startup-input":
+            if !needsInput { needsInput = true }
         case "dock-rows" where parts.count == 2:
             guard let wanted = Int(parts[1]) else { return }
             let clamped = min(Self.maxRows, max(1, wanted))
@@ -344,7 +352,7 @@ private struct PCodeDockCard: View {
         // The terminal keeps a fixed `gridRows` height, bottom-aligned in the
         // card and clipped: pcode draws its layout at the bottom of it, so a
         // taller layout is already drawn when the card grows to show it.
-        // Before pcode is ready it fills the pane and nothing is clipped. The
+        // Before pcode is ready it fills the pane, clipped only at the rounded corners. The
         // switch is not animated: each frame of it would resize the grid.
         let editorHeight = PCodeDock.editorHeight(ready: dock.ready, cell: cell, paneHeight: paneHeight)
         let shownHeight = dock.ready
@@ -354,6 +362,9 @@ private struct PCodeDockCard: View {
             Ghostty.SurfaceWrapper(surfaceView: docked, isSplit: isSplit)
                 .id(ObjectIdentifier(docked))
                 .frame(height: editorHeight)
+                // The grid's size never animates, even when `dock.rows` changes in
+                // the same update: only the card's clip does.
+                .transaction { $0.animation = nil }
         }
             .frame(height: shownHeight, alignment: .bottom)
             .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))

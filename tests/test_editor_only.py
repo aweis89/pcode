@@ -312,3 +312,13 @@ def test_cli_holds_a_crash_with_its_traceback(monkeypatch):
     with pytest.raises(ZeroDivisionError):
         cli.main()
     assert "ZeroDivisionError" in calls[0]
+
+
+def test_waiting_on_the_user_before_the_editor_tells_the_app(monkeypatch, keyboard, tty):
+    """The trust prompt and a held failure drop the app's boot cover (`pcode;startup-input`)."""
+    dock.hold_failed_start()
+    assert "\x1b_pcode;startup-input\x1b\\" in tty.pane.text
+    tty.pane.text = ""
+    monkeypatch.delenv(dock.EDITOR_ONLY_ENV)
+    dock.show_startup_input()
+    assert tty.pane.text == ""

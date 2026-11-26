@@ -3313,6 +3313,12 @@ class PreviewApp:
                 self._startup_pending = False
                 self.activity.finish_startup(ok=False)
                 self.transcript.error(error_message(error), title="Session host failed")
+                if self.editor_only:
+                    # The transcript goes nowhere here, and the app's has no host
+                    # to show: keep the reason in the editor until it is read.
+                    self.activity.flash(
+                        f"Session host failed: {error_message(error)}", seconds=24 * 3600
+                    )
                 early = None
                 session.app.invalidate()
                 return

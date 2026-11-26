@@ -699,6 +699,18 @@ def open_editor_only() -> EditorOnly:
     return _active
 
 
+def show_startup_input() -> None:
+    """Before the editor starts, pcode waits on the user: the app drops its boot cover.
+
+    `pcode;startup-input`, for the trust prompt and a held failure, which
+    the app's startup overlay would otherwise hide until its safety timeout.
+    """
+    if editor_only_requested():
+        with suppress(OSError, ValueError):
+            sys.stdout.write(_apc("startup-input"))
+            sys.stdout.flush()
+
+
 # Whether this process ever opened the editor-only editor (`hold_failed_start`).
 _editor_started = False
 HELD_FAILURE = "\npcode exited before the editor started. Press Enter to close.\n"
@@ -709,12 +721,15 @@ def hold_failed_start(detail: str = "") -> None:
 
     The app shows the pane's terminal until pcode's editor is ready and closes
     the pane when pcode exits, so an error printed before then (a bad flag,
-    the trust prompt declined, a host that never came up) would vanish with
+    the trust prompt declined, a host that failed to spawn) would vanish with
     it. Only pcode knows whether its editor ever started, so it waits here.
+    A host that spawned but cannot be reached is reported in the editor
+    (`PreviewApp`'s `connect_host`), which has started by then.
     """
     if _editor_started or not editor_only_requested():
         return
     with suppress(OSError, EOFError, KeyboardInterrupt, ValueError):
+        show_startup_input()
         sys.stderr.write(detail + HELD_FAILURE)
         sys.stderr.flush()
         sys.stdin.readline()
