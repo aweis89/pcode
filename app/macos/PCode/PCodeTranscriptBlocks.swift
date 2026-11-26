@@ -315,7 +315,7 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     func configure(
         attributedText: NSAttributedString,
         isSidePrompt: Bool,
-        style: PCodePromptStyle = .classic,
+        style: PCodePromptStyle,
         width: CGFloat,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?
@@ -342,7 +342,7 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
             accentBar.frame = .zero
         case .bar:
             // Spans the text exactly, like the terminal rail on every wrapped line.
-            accentBar.frame = CGRect(x: 4, y: insets.top, width: 3, height: max(12, textHeight))
+            accentBar.frame = CGRect(x: 4, y: insets.top, width: 3, height: textHeight)
         }
         accentBar.isHidden = style == .tinted
         applyLayerColors()
