@@ -502,18 +502,24 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     @Published private(set) var isReady = false
     @Published private(set) var shell: Ghostty.SurfaceView?
     @Published var shellVisible = false
-    /// The terminal's title, for the sidebar. Copied out so the sidebar does
+    /// The session's title, for the sidebar: its host's while one holds the session,
+    /// else the terminal's (`PCodePaneStateResolver`). Copied out so the sidebar does
     /// not observe the whole surface, which publishes on every resize and focus change.
     @Published private(set) var title = ""
+    /// The session host's entry while one holds this pane's session.
+    @Published private(set) var hostStatus: PCodeHostStatus?
+    private var resolver = PCodePaneStateResolver()
     private var titleSubscription: AnyCancellable?
+    private var hostSubscription: AnyCancellable?
     private var dockSubscription: AnyCancellable?
     private var dockReadySubscription: AnyCancellable?
     private var progressSubscription: AnyCancellable?
     private var readyFallbackWork: DispatchWorkItem?
     private var readySafetyWork: DispatchWorkItem?
 
-    /// What the session is doing, from the progress pcode reports to its
-    /// terminal (OSC 9;4): a turn running, a failed one not yet seen, or idle.
+    /// What the session is doing, from its host while hosted and the progress
+    /// pcode reports to its terminal (OSC 9;4): a turn running, a failed one
+    /// not yet seen, or idle.
     enum Activity { case idle, running, failed }
     @Published private(set) var activity: Activity = .idle
     /// Called when pcode's docked editor comes or goes, so a hidden pane can size it.
@@ -535,7 +541,22 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         self.sessionID = sessionID
         titleSubscription = surface.$title.removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.title = $0 }
+            .sink { [weak self] title in
+                guard let self else { return }
+                self.resolver.oscTitle = title
+                self.resolve()
+            }
+        hostSubscription = $sessionID
+            .combineLatest(PCodeHostWatcher.shared.$statuses)
+            .map { sessionID, statuses in sessionID.flatMap { statuses[$0] } }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self else { return }
+                self.hostStatus = status
+                self.resolver.setHost(status)
+                self.resolve()
+            }
         progressSubscription = surface.$progressReport
             .map { report -> Activity in
                 switch report?.state {
@@ -548,10 +569,8 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] activity in
                 guard let self else { return }
-                let finished = self.activity == .running && activity != .running
-                self.activity = activity
-                if finished { self.onTurnFinished?() }
-                self.onActivityChange?()
+                self.resolver.setOSCActivity(activity)
+                self.resolve()
             }
         dockSubscription = surface.pcodeDock.$surface
             .receive(on: DispatchQueue.main)
@@ -575,6 +594,18 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     deinit {
         readyFallbackWork?.cancel()
         readySafetyWork?.cancel()
+    }
+
+    /// Publish the title and activity the resolver settles on, and announce a finished turn.
+    private func resolve() {
+        let title = resolver.title
+        if title != self.title { self.title = title }
+        let activity = resolver.activity
+        guard activity != self.activity else { return }
+        let finished = self.activity == .running
+        self.activity = activity
+        if finished { onTurnFinished?() }
+        onActivityChange?()
     }
 
     /// Dismiss the startup overlay once pcode is live.
