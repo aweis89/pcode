@@ -1,7 +1,11 @@
-"""SPIKE: run the editor, tasks and status bar on a terminal docked under pcode's pane.
+"""Run the editor, tasks and status bar on a terminal docked under pcode's pane.
 
-Opt in with `PCODE_DOCK=1` in Ghostty Smooth built from the matching spike
-branch. pcode asks the terminal for a dock (`pcode;dock;<token>`), and the
+Two modes share this module. The dock (`PCODE_DOCK=1`, a spike for the
+standalone Ghostty Smooth fork) is described first; editor-only, which
+Pcode.app uses for every workspace pane, is at the end.
+
+Dock: opt in with `PCODE_DOCK=1` in Ghostty Smooth built from the matching
+spike branch. pcode asks the terminal for a dock (`pcode;dock;<token>`), and the
 terminal lays a second terminal in a styled card below pcode's pane. That
 terminal runs `pcode.popup_bridge <token>`, which hands its tty back here,
 the same way an overlay popup does (`popup_surface.overlay`). The prompt_toolkit
@@ -26,8 +30,8 @@ of it to scrollback. Growing scrolls the transcript up out of the card's way
 before the card is told to grow (`report_rows`); shrinking only widens the
 region and leaves the gap.
 
-Not wired up beyond what the spike needs: no probe (a terminal without docks
-costs a `CONNECT_TIMEOUT` wait at startup), no tmux, no tests.
+The dock is not wired up beyond what the spike needs: no probe (a terminal
+without docks costs a `CONNECT_TIMEOUT` wait at startup) and no tmux.
 
 Editor-only (`PCODE_EDITOR_ONLY=1`, which only Pcode.app sets) is the same
 editor with no pane behind it: a host client whose own terminal shows just
@@ -689,6 +693,28 @@ class EditorOnly(Dock):
 
 def open_editor_only() -> EditorOnly:
     """Run the editor alone on pcode's own terminal (`EditorOnly`)."""
-    global _active
+    global _active, _editor_started
     _active = EditorOnly(sys.stdout.fileno())
+    _editor_started = True
     return _active
+
+
+# Whether this process ever opened the editor-only editor (`hold_failed_start`).
+_editor_started = False
+HELD_FAILURE = "\npcode exited before the editor started. Press Enter to close.\n"
+
+
+def hold_failed_start(detail: str = "") -> None:
+    """Keep a Pcode.app pane's startup failure on screen until Enter.
+
+    The app shows the pane's terminal until pcode's editor is ready and closes
+    the pane when pcode exits, so an error printed before then (a bad flag,
+    the trust prompt declined, a host that never came up) would vanish with
+    it. Only pcode knows whether its editor ever started, so it waits here.
+    """
+    if _editor_started or not editor_only_requested():
+        return
+    with suppress(OSError, EOFError, KeyboardInterrupt, ValueError):
+        sys.stderr.write(detail + HELD_FAILURE)
+        sys.stderr.flush()
+        sys.stdin.readline()

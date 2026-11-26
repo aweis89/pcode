@@ -205,3 +205,110 @@ def test_editor_only_tint_does_not_feed_back_into_appearance(monkeypatch, tty):
     watch.refresh()
     assert editor._sent_tint is None
     assert drain(tty.master) == b"\x1b]111\x1b\\" + appearance.QUERY_BACKGROUND
+
+
+def test_app_pane_native_layers_need_editor_only_on_a_terminal(monkeypatch, tty):
+    """Only the editor-only terminal claims the app's native layers; the native-transcript
+    flag alone (inherited by a child process, say) does not, nor does a pipe."""
+    from pcode import theme
+
+    monkeypatch.setattr(theme, "_drawer_protocol", None)
+    monkeypatch.setattr(theme, "_popup_protocol", None)
+    monkeypatch.delenv(dock.EDITOR_ONLY_ENV, raising=False)
+    monkeypatch.setenv("PCODE_NATIVE_TRANSCRIPT", "1")
+    assert not theme.drawer_supported() and not theme.native_toast_supported()
+    monkeypatch.setenv(dock.EDITOR_ONLY_ENV, "1")
+    assert theme.drawer_supported() and theme.native_completion_supported()
+    tty.pane.isatty = lambda: False  # Both ends must be a terminal.
+    assert not theme.popup_supported()
+
+
+class Keyboard:
+    """`sys.stdin` with a line ready, and `sys.stderr`, recording what was shown."""
+
+    def __init__(self) -> None:
+        self.shown = ""
+        self.read = 0
+
+    def write(self, text: str) -> int:
+        self.shown += text
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def readline(self) -> str:
+        self.read += 1
+        return "\n"
+
+
+@pytest.fixture
+def keyboard(monkeypatch, tty):
+    keys = Keyboard()
+    monkeypatch.setattr(dock, "sys", SimpleNamespace(stdout=tty.pane, stdin=tty.pane, stderr=keys))
+    tty.pane.readline = keys.readline
+    monkeypatch.setattr(dock, "_editor_started", False)
+    monkeypatch.setenv(dock.EDITOR_ONLY_ENV, "1")
+    return keys
+
+
+def test_a_failed_start_waits_for_enter_in_an_app_pane(keyboard):
+    """The app closes the pane when pcode exits: an early error stays until Enter."""
+    dock.hold_failed_start("Traceback: boom\n")
+    assert keyboard.shown.startswith("Traceback: boom\n")
+    assert "Press Enter to close" in keyboard.shown
+    assert keyboard.read == 1
+
+
+def test_no_hold_once_the_editor_started_or_outside_the_app(monkeypatch, keyboard):
+    monkeypatch.setattr(dock, "_editor_started", True)
+    dock.hold_failed_start()
+    monkeypatch.setattr(dock, "_editor_started", False)
+    monkeypatch.delenv(dock.EDITOR_ONLY_ENV)
+    dock.hold_failed_start()
+    assert keyboard.shown == "" and keyboard.read == 0
+
+
+def test_opening_the_editor_marks_it_started(monkeypatch, keyboard):
+    dock.open_editor_only()
+    dock.hold_failed_start()
+    assert keyboard.read == 0
+
+
+@pytest.mark.parametrize(
+    ("code", "held"), [(2, True), ("bad flag", True), (0, False), (None, False)]
+)
+def test_cli_holds_only_a_failed_exit(monkeypatch, code, held):
+    import sys as real_sys
+
+    from pcode import cli
+
+    calls = []
+    monkeypatch.setattr(cli, "_hold_failed_start", lambda detail="": calls.append(detail))
+    monkeypatch.setattr(real_sys, "argv", ["pcode"])
+    monkeypatch.setattr(cli, "_quiet_stdin", lambda stack: None)
+    monkeypatch.setattr("pcode.proctitle.rename", lambda: None)
+
+    def fail():
+        raise SystemExit(code)
+
+    monkeypatch.setattr("pcode.app.main", fail)
+    with pytest.raises(SystemExit):
+        cli.main()
+    assert bool(calls) == held
+
+
+def test_cli_holds_a_crash_with_its_traceback(monkeypatch):
+    import sys as real_sys
+
+    from pcode import cli
+
+    calls = []
+    monkeypatch.setattr(cli, "_hold_failed_start", lambda detail="": calls.append(detail))
+    monkeypatch.setattr(real_sys, "argv", ["pcode"])
+    monkeypatch.setattr(cli, "_quiet_stdin", lambda stack: None)
+    monkeypatch.setattr("pcode.proctitle.rename", lambda: None)
+    monkeypatch.setattr("pcode.app.main", lambda: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        cli.main()
+    assert "ZeroDivisionError" in calls[0]

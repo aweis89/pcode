@@ -4427,7 +4427,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
     the terminal then only renders it. Trust is asked here too, since the host
     has nobody to ask. The host makes the worktree, as the process that works in it.
     """
-    from pcode.remote import HostLaunch, spawn_host
+    from pcode.remote import HostLaunch, app_host_id, spawn_host
 
     if args.attach is not None:
         entry = _pick_host(args.attach, args.workspace or Path.cwd())
@@ -4458,6 +4458,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
         prompt_trust(workspace, ask=ask)
         model = saved_model or args.model or load_preferences().get("model")
         identity, process, log = spawn_host(
+            identity=app_host_id(),
             model=model,
             workspace=workspace,
             resume=resume,
@@ -4705,12 +4706,19 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.print and args.attach is not None:
         _print_hosted(args, parser)
         return
-    # A session runs in a background host when asked (--host, session_host on);
-    # with no model set yet, the host starts in preview mode until /model picks one.
-    hosted = args.attach is not None or (
-        args.host
-        if args.host is not None
-        else load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
+    # A session runs in a background host when asked (--host, session_host on).
+    # An explicit --host with no model set yet starts the host in preview mode
+    # until /model picks one (Pcode.app relies on this); session_host=on alone
+    # keeps the canned preview in-process, as there is nothing to host.
+    has_model = bool(args.model or args.resume or load_preferences().get("model"))
+    hosted = (
+        args.attach is not None
+        or args.host is True
+        or (
+            args.host is None
+            and has_model
+            and load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
+        )
     )
     if args.resume and not args.fork and args.attach is None and not args.print:
         running = _running_host(args.resume, args.session_dir, args.workspace or Path.cwd())

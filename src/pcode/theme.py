@@ -99,11 +99,10 @@ def native_app() -> bool:
 
 
 def _app_pane() -> bool:
-    """Whether Pcode.app launched this pane with its native transcript/editor env."""
-    return (
-        os.environ.get("PCODE_EDITOR_ONLY") == "1"
-        or os.environ.get("PCODE_NATIVE_TRANSCRIPT") == "1"
-    ) and (sys.stdin.isatty() or sys.stdout.isatty())
+    """Whether this is a Pcode.app pane's editor-only terminal (`dock.editor_only_requested`)."""
+    from pcode import dock
+
+    return dock.editor_only_requested()
 
 
 def drawer_supported() -> bool:

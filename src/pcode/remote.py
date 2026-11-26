@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -557,6 +558,33 @@ class HostLaunch:
         return cls(entry.id, log=Path(entry.log) if entry.log else None)
 
 
+# The id Pcode.app picks for the host a pane starts (`app_host_id`).
+APP_HOST_ID_ENV = "PCODE_HOST_ID"
+# Pcode.app sets these for the editor on the pane's terminal. The host has no
+# terminal, and its shell commands and sub-agents must not think they run in one.
+TERMINAL_ONLY_ENV = frozenset(
+    {"PCODE_EDITOR_ONLY", "PCODE_NATIVE_TRANSCRIPT", "PCODE_DOCK", APP_HOST_ID_ENV}
+)
+
+
+def app_host_id(directory: Path | None = None) -> str | None:
+    """The host id Pcode.app chose for this pane, consumed so only the first host uses it.
+
+    The app stops a closed pane's host by this id, which it knows before the
+    host has booted and reported one. Ignored when malformed or already taken
+    (a host from before a restart still holds it).
+    """
+    value = os.environ.pop(APP_HOST_ID_ENV, "")
+    if not re.fullmatch(r"[0-9a-f]{8}", value):
+        return None
+    if (
+        socket_path(value, directory).exists()
+        or (directory or host_dir()).joinpath(f"{value}.json").exists()
+    ):
+        return None
+    return value
+
+
 def spawn_host(
     *,
     model: str | None = None,
@@ -620,7 +648,11 @@ def spawn_host(
     elif worktree:
         argv.append("--worktree")
     inherited = os.environ if profile is None else scrubbed_env(os.environ)
-    env = {**inherited, "PCODE_HOST_LOG": str(log), "PCODE_HOST_DIR": str(directory)}
+    env = {
+        **{key: value for key, value in inherited.items() if key not in TERMINAL_ONLY_ENV},
+        "PCODE_HOST_LOG": str(log),
+        "PCODE_HOST_DIR": str(directory),
+    }
     try:
         fd = os.open(log, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "ab") as output:

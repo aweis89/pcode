@@ -515,6 +515,8 @@ class SessionHost:
         self.view = HostView(self)
         self.activity = MirroredActivity(lambda changes: self.emit("state", (changes,), {}))
         self.controller = SessionController(self.view, self.activity, PreviewRuntime())
+        # Started with no model, it previews until /model finishes startup.
+        self.controller.starts_on_model = True
         self.controller.interactive = True
         # A loop task cancelled while the host shuts down is not a Ctrl+C.
         self.controller.closing = lambda: not self.controller.running
@@ -587,6 +589,8 @@ class SessionHost:
         """
         controller = self.controller
         try:
+            if (preset := controller.startup_error) is not None:
+                raise preset  # Found before boot (`_serve`); /model recovers from it.
             await controller.initialize_runtime()
         except Exception as error:  # noqa: BLE001 - reported to the terminals.
             controller.startup_error = error
@@ -1435,6 +1439,23 @@ def fork_worktree(saved, workspace: Path) -> Path:
     return created
 
 
+def plan_startup(controller: SessionController, model: str | None, saved) -> None:
+    """What `SessionHost.boot` builds: the model's runtime, or a preview until /model."""
+    controller.model = model
+    controller._saved_session = saved
+    controller.resuming = saved is not None
+    controller._needs_runtime = bool(model)
+    controller.startup_pending = bool(model)
+    if saved is not None and not model:
+        # Nothing to restore it with: /model builds the agent and restores it
+        # then, the same recovery as after a failed launch.
+        from pcode.sessions import SessionError
+
+        controller.startup_error = SessionError(
+            "This session has no model to resume with: pick one with /model."
+        )
+
+
 async def _serve(args: argparse.Namespace) -> dict | None:
     """Run the host until it stops; `spawn_host` arguments for its successor, if any."""
     from pcode.app import _enter_worktree, _resume_workspace
@@ -1505,18 +1526,13 @@ async def _serve(args: argparse.Namespace) -> dict | None:
     host.carried = read_carry(args.carry)
     # An unattended session's worktree is left for its owner to inspect.
     host.keep_worktree = profile is not None
-    model = args.model or None
     controller = host.controller
-    controller.model = model
+    plan_startup(controller, args.model or None, saved)
     controller.workspace = workspace
     controller.session_dir = saved.directory.parent if saved is not None else args.session_dir
     controller.save_sessions = not args.no_save
-    controller._saved_session = saved
     controller._session_id = session_id
     controller.worktree_owner = session_id
-    controller.resuming = saved is not None
-    controller._needs_runtime = bool(model)
-    controller.startup_pending = bool(model or saved is not None)
     controller.activity.thinking_mode = thinking_mode_preference()
     controller.register_skills()
     await host.serve()

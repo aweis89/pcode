@@ -566,6 +566,10 @@ class SessionController:
         # Building the runtime has not finished yet, or failed with this.
         self.startup_pending = False
         self.startup_error: Exception | None = None
+        # A session host started with no model: its first /model finishes
+        # startup (extensions, MCP defaults) as launch would have. An
+        # in-process preview's /model only swaps the runtime, as it always has.
+        self.starts_on_model = False
         self.model: str | None = None
         self.workspace = Path.cwd()
         # Where saved sessions live, and whether this one is saved.
@@ -3069,7 +3073,7 @@ class SessionController:
         from pcode.live import AgentRuntime
 
         recovering = self.startup_error is not None
-        starting = recovering or not self.model
+        starting = recovering or (self.starts_on_model and not self.model)
         if model == self.model and not recovering:
             self.persist_defaults(model=model)
             self.view.note(f"Already using {model}.")
@@ -3100,8 +3104,10 @@ class SessionController:
                     raise
             self.runtime.replace_agent(agent)
             self.runtime.session_factory = factory
-        else:
+        elif starting:
             await self._finish_startup(AgentRuntime(agent, session_factory=factory))
+        else:
+            self.runtime = AgentRuntime(agent, session_factory=factory)
         self.model = model
         await self.runtime.refresh_context()
         self.persist_defaults(model=model)

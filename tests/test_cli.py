@@ -1,5 +1,7 @@
 import io
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -426,3 +428,56 @@ def test_theme_preview_cli_passes_the_theme(monkeypatch):
     app.assert_called_once_with(theme="light")
     app.return_value.transcript.events.assert_called_once()
     app.return_value.transcript.syntax_gallery.assert_called_once_with()
+
+
+def test_session_host_on_without_a_model_stays_in_process(monkeypatch, tmp_path):
+    # Nothing to host but the canned preview: the setting alone starts no host.
+    from pcode.preferences import save_preferences
+
+    save_preferences(session_host="on")
+    monkeypatch.setattr(sys, "argv", ["pcode", "-C", str(tmp_path)])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with (
+        patch("pcode.app._run_hosted", side_effect=AssertionError("hosted")),
+        patch("pcode.app.PreviewApp") as app,
+    ):
+        main()
+    assert app.call_args.kwargs["model"] is None
+    assert app.call_args.kwargs.get("host") is None
+    app.return_value.run.assert_called_once()
+
+
+def test_session_host_on_with_a_model_is_hosted(monkeypatch, tmp_path):
+    from pcode.preferences import save_preferences
+
+    save_preferences(session_host="on", model="test:local")
+    monkeypatch.setattr(sys, "argv", ["pcode", "-C", str(tmp_path)])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with patch("pcode.app._run_hosted") as hosted:
+        main()
+    hosted.assert_called_once()
+
+
+def test_explicit_host_without_a_model_starts_a_preview_host(monkeypatch, tmp_path):
+    # Pcode.app runs every pane as `pcode --host`, model or not.
+    monkeypatch.setattr(sys, "argv", ["pcode", "--host", "--no-worktree", "-C", str(tmp_path)])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("PCODE_HOST_ID", "0123abcd")
+    hosts = Path(tempfile.mkdtemp(dir="/tmp"))  # Socket paths have a short limit.
+    monkeypatch.setenv("PCODE_HOST_DIR", str(hosts))
+    with (
+        patch("pcode.project_trust.prompt_trust"),
+        patch("pcode.remote.spawn_host", return_value=("h1", None, tmp_path / "log")) as spawn,
+        patch("pcode.app._tidy_stopped_host"),
+        patch("pcode.app.PreviewApp") as app,
+    ):
+        main()
+    assert spawn.call_args.kwargs["model"] is None
+    # The id the app picked, so closing the pane stops this host before it reports one.
+    assert spawn.call_args.kwargs["identity"] == "0123abcd"
+    assert "PCODE_HOST_ID" not in os.environ
+    assert app.call_args.kwargs["host"] is not None
+    hosts.rmdir()

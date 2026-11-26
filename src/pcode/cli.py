@@ -77,8 +77,27 @@ def main() -> None:
             from pcode.app import main as run
 
             run()
+        except SystemExit as exit:
+            if exit.code not in (None, 0):
+                _hold_failed_start()
+            raise
+        except Exception:
+            import traceback
+
+            _hold_failed_start(traceback.format_exc())
+            raise
         finally:
             _startup = None
+
+
+def _hold_failed_start(detail: str = "") -> None:
+    """In a Pcode.app pane, keep an error from before the editor started on screen."""
+    restore_stdin()
+    try:
+        from pcode import dock
+    except Exception:  # noqa: BLE001 - the failure being held may be this import.
+        return
+    dock.hold_failed_start(detail)
 
 
 if __name__ == "__main__":
