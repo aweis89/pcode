@@ -219,4 +219,18 @@ struct PCodeLaunchTests {
         #expect(fish.command.contains("fish\\'\\''s\\\\dir"))
         #expect(fish.command.contains("; else; exec pcode; end"))
     }
+
+    @Test func recognisesPCodeAndHostCommandLines() {
+        let framework = "/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python"
+        #expect(PCodeProcess.isPCode(arguments: ["/Users/me/.local/bin/pcode", "--host"]))
+        #expect(PCodeProcess.isPCode(arguments: ["/usr/bin/python3", "/Users/me/.local/bin/pcode"]))
+        #expect(PCodeProcess.isPCode(arguments: [framework, "-m", "pcode"]))
+        #expect(!PCodeProcess.isPCode(arguments: [framework, "-m", "pcode.host"]))
+        // Hosts run as `<python> -m pcode.host`; a uv tool install runs them on Homebrew's framework Python.
+        #expect(PCodeProcess.isPCodeOrHost(arguments: ["/w/.venv/bin/python3", "-m", "pcode.host", "--id", "h"]))
+        #expect(PCodeProcess.isPCodeOrHost(arguments: [framework, "-m", "pcode.host", "--id", "h"]))
+        #expect(!PCodeProcess.isPCodeOrHost(arguments: ["/bin/zsh", "-m", "pcode.host"]))
+        #expect(!PCodeProcess.isPCodeOrHost(arguments: [framework, "-m", "http.server"]))
+        #expect(!PCodeProcess.isPCodeOrHost(arguments: []))
+    }
 }

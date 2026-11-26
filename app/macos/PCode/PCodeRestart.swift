@@ -251,22 +251,30 @@ enum PCodeProcess {
 
     /// Whether `pid`'s command line is pcode: `…/pcode ARGS` (renamed by
     /// `pcode.proctitle`, or a binary), or `…/python3 …/pcode ARGS`.
-    static func isPCode(_ pid: pid_t) -> Bool {
-        let argv = arguments(pid)
+    static func isPCode(_ pid: pid_t) -> Bool { isPCode(arguments: arguments(pid)) }
+
+    static func isPCode(arguments argv: [String]) -> Bool {
         func named(_ arg: String) -> Bool { (arg as NSString).lastPathComponent == "pcode" }
         guard let first = argv.first else { return false }
         if named(first) { return true }
-        guard (first as NSString).lastPathComponent.hasPrefix("python"), argv.count > 1 else { return false }
+        guard isPython(first), argv.count > 1 else { return false }
         return named(argv[1]) || (argv[1] == "-m" && argv.count > 2 && argv[2] == "pcode")
     }
 
     /// Whether `pid` is pcode or one of its background hosts, which run as
     /// `…/python3 -m pcode.host ARGS`.
-    static func isPCodeOrHost(_ pid: pid_t) -> Bool {
-        if isPCode(pid) { return true }
-        let argv = arguments(pid)
-        guard argv.count > 2, (argv[0] as NSString).lastPathComponent.hasPrefix("python") else { return false }
+    static func isPCodeOrHost(_ pid: pid_t) -> Bool { isPCodeOrHost(arguments: arguments(pid)) }
+
+    static func isPCodeOrHost(arguments argv: [String]) -> Bool {
+        if isPCode(arguments: argv) { return true }
+        guard argv.count > 2, isPython(argv[0]) else { return false }
         return argv[1] == "-m" && argv[2] == "pcode.host"
+    }
+
+    /// `python3`, `python3.15`, or a framework build's `…/Python.app/Contents/MacOS/Python`
+    /// (Homebrew's, which a uv tool install runs hosts on).
+    private static func isPython(_ path: String) -> Bool {
+        (path as NSString).lastPathComponent.lowercased().hasPrefix("python")
     }
 
     /// A process's argv, read as `ps` does (KERN_PROCARGS2: argc, the exec
