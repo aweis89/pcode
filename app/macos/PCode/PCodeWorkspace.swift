@@ -562,6 +562,10 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// A finished turn's response that hasn't been looked at here yet. Kept
     /// by session ID in the workspace, so it survives restarts.
     @Published var unseen = false
+    /// When this pane was opened; used to place brand-new 0-turn panes at the top when sorting.
+    let createdAt: Date = Date()
+    /// When the most recent turn finished in this pane during this app session.
+    @Published private(set) var lastResponseDate: Date?
 
     init(surface: Ghostty.SurfaceView, directory: String, projectPath: String? = nil, sessionID: String?) {
         self.surface = surface
@@ -643,7 +647,10 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         guard activity != self.activity else { return }
         let finished = self.activity == .running
         self.activity = activity
-        if finished { onTurnFinished?() }
+        if finished {
+            self.lastResponseDate = Date()
+            onTurnFinished?()
+        }
         onActivityChange?()
     }
 
@@ -688,6 +695,22 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         return dir != projectPath ? (dir as NSString).lastPathComponent : nil
     }
 
+    /// Timestamp of the last completed response for this pane (nil for brand-new 0-turn panes).
+    func lastResponseDate(saved: PCodeSessionInfo?) -> Date? {
+        let savedDate = (saved?.turns ?? 0) > 0 ? saved?.updatedDate : nil
+        switch (lastResponseDate, savedDate) {
+        case (let live?, let disk?): return max(live, disk)
+        case (let live?, nil): return live
+        case (nil, let disk?): return disk
+        case (nil, nil): return nil
+        }
+    }
+
+    /// Sort key for ordering open panes by last activity (falls back to `createdAt` for brand-new panes).
+    func sortDate(saved: PCodeSessionInfo?) -> Date {
+        lastResponseDate(saved: saved) ?? createdAt
+    }
+
     func setShell(_ view: Ghostty.SurfaceView?) { shell = view }
 }
 
@@ -713,23 +736,26 @@ struct PCodeHostedSession: Identifiable, Equatable {
     }
 }
 
-/// One folder group in the sidebar: open panes first, then detached live hosts, then recent saved sessions.
+/// One folder group in the sidebar: starred sessions float to the top, followed by open panes, detached hosts, and recent saved sessions.
 struct PCodeProjectGroup: Identifiable {
     let path: String
     let openPanes: [PCodeSessionPane]
     let hostedSessions: [PCodeHostedSession]
     let recentSessions: [PCodeSessionInfo]
+    let starredSessionIDs: Set<String>
 
     init(
         path: String,
         openPanes: [PCodeSessionPane],
         hostedSessions: [PCodeHostedSession] = [],
-        recentSessions: [PCodeSessionInfo]
+        recentSessions: [PCodeSessionInfo],
+        starredSessionIDs: Set<String> = []
     ) {
         self.path = path
         self.openPanes = openPanes
         self.hostedSessions = hostedSessions
         self.recentSessions = recentSessions
+        self.starredSessionIDs = starredSessionIDs
     }
 
     var id: String { path }
@@ -742,12 +768,44 @@ struct PCodeProjectGroup: Identifiable {
 
     var abbreviatedPath: String { PCodeWorkspace.abbreviatePath(path) }
 
-    /// Aggregate activity across open panes and detached live hosts so collapsed folders still surface live state.
+    var starredOpenPanes: [PCodeSessionPane] {
+        openPanes.filter { pane in pane.sessionID.map(starredSessionIDs.contains) == true }
+    }
+
+    var unstarredOpenPanes: [PCodeSessionPane] {
+        openPanes.filter { pane in pane.sessionID.map(starredSessionIDs.contains) != true }
+    }
+
+    var starredHostedSessions: [PCodeHostedSession] {
+        hostedSessions.filter { starredSessionIDs.contains($0.id) }
+    }
+
+    var unstarredHostedSessions: [PCodeHostedSession] {
+        hostedSessions.filter { !starredSessionIDs.contains($0.id) }
+    }
+
+    var starredRecentSessions: [PCodeSessionInfo] {
+        recentSessions.filter { starredSessionIDs.contains($0.id) }
+    }
+
+    var unstarredRecentSessions: [PCodeSessionInfo] {
+        recentSessions.filter { !starredSessionIDs.contains($0.id) }
+    }
+
+    var hasRunning: Bool {
+        openPanes.contains(where: { $0.activity == .running })
+            || hostedSessions.contains(where: { $0.activity == .running })
+    }
+
+    var hasFailed: Bool {
+        openPanes.contains(where: { $0.activity == .failed })
+            || hostedSessions.contains(where: { $0.activity == .failed })
+    }
+
+    /// Aggregate activity across open panes and detached live hosts.
     var activity: PCodeSessionPane.Activity? {
-        if openPanes.contains(where: { $0.activity == .running })
-            || hostedSessions.contains(where: { $0.activity == .running }) { return .running }
-        if openPanes.contains(where: { $0.activity == .failed })
-            || hostedSessions.contains(where: { $0.activity == .failed }) { return .failed }
+        if hasRunning { return .running }
+        if hasFailed { return .failed }
         if !openPanes.isEmpty || !hostedSessions.isEmpty { return .idle }
         return nil
     }
@@ -1012,21 +1070,25 @@ final class PCodeWorkspace: ObservableObject {
         historyGeneration += 1
         let generation = historyGeneration
         let unseen = unseenIDs
+        let starred = starredSessionIDs
         DispatchQueue.global(qos: .userInitiated).async {
             let hosted = PCodeSessionInfo.hosted()
             let all = PCodeSessionInfo.load(limit: .max, hosted: hosted)
             // Sessions deleted outside the app (no directory left at all).
-            let gone = unseen.filter {
+            let gone = unseen.union(starred).filter {
                 !FileManager.default.fileExists(atPath: PCodeSessionInfo.root.appendingPathComponent($0).path)
             }
             var trimmed = Array(all.prefix(200))
             let trimmedIDs = Set(trimmed.map(\.id))
-            for info in all.dropFirst(200) where hosted.contains(info.id) && !trimmedIDs.contains(info.id) {
+            for info in all.dropFirst(200) where (hosted.contains(info.id) || starred.contains(info.id)) && !trimmedIDs.contains(info.id) {
                 trimmed.append(info)
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self, generation == self.historyGeneration else { return }
-                if !gone.isEmpty { self.unseenIDs.subtract(gone) }
+                if !gone.isEmpty {
+                    self.unseenIDs.subtract(gone)
+                    self.starredSessionIDs.subtract(gone)
+                }
                 self.history = trimmed
                 let callbacks = self.pendingHistoryCallbacks
                 self.pendingHistoryCallbacks.removeAll()
@@ -1057,6 +1119,34 @@ final class PCodeWorkspace: ObservableObject {
     }
     /// Folders where the user clicked "Show more…" for recent sessions.
     @Published var expandedRecentFolders: Set<String> = []
+    /// Starred session IDs (always float to the top of their folder).
+    @Published private(set) var starredSessionIDs: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: PCodeWorkspace.starredKey) ?? []
+    ) {
+        didSet {
+            if starredSessionIDs != oldValue {
+                UserDefaults.standard.set(Array(starredSessionIDs), forKey: Self.starredKey)
+            }
+        }
+    }
+    /// User-dragged heights for folder sections (nil = auto-fit).
+    @Published private(set) var folderHeights: [String: CGFloat] = {
+        guard let stored = UserDefaults.standard.dictionary(forKey: PCodeWorkspace.folderHeightsKey) as? [String: Double] else {
+            return [:]
+        }
+        var result: [String: CGFloat] = [:]
+        for (path, value) in stored where value > 0 {
+            result[PCodeWorkspace.normalizePath(path)] = PCodeSidebarLayout.clampedFolderHeight(CGFloat(value))
+        }
+        return result
+    }() {
+        didSet {
+            if folderHeights != oldValue {
+                let raw = folderHeights.mapValues { Double($0) }
+                UserDefaults.standard.set(raw, forKey: Self.folderHeightsKey)
+            }
+        }
+    }
     /// Whether the ⌘⇧N floating Command Center overlay is open (used when a session pane is active).
     @Published var showingDirectoryPicker = false
     /// Incremented to focus the inline project launcher when no session pane is open.
@@ -1117,8 +1207,34 @@ final class PCodeWorkspace: ObservableObject {
     private static let pinnedKey = "PCodeWorkspacePinnedFolders"
     private static let hiddenKey = "PCodeWorkspaceHiddenFolders"
     private static let collapsedKey = "PCodeWorkspaceCollapsedFolders"
+    private static let starredKey = "PCodeWorkspaceStarredSessions"
+    private static let folderHeightsKey = "PCodeWorkspaceFolderHeights"
     private static let sidebarWidthKey = "PCodeWorkspaceSidebarWidth"
     private static let sidebarAutoHideKey = "PCodeWorkspaceSidebarAutoHide"
+
+    func isStarred(_ sessionID: String?) -> Bool {
+        guard let sessionID, !sessionID.isEmpty else { return false }
+        return starredSessionIDs.contains(sessionID)
+    }
+
+    func toggleStar(_ sessionID: String) {
+        guard !sessionID.isEmpty else { return }
+        if starredSessionIDs.contains(sessionID) {
+            starredSessionIDs.remove(sessionID)
+        } else {
+            starredSessionIDs.insert(sessionID)
+        }
+    }
+
+    func setFolderHeight(_ height: CGFloat, for path: String) {
+        let normalized = Self.normalizePath(path)
+        folderHeights[normalized] = PCodeSidebarLayout.clampedFolderHeight(height)
+    }
+
+    func resetFolderHeight(for path: String) {
+        let normalized = Self.normalizePath(path)
+        folderHeights.removeValue(forKey: normalized)
+    }
 
     func effectiveSidebarWidth(in totalWidth: CGFloat) -> CGFloat {
         PCodeSidebarLayout.clampedWidth(sidebarWidth, totalWidth: totalWidth)
@@ -1309,14 +1425,17 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     /// Pure grouping helper for sidebar folders: open panes first, then detached live hosts,
-    /// pinned folders, and recent saved sessions (excluding hidden folders unless active).
+    /// pinned folders, and recent saved sessions (excluding hidden folders unless active or starred).
+    /// Within each folder, starred sessions sort first, and open/hosted sessions sort by last active descending.
     static func buildProjectGroups(
         panes: [PCodeSessionPane],
         projectPathForPane: (PCodeSessionPane) -> String,
         history: [PCodeSessionInfo],
         detachedHostStatuses: [String: PCodeHostStatus],
         pinnedFolders: [String],
-        hiddenFolders: Set<String>
+        hiddenFolders: Set<String>,
+        starredSessionIDs: Set<String> = [],
+        lastActiveDateForPane: ((PCodeSessionPane) -> Date)? = nil
     ) -> [PCodeProjectGroup] {
         let openIDs = Set(panes.compactMap(\.sessionID))
         var order: [String] = []
@@ -1344,16 +1463,45 @@ final class PCodeWorkspace: ObservableObject {
         var recentByProject: [String: [PCodeSessionInfo]] = [:]
         for info in history where !openIDs.contains(info.id) && detachedHostStatuses[info.id] == nil {
             let project = info.normalizedProjectPath
-            guard !hiddenFolders.contains(project) || openByProject[project] != nil || hostedByProject[project] != nil else { continue }
+            let hasStarred = starredSessionIDs.contains(info.id)
+            guard hasStarred || !hiddenFolders.contains(project) || openByProject[project] != nil || hostedByProject[project] != nil else { continue }
             register(project)
             recentByProject[project, default: []].append(info)
         }
         return order.map { path in
-            PCodeProjectGroup(
+            let sortedOpen = (openByProject[path] ?? []).sorted { lhs, rhs in
+                let lhsStarred = lhs.sessionID.map(starredSessionIDs.contains) == true
+                let rhsStarred = rhs.sessionID.map(starredSessionIDs.contains) == true
+                if lhsStarred != rhsStarred { return lhsStarred }
+                let lhsDate = lastActiveDateForPane?(lhs) ?? lhs.createdAt
+                let rhsDate = lastActiveDateForPane?(rhs) ?? rhs.createdAt
+                if lhsDate != rhsDate { return lhsDate > rhsDate }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            let sortedHosted = (hostedByProject[path] ?? []).sorted { lhs, rhs in
+                let lhsStarred = starredSessionIDs.contains(lhs.id)
+                let rhsStarred = starredSessionIDs.contains(rhs.id)
+                if lhsStarred != rhsStarred { return lhsStarred }
+                let lhsDate = lhs.updatedDate ?? .distantPast
+                let rhsDate = rhs.updatedDate ?? .distantPast
+                if lhsDate != rhsDate { return lhsDate > rhsDate }
+                return lhs.id < rhs.id
+            }
+            let sortedRecent = (recentByProject[path] ?? []).sorted { lhs, rhs in
+                let lhsStarred = starredSessionIDs.contains(lhs.id)
+                let rhsStarred = starredSessionIDs.contains(rhs.id)
+                if lhsStarred != rhsStarred { return lhsStarred }
+                let lhsDate = lhs.updatedDate ?? .distantPast
+                let rhsDate = rhs.updatedDate ?? .distantPast
+                if lhsDate != rhsDate { return lhsDate > rhsDate }
+                return lhs.id < rhs.id
+            }
+            return PCodeProjectGroup(
                 path: path,
-                openPanes: openByProject[path] ?? [],
-                hostedSessions: hostedByProject[path] ?? [],
-                recentSessions: recentByProject[path] ?? [])
+                openPanes: sortedOpen,
+                hostedSessions: sortedHosted,
+                recentSessions: sortedRecent,
+                starredSessionIDs: starredSessionIDs)
         }
     }
 
@@ -1365,7 +1513,9 @@ final class PCodeWorkspace: ObservableObject {
             history: history,
             detachedHostStatuses: detachedHostStatuses,
             pinnedFolders: pinnedFolders,
-            hiddenFolders: hiddenFolders)
+            hiddenFolders: hiddenFolders,
+            starredSessionIDs: starredSessionIDs,
+            lastActiveDateForPane: { [self] pane in pane.sortDate(saved: info(for: pane)) })
     }
 
     /// Projects offered by the Command Center: current project first, then all known projects.
@@ -1544,13 +1694,14 @@ final class PCodeWorkspace: ObservableObject {
     func peekTarget(for pane: PCodeSessionPane) -> PCodePeekTarget {
         let saved = info(for: pane)
         let title = Self.displayTitle(paneTitle: pane.title, savedLabel: saved?.label)
+        let responseDate = pane.lastResponseDate(saved: saved)
         return PCodePeekTarget(
             sessionID: pane.sessionID,
             title: title,
-            subtitle: saved?.worktreeName ?? pane.worktreeName,
+            subtitle: Self.sessionSubtitle(worktreeName: saved?.worktreeName ?? pane.worktreeName, updatedDate: responseDate),
             directory: pane.directory,
             turnsHint: saved?.turns,
-            updatedDate: saved?.updatedDate,
+            updatedDate: responseDate,
             isOpen: true,
             paneID: pane.id,
             info: saved)
@@ -1701,14 +1852,24 @@ final class PCodeWorkspace: ObservableObject {
         isoWithFractional.date(from: iso) ?? isoBasic.date(from: iso)
     }
 
-    static func relativeTime(_ date: Date?) -> String? {
+    static func relativeTime(_ date: Date?, now: Date = Date()) -> String? {
         guard let date else { return nil }
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
         if seconds < 60 { return "now" }
         if seconds < 3600 { return "\(seconds / 60)m" }
         if seconds < 86_400 { return "\(seconds / 3600)h" }
         if seconds < 86_400 * 14 { return "\(seconds / 86_400)d" }
         return "\(seconds / (86_400 * 7))w"
+    }
+
+    static func sessionSubtitle(worktreeName: String?, updatedDate: Date?, now: Date = Date()) -> String? {
+        let rel = relativeTime(updatedDate, now: now)
+        switch (worktreeName?.isEmpty == false ? worktreeName : nil, rel) {
+        case (let wt?, let age?): return "\(wt) · \(age)"
+        case (let wt?, nil): return wt
+        case (nil, let age?): return age
+        case (nil, nil): return nil
+        }
     }
 
     // MARK: Sidebar actions
@@ -1777,6 +1938,7 @@ final class PCodeWorkspace: ObservableObject {
                 }
                 if status == 0 {
                     self.unseenIDs.remove(id)
+                    self.starredSessionIDs.remove(id)
                     self.peek.clearHover(sessionID: id)
                 }
                 self.reloadHistory()
@@ -1883,13 +2045,13 @@ final class PCodeWorkspace: ObservableObject {
         pane.onTurnFinished = { [weak self, weak pane] in
             guard let self, let pane else { return }
             if self.isViewed(pane) { self.markSeen(pane) } else { self.markUnseen(pane) }
+            // Re-sort open panes by last response and refresh folder status dots.
+            self.objectWillChange.send()
         }
         pane.onDockChange = { [weak self] in self?.schedulePresize() }
-        pane.onActivityChange = { [weak self, weak pane] in
-            guard let self, let pane else { return }
-            if self.collapsedFolders.contains(self.projectPath(for: pane)) {
-                self.objectWillChange.send()
-            }
+        pane.onActivityChange = { [weak self] in
+            // Folder headers always surface live running/failed dots (collapsed or expanded).
+            self?.objectWillChange.send()
         }
     }
 
@@ -2154,6 +2316,14 @@ enum PCodeSidebarLayout {
     static let revealEdgeWidth: CGFloat = 10
     /// Extra margin past the revealed sidebar's right edge so resizing doesn't trigger a hide.
     static let hideGraceMargin: CGFloat = 12
+    /// Bounds for user-dragged folder section heights in the sidebar.
+    static let minFolderHeight: CGFloat = 44
+    static let maxFolderHeight: CGFloat = 800
+
+    static func clampedFolderHeight(_ proposed: CGFloat) -> CGFloat {
+        guard proposed.isFinite, proposed > 0 else { return minFolderHeight }
+        return min(maxFolderHeight, max(minFolderHeight, proposed))
+    }
 
     static func clampedWidth(_ proposed: CGFloat, totalWidth: CGFloat) -> CGFloat {
         let candidate = (proposed.isFinite && proposed > 0) ? proposed : defaultWidth
@@ -2180,20 +2350,13 @@ enum PCodeSidebarLayout {
     }
 }
 
-/// What the sidebar can select: an open pane, or a saved session to reopen.
-private enum PCodeSidebarItem: Hashable {
-    case pane(UUID)
-    case saved(String)
-}
-
 struct PCodeWorkspaceView: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var workspace: PCodeWorkspace
     @State private var isDropTargeted = false
     /// `workspace.sidebarWidth` when the current resize drag began.
     @State private var sidebarDragStart: CGFloat?
-    /// Tracks macOS < 15 `NSCursor.resizeLeftRight` push state so pushes and pops stay balanced.
-    @State private var resizeCursorPushed = false
+    @State private var sidebarHandleHovered = false
 
     private static let initialRecentLimit = 5
 
@@ -2209,26 +2372,64 @@ struct PCodeWorkspaceView: View {
                     let totalWidth = geometry.size.width
                     let sidebarWidth = workspace.effectiveSidebarWidth(in: totalWidth)
                     let sidebarVisible = !workspace.sidebarAutoHide || workspace.sidebarRevealed
-                    HStack(spacing: 0) {
-                        ZStack(alignment: .trailing) {
+                    ZStack(alignment: .leading) {
+                        HStack(spacing: 0) {
+                            ZStack(alignment: .trailing) {
+                                if sidebarVisible {
+                                    sidebar
+                                        .frame(width: sidebarWidth)
+                                        .background(sidebarBackground)
+                                        .onHover { workspace.sidebarHoverChanged($0) }
+                                        .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
+                                        .transition(.identity)
+                                }
+                            }
+                            .frame(width: sidebarVisible ? sidebarWidth : 0, alignment: .trailing)
+                            .clipped()
+
                             if sidebarVisible {
-                                sidebar
-                                    .frame(width: sidebarWidth)
-                                    .background(sidebarBackground)
-                                    .onHover { workspace.sidebarHoverChanged($0) }
-                                    .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
+                                Rectangle()
+                                    .fill(
+                                        sidebarHandleHovered || sidebarDragStart != nil
+                                            ? Color.accentColor.opacity(0.6)
+                                            : ghostty.config.splitDividerColor
+                                    )
+                                    .frame(width: 1)
                                     .transition(.identity)
                             }
-                        }
-                        .frame(width: sidebarVisible ? sidebarWidth : 0, alignment: .trailing)
-                        .clipped()
 
+                            detailPane
+                        }
+
+                        // Mounted above both sidebar and detailPane so Ghostty's NSView
+                        // never steals cursor tracking from the resize hit zone.
                         if sidebarVisible {
-                            sidebarResizeHandle(width: sidebarWidth, totalWidth: totalWidth)
-                                .transition(.identity)
+                            PCodeResizeHandle(
+                                orientation: .horizontal,
+                                onHover: { sidebarHandleHovered = $0 },
+                                onDoubleClick: { workspace.resetSidebarWidth() },
+                                onDragStart: {
+                                    sidebarDragStart = sidebarWidth
+                                    workspace.isResizingSidebar = true
+                                },
+                                onDragChanged: { delta in
+                                    let start = sidebarDragStart ?? sidebarWidth
+                                    workspace.sidebarWidth = PCodeSidebarLayout.clampedWidth(
+                                        start + delta,
+                                        totalWidth: totalWidth
+                                    )
+                                },
+                                onDragEnded: {
+                                    sidebarDragStart = nil
+                                    workspace.isResizingSidebar = false
+                                    workspace.scheduleSidebarHideIfPointerOutside()
+                                }
+                            )
+                            .frame(width: 11)
+                            .offset(x: sidebarWidth - 5)
+                            .zIndex(5)
+                            .transition(.identity)
                         }
-
-                        detailPane
                     }
                     .animation(.easeOut(duration: 0.2), value: sidebarVisible)
                 }
@@ -2301,62 +2502,6 @@ struct PCodeWorkspaceView: View {
             withFraction: 0.06, of: .white) ?? .windowBackgroundColor)
     }
 
-    /// The sidebar's right edge: a hairline to see, a wider strip to drag (double-click resets width).
-    private func sidebarResizeHandle(width: CGFloat, totalWidth: CGFloat) -> some View {
-        Rectangle()
-            .fill(ghostty.config.splitDividerColor)
-            .frame(width: 1)
-            .overlay(
-                Color.clear
-                    .frame(width: 9)
-                    .contentShape(Rectangle())
-                    .backport.pointerStyle(.resizeLeftRight)
-                    .onHover { inside in
-                        if #available(macOS 15, *) { return }
-                        if inside {
-                            if !resizeCursorPushed {
-                                NSCursor.resizeLeftRight.push()
-                                resizeCursorPushed = true
-                            }
-                        } else if resizeCursorPushed {
-                            NSCursor.pop()
-                            resizeCursorPushed = false
-                        }
-                    }
-                    .onDisappear {
-                        sidebarDragStart = nil
-                        workspace.isResizingSidebar = false
-                        if resizeCursorPushed {
-                            NSCursor.pop()
-                            resizeCursorPushed = false
-                        }
-                    }
-                    .onTapGesture(count: 2) {
-                        workspace.resetSidebarWidth()
-                    }
-                    .gesture(
-                        DragGesture(coordinateSpace: .global)
-                            .onChanged { gesture in
-                                let start = sidebarDragStart ?? width
-                                if sidebarDragStart == nil {
-                                    sidebarDragStart = start
-                                    workspace.isResizingSidebar = true
-                                }
-                                workspace.sidebarWidth = PCodeSidebarLayout.clampedWidth(
-                                    start + gesture.translation.width,
-                                    totalWidth: totalWidth
-                                )
-                            }
-                            .onEnded { _ in
-                                sidebarDragStart = nil
-                                workspace.isResizingSidebar = false
-                                workspace.scheduleSidebarHideIfPointerOutside()
-                            }
-                    )
-            )
-            .zIndex(1)
-    }
-
     private var sidebarHeader: some View {
         HStack(spacing: 6) {
             Text("Projects")
@@ -2384,21 +2529,6 @@ struct PCodeWorkspaceView: View {
         .padding(.vertical, 8)
     }
 
-    private var selection: Binding<PCodeSidebarItem?> {
-        Binding(
-            get: { workspace.selected.map(PCodeSidebarItem.pane) },
-            set: { item in
-                switch item {
-                case .pane(let id):
-                    if let pane = workspace.panes.first(where: { $0.id == id }) { workspace.select(pane) }
-                case .saved(let id):
-                    if let info = workspace.history.first(where: { $0.id == id }) { workspace.open(info) }
-                case nil:
-                    break
-                }
-            })
-    }
-
     private var sidebar: some View {
         VStack(spacing: 0) {
             sidebarHeader
@@ -2420,109 +2550,27 @@ struct PCodeWorkspaceView: View {
     }
 
     private var sessionList: some View {
-        List(selection: selection) {
-            ForEach(workspace.projectGroups) { group in
-                folderSection(for: group)
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let now = context.date
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(workspace.projectGroups) { group in
+                        PCodeFolderSectionView(
+                            workspace: workspace,
+                            group: group,
+                            now: now,
+                            initialRecentLimit: Self.initialRecentLimit,
+                            dividerColor: ghostty.config.splitDividerColor,
+                            folderMenu: { folderMenu(group) },
+                            openMenu: { openMenu($0) },
+                            hostedMenu: { hostedMenu($0) },
+                            recentMenu: { recentMenu($0) }
+                        )
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 12)
             }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-    }
-
-    @ViewBuilder
-    private func folderSection(for group: PCodeProjectGroup) -> some View {
-        let collapsed = workspace.collapsedFolders.contains(group.path)
-        let section = Section {
-            if !collapsed {
-                ForEach(group.openPanes) { pane in
-                    PCodePaneRow(
-                        pane: pane,
-                        info: workspace.info(for: pane),
-                        onHoverChange: { hovering in
-                            guard pane.id != workspace.selected else { return }
-                            workspace.peek.rowHoverChanged(workspace.peekTarget(for: pane), hovering: hovering)
-                        }
-                    ) { openMenu(pane) }
-                        .tag(PCodeSidebarItem.pane(pane.id))
-                        .contextMenu { openMenu(pane) }
-                }
-                ForEach(group.hostedSessions) { hosted in
-                    PCodeSessionRow(
-                        title: hosted.title,
-                        subtitle: hosted.info.worktreeName ?? PCodeWorkspace.relativeTime(hosted.updatedDate),
-                        activity: hosted.activity,
-                        unseen: hosted.host.unseen || workspace.unseenIDs.contains(hosted.id),
-                        onHoverChange: { hovering in
-                            workspace.peek.rowHoverChanged(workspace.peekTarget(for: hosted), hovering: hovering)
-                        }
-                    ) {
-                        hostedMenu(hosted)
-                    }
-                    .tag(PCodeSidebarItem.saved(hosted.id))
-                    .contextMenu { hostedMenu(hosted) }
-                }
-                let expanded = workspace.expandedRecentFolders.contains(group.path)
-                let visibleRecent = expanded
-                    ? group.recentSessions
-                    : Array(group.recentSessions.prefix(Self.initialRecentLimit))
-                ForEach(visibleRecent) { info in
-                    PCodeSessionRow(
-                        title: info.label,
-                        subtitle: info.worktreeName ?? PCodeWorkspace.relativeTime(info.updatedDate),
-                        activity: nil,
-                        unseen: workspace.unseenIDs.contains(info.id),
-                        onHoverChange: { hovering in
-                            workspace.peek.rowHoverChanged(workspace.peekTarget(for: info), hovering: hovering)
-                        }
-                    ) {
-                        recentMenu(info)
-                    }
-                    .tag(PCodeSidebarItem.saved(info.id))
-                    .contextMenu { recentMenu(info) }
-                }
-                if !expanded && group.recentSessions.count > Self.initialRecentLimit {
-                    let remaining = group.recentSessions.count - Self.initialRecentLimit
-                    Button {
-                        workspace.expandedRecentFolders.insert(group.path)
-                    } label: {
-                        Text("Show \(remaining) more…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 20)
-                    }
-                    .buttonStyle(.plain)
-                }
-                if group.openPanes.isEmpty && group.hostedSessions.isEmpty && group.recentSessions.isEmpty {
-                    Button {
-                        workspace.newSession(directory: group.path)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "plus")
-                                .font(.caption2)
-                            Text("New session")
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 20)
-                        .padding(.vertical, 2)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        } header: {
-            PCodeFolderHeader(
-                group: group,
-                isCollapsed: collapsed,
-                hasUnseen: group.hasUnseen(workspace.unseenIDs),
-                onToggle: { workspace.toggleCollapsed(group.path) },
-                onNewSession: { workspace.newSession(directory: group.path) }
-            )
-            .contextMenu { folderMenu(group) }
-        }
-        if #available(macOS 13.3, *) {
-            section.collapsible(false)
-        } else {
-            section
         }
     }
 
@@ -2555,6 +2603,9 @@ struct PCodeWorkspaceView: View {
 
     @ViewBuilder private func folderMenu(_ group: PCodeProjectGroup) -> some View {
         Button("New Session") { workspace.newSession(directory: group.path) }
+        if workspace.folderHeights[group.path] != nil {
+            Button("Reset Section Height") { workspace.resetFolderHeight(for: group.path) }
+        }
         Divider()
         Button("Reveal in Finder") { PCodeWorkspace.reveal(group.path) }
         Button("Copy Path") { PCodeWorkspace.copy(group.path) }
@@ -2570,6 +2621,15 @@ struct PCodeWorkspaceView: View {
                 workspace.peek.peekFromMenu(workspace.peekTarget(for: pane))
             } label: {
                 Label("Peek (⌥ Hover)", systemImage: "eye")
+            }
+            Divider()
+        }
+        if let id = pane.sessionID {
+            let starred = workspace.isStarred(id)
+            Button {
+                workspace.toggleStar(id)
+            } label: {
+                Label(starred ? "Unstar Session" : "Star Session", systemImage: starred ? "star.slash" : "star")
             }
             Divider()
         }
@@ -2591,6 +2651,12 @@ struct PCodeWorkspaceView: View {
             Label("Peek (⌥ Hover)", systemImage: "eye")
         }
         Button("Attach") { workspace.open(hosted.info) }
+        let starred = workspace.isStarred(hosted.id)
+        Button {
+            workspace.toggleStar(hosted.id)
+        } label: {
+            Label(starred ? "Unstar Session" : "Star Session", systemImage: starred ? "star.slash" : "star")
+        }
         Divider()
         Button("Reveal Directory in Finder") { PCodeWorkspace.reveal(hosted.info.workspace) }
         Button("Copy Session ID") { PCodeWorkspace.copy(hosted.id) }
@@ -2603,6 +2669,12 @@ struct PCodeWorkspaceView: View {
             Label("Peek (⌥ Hover)", systemImage: "eye")
         }
         Button("Open") { workspace.open(info) }
+        let starred = workspace.isStarred(info.id)
+        Button {
+            workspace.toggleStar(info.id)
+        } label: {
+            Label(starred ? "Unstar Session" : "Star Session", systemImage: starred ? "star.slash" : "star")
+        }
         Button("Delete Session…", role: .destructive) { workspace.confirmDelete(info: info) }
         Divider()
         Button("Reveal Directory in Finder") { PCodeWorkspace.reveal(info.workspace) }
@@ -2610,7 +2682,359 @@ struct PCodeWorkspaceView: View {
     }
 }
 
-/// A project folder header in the sidebar: disclosure chevron, name, collapsed activity badge, and hover + button.
+/// One project folder section in the sidebar: auto-fits its sessions until the user drags its bottom divider.
+private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMenu: View, RecentMenu: View>: View {
+    @ObservedObject var workspace: PCodeWorkspace
+    let group: PCodeProjectGroup
+    let now: Date
+    let initialRecentLimit: Int
+    let dividerColor: Color
+    @ViewBuilder var folderMenu: () -> FolderMenu
+    @ViewBuilder var openMenu: (PCodeSessionPane) -> OpenMenu
+    @ViewBuilder var hostedMenu: (PCodeHostedSession) -> HostedMenu
+    @ViewBuilder var recentMenu: (PCodeSessionInfo) -> RecentMenu
+
+    @State private var measuredHeight: CGFloat = 0
+    @State private var dragStartHeight: CGFloat?
+    @State private var handleHovered = false
+
+    var body: some View {
+        let collapsed = workspace.collapsedFolders.contains(group.path)
+        let customHeight = workspace.folderHeights[group.path]
+
+        VStack(alignment: .leading, spacing: 0) {
+            PCodeFolderHeader(
+                group: group,
+                isCollapsed: collapsed,
+                hasUnseen: group.hasUnseen(workspace.unseenIDs),
+                onToggle: { workspace.toggleCollapsed(group.path) },
+                onNewSession: { workspace.newSession(directory: group.path) }
+            )
+            .padding(.horizontal, 4)
+            .contextMenu { folderMenu() }
+
+            if !collapsed {
+                if let customHeight {
+                    ScrollView(.vertical) {
+                        rowsContent
+                    }
+                    .frame(height: customHeight)
+                } else {
+                    rowsContent
+                        .background(GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { measuredHeight = proxy.size.height }
+                                .onChange(of: proxy.size.height) { measuredHeight = $0 }
+                        })
+                }
+
+                folderResizeDivider(currentHeight: customHeight ?? measuredHeight)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rowsContent: some View {
+        let expanded = workspace.expandedRecentFolders.contains(group.path)
+        let unstarredRecent = group.unstarredRecentSessions
+        let visibleUnstarredRecent = expanded
+            ? unstarredRecent
+            : Array(unstarredRecent.prefix(initialRecentLimit))
+
+        VStack(alignment: .leading, spacing: 2) {
+            // Starred sessions always float to the top of their folder.
+            ForEach(group.starredOpenPanes) { pane in
+                openPaneRow(pane)
+            }
+            ForEach(group.starredHostedSessions) { hosted in
+                hostedSessionRow(hosted)
+            }
+            ForEach(group.starredRecentSessions) { info in
+                recentSessionRow(info)
+            }
+
+            // Unstarred sessions: open (sorted by last active), detached hosts, then recent saved.
+            ForEach(group.unstarredOpenPanes) { pane in
+                openPaneRow(pane)
+            }
+            ForEach(group.unstarredHostedSessions) { hosted in
+                hostedSessionRow(hosted)
+            }
+            ForEach(visibleUnstarredRecent) { info in
+                recentSessionRow(info)
+            }
+
+            if !expanded && unstarredRecent.count > initialRecentLimit {
+                let remaining = unstarredRecent.count - initialRecentLimit
+                Button {
+                    workspace.expandedRecentFolders.insert(group.path)
+                } label: {
+                    Text("Show \(remaining) more…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 26)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if group.openPanes.isEmpty && group.hostedSessions.isEmpty && group.recentSessions.isEmpty {
+                Button {
+                    workspace.newSession(directory: group.path)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                            .font(.caption2)
+                        Text("New session")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 26)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func openPaneRow(_ pane: PCodeSessionPane) -> some View {
+        let sessionID = pane.sessionID
+        PCodePaneRow(
+            pane: pane,
+            info: workspace.info(for: pane),
+            now: now,
+            isSelected: pane.id == workspace.selected,
+            isStarred: workspace.isStarred(sessionID),
+            onSelect: { workspace.select(pane) },
+            onToggleStar: sessionID.map { id in { workspace.toggleStar(id) } },
+            onHoverChange: { hovering in
+                guard pane.id != workspace.selected else { return }
+                workspace.peek.rowHoverChanged(workspace.peekTarget(for: pane), hovering: hovering)
+            }
+        ) { openMenu(pane) }
+            .contextMenu { openMenu(pane) }
+    }
+
+    @ViewBuilder
+    private func hostedSessionRow(_ hosted: PCodeHostedSession) -> some View {
+        PCodeSessionRow(
+            title: hosted.title,
+            subtitle: PCodeWorkspace.sessionSubtitle(
+                worktreeName: hosted.info.worktreeName,
+                updatedDate: hosted.updatedDate,
+                now: now
+            ),
+            activity: hosted.activity,
+            unseen: hosted.host.unseen || workspace.unseenIDs.contains(hosted.id),
+            isSelected: false,
+            isStarred: workspace.isStarred(hosted.id),
+            onSelect: { workspace.open(hosted.info) },
+            onToggleStar: { workspace.toggleStar(hosted.id) },
+            onHoverChange: { hovering in
+                workspace.peek.rowHoverChanged(workspace.peekTarget(for: hosted), hovering: hovering)
+            }
+        ) {
+            hostedMenu(hosted)
+        }
+        .contextMenu { hostedMenu(hosted) }
+    }
+
+    @ViewBuilder
+    private func recentSessionRow(_ info: PCodeSessionInfo) -> some View {
+        PCodeSessionRow(
+            title: info.label,
+            subtitle: PCodeWorkspace.sessionSubtitle(
+                worktreeName: info.worktreeName,
+                updatedDate: info.updatedDate,
+                now: now
+            ),
+            activity: nil,
+            unseen: workspace.unseenIDs.contains(info.id),
+            isSelected: false,
+            isStarred: workspace.isStarred(info.id),
+            onSelect: { workspace.open(info) },
+            onToggleStar: { workspace.toggleStar(info.id) },
+            onHoverChange: { hovering in
+                workspace.peek.rowHoverChanged(workspace.peekTarget(for: info), hovering: hovering)
+            }
+        ) {
+            recentMenu(info)
+        }
+        .contextMenu { recentMenu(info) }
+    }
+
+    private func folderResizeDivider(currentHeight: CGFloat) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(
+                    handleHovered || dragStartHeight != nil
+                        ? Color.accentColor.opacity(0.6)
+                        : dividerColor.opacity(0.6)
+                )
+                .frame(height: handleHovered || dragStartHeight != nil ? 2 : 1)
+                .padding(.horizontal, 4)
+
+            PCodeResizeHandle(
+                orientation: .vertical,
+                onHover: { handleHovered = $0 },
+                onDoubleClick: { workspace.resetFolderHeight(for: group.path) },
+                onDragStart: {
+                    dragStartHeight = max(PCodeSidebarLayout.minFolderHeight, currentHeight)
+                },
+                onDragChanged: { delta in
+                    let start = dragStartHeight ?? max(PCodeSidebarLayout.minFolderHeight, currentHeight)
+                    workspace.setFolderHeight(start + delta, for: group.path)
+                },
+                onDragEnded: {
+                    dragStartHeight = nil
+                }
+            )
+        }
+        .frame(height: 9)
+        .help(workspace.folderHeights[group.path] != nil
+              ? "Drag to resize section · Double-click to auto-fit"
+              : "Drag to adjust section height")
+    }
+}
+
+/// Native SwiftUI pulsing dot for active/running sessions in folder headers.
+private struct PCodePulsingDot: View {
+    @State private var pulsing = false
+
+    var body: some View {
+        if #available(macOS 14.0, *) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundStyle(Color.accentColor)
+                .symbolEffect(.pulse, isActive: true)
+                .help("Active session")
+        } else {
+            Circle()
+                .fill(Color.accentColor)
+                .frame(width: 6, height: 6)
+                .scaleEffect(pulsing ? 1.15 : 0.85)
+                .opacity(pulsing ? 1.0 : 0.45)
+                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulsing)
+                .onAppear { pulsing = true }
+                .help("Active session")
+        }
+    }
+}
+
+/// AppKit-backed resize handle with reliable cursor tracking (`resetCursorRects` + `cursorUpdate`)
+/// and screen-space dragging so sibling `NSView`s (like Ghostty's terminal) never steal the cursor.
+private struct PCodeResizeHandle: NSViewRepresentable {
+    enum Orientation {
+        case horizontal
+        case vertical
+    }
+
+    let orientation: Orientation
+    var onHover: ((Bool) -> Void)?
+    var onDoubleClick: (() -> Void)?
+    var onDragStart: (() -> Void)?
+    var onDragChanged: ((CGFloat) -> Void)?
+    var onDragEnded: (() -> Void)?
+
+    func makeNSView(context: Context) -> HandleView {
+        let view = HandleView()
+        updateNSView(view, context: context)
+        return view
+    }
+
+    func updateNSView(_ view: HandleView, context: Context) {
+        view.orientation = orientation
+        view.onHover = onHover
+        view.onDoubleClick = onDoubleClick
+        view.onDragStart = onDragStart
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        view.window?.invalidateCursorRects(for: view)
+    }
+
+    final class HandleView: NSView {
+        var orientation: Orientation = .horizontal
+        var onHover: ((Bool) -> Void)?
+        var onDoubleClick: (() -> Void)?
+        var onDragStart: (() -> Void)?
+        var onDragChanged: ((CGFloat) -> Void)?
+        var onDragEnded: (() -> Void)?
+
+        private var trackingArea: NSTrackingArea?
+        private var dragOrigin: NSPoint?
+
+        private var cursor: NSCursor {
+            orientation == .horizontal ? .resizeLeftRight : .resizeUpDown
+        }
+
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            addCursorRect(bounds, cursor: cursor)
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let trackingArea { removeTrackingArea(trackingArea) }
+            let area = NSTrackingArea(
+                rect: .zero,
+                options: [.mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            trackingArea = area
+        }
+
+        override func cursorUpdate(with event: NSEvent) {
+            cursor.set()
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            cursor.set()
+            onHover?(true)
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            if dragOrigin == nil {
+                onHover?(false)
+            }
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                onDoubleClick?()
+                return
+            }
+            dragOrigin = NSEvent.mouseLocation
+            cursor.set()
+            onDragStart?()
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let origin = dragOrigin else { return }
+            let current = NSEvent.mouseLocation
+            let delta: CGFloat = orientation == .horizontal
+                ? current.x - origin.x
+                : origin.y - current.y
+            cursor.set()
+            onDragChanged?(delta)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard dragOrigin != nil else { return }
+            dragOrigin = nil
+            onDragEnded?()
+            let local = convert(event.locationInWindow, from: nil)
+            if !bounds.contains(local) {
+                onHover?(false)
+            }
+        }
+    }
+}
+
+/// A project folder header in the sidebar: disclosure chevron, name, live status dots, and hover + button.
 private struct PCodeFolderHeader: View {
     let group: PCodeProjectGroup
     let isCollapsed: Bool
@@ -2643,9 +3067,24 @@ private struct PCodeFolderHeader: View {
             .buttonStyle(.plain)
             .help(group.abbreviatedPath)
 
-            if isCollapsed, group.activity != nil || hasUnseen {
-                PCodeActivityIndicator(activity: group.activity, unseen: hasUnseen)
-                    .frame(width: 12, height: 12)
+            if group.hasRunning || hasUnseen || group.hasFailed {
+                HStack(spacing: 4) {
+                    if group.hasRunning {
+                        PCodePulsingDot()
+                    }
+                    if hasUnseen {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
+                            .help("New response")
+                    }
+                    if group.hasFailed {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 6, height: 6)
+                            .help("Failed turn")
+                    }
+                }
             }
 
             Button(action: onNewSession) {
@@ -2660,7 +3099,7 @@ private struct PCodeFolderHeader: View {
             .help("New session in \(group.name)")
         }
         .textCase(nil)
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
     }
@@ -2669,22 +3108,33 @@ private struct PCodeFolderHeader: View {
 private struct PCodePaneRow<Actions: View>: View {
     @ObservedObject var pane: PCodeSessionPane
     var info: PCodeSessionInfo?
+    var now: Date = Date()
+    var isSelected = false
+    var isStarred = false
+    var onSelect: () -> Void
+    var onToggleStar: (() -> Void)? = nil
     var onHoverChange: ((Bool) -> Void)? = nil
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
         let title = PCodeWorkspace.displayTitle(paneTitle: pane.title, savedLabel: info?.label)
+        let worktree = info?.worktreeName ?? pane.worktreeName
+        let responseDate = pane.lastResponseDate(saved: info)
         PCodeSessionRow(
             title: title,
-            subtitle: info?.worktreeName ?? pane.worktreeName,
+            subtitle: PCodeWorkspace.sessionSubtitle(worktreeName: worktree, updatedDate: responseDate, now: now),
             activity: pane.activity,
             unseen: pane.unseen,
+            isSelected: isSelected,
+            isStarred: isStarred,
+            onSelect: onSelect,
+            onToggleStar: onToggleStar,
             onHoverChange: onHoverChange,
             actions: actions)
     }
 }
 
-/// A sidebar row; its actions are a right-click menu and, on hover, a … button.
+/// A sidebar row; its actions are a click to select, star button, right-click menu, and hover … button.
 private struct PCodeSessionRow<Actions: View>: View {
     var title: String
     var subtitle: String?
@@ -2692,6 +3142,10 @@ private struct PCodeSessionRow<Actions: View>: View {
     var activity: PCodeSessionPane.Activity?
     /// A finished response not yet looked at here.
     var unseen = false
+    var isSelected = false
+    var isStarred = false
+    var onSelect: () -> Void
+    var onToggleStar: (() -> Void)? = nil
     var onHoverChange: ((Bool) -> Void)? = nil
     @ViewBuilder var actions: () -> Actions
     @State private var hovering = false
@@ -2706,7 +3160,18 @@ private struct PCodeSessionRow<Actions: View>: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
+            if let onToggleStar, isStarred || hovering {
+                Button(action: onToggleStar) {
+                    Image(systemName: isStarred ? "star.fill" : "star")
+                        .font(.system(size: 10))
+                        .foregroundStyle(isStarred ? Color.yellow : Color.secondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isStarred ? "Unstar session" : "Star session")
+            }
             Menu { actions() } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -2714,8 +3179,18 @@ private struct PCodeSessionRow<Actions: View>: View {
                 .opacity(hovering ? 1 : 0)
                 .help("Session actions")
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(
+                    isSelected
+                        ? Color.accentColor.opacity(0.22)
+                        : (hovering ? Color.primary.opacity(0.06) : Color.clear)
+                )
+        )
         .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
         .onHover { inside in
             hovering = inside
             onHoverChange?(inside)

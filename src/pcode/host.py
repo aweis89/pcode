@@ -257,7 +257,11 @@ class _Client:
         host = self.host
         if host._latest is self:
             host._latest = self.displaced
-        host.update(attached=len(host.terminals()), unseen=host.entry.unseen or self.unseen_before)
+        host.update(
+            attached=len(host.terminals()),
+            unseen=host.entry.unseen or self.unseen_before,
+            touch=False,
+        )
 
     def cancel(self) -> None:
         self.host.controller.cancel()
@@ -672,7 +676,7 @@ class SessionHost:
                 if self.running_command is client:
                     self.running_command = None
                 if not self.stopped.is_set():
-                    self.update(attached=len(self.terminals()))
+                    self.update(attached=len(self.terminals()), touch=False)
 
     async def _observe(
         self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -812,7 +816,7 @@ class SessionHost:
         client.displaced, self._latest = self._latest, client
         client.unseen_before = self.entry.unseen
         # Shown now, so whatever finished while nobody watched has been seen.
-        self.update(attached=len(self.terminals()), unseen=False)
+        self.update(attached=len(self.terminals()), unseen=False, touch=False)
         self._state = self.controller.session_state()
         return {
             "id": self.entry.id,
@@ -1071,7 +1075,7 @@ class SessionHost:
             self.own_jobs()
         # /attach lists the session by its name once it has one, not its first prompt.
         if (title := state.get("session_title")) and title != self.entry.title:
-            self.update(title=title)
+            self.update(title=title, touch=False)
 
     def own_jobs(self) -> None:
         """Tag the jobs this host launches with its session, and take back that session's.
@@ -1084,10 +1088,10 @@ class SessionHost:
 
     # The entry other terminals read
 
-    def update(self, **changes) -> None:
+    def update(self, *, touch: bool = True, **changes) -> None:
         for key, value in changes.items():
             setattr(self.entry, key, value)
-        write_entry(self.entry, self.directory)
+        write_entry(self.entry, self.directory, touch=touch)
 
     def turn_began(self, prompt: str) -> None:
         self.reset_buffer()
