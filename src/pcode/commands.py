@@ -1,8 +1,9 @@
 """One registry drives dispatch, help, and slash completion."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
@@ -21,10 +22,31 @@ class Command:
     group: str = "Other"
     # Shown beside each argument in the completion menu, like the command's own
     # description; arguments without an entry complete bare.
-    argument_descriptions: dict[str, str] | None = None
+    argument_descriptions: Mapping[str, str] | None = None
     # Completes free-form arguments the fixed list cannot describe. Given the
     # argument text before the cursor, it yields completions for its end.
     argument_completer: Callable[[str], Iterable[Completion]] | None = None
+
+
+class DeferredDescriptions(Mapping[str, str]):
+    """Argument descriptions built on first use, for a list too costly to build
+    at every start for a menu that may never open."""
+
+    def __init__(self, build: Callable[[], dict[str, str]]) -> None:
+        self._build = build
+
+    @cached_property
+    def _descriptions(self) -> dict[str, str]:
+        return self._build()
+
+    def __getitem__(self, key: str) -> str:
+        return self._descriptions[key]
+
+    def __iter__(self):
+        return iter(self._descriptions)
+
+    def __len__(self) -> int:
+        return len(self._descriptions)
 
 
 class CommandRegistry:

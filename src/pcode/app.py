@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import importlib.metadata
 import logging
 import os
 import re
@@ -32,7 +31,7 @@ from rich.text import Text
 from pcode import glyphs, terminal_color
 from pcode.appearance import AppearanceWatch
 from pcode.cli import ask, restore_stdin
-from pcode.commands import Command, CommandRegistry
+from pcode.commands import Command, CommandRegistry, DeferredDescriptions
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.completion import complete_with
 from pcode.config import (
@@ -412,7 +411,7 @@ class PreviewApp:
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
-                argument_descriptions=config_argument_descriptions(),
+                argument_descriptions=DeferredDescriptions(config_argument_descriptions),
                 group="App",
             ),
             Command(
@@ -3962,9 +3961,7 @@ def main() -> None:
     # The workspace's `.pcode/preferences.json` overlays user defaults, so it has
     # to be known before the first load_preferences() (the --theme default).
     _select_project_root(sys.argv[1:])
-    parser.add_argument(
-        "--version", action="version", version=f"pcode {importlib.metadata.version('pcode')}"
-    )
+    parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(
         "--theme",
         choices=THEMES,
@@ -4162,7 +4159,7 @@ def main() -> None:
         return
     args.command = None
     if args.resume is not None:
-        from pcode.sessions import is_session_selector
+        from pcode.session_ids import is_session_selector
 
         if not is_session_selector(args.resume):
             # SESSION is optional, so argparse would otherwise swallow the first
@@ -4196,6 +4193,21 @@ def main() -> None:
             if not isinstance(args.profile, Path):
                 prune_captures()
         _run_cli(args, parser)
+
+
+class _VersionAction(argparse.Action):
+    """`--version`, looked up only when asked: reading package metadata costs
+    every start ~10 ms (`importlib.metadata` and the scan for `pcode`)."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.setdefault("help", "show program's version number and exit")
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from importlib.metadata import version
+
+        print(f"pcode {version('pcode')}")
+        parser.exit()
 
 
 def _select_project_root(argv: list[str]) -> None:
@@ -4478,13 +4490,20 @@ def _running_host(selector: str, session_dir: Path | None, workspace: Path):
     be attached to: going there keeps one conversation instead of two.
     """
     from pcode.host_protocol import list_hosts
+
+    hosts = list_hosts()
+    # A full ID, as an app pane passes, names its host outright (in the default
+    # store; another `--session-dir` resolves it there first).
+    running = next((entry for entry in hosts if entry.session_id == selector), None)
+    if running is not None and session_dir is None:
+        return running
     from pcode.sessions import SessionError, resolve_session
 
     try:
         identity = resolve_session(selector, session_dir, workspace).name
     except SessionError:
         return None  # The usual resume path reports it.
-    return next((entry for entry in list_hosts() if entry.session_id == identity), None)
+    return next((entry for entry in hosts if entry.session_id == identity), None)
 
 
 def _run_hosted(args: argparse.Namespace) -> None:

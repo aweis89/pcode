@@ -160,6 +160,15 @@ enum PCodeWorkspaceMode {
             || key.hasPrefix("__XCODE_")
     }
 
+    /// The `-c` script that prints the sentinel, `command`'s resolved path and
+    /// the login shell's environment. It is POSIX sh; fish can't parse it, so
+    /// under fish it runs in `/bin/sh`, which inherits fish's exported setup.
+    static func loginShellProbe(shell: String, command: String) -> String {
+        let probe = "p=$(command -v \(PCode.shellQuoted(command)) 2>/dev/null) || exit 1; printf '\\0%s\\0%s\\0' \(PCode.shellQuoted(envSentinel)) \"$p\"; /usr/bin/env -0"
+        guard URL(fileURLWithPath: shell).lastPathComponent == "fish" else { return probe }
+        return "exec /bin/sh -c \(fishQuoted(probe))"
+    }
+
     /// Warm the login-shell cache once in the background. Safe to call repeatedly.
     static func warmLoginShellCache() {
         cacheLock.lock()
@@ -168,14 +177,19 @@ enum PCodeWorkspaceMode {
             return
         }
         cacheStarted = true
+        // Entered under the lock, so `awaitLoginShellCache` never sees the
+        // warm-up started but the group still empty.
+        cacheWarming.enter()
         cacheLock.unlock()
 
         let shell = loginShell
         let cmd = command
         let baseEnv = ProcessInfo.processInfo.environment.filter { !isSkippedEnvKey($0.key) }
+        PCodeStartupTrace.mark("login-shell env warm start")
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let probe = "p=$(command -v \(PCode.shellQuoted(cmd)) 2>/dev/null) || exit 1; printf '\\0%s\\0%s\\0' \(PCode.shellQuoted(envSentinel)) \"$p\"; /usr/bin/env -0"
+            defer { cacheWarming.leave() }
+            let probe = loginShellProbe(shell: shell, command: cmd)
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: shell)
             proc.arguments = ["-l", "-c", probe]
@@ -238,7 +252,19 @@ enum PCodeWorkspaceMode {
             cacheLock.lock()
             cachedEnv = CachedShellEnv(commandPath: resolvedPath, direnvPath: direnvPath, env: env)
             cacheLock.unlock()
+            PCodeStartupTrace.mark("login-shell env cached")
         }
+    }
+
+    /// Settles when the warm-up started by `warmLoginShellCache` ends, ready or failed.
+    private static let cacheWarming = DispatchGroup()
+
+    /// Block (off the main thread) up to `timeout` for the login-shell cache,
+    /// so panes made right after launch take the direct command rather than
+    /// each paying for its own login shell. Starts the warm-up if needed.
+    static func awaitLoginShellCache(timeout: TimeInterval) {
+        warmLoginShellCache()
+        _ = cacheWarming.wait(timeout: .now() + timeout)
     }
 
     /// Direct command + cached login-shell env once ready, else the login-shell fallback.
@@ -333,6 +359,21 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
             ? (normalizedWorkspace as NSString).lastPathComponent
             : nil
         updatedDate = PCodeWorkspace.parseISO8601(updated)
+    }
+
+    /// Rebuild a session from its persisted index row, derived fields included
+    /// (parsing `updated` again for every session would cost a cold launch).
+    fileprivate init(_ row: LoadCache.Summary) {
+        id = row.id
+        workspace = row.workspace
+        updated = row.updated
+        name = row.name
+        title = row.title
+        turns = row.turns
+        project = row.project
+        normalizedProjectPath = row.normalizedProjectPath
+        worktreeName = row.worktreeName
+        updatedDate = row.updatedReference.map(Date.init(timeIntervalSinceReferenceDate:))
     }
 
     /// What the sidebar groups by (main checkout for worktrees, else workspace).
@@ -482,69 +523,247 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         return stateRoot.appendingPathComponent("pcode/sessions")
     }
 
-    /// Saved sessions with at least one turn (or held by a live host), newest first.
-    /// Live hosted sessions are always retained even when they fall beyond `limit`.
+    /// Saved sessions with at least one turn (or held by a live host), newest
+    /// first by `updated`: every one, for the sidebar to slice per project.
     static func load(
         root: URL = root,
-        limit: Int = 200,
-        hosted: Set<String> = hosted()
+        hosted: Set<String> = hosted(),
+        cache: LoadCache = .shared
     ) -> [PCodeSessionInfo] {
-        let fm = FileManager.default
-        guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
-        let all = loadCache.infos(dirs).filter { $0.turns > 0 || hosted.contains($0.id) }
-        let sorted = all.sorted { $0.updated > $1.updated }
-        if limit == .max || sorted.count <= limit { return sorted }
-        var trimmed = Array(sorted.prefix(limit))
-        let trimmedIDs = Set(trimmed.map(\.id))
-        for info in sorted.dropFirst(limit) where hosted.contains(info.id) && !trimmedIDs.contains(info.id) {
-            trimmed.append(info)
-        }
-        return trimmed
+        cache.infos(root: root).filter { $0.turns > 0 || hosted.contains($0.id) }
     }
 
-    private static let loadCache = LoadCache()
-
-    /// Decoded `session.json`s keyed by path, reused while the file's mtime and
-    /// size are unchanged: a reload then stats every session but parses only
-    /// the few that changed since the last one.
+    /// An index of every saved session's summary, keyed by directory name and
+    /// reused while its `session.json`'s mtime and size are unchanged: a reload
+    /// lists and stats every session but parses only the few that changed.
+    /// It is persisted (`session-index.json` in the app's caches folder), so a
+    /// cold launch parses only what changed while the app was closed too.
+    /// `session.json` stays the source of truth; the index is disposable.
     final class LoadCache {
+        /// Bump whenever `Summary` or what it derives (paths, dates) changes.
+        static let indexVersion = 1
+
+        /// The app's instance: persisted only for the session root it was made
+        /// for, so a test (or caller) loading another root never touches it.
+        static let shared = LoadCache(indexURL: defaultIndexURL, persistingFor: PCodeSessionInfo.root)
+
+        static var defaultIndexURL: URL? {
+            guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+                return nil
+            }
+            return caches
+                .appendingPathComponent(Bundle.main.bundleIdentifier ?? "pcode", isDirectory: true)
+                .appendingPathComponent("session-index.json")
+        }
+
+        /// A session's sidebar fields, decoded and derived once.
+        struct Summary: Codable, Equatable {
+            let id: String
+            let workspace: String
+            let updated: String
+            let name: String?
+            let title: String?
+            let turns: Int
+            let project: String?
+            let normalizedProjectPath: String
+            let worktreeName: String?
+            let updatedReference: Double?
+
+            init(_ info: PCodeSessionInfo) {
+                id = info.id
+                workspace = info.workspace
+                updated = info.updated
+                name = info.name
+                title = info.title
+                turns = info.turns
+                project = info.project
+                normalizedProjectPath = info.normalizedProjectPath
+                worktreeName = info.worktreeName
+                updatedReference = info.updatedDate?.timeIntervalSinceReferenceDate
+            }
+        }
+
+        /// One session directory: its `session.json`'s stamp and summary, or no
+        /// summary when the file didn't parse or names another id (so it isn't
+        /// reread until it changes).
+        struct Row: Codable, Equatable {
+            let dir: String
+            let sec: Int
+            let nsec: Int
+            let size: Int64
+            let summary: Summary?
+        }
+
+        private struct IndexFile: Codable {
+            let version: Int
+            let root: String
+            let rows: [Row]
+        }
+
         private struct Entry {
-            let stamp: timespec
-            let size: off_t
+            let row: Row
             let info: PCodeSessionInfo?
         }
 
+        let indexURL: URL?
+        private let persistRoot: String?
         private let lock = NSLock()
+        private var root: String?
         private var entries: [String: Entry] = [:]
+        /// What the last load returned, reused while nothing changed.
+        private var sorted: [PCodeSessionInfo] = []
+        private var indexRead = false
+        /// Whether the index file on disk matches `entries`.
+        private var persisted = false
+        private let writer = DispatchQueue(label: "com.pcode.session-index", qos: .utility)
+        /// `session.json`s parsed since this cache was made (not counting the index).
         private(set) var decodes = 0
 
-        func infos(_ dirs: [URL]) -> [PCodeSessionInfo] {
+        /// `indexURL` persists the index for loads of `root` (defaults to
+        /// `PCodeSessionInfo.root`); nil keeps it in memory only.
+        init(indexURL: URL? = nil, persistingFor root: URL? = nil) {
+            self.indexURL = indexURL
+            persistRoot = indexURL == nil ? nil : (root ?? PCodeSessionInfo.root).standardizedFileURL.path
+        }
+
+        /// Every session under `root` that parsed, newest first by `updated`.
+        /// Blocks on disk: call it off the main thread.
+        func infos(root rootURL: URL) -> [PCodeSessionInfo] {
             lock.lock()
             defer { lock.unlock() }
-            let decoder = JSONDecoder()
-            var fresh: [String: Entry] = [:]
-            fresh.reserveCapacity(dirs.count)
-            var result: [PCodeSessionInfo] = []
-            for dir in dirs {
-                let path = dir.appendingPathComponent("session.json").path
-                var st = Darwin.stat()
-                guard Darwin.lstat(path, &st) == 0 else { continue }
-                let entry: Entry
-                if let old = entries[path], old.size == st.st_size,
-                   old.stamp.tv_sec == st.st_mtimespec.tv_sec, old.stamp.tv_nsec == st.st_mtimespec.tv_nsec {
-                    entry = old
-                } else {
-                    decodes += 1
-                    let info = (try? Data(contentsOf: URL(fileURLWithPath: path)))
-                        .flatMap { try? decoder.decode(PCodeSessionInfo.self, from: $0) }
-                        .flatMap { $0.id == dir.lastPathComponent ? $0 : nil }
-                    entry = Entry(stamp: st.st_mtimespec, size: st.st_size, info: info)
-                }
-                fresh[path] = entry
-                if let info = entry.info { result.append(info) }
+            let rootPath = rootURL.standardizedFileURL.path
+            let persisting = indexURL != nil && rootPath == persistRoot
+            if root != rootPath {
+                root = rootPath
+                entries = [:]
+                sorted = []
+                indexRead = false
+                persisted = false
             }
-            entries = fresh  // Drops deleted sessions.
-            return result
+            if !indexRead {
+                indexRead = true
+                if persisting, let rows = readIndex(root: rootPath) {
+                    entries.reserveCapacity(rows.count)
+                    for row in rows {
+                        entries[row.dir] = Entry(row: row, info: row.summary.map(PCodeSessionInfo.init))
+                    }
+                    sorted = Self.sortedInfos(entries.values)
+                    persisted = true
+                }
+            }
+
+            // List and stat every session; keep entries whose stamp still matches.
+            var slots: [(dir: String, path: String, stat: Darwin.stat, entry: Entry?)] = []
+            slots.reserveCapacity(entries.count + 16)
+            for (dir, st) in Self.sessionFiles(rootPath) {
+                let path = rootPath + "/" + dir + "/session.json"
+                var cached: Entry?
+                if let old = entries[dir], old.row.size == Int64(st.st_size),
+                   old.row.sec == Int(st.st_mtimespec.tv_sec), old.row.nsec == Int(st.st_mtimespec.tv_nsec) {
+                    cached = old
+                }
+                slots.append((dir, path, st, cached))
+            }
+            // Parse the rest in parallel: with no index (first launch) that's
+            // every saved session.
+            let misses = slots.indices.filter { slots[$0].entry == nil }
+            decodes += misses.count
+            if !misses.isEmpty {
+                var parsed = [PCodeSessionInfo?](repeating: nil, count: misses.count)
+                let chunk = 32
+                parsed.withUnsafeMutableBufferPointer { out in
+                    DispatchQueue.concurrentPerform(iterations: (misses.count + chunk - 1) / chunk) { c in
+                        let decoder = JSONDecoder()
+                        for k in (c * chunk)..<min(misses.count, (c + 1) * chunk) {
+                            let slot = slots[misses[k]]
+                            out[k] = (try? Data(contentsOf: URL(fileURLWithPath: slot.path)))
+                                .flatMap { try? decoder.decode(PCodeSessionInfo.self, from: $0) }
+                                .flatMap { $0.id == slot.dir ? $0 : nil }
+                        }
+                    }
+                }
+                for (k, index) in misses.enumerated() {
+                    let st = slots[index].stat
+                    let row = Row(
+                        dir: slots[index].dir,
+                        sec: Int(st.st_mtimespec.tv_sec), nsec: Int(st.st_mtimespec.tv_nsec),
+                        size: Int64(st.st_size), summary: parsed[k].map(Summary.init))
+                    slots[index].entry = Entry(row: row, info: parsed[k])
+                }
+            }
+            let changed = !misses.isEmpty || slots.count != entries.count
+            if changed {
+                var fresh: [String: Entry] = [:]
+                fresh.reserveCapacity(slots.count)
+                for slot in slots {
+                    if let entry = slot.entry { fresh[slot.dir] = entry }
+                }
+                entries = fresh  // Drops deleted sessions.
+                sorted = Self.sortedInfos(entries.values)
+                persisted = false
+            }
+            if persisting && !persisted {
+                persisted = true
+                write(IndexFile(version: Self.indexVersion, root: rootPath, rows: entries.values.map(\.row)))
+            }
+            return sorted
+        }
+
+        /// Wait for a pending index write (tests).
+        func flush() { writer.sync {} }
+
+        private static func sortedInfos(_ entries: Dictionary<String, Entry>.Values) -> [PCodeSessionInfo] {
+            entries.compactMap(\.info).sorted { $0.updated != $1.updated ? $0.updated > $1.updated : $0.id < $1.id }
+        }
+
+        /// Each real directory in `root` (not a symlink to one) holding a
+        /// regular `session.json`, with that file's stat. Stats relative to the
+        /// open directory: lstat on full paths was several times slower.
+        private static func sessionFiles(_ root: String) -> [(dir: String, stat: Darwin.stat)] {
+            guard let dirp = opendir(root) else { return [] }
+            defer { closedir(dirp) }
+            let fd = dirfd(dirp)
+            var files: [(dir: String, stat: Darwin.stat)] = []
+            while let ent = readdir(dirp) {
+                let type = ent.pointee.d_type
+                let name = withUnsafeBytes(of: ent.pointee.d_name) { raw in
+                    String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+                }
+                if name == "." || name == ".." { continue }
+                var st = Darwin.stat()
+                if type == DT_UNKNOWN {
+                    guard fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { continue }
+                } else if type != DT_DIR {
+                    continue
+                }
+                guard fstatat(fd, name + "/session.json", &st, AT_SYMLINK_NOFOLLOW) == 0,
+                      (st.st_mode & S_IFMT) == S_IFREG
+                else { continue }
+                files.append((name, st))
+            }
+            return files
+        }
+
+        /// The persisted rows for `root`, or nil if the file is missing,
+        /// unreadable, from another version, or for another root.
+        private func readIndex(root: String) -> [Row]? {
+            guard let indexURL,
+                  let data = try? Data(contentsOf: indexURL),
+                  let file = try? JSONDecoder().decode(IndexFile.self, from: data),
+                  file.version == Self.indexVersion, file.root == root
+            else { return nil }
+            return file.rows
+        }
+
+        private func write(_ file: IndexFile) {
+            guard let indexURL else { return }
+            writer.async {
+                guard let data = try? JSONEncoder().encode(file) else { return }
+                try? FileManager.default.createDirectory(
+                    at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                // `.atomic` writes a temporary file and renames it over the old one.
+                try? data.write(to: indexURL, options: .atomic)
+            }
         }
     }
 }
@@ -663,17 +882,17 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             .filter { $0 }
             .first()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.markReady() }
+            .sink { [weak self] _ in self?.markReady(via: "dock") }
         // pcode asks the user something before its editor starts: show it now.
         inputSubscription = surface.pcodeDock.$needsInput
             .filter { $0 }
             .first()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.markReady() }
+            .sink { [weak self] _ in self?.markReady(via: "input") }
 
         // Safety escape hatch: if pcode errors out or never enables the dock,
         // drop the boot overlay so the terminal output is always visible.
-        let safety = DispatchWorkItem { [weak self] in self?.markReady() }
+        let safety = DispatchWorkItem { [weak self] in self?.markReady(via: "safety timeout") }
         readySafetyWork = safety
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: safety)
     }
@@ -699,8 +918,9 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     }
 
     /// Dismiss the startup overlay once pcode is live.
-    func markReady() {
+    func markReady(via reason: String = "direct") {
         guard !isReady else { return }
+        PCodeStartupTrace.paneReady(via: reason)
         readyFallbackWork?.cancel()
         readyFallbackWork = nil
         readySafetyWork?.cancel()
@@ -713,7 +933,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     func noteSessionReported() {
         guard !isReady, readyFallbackWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            self?.markReady()
+            self?.markReady(via: "session fallback")
         }
         readyFallbackWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
@@ -791,6 +1011,8 @@ struct PCodeProjectGroup: Identifiable {
     let openPanes: [PCodeSessionPane]
     let hostedSessions: [PCodeHostedSession]
     let recentSessions: [PCodeSessionInfo]
+    /// Recent saved sessions in the folder beyond `recentSessions` ("Show more…").
+    let remainingRecentCount: Int
     let starredSessionIDs: Set<String>
 
     init(
@@ -798,14 +1020,19 @@ struct PCodeProjectGroup: Identifiable {
         openPanes: [PCodeSessionPane],
         hostedSessions: [PCodeHostedSession] = [],
         recentSessions: [PCodeSessionInfo],
+        remainingRecentCount: Int = 0,
         starredSessionIDs: Set<String> = []
     ) {
         self.path = path
         self.openPanes = openPanes
         self.hostedSessions = hostedSessions
         self.recentSessions = recentSessions
+        self.remainingRecentCount = remainingRecentCount
         self.starredSessionIDs = starredSessionIDs
     }
+
+    /// Every recent saved session in the folder, shown or not.
+    var recentCount: Int { recentSessions.count + remainingRecentCount }
 
     var id: String { path }
 
@@ -883,16 +1110,33 @@ struct PCodeDirectoryCandidate: Identifiable, Hashable {
 
 final class PCodeWorkspace: ObservableObject {
     @Published private(set) var panes: [PCodeSessionPane] = [] {
-        didSet { syncDetachedHostStatuses() }
-    }
-    @Published var selected: UUID?
-    @Published private(set) var history: [PCodeSessionInfo] = [] {
         didSet {
-            historyByID = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            syncDetachedHostStatuses()
+            publishHistory()
         }
     }
+    @Published var selected: UUID?
+    /// What the sidebar shows of `allHistory`, newest first: every starred,
+    /// open, and hosted session, plus each project's newest `recentLimit`
+    /// others (`remainingRecentCounts` counts the rest).
+    @Published private(set) var history: [PCodeSessionInfo] = []
+    /// Per project, how many recent sessions `history` leaves out.
+    @Published private(set) var remainingRecentCounts: [String: Int] = [:]
+    /// Every saved session with a turn (or a live host), newest first. Not
+    /// published: the sidebar redraws from its slice, `history`.
+    private(set) var allHistory: [PCodeSessionInfo] = [] {
+        didSet {
+            historyByID = Dictionary(allHistory.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        }
+    }
+    /// Sessions a live host held at the last history load.
+    private var hostedAtLastLoad: Set<String> = []
     /// Live background hosts not currently open in a pane, published only when the detached subset changes.
-    @Published private(set) var detachedHostStatuses: [String: PCodeHostStatus] = [:]
+    @Published private(set) var detachedHostStatuses: [String: PCodeHostStatus] = [:] {
+        didSet {
+            if Set(detachedHostStatuses.keys) != Set(oldValue.keys) { publishHistory() }
+        }
+    }
     private var allHostStatuses: [String: PCodeHostStatus] = [:]
     private var historyByID: [String: PCodeSessionInfo] = [:]
     private var hostWatcherSubscription: AnyCancellable?
@@ -901,6 +1145,8 @@ final class PCodeWorkspace: ObservableObject {
     let peek = PCodePeekController()
     /// Whether the workspace window is on screen; set by its controller.
     var windowVisible: () -> Bool = { false }
+    /// The same, for SwiftUI views (`pcodeWindowOnScreen`); kept current by `syncOcclusion`.
+    let windowVisibility = PCodeWindowVisibility()
     /// The workspace window, for confirmation sheets; set by its controller.
     weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
@@ -917,6 +1163,7 @@ final class PCodeWorkspace: ObservableObject {
 
     init(ghostty: Ghostty.App) {
         self.ghostty = ghostty
+        PCodeStartupTrace.mark("workspace init")
         PCodeWorkspaceMode.warmLoginShellCache()
         peek.onTargetChange = { [weak self] in
             guard let self else { return }
@@ -986,7 +1233,7 @@ final class PCodeWorkspace: ObservableObject {
             self.syncDetachedHostStatuses()
             self.saveOpen()
             if pane.id == self.selected { self.saveSelected() }
-            self.reloadHistory()
+            self.scheduleHistoryReload()
         })
         hostWatcherSubscription = PCodeHostWatcher.shared.$statuses
             .receive(on: DispatchQueue.main)
@@ -999,6 +1246,8 @@ final class PCodeWorkspace: ObservableObject {
             // Scheduled on the main run loop.
             MainActor.assumeIsolated { self?.reconcilePanes() }
         }
+        // A backstop, not a deadline: let the system batch its wakeups.
+        reconcileTimer?.tolerance = 1
     }
 
     private var reconcileTimer: Timer?
@@ -1024,7 +1273,9 @@ final class PCodeWorkspace: ObservableObject {
             now.timeIntervalSince(pane.createdAt) > Self.reconcileGrace && Self.processGone(pane.surface)
         }
         dead.forEach(close)
-        if now.timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
+        // Nobody sees the sidebar while the window is hidden; `syncOcclusion`
+        // reloads when it shows again.
+        if windowVisibility.onScreen, now.timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
             reloadHistory()
         }
     }
@@ -1092,7 +1343,7 @@ final class PCodeWorkspace: ObservableObject {
             return host.turns != prev.turns
         }
         if appearedUnknown || disappeared || turnFinished {
-            reloadHistory()
+            scheduleHistoryReload()
         }
     }
 
@@ -1131,21 +1382,57 @@ final class PCodeWorkspace: ObservableObject {
         guard !restarting, !restoring else { return }
         restoring = true
         hasRestored = true
+        PCodeStartupTrace.mark("restore start")
         let saved = UserDefaults.standard.stringArray(forKey: Self.openKey) ?? []
         let marked = Self.restartMarker()
         let selectedID = UserDefaults.standard.string(forKey: Self.selectedKey)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Two things run at once: the history load (which fills the sidebar
+        // as soon as it lands) and, off the main thread, the waits below.
+        // The panes reopen when both are done.
+        let steps = DispatchGroup()
+        var loaded: [PCodeSessionInfo] = []
+        steps.enter()
+        reloadHistory { all in
+            loaded = all
+            steps.leave()
+        }
+        var ready: Set<String> = []
+        var hosted: Set<String> = []
+        var openElsewhere: Set<String> = []
+        steps.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
             // Sessions a Restart Pcode just moved may still be on their way
             // into their hosts.
-            let ready = PCodeSessionInfo.awaitRestarted(marked)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.restoring = false
-                Self.clearRestartMarker()
-                self.reloadHistory { [weak self] all in
-                    guard let self, self.panes.isEmpty else { return }
-                    self.reopen(saved: saved, marked: Set(marked), ready: ready, all: all, selectedID: selectedID)
-                }
+            ready = PCodeSessionInfo.awaitRestarted(marked)
+            PCodeStartupTrace.mark("restarted sessions awaited (\(marked.count))")
+            // The panes launch next: without the login shell's env each runs
+            // its own login shell to start pcode. Bounded; a slow shell
+            // config falls back to that as before.
+            PCodeWorkspaceMode.awaitLoginShellCache(timeout: 2)
+            PCodeStartupTrace.mark("login-shell env awaited")
+            // What `reopen` checks, read here rather than on the main thread.
+            hosted = PCodeSessionInfo.hosted()
+            openElsewhere = Set(saved.filter { !hosted.contains($0) && PCodeSessionInfo.isOpen($0) })
+            steps.leave()
+        }
+        steps.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.restoring = false
+            Self.clearRestartMarker()
+            let reopen: ([PCodeSessionInfo]) -> Void = { [weak self] all in
+                PCodeStartupTrace.mark("history loaded (\(all.count) sessions)")
+                guard let self, self.panes.isEmpty else { return }
+                self.reopen(
+                    saved: saved, marked: Set(marked), ready: ready, all: all, selectedID: selectedID,
+                    hosted: hosted, openElsewhere: openElsewhere)
+                PCodeStartupTrace.mark("reopen done (\(self.panes.count) panes)")
+            }
+            // Restarted sessions' hosts registered during the wait: reload
+            // to list them. Otherwise the load above is current enough.
+            if marked.isEmpty {
+                reopen(loaded)
+            } else {
+                self.reloadHistory(then: reopen)
             }
         }
     }
@@ -1156,12 +1443,12 @@ final class PCodeWorkspace: ObservableObject {
 
     private func reopen(
         saved: [String], marked: Set<String>, ready: Set<String>,
-        all: [PCodeSessionInfo], selectedID: String?
+        all: [PCodeSessionInfo], selectedID: String?,
+        hosted: Set<String>, openElsewhere: Set<String>
     ) {
         let infos = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        // Any session a host holds, even one a terminal is attached to as
-        // well: `pcode -c` attaches to the host, and the window shows them all.
-        let hosted = PCodeSessionInfo.hosted()
+        // Any session a host holds (`hosted`), even one a terminal is attached
+        // to as well: `pcode -c` attaches to the host, and the window shows them all.
         let extra = all.map(\.id).filter { hosted.contains($0) && !saved.contains($0) }
         for id in saved + extra {
             guard let info = infos[id] else { continue }
@@ -1169,7 +1456,7 @@ final class PCodeWorkspace: ObservableObject {
             // without a host: that would start a copy of it here instead.
             // A restarted one may have been seen ready before its host
             // registered.
-            let openable = hosted.contains(id) || (marked.contains(id) ? ready.contains(id) : !PCodeSessionInfo.isOpen(id))
+            let openable = hosted.contains(id) || (marked.contains(id) ? ready.contains(id) : !openElsewhere.contains(id))
             if openable { open(info, select: false) }
         }
         if !panes.isEmpty {
@@ -1191,24 +1478,21 @@ final class PCodeWorkspace: ObservableObject {
         let starred = starredSessionIDs
         DispatchQueue.global(qos: .userInitiated).async {
             let hosted = PCodeSessionInfo.hosted()
-            let all = PCodeSessionInfo.load(limit: .max, hosted: hosted)
+            let all = PCodeSessionInfo.load(hosted: hosted)
             // Sessions deleted outside the app (no directory left at all).
             let gone = unseen.union(starred).filter {
                 !FileManager.default.fileExists(atPath: PCodeSessionInfo.root.appendingPathComponent($0).path)
             }
-            var trimmed = Array(all.prefix(200))
-            let trimmedIDs = Set(trimmed.map(\.id))
-            for info in all.dropFirst(200) where (hosted.contains(info.id) || starred.contains(info.id)) && !trimmedIDs.contains(info.id) {
-                trimmed.append(info)
-            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, generation == self.historyGeneration else { return }
+                if all != self.allHistory { self.allHistory = all }
+                self.hostedAtLastLoad = hosted
                 if !gone.isEmpty {
                     self.unseenIDs.subtract(gone)
                     self.starredSessionIDs.subtract(gone)
                 }
-                // Unchanged (the usual periodic reload): don't redraw the sidebar.
-                if trimmed != self.history { self.history = trimmed }
+                self.publishHistory()
+                PCodeStartupTrace.mark("sidebar history set", once: true)
                 let callbacks = self.pendingHistoryCallbacks
                 self.pendingHistoryCallbacks.removeAll()
                 callbacks.forEach { $0(all) }
@@ -1216,8 +1500,73 @@ final class PCodeWorkspace: ObservableObject {
         }
     }
 
+    /// Reload history shortly, folding in every request until then: at launch
+    /// each restored pane reports its session and host, one reload apiece.
+    func scheduleHistoryReload() {
+        guard historyReloadWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.historyReloadWork = nil
+            self.reloadHistory()
+        }
+        historyReloadWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.historyReloadCoalesce, execute: work)
+    }
+
+    private var historyReloadWork: DispatchWorkItem?
+    private static let historyReloadCoalesce: TimeInterval = 0.25
+
     private var historyGeneration = 0
     private var pendingHistoryCallbacks: [([PCodeSessionInfo]) -> Void] = []
+
+    /// Recent sessions a folder shows before "Show more…".
+    static let initialRecentLimit = 5
+    /// How many more each "Show more…" click reveals.
+    static let recentPageSize = 50
+
+    /// Re-slice `allHistory` into `history` (in memory, no disk), publishing
+    /// only what changed: the usual periodic reload doesn't redraw the sidebar.
+    private func publishHistory() {
+        let keep = starredSessionIDs
+            .union(panes.compactMap(\.sessionID))
+            .union(detachedHostStatuses.keys)
+            .union(hostedAtLastLoad)
+        let slice = Self.sliceHistory(
+            allHistory, keep: keep, recentLimits: recentLimits, defaultLimit: Self.initialRecentLimit)
+        if slice.sessions != history { history = slice.sessions }
+        if slice.remaining != remainingRecentCounts { remainingRecentCounts = slice.remaining }
+    }
+
+    /// Of `all` (newest first), every session in `keep` plus each project's
+    /// newest `recentLimits[project]` (else `defaultLimit`) others, in order,
+    /// and per project the exact count of the others left out.
+    static func sliceHistory(
+        _ all: [PCodeSessionInfo], keep: Set<String>, recentLimits: [String: Int], defaultLimit: Int
+    ) -> (sessions: [PCodeSessionInfo], remaining: [String: Int]) {
+        var sessions: [PCodeSessionInfo] = []
+        var shown: [String: Int] = [:]
+        var remaining: [String: Int] = [:]
+        for info in all {
+            if keep.contains(info.id) {
+                sessions.append(info)
+                continue
+            }
+            let project = info.normalizedProjectPath
+            let count = shown[project, default: 0]
+            if count < recentLimits[project] ?? defaultLimit {
+                shown[project] = count + 1
+                sessions.append(info)
+            } else {
+                remaining[project, default: 0] += 1
+            }
+        }
+        return (sessions, remaining)
+    }
+
+    /// "Show more…": reveal the next page of a folder's recent sessions.
+    func showMoreRecent(_ path: String) {
+        recentLimits[path] = (recentLimits[path] ?? Self.initialRecentLimit) + Self.recentPageSize
+    }
 
     /// Folders explicitly added to the sidebar (may have no sessions yet).
     @Published var pinnedFolders: [String] = (UserDefaults.standard.stringArray(forKey: PCodeWorkspace.pinnedKey) ?? [])
@@ -1236,8 +1585,13 @@ final class PCodeWorkspace: ObservableObject {
     ) {
         didSet { UserDefaults.standard.set(Array(collapsedFolders), forKey: Self.collapsedKey) }
     }
-    /// Folders where the user clicked "Show more…" for recent sessions.
-    @Published var expandedRecentFolders: Set<String> = []
+    /// Per folder, how many recent sessions to show once the user clicked
+    /// "Show more…" (`initialRecentLimit` otherwise); collapsing resets it.
+    @Published private(set) var recentLimits: [String: Int] = [:] {
+        didSet {
+            if recentLimits != oldValue { publishHistory() }
+        }
+    }
     /// Starred session IDs (always float to the top of their folder).
     @Published private(set) var starredSessionIDs: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: PCodeWorkspace.starredKey) ?? []
@@ -1245,6 +1599,7 @@ final class PCodeWorkspace: ObservableObject {
         didSet {
             if starredSessionIDs != oldValue {
                 UserDefaults.standard.set(Array(starredSessionIDs), forKey: Self.starredKey)
+                publishHistory()
             }
         }
     }
@@ -1556,6 +1911,7 @@ final class PCodeWorkspace: ObservableObject {
         pinnedFolders: [String],
         hiddenFolders: Set<String>,
         starredSessionIDs: Set<String> = [],
+        remainingRecentCounts: [String: Int] = [:],
         lastActiveDateForPane: ((PCodeSessionPane) -> Date)? = nil
     ) -> [PCodeProjectGroup] {
         let openIDs = Set(panes.compactMap(\.sessionID))
@@ -1617,11 +1973,15 @@ final class PCodeWorkspace: ObservableObject {
                 if lhsDate != rhsDate { return lhsDate > rhsDate }
                 return lhs.id < rhs.id
             }
+            // A hidden folder shown only for a starred session lists no others.
+            let showsUnstarred = !hiddenFolders.contains(path)
+                || openByProject[path] != nil || hostedByProject[path] != nil
             return PCodeProjectGroup(
                 path: path,
                 openPanes: sortedOpen,
                 hostedSessions: sortedHosted,
                 recentSessions: sortedRecent,
+                remainingRecentCount: showsUnstarred ? remainingRecentCounts[path] ?? 0 : 0,
                 starredSessionIDs: starredSessionIDs)
         }
     }
@@ -1636,6 +1996,7 @@ final class PCodeWorkspace: ObservableObject {
             pinnedFolders: pinnedFolders,
             hiddenFolders: hiddenFolders,
             starredSessionIDs: starredSessionIDs,
+            remainingRecentCounts: remainingRecentCounts,
             lastActiveDateForPane: { [self] pane in pane.sortDate(saved: info(for: pane)) })
     }
 
@@ -1646,6 +2007,15 @@ final class PCodeWorkspace: ObservableObject {
         let groups = projectGroups
         var seen: Set<String> = []
         var result: [PCodeDirectoryCandidate] = []
+        // Saved sessions per project from the full index (the sidebar shows a slice).
+        let openIDs = Set(panes.compactMap(\.sessionID))
+        var recentCounts: [String: Int] = [:]
+        var recentOrder: [String] = []
+        for info in allHistory where !openIDs.contains(info.id) && detachedHostStatuses[info.id] == nil {
+            let path = info.normalizedProjectPath
+            if recentCounts[path] == nil { recentOrder.append(path) }
+            recentCounts[path, default: 0] += 1
+        }
 
         func append(_ group: PCodeProjectGroup, isCurrent: Bool) {
             guard seen.insert(group.path).inserted else { return }
@@ -1654,7 +2024,7 @@ final class PCodeWorkspace: ObservableObject {
                 name: group.name,
                 abbreviatedPath: group.abbreviatedPath,
                 openCount: group.openPanes.count + group.hostedSessions.count,
-                recentCount: group.recentSessions.count,
+                recentCount: recentCounts[group.path] ?? 0,
                 isCurrent: isCurrent,
                 isPinned: pinnedSet.contains(group.path),
                 isRawPath: false))
@@ -1667,22 +2037,14 @@ final class PCodeWorkspace: ObservableObject {
             append(group, isCurrent: group.path == currentProject)
         }
         // Also offer projects hidden from the sidebar so ⌘⇧N can still find and reopen them.
-        var hiddenCounts: [String: Int] = [:]
-        var hiddenOrder: [String] = []
-        for info in history {
-            let path = info.normalizedProjectPath
-            guard !seen.contains(path) else { continue }
-            if hiddenCounts[path] == nil { hiddenOrder.append(path) }
-            hiddenCounts[path, default: 0] += 1
-        }
-        for path in hiddenOrder where seen.insert(path).inserted {
+        for path in recentOrder where seen.insert(path).inserted {
             let last = (path as NSString).lastPathComponent
             result.append(PCodeDirectoryCandidate(
                 path: path,
                 name: path == Self.normalizePath(NSHomeDirectory()) ? "~" : (last.isEmpty ? path : last),
                 abbreviatedPath: Self.abbreviatePath(path),
                 openCount: 0,
-                recentCount: hiddenCounts[path] ?? 0,
+                recentCount: recentCounts[path] ?? 0,
                 isCurrent: currentProject == path,
                 isPinned: false,
                 isRawPath: false))
@@ -1851,6 +2213,7 @@ final class PCodeWorkspace: ObservableObject {
             collapsedFolders.remove(normalized)
         } else {
             collapsedFolders.insert(normalized)
+            recentLimits[normalized] = nil
         }
     }
 
@@ -1872,6 +2235,7 @@ final class PCodeWorkspace: ObservableObject {
         let normalized = Self.normalizePath(path)
         pinnedFolders.removeAll { $0 == normalized }
         hiddenFolders.insert(normalized)
+        recentLimits[normalized] = nil
     }
 
     /// Present a native macOS folder chooser (`NSOpenPanel`).
@@ -2078,6 +2442,14 @@ final class PCodeWorkspace: ObservableObject {
     /// compete with the one being watched.
     func syncOcclusion() {
         let windowVisible = windowVisible()
+        if windowVisibility.onScreen != windowVisible {
+            windowVisibility.onScreen = windowVisible
+            // The periodic history reload skips a hidden window: catch up now.
+            if windowVisible, hasRestored, !restoring,
+               Date().timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
+                reloadHistory()
+            }
+        }
         let peekedPaneID = peek.target?.paneID
         for pane in panes {
             let visible = windowVisible && (pane.id == selected || pane.id == peekedPaneID)
@@ -2355,6 +2727,7 @@ final class PCodeWorkspace: ObservableObject {
         // pcode keeps its own startup errors on screen until Enter (`hold_failed_start`).
         config.waitAfterCommand = false
         let view = Ghostty.SurfaceView(app, baseConfig: config)
+        PCodeStartupTrace.paneCreated(launch.command.hasPrefix("/usr/bin/env") ? "direct" : "login-shell fallback")
         view.pcodeSession = sessionID
         PCode.applyColorScheme(to: view)
         let pane = PCodeSessionPane(
@@ -2491,8 +2864,6 @@ struct PCodeWorkspaceView: View {
     /// `workspace.sidebarWidth` when the current resize drag began.
     @State private var sidebarDragStart: CGFloat?
     @State private var sidebarHandleHovered = false
-
-    private static let initialRecentLimit = 5
 
     // A plain stack, not NavigationSplitView, and no toolbar: on macOS 26+
     // those lay glass (blur sampled every frame) over the terminal, which is
@@ -2693,7 +3064,6 @@ struct PCodeWorkspaceView: View {
                             workspace: workspace,
                             group: group,
                             now: now,
-                            initialRecentLimit: Self.initialRecentLimit,
                             dividerColor: ghostty.config.splitDividerColor,
                             folderMenu: { folderMenu(group) },
                             openMenu: { openMenu($0) },
@@ -2822,7 +3192,6 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
     @ObservedObject var workspace: PCodeWorkspace
     let group: PCodeProjectGroup
     let now: Date
-    let initialRecentLimit: Int
     let dividerColor: Color
     @ViewBuilder var folderMenu: () -> FolderMenu
     @ViewBuilder var openMenu: (PCodeSessionPane) -> OpenMenu
@@ -2870,12 +3239,6 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
 
     @ViewBuilder
     private var rowsContent: some View {
-        let expanded = workspace.expandedRecentFolders.contains(group.path)
-        let unstarredRecent = group.unstarredRecentSessions
-        let visibleUnstarredRecent = expanded
-            ? unstarredRecent
-            : Array(unstarredRecent.prefix(initialRecentLimit))
-
         VStack(alignment: .leading, spacing: 2) {
             // Starred sessions always float to the top of their folder.
             ForEach(group.starredOpenPanes) { pane in
@@ -2895,16 +3258,19 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
             ForEach(group.unstarredHostedSessions) { hosted in
                 hostedSessionRow(hosted)
             }
-            ForEach(visibleUnstarredRecent) { info in
+            // The workspace publishes only the first page or so of each
+            // folder's recent sessions; the rest are counted.
+            ForEach(group.unstarredRecentSessions) { info in
                 recentSessionRow(info)
             }
 
-            if !expanded && unstarredRecent.count > initialRecentLimit {
-                let remaining = unstarredRecent.count - initialRecentLimit
+            if group.remainingRecentCount > 0 {
+                let remaining = group.remainingRecentCount
+                let next = min(remaining, PCodeWorkspace.recentPageSize)
                 Button {
-                    workspace.expandedRecentFolders.insert(group.path)
+                    workspace.showMoreRecent(group.path)
                 } label: {
-                    Text("Show \(remaining) more…")
+                    Text(next == remaining ? "Show \(remaining) more…" : "Show \(next) more of \(remaining)…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 26)
@@ -3038,12 +3404,42 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
     }
 }
 
+/// Whether the workspace window is on screen (not hidden, minimized or fully
+/// covered), for views that animate to stop while nobody can see them.
+private struct PCodeWindowOnScreenKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var pcodeWindowOnScreen: Bool {
+        get { self[PCodeWindowOnScreenKey.self] }
+        set { self[PCodeWindowOnScreenKey.self] = newValue }
+    }
+}
+
+/// The window's on-screen state, kept apart from `PCodeWorkspace` so a change
+/// redraws only what reads `pcodeWindowOnScreen`.
+final class PCodeWindowVisibility: ObservableObject {
+    @Published var onScreen = true
+}
+
+/// Hands `PCodeWindowVisibility` down as `pcodeWindowOnScreen`.
+struct PCodeWindowVisibilityReader<Content: View>: View {
+    @ObservedObject var visibility: PCodeWindowVisibility
+    let content: Content
+
+    var body: some View {
+        content.environment(\.pcodeWindowOnScreen, visibility.onScreen)
+    }
+}
+
 /// A turn running: the same green dot as a settled, unseen response, with a
 /// thin arc orbiting it, so running and done differ by motion, not by shape
 /// or size. Fills its frame; the dot is half of it (6pt in a 12pt slot).
 private struct PCodeRunningDot: View {
     private static let period = 1.1
     private static let lineWidth: CGFloat = 1.2
+    @Environment(\.pcodeWindowOnScreen) private var onScreen
 
     var body: some View {
         GeometryReader { geometry in
@@ -3051,7 +3447,8 @@ private struct PCodeRunningDot: View {
             ZStack {
                 // 30 fps is plenty for a 12pt arc, and keeps the sidebar from
                 // redrawing at the terminal's 120.
-                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                // Paused while the window is hidden or covered: nobody sees it.
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !onScreen)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let turns = t.truncatingRemainder(dividingBy: Self.period) / Self.period
                     Circle()
@@ -4195,6 +4592,9 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
 
     /// Show the window, restoring sessions once on first open.
     static func show(_ ghostty: Ghostty.App) {
+        PCodeStartupTrace.mark("show workspace", once: true)
+        // First show: start the login shell now, beside building the window.
+        if instance == nil { PCodeWorkspaceMode.warmLoginShellCache() }
         let controller = shared(ghostty)
         if !controller.workspace.hasRestored {
             controller.workspace.restore()
@@ -4205,6 +4605,7 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        PCodeStartupTrace.mark("window shown", once: true)
     }
 
     private init(ghostty: Ghostty.App) {
@@ -4226,9 +4627,11 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         // Keep mouseMoved events flowing even when no terminal SurfaceView is open so auto-hide reveal still works.
         window.acceptsMouseMovedEvents = true
         let hosting = NSHostingController(
-            rootView: PCodeWorkspaceView(workspace: workspace)
-                .frame(minWidth: 700, minHeight: 400)
-                .environmentObject(ghostty))
+            rootView: PCodeWindowVisibilityReader(
+                visibility: workspace.windowVisibility,
+                content: PCodeWorkspaceView(workspace: workspace)
+                    .frame(minWidth: 700, minHeight: 400)
+                    .environmentObject(ghostty)))
         // The window keeps its own size; by default the controller shrinks it
         // to SwiftUI's ideal size, which for a split view is tiny.
         hosting.sizingOptions = [.minSize]

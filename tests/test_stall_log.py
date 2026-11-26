@@ -60,10 +60,13 @@ class ScriptedWatch:
         steps = iter(steps)
 
         def wait(timeout):
-            assert timeout == stall_log.POLL
             step = next(steps, None)
             if step is None:
                 return True
+            # Each step is what happens during one poll. A longer wait (the
+            # loop keeping time) sleeps the rest first, using no CPU.
+            assert timeout >= stall_log.POLL
+            self.advance(timeout - stall_log.POLL)
             step()
             return False
 
@@ -116,6 +119,38 @@ def test_heartbeat_registers_gc_callback_until_stopped(tmp_path):
         assert watch._gc not in gc.callbacks
 
     asyncio.run(run())
+
+
+def test_a_selector_loop_is_timed_without_a_timer_and_left_as_found(tmp_path):
+    watch = StallWatch(tmp_path / "stalls.jsonl")
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        task = asyncio.create_task(watch.heartbeat())
+        await asyncio.sleep(0.05)
+        assert "select" in vars(loop._selector)
+        # Waiting for I/O: nothing is due, and the heartbeat schedules no timer.
+        assert not loop._scheduled
+        assert watch._due is not None  # This pass, which left the selector to run.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert "select" not in vars(loop._selector)
+        assert watch._due is None
+
+    try:
+        asyncio.run(run())
+    finally:
+        watch.stop()
+
+
+def test_the_loop_waiting_in_its_watched_selector_is_idle():
+    run_once = frame("base_events.py", "_run_once")
+    watched = frame("stall_log.py", "_watched_select", run_once)
+    assert stall_log._idle(frame("selectors.py", "select", watched))
+    assert stall_log._idle(frame("selectors.py", "select", run_once))
+    elsewhere = frame("stall_log.py", "_watched_select", frame("subprocess.py", "_communicate"))
+    assert not stall_log._idle(frame("selectors.py", "select", elsewhere))
 
 
 def test_a_blocked_loop_logs_one_stall_naming_the_blocker(tmp_path):
@@ -478,6 +513,29 @@ def test_an_idle_loop_logs_nothing(tmp_path):
     # A generous threshold: a loaded test machine can starve the process briefly.
     asyncio.run(watched(StallWatch(path, threshold=0.3), body))
     assert records(path) == []
+
+
+def test_the_watcher_sleeps_while_the_loop_keeps_time(scripted_watch):
+    """Polling every 20 ms on an idle loop was most of an idle terminal's CPU."""
+    driver = scripted_watch
+    watch = driver.watch
+    watch._due = driver.wall + stall_log.BEAT
+    timeouts = []
+
+    def wait(timeout):
+        timeouts.append(round(timeout, 3))
+        if len(timeouts) == 3:
+            return True
+        driver.advance(timeout)
+        if len(timeouts) == 1:  # The beat runs on time.
+            watch._due = driver.wall + stall_log.BEAT
+        return False
+
+    driver.monkeypatch.setattr(watch._stop, "wait", wait)
+    watch._watch()
+    # Asleep until the next beat (due in 50 ms) could be overdue (100 ms past
+    # due); then, with that beat not yet run, polling.
+    assert timeouts == [stall_log.POLL, 0.15, stall_log.POLL]
 
 
 def test_a_short_block_under_the_threshold_is_ignored(tmp_path):

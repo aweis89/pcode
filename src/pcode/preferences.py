@@ -6,11 +6,12 @@ import re
 import shlex
 import shutil
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 from filelock import FileLock
-from pygments.styles import get_all_styles
 from rich.cells import cell_len
 from rich.spinner import SPINNERS as RICH_SPINNERS
 
@@ -19,12 +20,45 @@ from pcode.kitty_spinner import SMOOTH_NAMES as SMOOTH_SPINNERS
 from pcode.profiling import PROFILE_MODES
 from pcode.transcript_log import CHAR_BUDGET
 
-# Every Pygments style installed here, including any added by a plugin package.
-# The scan costs a few milliseconds once; Rich imports Pygments regardless.
 # `terminal` is not a Pygments style: it hands every color, code included, to
 # the terminal's own ANSI palette, so pcode matches whatever scheme it runs in.
 TERMINAL_SYNTAX = "terminal"
-SYNTAX_THEMES = (TERMINAL_SYNTAX, *sorted(get_all_styles()))
+
+
+class _SyntaxThemes(Sequence[str]):
+    """`terminal`, then every Pygments style installed, plugin packages' included.
+
+    Listed on first use: finding plugin styles scans every installed package's
+    entry points (~15 ms), which every start paid at import though only a
+    menu, a gallery or an unknown name needs it. A built-in name is checked
+    without the scan.
+    """
+
+    @cached_property
+    def _names(self) -> tuple[str, ...]:
+        from pygments.styles import get_all_styles
+
+        return (TERMINAL_SYNTAX, *sorted(get_all_styles()))
+
+    def __contains__(self, name: object) -> bool:
+        from pygments.styles import STYLE_MAP
+
+        return name == TERMINAL_SYNTAX or name in STYLE_MAP or name in self._names
+
+    def __bool__(self) -> bool:
+        return True  # `terminal` at least; without this, `bool()` lists them.
+
+    def __getitem__(self, index):
+        return self._names[index]
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+    def __repr__(self) -> str:
+        return repr(self._names)
+
+
+SYNTAX_THEMES: Sequence[str] = _SyntaxThemes()
 
 
 def _steady_width(frames: list[str]) -> bool:

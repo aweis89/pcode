@@ -160,10 +160,10 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         }
         let info: PCodeSessionInfo?
         if let id = args["session"] as? String {
-            info = workspace.history.first { $0.id == id || $0.id.hasPrefix(id) }
+            info = workspace.allHistory.first { $0.id == id || $0.id.hasPrefix(id) }
         } else {
             let openIDs = Set(workspace.panes.compactMap(\.sessionID))
-            info = workspace.history.first { !openIDs.contains($0.id) } ?? workspace.history.first
+            info = workspace.allHistory.first { !openIDs.contains($0.id) } ?? workspace.allHistory.first
         }
         guard let info else { throw DebugCommands.Failure("no session to peek") }
         workspace.peek.peekFromMenu(workspace.peekTarget(for: info))

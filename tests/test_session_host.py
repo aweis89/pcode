@@ -2383,6 +2383,22 @@ def test_registry_forgets_hosts_whose_process_is_gone(host_dir):
         find_host("nothing")
 
 
+def test_a_full_session_id_finds_its_host_without_reading_sessions(host_dir, monkeypatch, tmp_path):
+    import pcode.sessions
+    from pcode.app import _running_host
+
+    identity = "0123abcd-0000-4000-8000-000000000000"
+    write_entry(
+        HostEntry(id="live0000", pid=os.getpid(), model="m", workspace="/repo", session_id=identity)
+    )
+
+    def unread(*args, **kwargs):
+        raise AssertionError("listed sessions")
+
+    monkeypatch.setattr(pcode.sessions, "list_sessions", unread)
+    assert _running_host(identity, None, tmp_path).id == "live0000"
+
+
 def test_hosts_json_lists_running_hosts_for_scripts(host_dir, monkeypatch, capsys):
     from pcode.app import main
 

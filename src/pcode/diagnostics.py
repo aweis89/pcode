@@ -4,7 +4,6 @@ import os
 import re
 import sysconfig
 import traceback
-from importlib.metadata import version
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -266,6 +265,9 @@ def quota_message(error: BaseException) -> str | None:
 
 
 def versions() -> dict[str, str]:
+    # Here, not at import: `importlib.metadata` costs every start ~10 ms.
+    from importlib.metadata import version
+
     return {
         package: version(package)
         for package in ("pcode", "pydantic-ai-slim", "pydantic-ai-harness")

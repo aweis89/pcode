@@ -4,14 +4,13 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import sqlite3
 import tempfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -19,14 +18,10 @@ from uuid import uuid4
 
 from filelock import FileLock, Timeout
 from pydantic import BaseModel
-from pydantic_ai_harness.step_persistence import (
-    SqliteStepStore,
-    StepEvent,
-    ToolEffectRecord,
-)
 
 from pcode.conversation_tree import ConversationTree, side_record
 from pcode.diagnostics import error_report, redact, versions
+from pcode.session_ids import is_session_selector
 
 
 class SessionError(ValueError):
@@ -103,12 +98,17 @@ def read_info(path: Path) -> SessionInfo:
     return info
 
 
-def list_sessions(root: Path | None = None) -> list[SessionInfo]:
+def list_sessions(root: Path | None = None, prefix: str = "") -> list[SessionInfo]:
+    """Saved sessions, newest first; only IDs starting with `prefix` if given.
+
+    A directory is named for its session's ID, so a prefix skips reading the
+    others: an app pane resuming one of a thousand sessions read them all.
+    """
     root = root or session_root()
     result = []
     if root.is_dir():
         for path in root.iterdir():
-            if path.is_dir() and not path.is_symlink():
+            if path.name.startswith(prefix) and path.is_dir() and not path.is_symlink():
                 try:
                     result.append(read_info(path))
                 except SessionError:
@@ -428,17 +428,12 @@ def compact_snapshots(directory: Path, keep: int = SNAPSHOTS_PER_RUN) -> tuple[i
     return before, _store_bytes(database)
 
 
-def is_session_selector(value: str) -> bool:
-    """Tell an ID/prefix apart from prompt text after an optional-argument flag."""
-    return value == "latest" or bool(re.fullmatch(r"[a-f0-9-]{8,36}", value))
-
-
 def resolve_session(selector: str, root: Path | None = None, workspace: Path | None = None) -> Path:
     """Resolve an ID/prefix, or the newest session, optionally scoped to a workspace."""
     root = root or session_root()
     if not is_session_selector(selector):
         raise SessionError("Use a session ID from --sessions, or omit it for the latest.")
-    sessions = list_sessions(root)
+    sessions = list_sessions(root, "" if selector == "latest" else selector)
     if selector != "latest":
         matches = [s for s in sessions if s.id.startswith(selector)]
     elif workspace is None:
@@ -581,6 +576,8 @@ def _ensure_harness_schema(database: Path) -> None:
     Runs on its own loop in a worker thread, so it works whether or not the
     caller is already inside one.
     """
+    from pydantic_ai_harness.step_persistence import SqliteStepStore
+
     store = SqliteStepStore(database=database, media_store=None)
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(asyncio.run, store.get_run(run_id="")).result()
@@ -643,20 +640,6 @@ def adopt_legacy_messages(database: Path) -> None:
         connection.rollback()
     finally:
         connection.close()
-
-
-class PrivateStepStore(SqliteStepStore):
-    """Use the public store hooks to redact error strings, not replay-critical history."""
-
-    async def append_event(self, event: StepEvent) -> None:
-        if event.error:
-            event = replace(event, error=redact(event.error))
-        await super().append_event(event)
-
-    async def record_tool_effect(self, record: ToolEffectRecord) -> None:
-        if record.effect_summary:
-            record = replace(record, effect_summary=redact(record.effect_summary))
-        await super().record_tool_effect(record)
 
 
 def _parse(line: bytes) -> dict | None:
@@ -877,6 +860,8 @@ class SavedSession(SessionJournal):
             for name in ("steps.sqlite3", "transcript.jsonl", "session.json"):
                 private_file(directory / name)
             adopt_legacy_messages(directory / "steps.sqlite3")
+            from pcode.step_store import PrivateStepStore
+
             self.store = PrivateStepStore(
                 database=directory / "steps.sqlite3",
                 max_snapshots_per_run=SNAPSHOTS_PER_RUN,

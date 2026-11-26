@@ -226,6 +226,23 @@ def test_latest_is_scoped_to_the_given_workspace(tmp_path):
         resolve_session("latest", root, tmp_path)
 
 
+def test_an_id_prefix_reads_only_the_sessions_it_could_name(tmp_path, monkeypatch):
+    import pcode.sessions as sessions
+
+    root = tmp_path / "sessions"
+    wanted, other = (SavedSession.create("test:local", tmp_path, root) for _ in range(2))
+    wanted.close()
+    other.close()
+    read = []
+    real = sessions.read_info
+    monkeypatch.setattr(sessions, "read_info", lambda path: read.append(path.name) or real(path))
+
+    # As an app pane resumes: by full ID.
+    assert resolve_session(wanted.info.id, root).name == wanted.info.id
+    assert read == [wanted.info.id]
+    assert {info.id for info in list_sessions(root, "")} == {wanted.info.id, other.info.id}
+
+
 @pytest.mark.parametrize("tail", [b'{"kind":"TextDelta","text":"torn', b'{"text":"\xf0\x9f'])
 def test_torn_journal_does_not_hide_future_events(tmp_path, tail):
     saved = SavedSession.create("test:local", tmp_path, tmp_path / "sessions")
@@ -743,7 +760,8 @@ def test_a_legacy_row_that_lost_a_message_fails_alone(tmp_path):
 def test_compacting_stores_whole_history_rows_once_and_keeps_them_readable(tmp_path):
     from pydantic_ai.messages import ModelMessagesTypeAdapter
 
-    from pcode.sessions import PrivateStepStore, compact_snapshots
+    from pcode.sessions import compact_snapshots
+    from pcode.step_store import PrivateStepStore
 
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", tmp_path, root)

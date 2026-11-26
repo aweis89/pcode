@@ -150,60 +150,197 @@ struct PCodeSidebarTests {
         #expect(PCodePathCompleter.directorySuggestions(for: "~nonexistentuserxyz", home: homePath, fileManager: fm).isEmpty)
     }
 
-    @Test func sessionLoadIncludesZeroTurnLiveHostedSessions() throws {
+    /// A throwaway session root under the temporary directory.
+    private struct SessionRoot {
+        let url: URL
         let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("pcode-sessions-test-\(UUID().uuidString)")
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: root) }
 
-        func writeSession(id: String, turns: Int, updated: String, title: String) throws {
-            let dir = root.appendingPathComponent(id)
+        init(_ label: String) throws {
+            url = FileManager.default.temporaryDirectory.appendingPathComponent("pcode-\(label)-\(UUID().uuidString)")
+            try fm.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+
+        func write(
+            _ id: String, workspace: String = "/tmp/proj", turns: Int = 1,
+            updated: String = "2026-11-26T01:00:00+00:00", title: String? = nil
+        ) throws {
+            let dir = url.appendingPathComponent(id)
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
             let json = """
-            {"id":"\(id)","workspace":"/tmp/proj","updated":"\(updated)","title":"\(title)","turns":\(turns)}
+            {"id":"\(id)","workspace":"\(workspace)","updated":"\(updated)","title":"\(title ?? id)","turns":\(turns)}
             """
             try Data(json.utf8).write(to: dir.appendingPathComponent("session.json"))
         }
 
-        try writeSession(id: "empty-idle", turns: 0, updated: "2026-11-26T01:00:00+00:00", title: "Empty")
-        try writeSession(id: "live-zero-turns", turns: 0, updated: "2026-11-26T02:00:00+00:00", title: "Running first turn")
-        try writeSession(id: "completed-new", turns: 2, updated: "2026-11-26T03:00:00+00:00", title: "Completed new")
-        try writeSession(id: "live-old", turns: 1, updated: "2026-11-25T01:00:00+00:00", title: "Old live host")
+        func remove() { try? fm.removeItem(at: url) }
+    }
 
-        let loaded = PCodeSessionInfo.load(root: root, limit: 2, hosted: ["live-zero-turns", "live-old"])
-        // Top 2 newest plus the live-old host that fell beyond the limit.
+    @Test func sessionLoadIncludesZeroTurnLiveHostedSessions() throws {
+        let root = try SessionRoot("sessions-test")
+        defer { root.remove() }
+        try root.write("empty-idle", turns: 0, updated: "2026-11-26T01:00:00+00:00")
+        try root.write("live-zero-turns", turns: 0, updated: "2026-11-26T02:00:00+00:00")
+        try root.write("completed-new", turns: 2, updated: "2026-11-26T03:00:00+00:00")
+        try root.write("live-old", turns: 1, updated: "2026-11-25T01:00:00+00:00")
+
+        let loaded = PCodeSessionInfo.load(
+            root: root.url, hosted: ["live-zero-turns", "live-old"], cache: PCodeSessionInfo.LoadCache())
+        // Every session with a turn or a live host, newest first; no cap.
         #expect(loaded.map(\.id) == ["completed-new", "live-zero-turns", "live-old"])
     }
 
     @Test func sessionLoadCacheParsesOnlyChangedFiles() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("pcode-cache-test-\(UUID().uuidString)")
-        defer { try? fm.removeItem(at: root) }
-        func write(_ id: String, title: String) throws {
-            let dir = root.appendingPathComponent(id)
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            let json = """
-            {"id":"\(id)","workspace":"/tmp/proj","updated":"2026-11-26T01:00:00+00:00","title":"\(title)","turns":1}
-            """
-            try Data(json.utf8).write(to: dir.appendingPathComponent("session.json"))
-        }
-        try write("a", title: "A")
-        try write("b", title: "B")
+        let root = try SessionRoot("cache-test")
+        defer { root.remove() }
+        try root.write("a", title: "A")
+        try root.write("b", title: "B")
+        // Not a session: a symlink to one, and a session.json naming another id.
+        try root.fm.createSymbolicLink(
+            at: root.url.appendingPathComponent("link"), withDestinationURL: root.url.appendingPathComponent("a"))
+        try root.write("c")
+        try Data(#"{"id":"other","workspace":"/tmp/proj","updated":"x","turns":1}"#.utf8)
+            .write(to: root.url.appendingPathComponent("c/session.json"))
         let cache = PCodeSessionInfo.LoadCache()
-        func load() throws -> [String: String] {
-            let dirs = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            return Dictionary(uniqueKeysWithValues: cache.infos(dirs).map { ($0.id, $0.label) })
+        func load() -> [String: String] {
+            Dictionary(uniqueKeysWithValues: cache.infos(root: root.url).map { ($0.id, $0.label) })
         }
 
-        #expect(try load() == ["a": "A", "b": "B"])
-        #expect(cache.decodes == 2)
-        #expect(try load() == ["a": "A", "b": "B"])
-        #expect(cache.decodes == 2)  // Nothing changed: nothing parsed.
-        try write("b", title: "B renamed")
-        #expect(try load() == ["a": "A", "b": "B renamed"])
+        #expect(load() == ["a": "A", "b": "B"])
         #expect(cache.decodes == 3)
-        try fm.removeItem(at: root.appendingPathComponent("a"))
-        #expect(try load() == ["b": "B renamed"])
+        #expect(load() == ["a": "A", "b": "B"])
+        #expect(cache.decodes == 3)  // Nothing changed: nothing parsed, not even the bad one.
+        try root.write("b", title: "B renamed")
+        #expect(load() == ["a": "A", "b": "B renamed"])
+        #expect(cache.decodes == 4)
+        try root.fm.removeItem(at: root.url.appendingPathComponent("a"))
+        #expect(load() == ["b": "B renamed"])
+    }
+
+    @Test func persistedSessionIndexRoundTripsAndParsesOnlyChangedFiles() throws {
+        let root = try SessionRoot("index-test")
+        defer { root.remove() }
+        let index = root.fm.temporaryDirectory.appendingPathComponent("pcode-index-\(UUID().uuidString).json")
+        defer { try? root.fm.removeItem(at: index) }
+        try root.write("a", updated: "2026-11-26T01:00:00+00:00", title: "A")
+        try root.write("b", updated: "2026-11-26T02:00:00.5+00:00", title: "B")
+        try root.write("zero", turns: 0)
+        try root.write("bad")
+        try Data("not json".utf8).write(to: root.url.appendingPathComponent("bad/session.json"))
+
+        let first = PCodeSessionInfo.LoadCache(indexURL: index, persistingFor: root.url)
+        let firstLoad = first.infos(root: root.url)
+        first.flush()
+        #expect(first.decodes == 4)
+        #expect(root.fm.fileExists(atPath: index.path))
+
+        // A second cache (the next launch) reads the index and parses only what changed.
+        try root.write("a", updated: "2026-11-26T03:00:00+00:00", title: "A again")
+        let second = PCodeSessionInfo.LoadCache(indexURL: index, persistingFor: root.url)
+        let secondLoad = second.infos(root: root.url)
+        #expect(second.decodes == 1)
+        #expect(secondLoad.map(\.id) == ["a", "b", "zero"])
+        #expect(secondLoad.map(\.label) == ["A again", "B", "zero"])
+        // Rows rebuilt from the index match freshly parsed ones, derived fields included.
+        #expect(secondLoad.dropFirst() == firstLoad.filter { $0.id != "a" }[...])
+        #expect(secondLoad[1].updatedDate == PCodeWorkspace.parseISO8601("2026-11-26T02:00:00.5+00:00"))
+
+        // Unchanged since: a third launch parses nothing.
+        second.flush()
+        let third = PCodeSessionInfo.LoadCache(indexURL: index, persistingFor: root.url)
+        #expect(third.infos(root: root.url) == secondLoad)
+        #expect(third.decodes == 0)
+
+        // Loading another root neither reads nor writes the index.
+        let other = try SessionRoot("index-other")
+        defer { other.remove() }
+        try other.write("x")
+        let before = try Data(contentsOf: index)
+        #expect(third.infos(root: other.url).map(\.id) == ["x"])
+        third.flush()
+        #expect(try Data(contentsOf: index) == before)
+    }
+
+    @Test func corruptOrOldSessionIndexIsDiscarded() throws {
+        let root = try SessionRoot("index-bad")
+        defer { root.remove() }
+        let index = root.fm.temporaryDirectory.appendingPathComponent("pcode-index-\(UUID().uuidString).json")
+        defer { try? root.fm.removeItem(at: index) }
+        try root.write("a", title: "A")
+
+        for contents in [
+            "garbage",
+            #"{"version":0,"root":"\#(root.url.standardizedFileURL.path)","rows":[]}"#,
+            #"{"version":\#(PCodeSessionInfo.LoadCache.indexVersion),"root":"/elsewhere","rows":[]}"#,
+        ] {
+            try Data(contents.utf8).write(to: index)
+            let cache = PCodeSessionInfo.LoadCache(indexURL: index, persistingFor: root.url)
+            #expect(cache.infos(root: root.url).map(\.label) == ["A"])
+            #expect(cache.decodes == 1)
+            cache.flush()
+            // Rewritten as a current index.
+            let next = PCodeSessionInfo.LoadCache(indexURL: index, persistingFor: root.url)
+            #expect(next.infos(root: root.url).map(\.label) == ["A"])
+            #expect(next.decodes == 0)
+        }
+    }
+
+    private func makeInfo(_ id: String, workspace: String, updated: String) throws -> PCodeSessionInfo {
+        let json = """
+        {"id":"\(id)","workspace":"\(workspace)","updated":"\(updated)","title":"\(id)","turns":1}
+        """
+        return try JSONDecoder().decode(PCodeSessionInfo.self, from: Data(json.utf8))
+    }
+
+    @Test func quietProjectKeepsItsFolderAndExactCounts() throws {
+        let busy = PCodeWorkspace.normalizePath("/tmp/busy-proj")
+        let quiet = PCodeWorkspace.normalizePath("/tmp/quiet-proj")
+        // 300 newer sessions in one project, then three old ones in another.
+        var all = try (0..<300).map { i in
+            try makeInfo("busy-\(1000 - i)", workspace: busy, updated: "2026-11-26T\(String(format: "%02d", 23 - i / 60)):\(String(format: "%02d", 59 - i % 60)):00+00:00")
+        }
+        all += try (1...3).map { try makeInfo("quiet-\($0)", workspace: quiet, updated: "2026-01-0\($0)T00:00:00+00:00") }
+        all.sort { $0.updated > $1.updated }
+
+        let slice = PCodeWorkspace.sliceHistory(all, keep: [], recentLimits: [:], defaultLimit: 5)
+        #expect(slice.sessions.count == 8)
+        #expect(slice.remaining == [busy: 295])
+        let groups = PCodeWorkspace.buildProjectGroups(
+            panes: [], projectPathForPane: { $0.projectPath }, history: slice.sessions,
+            detachedHostStatuses: [:], pinnedFolders: [], hiddenFolders: [],
+            remainingRecentCounts: slice.remaining)
+        #expect(groups.map(\.path) == [busy, quiet])
+        #expect(groups[0].recentSessions.count == 5)
+        #expect(groups[0].remainingRecentCount == 295)
+        #expect(groups[0].recentCount == 300)
+        #expect(groups[1].recentSessions.map(\.id) == ["quiet-3", "quiet-2", "quiet-1"])
+        #expect(groups[1].recentCount == 3)
+    }
+
+    @Test func showingMoreReslicesFromMemoryWithExactRemaining() throws {
+        let proj = PCodeWorkspace.normalizePath("/tmp/more-proj")
+        let all = try (0..<120).map { i in
+            try makeInfo(String(format: "s%03d", i), workspace: proj, updated: String(format: "2026-11-26T01:%02d:%02d+00:00", 59 - i / 60, 59 - i % 60))
+        }
+        // A starred, an open, and a hosted session never count against the limit.
+        let keep: Set<String> = ["s000", "s050", "s119"]
+        let collapsed = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [:], defaultLimit: 5)
+        #expect(collapsed.sessions.map(\.id) == ["s000", "s001", "s002", "s003", "s004", "s005", "s050", "s119"])
+        #expect(collapsed.remaining == [proj: 112])
+
+        let page = PCodeWorkspace.initialRecentLimit + PCodeWorkspace.recentPageSize
+        let expanded = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [proj: page], defaultLimit: 5)
+        #expect(expanded.sessions.count == page + keep.count)
+        #expect(expanded.remaining == [proj: 117 - page])
+        let groups = PCodeWorkspace.buildProjectGroups(
+            panes: [], projectPathForPane: { $0.projectPath }, history: expanded.sessions,
+            detachedHostStatuses: [:], pinnedFolders: [], hiddenFolders: [], starredSessionIDs: keep,
+            remainingRecentCounts: expanded.remaining)
+        #expect(groups[0].unstarredRecentSessions.count == page)
+        #expect(groups[0].remainingRecentCount == 117 - page)
+
+        let all117 = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [proj: page + 100], defaultLimit: 5)
+        #expect(all117.sessions.count == 120)
+        #expect(all117.remaining.isEmpty)
     }
 
     @Test func hostedSessionsSurfaceActivityAndUnseenInProjectGroup() throws {
