@@ -226,10 +226,18 @@ def background_theme(response: bytes) -> str | None:
     if match is None:
         return None
     rgb = [int(value, 16) / (16 ** len(value) - 1) for value in match.groups()]
+    color = "#" + "".join(f"{round(value * 255):02x}" for value in rgb)
+    from pcode import dock
+
+    docked = dock.active()
+    if docked is not None and docked.owns_tty and color in (docked.tint, docked._sent_tint):
+        # EditorOnly's own OSC 11 tint echoed back: never record it as the
+        # base background, or the next frame_shades call would lift it again.
+        return None
     # Perceived brightness, rather than the unweighted RGB average.
     brightness = sum(value * weight for value, weight in zip(rgb, (0.299, 0.587, 0.114)))
     theme = "light" if brightness >= 0.5 else "dark"
-    _background = ("#" + "".join(f"{round(value * 255):02x}" for value in rgb), theme)
+    _background = (color, theme)
     return theme
 
 

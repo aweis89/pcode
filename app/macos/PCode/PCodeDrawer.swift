@@ -159,14 +159,19 @@ struct PCodeDrawerSurface: View {
                 .overlay(alignment: .topTrailing) {
                     ZStack(alignment: .topTrailing) {
                         Color.clear
-                        if drawsDrawer, drawer.visible, let thread = drawer.thread {
+                        if drawsDrawer, let thread = drawer.thread {
+                            let drawerWidth = width(in: geometry.size.width)
                             overlay(
                                 thread,
-                                width: width(in: geometry.size.width),
+                                width: drawerWidth,
                                 height: height(in: geometry.size.height),
                                 total: geometry.size.width,
                                 totalHeight: geometry.size.height
                             )
+                            // Keep the view mounted across `pcode;hide` and `pcode;show` so its
+                            // scroll offset and selection survive while a popup covers the pane.
+                            .offset(x: drawer.visible ? 0 : drawerWidth + 16)
+                            .opacity(drawer.visible ? 1 : 0)
                             .allowsHitTesting(drawer.visible)
                             .transition(.move(edge: .trailing))
                             .zIndex(1)

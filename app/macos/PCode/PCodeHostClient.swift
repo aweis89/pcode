@@ -116,6 +116,60 @@ enum PCodeHostEvent: Equatable {
     case note(String)
     case error(String)
     case conversationReset
+    /// A `state` notify: the session fields that changed since the last one.
+    case sessionState(PCodeHostSessionDelta)
+    /// The conversation's identity or settings changed (`session_changed`); carries the host's current session id.
+    case sessionChanged(String)
+}
+
+/// The `SESSION_FIELDS` (`pcode.controller`) a `state` notify carries that the app tracks.
+/// Each is nil when that field did not change; the host sends only what changed.
+struct PCodeHostSessionDelta: Equatable {
+    var busy: Bool?
+    var promptState: String?
+    var turnOutcome: String?
+
+    var isEmpty: Bool { busy == nil && promptState == nil && turnOutcome == nil }
+}
+
+/// The session state a host observer mirrors: the `state` deltas folded together, plus the
+/// session id from the welcome (a `conversation_reset` clears it, as the host does).
+struct PCodeHostSessionState: Equatable {
+    var sessionID = ""
+    var busy = false
+    /// `Activity.prompt_state`: "", "running", or how the last prompt ended.
+    var promptState = ""
+    /// `Activity.turn_outcome`: "", "done", "cancelled" or "failed".
+    var turnOutcome = ""
+
+    init() {}
+
+    /// The state a host reports at handshake, before its catch-up calls are folded in.
+    init(welcome: PCodeHostSocketClient.Welcome) {
+        sessionID = welcome.sessionID
+        busy = welcome.hostState == "working"
+        if busy { promptState = "running" }
+    }
+
+    /// Fold one host event in; returns whether anything changed.
+    @discardableResult
+    mutating func apply(_ event: PCodeHostEvent) -> Bool {
+        let before = self
+        switch event {
+        case .sessionState(let delta):
+            if let busy = delta.busy { self.busy = busy }
+            if let promptState = delta.promptState { self.promptState = promptState }
+            if let turnOutcome = delta.turnOutcome { self.turnOutcome = turnOutcome }
+        case .sessionChanged(let id):
+            if !id.isEmpty { sessionID = id }
+        case .conversationReset:
+            sessionID = ""
+            turnOutcome = ""
+        default:
+            break
+        }
+        return self != before
+    }
 }
 
 /// Dual-format event decoder for `transcript.jsonl` and live `pcode.host` RPC notifications.
@@ -199,6 +253,16 @@ enum PCodeHostEventDecoder {
             return nil
         case "conversation_reset":
             return .conversationReset
+        case "state":
+            guard let changes = args.first as? [String: Any] else { return nil }
+            let delta = PCodeHostSessionDelta(
+                busy: changes["busy"] as? Bool,
+                promptState: changes["prompt_state"] as? String,
+                turnOutcome: changes["turn_outcome"] as? String)
+            // Deltas of only untracked fields (queue, notice, status) are dropped here.
+            return delta.isEmpty ? nil : .sessionState(delta)
+        case "session_changed":
+            return .sessionChanged((args.first as? String) ?? "")
         default:
             // Terminal-only or unknown notifications are ignored safely.
             return nil
@@ -720,6 +784,10 @@ final class PCodeTranscriptEventReducer {
                 payload: .prose(markdown: text, referenceDefinitions: "", copyMarkdown: nil),
                 spacingAfter: 6)
             doc.upsertItem(item, reveal: reveal)
+
+        case .sessionState, .sessionChanged:
+            // Session state, not transcript content (`PCodeHostSessionState`).
+            break
         }
     }
 
@@ -853,6 +921,8 @@ final class PCodeHostSocketClient {
         let hostID: String
         let sessionID: String
         let title: String
+        /// The host entry's state at handshake (`working`, `idle`, ...).
+        let hostState: String
         let pacedScrollback: PCodeStreamingPaceMode
         let history: [PCodeHostEvent]
         let catchUpCalls: [PCodeHostEvent]
@@ -1107,7 +1177,7 @@ final class PCodeHostSocketClient {
         }
     }
 
-    private static func decodeWelcome(_ obj: [String: Any]) -> Welcome {
+    static func decodeWelcome(_ obj: [String: Any]) -> Welcome {
         let rawPace = (obj["paced_scrollback"] as? String) ?? "rows"
         let pace = PCodeStreamingPaceMode(rawValue: rawPace) ?? .rows
         let rawHistory = (obj["history"] as? [[String: Any]]) ?? []
@@ -1127,6 +1197,7 @@ final class PCodeHostSocketClient {
             hostID: (obj["id"] as? String) ?? "",
             sessionID: (obj["session_id"] as? String) ?? "",
             title: (obj["title"] as? String) ?? "",
+            hostState: (obj["state"] as? String) ?? "",
             pacedScrollback: pace,
             history: history,
             catchUpCalls: catchUp)

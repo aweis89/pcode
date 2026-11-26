@@ -312,6 +312,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     var accessibilityRowProxies: [String: PCodeTranscriptAccessibilityRowElement] = [:]
     /// Called on plain click or non-navigation typing to hand keyboard focus back to `PCodeDockCard`.
     var onReturnFocusToComposer: (() -> Void)?
+    /// In the `/btw` drawer, `q` hands focus back to the composer without forwarding `q` (`btw_tail`).
+    var swallowsQToReturnFocus = false
 
     var typography: PCodeTypographySnapshot
     var theme: PCodeTranscriptTheme
@@ -1673,9 +1675,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     override func keyDown(with event: NSEvent) {
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
-        // Let standard copy/select-all/find shortcuts or Escape clear selection;
-        // forward ordinary typing back to the docked composer so focus never feels stranded.
-        if event.keyCode == 53 { // Escape
+        // Let standard copy/select-all/find shortcuts or Escape (or `q` in the /btw drawer) clear
+        // selection; forward ordinary typing back to the docked composer so focus never feels stranded.
+        if event.keyCode == 53 || (swallowsQToReturnFocus && mods.isEmpty && event.charactersIgnoringModifiers == "q") {
             selection = nil
             updateMountedSelectionHighlights()
             onReturnFocusToComposer?()

@@ -14,6 +14,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private static let maxTailLineBytes = 16 * 1024 * 1024
 
     @Published var paceMode: PCodeStreamingPaceMode = PCodeStreamingPaceMode.loadDefaultFromPreferences()
+    /// Busy, prompt state, turn outcome and session id as the session host reports them.
+    /// Only a hosted session updates it; a journal-tailed one keeps just the attached id.
+    @Published private(set) var sessionState = PCodeHostSessionState()
 
     private let socketClient = PCodeHostSocketClient()
     private var reducer: PCodeTranscriptEventReducer?
@@ -45,6 +48,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         self.documentView = documentView
         self.attachedSessionID = normalized
         documentView.paceMode = paceMode
+        resetSessionState(sessionID: normalized ?? "")
 
         let newReducer = PCodeTranscriptEventReducer(documentView: documentView)
         self.reducer = newReducer
@@ -70,6 +74,24 @@ final class PCodeLiveTranscriptController: ObservableObject {
         reducer = nil
         documentView = nil
         attachedSessionID = nil
+        resetSessionState(sessionID: "")
+    }
+
+    /// Forget what a host reported, keeping only the attached session id.
+    private func resetSessionState(sessionID: String) {
+        var state = PCodeHostSessionState()
+        state.sessionID = sessionID
+        if state != sessionState {
+            sessionState = state
+        }
+    }
+
+    /// Fold a host event into `sessionState`, publishing only real changes.
+    private func applySessionEvent(_ event: PCodeHostEvent) {
+        var next = sessionState
+        if next.apply(event) {
+            sessionState = next
+        }
     }
 
     // MARK: - Hosted Session (Unix Socket Observer)
@@ -93,21 +115,29 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     reducer.apply(event, reveal: false, isLive: false)
                 }
                 reducer.settleHistory()
+                var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
+                    state.apply(event)
                     reducer.apply(event, reveal: false, isLive: true)
+                }
+                if state != self.sessionState {
+                    self.sessionState = state
                 }
                 documentView.scrollToBottomAndPin()
             },
             onEvent: { [weak self] event in
                 guard let self, self.attachGeneration == generation else { return }
+                self.applySessionEvent(event)
                 reducer.apply(event, reveal: true)
             },
             onError: { [weak self, weak documentView] _ in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
+                self.resetSessionState(sessionID: sessionID)
                 self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
             },
             onClosed: { [weak self, weak documentView] in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
+                self.resetSessionState(sessionID: sessionID)
                 self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
             })
     }

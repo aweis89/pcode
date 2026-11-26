@@ -388,6 +388,8 @@ class HostView:
 
     def session_changed(self) -> None:
         self._host.push_state()
+        for peer in list(self._host.transcript_observers):
+            peer.notify("session_changed", self._host.entry.session_id)
 
     def commands_changed(self) -> None:
         self._host.push_state()

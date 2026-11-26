@@ -436,8 +436,10 @@ struct PCodeBtwTranscriptRepresentable: NSViewRepresentable {
 
     private func wire(_ view: PCodeBtwTranscriptHostView) {
         view.onClose = onClose
-        // Esc, a plain click or typing in the drawer give the keyboard back to
-        // pcode's editor (typed keys go on to it), so it never strands focus.
+        // Esc, `q`, a plain click or typing in the drawer give the keyboard back
+        // to pcode's editor (`q` is swallowed as in `btw_tail`; other typed keys
+        // go on to it), so it never strands focus.
+        view.scrollView.transcriptDocumentView.swallowsQToReturnFocus = true
         view.scrollView.transcriptDocumentView.onReturnFocusToComposer = onFocusTerminal
     }
 

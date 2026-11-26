@@ -330,6 +330,7 @@ extension Ghostty.SurfaceView {
     /// SPIKE: typing in the transcript (after a selection): the key still
     /// reaches the editor through pcode, and the keyboard goes back to the dock.
     func pcodeWillKeyDown(_ event: NSEvent) {
+        NotificationCenter.default.post(name: PCodeSessionPane.surfaceKeyPressed, object: pcodeWindowSurface)
         guard let docked = shownPCodeDock, !event.modifierFlags.contains(.command) else { return }
         Ghostty.moveFocus(to: docked)
     }

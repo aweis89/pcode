@@ -345,6 +345,17 @@ class PreviewApp:
             glyphs.apply_nerd(
                 glyphs.wanted_nerd(glyph_setting, ascii_on=ascii_wanted or glyphs.active())
             )
+        from pcode import dock
+
+        # Editor-only (`PCODE_EDITOR_ONLY=1`, `dock.EditorOnly`): this terminal
+        # shows just the editor and the transcript goes nowhere, since the app
+        # draws it from the host. Only for a host client: a session running in
+        # this process (no model to start a host with, say) speaks through this
+        # transcript alone (the trust prompt, "needs a model", config errors),
+        # so the flag is ignored and pcode runs as in any terminal.
+        self.editor_only = host is not None and dock.editor_only_requested()
+        if self.editor_only:
+            self.transcript.console.file = dock.NullSink(sys.stdout.fileno())
         self.running = True
         self._popup_generation = 0
         self._command_popup_generation: int | None = None
@@ -3493,9 +3504,17 @@ class PreviewApp:
         )
         from pcode import dock
 
-        # SPIKE: the editor on a terminal docked under this one (`PCODE_DOCK=1`).
-        docked = await dock.open_dock() if dock.requested() else None
-        dock_io = {"input": docked.input, "output": docked.output} if docked else {}
+        if self.editor_only:
+            docked = dock.open_editor_only()
+        else:
+            # SPIKE: the editor on a terminal docked under this one (`PCODE_DOCK=1`).
+            docked = await dock.open_dock() if dock.requested() else None
+        dock_io = {}
+        if docked is not None:
+            dock_io["output"] = docked.output
+            # Editor-only reads stdin, the application's default.
+            if docked.input is not None:
+                dock_io["input"] = docked.input
         session = create_prompt(
             self.registry,
             **dock_io,

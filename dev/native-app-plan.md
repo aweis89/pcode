@@ -176,12 +176,13 @@ Unverified: whether a clipped, fixed-grid editor surface sits well inside the
 fork's split tree; host boot latency; what SIGUSR2 (Restart) does to a hosted
 client.
 
-Owner decisions needed before the "always hosted" piece:
+Decisions for the "always hosted" piece:
 
-- Closing a pane once every pane is hosted: stop the host, or detach (the host
-  lingers until `session_host_idle_minutes` and `reopen` brings it back)?
-- No model configured: `--host` falls back to in-process. Keep that fallback,
-  or show a native "set up a model" card?
+- Closing a pane stops its host (owner, 2026-11-25), as closing ends the
+  session today; it does not detach.
+- No model configured: keep `--host`'s in-process fallback for now. While that
+  fallback exists, the old two-surface path cannot be deleted in piece 6; a
+  native "set up a model" card belongs with the sign-in long tail in 3b.
 
 #### 3a sequence
 
@@ -205,8 +206,9 @@ two-surface path stays the default until piece 6.
    surface laid out as the card; delete the dock handoff, `presizeHidden`'s
    dock branch and the spike hooks; repoint Peek; update the `ui-loop` skill.
    The Python handoff code stays for the standalone fork until that drops it.
-7. Optional, owner's call: remove the dead seam hooks in the fork and
-   `make app-lock`.
+7. Not part of 3a: removing the dead seam hooks in the fork (and
+   `make app-lock`). Raise it with the owner once 3a is done; it depends on
+   3b and step 4.
 
 ### 3b. Native composer (undecided)
 
