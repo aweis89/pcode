@@ -915,8 +915,10 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// A finished turn's response that hasn't been looked at here yet. Kept
     /// by session ID in the workspace, so it survives restarts.
     @Published var unseen = false
-    /// When this pane was opened; fallback sort key before a saved session's creation time is loaded.
+    /// When this pane was opened; used by `reconcilePanes` for its startup grace period.
     let createdAt: Date = Date()
+    /// Fallback sort key before a saved session's creation time is loaded; refreshed on `/new`.
+    private(set) var sessionStartedAt: Date = Date()
     /// When the most recent turn finished in this pane during this app session.
     @Published private(set) var lastResponseDate: Date?
     /// Per-session right-hand Inspector state and live stores.
@@ -1078,6 +1080,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     }
 
     func clearLastResponseDate() { lastResponseDate = nil }
+    func resetSessionStartedAt() { sessionStartedAt = Date() }
 
     /// The saved label to fall back on while the terminal has no title yet.
     func savedLabel(saved: PCodeSessionInfo?) -> String? {
@@ -1097,13 +1100,13 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         }
     }
 
-    /// Sort key for ordering open panes by session creation time (falls back to `createdAt` for brand-new panes).
+    /// Sort key for ordering open panes by session creation time (falls back to `sessionStartedAt` for brand-new panes).
     static func sortDate(saved: PCodeSessionInfo?, createdAt: Date) -> Date {
         saved?.createdDate ?? createdAt
     }
 
     func sortDate(saved: PCodeSessionInfo?) -> Date {
-        Self.sortDate(saved: saved, createdAt: createdAt)
+        Self.sortDate(saved: saved, createdAt: sessionStartedAt)
     }
 
     func setShell(_ view: Ghostty.SurfaceView?) { shell = view }
@@ -1356,6 +1359,7 @@ final class PCodeWorkspace: ObservableObject {
             if let old, old != view.pcodeSession {
                 pane.clearLastResponseDate()
                 pane.openedLabel = nil
+                if view.pcodeSession == nil { pane.resetSessionStartedAt() }
             }
             pane.hostID = view.pcodeHost
             if let host = view.pcodeHost { pane.lastHostID = host }
@@ -2687,8 +2691,6 @@ final class PCodeWorkspace: ObservableObject {
         pane.onTurnFinished = { [weak self, weak pane] in
             guard let self, let pane else { return }
             if self.isViewed(pane) { self.markSeen(pane) } else { self.markUnseen(pane) }
-            // Re-sort open panes by last response and refresh folder status dots.
-            self.objectWillChange.send()
         }
         pane.onActivityChange = { [weak self] in
             // Folder headers always surface live running/failed dots (collapsed or expanded).
@@ -2726,6 +2728,8 @@ final class PCodeWorkspace: ObservableObject {
     private func sessionIDChanged(_ pane: PCodeSessionPane, from old: String?) {
         guard old != pane.sessionID else { return }
         publishHistory()  // The open set changed without `panes` changing.
+        // Recompute sidebar grouping/sorting even when `history` itself didn't change.
+        objectWillChange.send()
         // A response that ended before the new ID arrived belongs to it, not the old one.
         let carried = pane.unseen && (old.map { unseenIDs.contains($0) } ?? true)
         if let old, carried { unseenIDs.remove(old) }
