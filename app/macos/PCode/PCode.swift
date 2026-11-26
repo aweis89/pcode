@@ -116,8 +116,6 @@ enum PCode {
         var view = window?.firstResponder as? NSView
         while let current = view {
             if let surface = current as? Ghostty.SurfaceView {
-                // SPIKE: the docked editor stands for pcode's terminal itself: Cmd+W closes that.
-                if surface.pcodeOwner is PCodeDock { return nil }
                 return surface.isPCodeOverlay ? surface : nil
             }
             view = current.superview
@@ -319,42 +317,23 @@ extension Ghostty.SurfaceView {
             pcodeCompletion.handle(payload)
         case "toast":
             pcodeToast.handle(payload)
-        case "dock", "dock-close":
+        case "dock", "dock-close", "ready", "dock-rows":
             pcodeDock.handle(payload)
         default:
             pcodeDrawer.handle(payload)
         }
     }
 
-    /// SPIKE: a shown dock's terminal, if this is the pane it docks under.
-    private var shownPCodeDock: Ghostty.SurfaceView? {
-        guard !isPCodeOverlay, let dock = existingPCodeDock, dock.ready else { return nil }
-        return dock.surface
-    }
-
-    /// SPIKE: for a dock's terminal, the height of it the card shows, from its
-    /// bottom edge; the rest is clipped off and must not take clicks.
+    /// For a session pane's editor terminal, the height the card shows from its
+    /// bottom edge; the rest of the 40-row grid is clipped off and must not take clicks.
     var pcodeDockVisibleHeight: CGFloat? {
-        guard let dock = pcodeOwner as? PCodeDock, cellSize.height > 0 else { return nil }
-        return PCodeDock.cardHeight(rows: dock.rows, cell: cellSize.height)
+        guard pcodeIsSessionPane, let dock = existingPCodeDock, cellSize.height > 0 else { return nil }
+        let surfaceRows = surfaceSize.map { Int($0.rows) }
+        return PCodeDock.cardHeight(rows: dock.rows, cell: cellSize.height, surfaceRows: surfaceRows)
     }
 
-    /// SPIKE: whether this is a pane with its pcode dock shown under it.
-    var pcodeHasShownDock: Bool { shownPCodeDock != nil }
-
-    /// SPIKE: a click in the transcript is done. Unless it left a selection
-    /// (kept here for Cmd+C), the keyboard goes back to the docked editor.
-    func pcodeDidMouseUp() {
-        guard let docked = shownPCodeDock, let surface, !ghostty_surface_has_selection(surface) else { return }
-        Ghostty.moveFocus(to: docked)
-    }
-
-    /// SPIKE: typing in the transcript (after a selection): the key still
-    /// reaches the editor through pcode, and the keyboard goes back to the dock.
     func pcodeWillKeyDown(_ event: NSEvent) {
         NotificationCenter.default.post(name: PCodeSessionPane.surfaceKeyPressed, object: pcodeWindowSurface)
-        guard let docked = shownPCodeDock, !event.modifierFlags.contains(.command) else { return }
-        Ghostty.moveFocus(to: docked)
     }
 
     /// This surface took the keyboard. While its popup is shown, the popup gets it back.
@@ -375,10 +354,6 @@ extension Ghostty.SurfaceView {
     /// otherwise focus it, and the popup take focus back, on every move).
     var pcodeAllowsMouseFocus: Bool {
         if isPCodeOverlay { return !pcodeIgnoresMouse }
-        // SPIKE: hovering the transcript must not take the keyboard from a shown
-        // dock; a click still does (to select and copy), and keys typed then
-        // still reach the editor through pcode.
-        if existingPCodeDock?.ready == true { return false }
         return existingPCodePopup?.ready != true
     }
 }

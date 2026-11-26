@@ -3069,11 +3069,12 @@ class SessionController:
         from pcode.live import AgentRuntime
 
         recovering = self.startup_error is not None
+        starting = recovering or not self.model
         if model == self.model and not recovering:
             self.persist_defaults(model=model)
             self.view.note(f"Already using {model}.")
             return
-        if recovering and self.extensions is None:
+        if starting and self.extensions is None:
             self.extensions = await asyncio.to_thread(self._load_extensions)
         # Construct first: a missing provider/login must leave the old session intact.
         capabilities = self.extensions.capabilities if self.extensions else ()
@@ -3100,14 +3101,15 @@ class SessionController:
             self.runtime.replace_agent(agent)
             self.runtime.session_factory = factory
         else:
-            self.runtime = AgentRuntime(agent, session_factory=factory)
+            await self._finish_startup(AgentRuntime(agent, session_factory=factory))
         self.model = model
         await self.runtime.refresh_context()
         self.persist_defaults(model=model)
         self.save_sessions = save
+        if starting:
+            self.mcp_defaults_requested = True
         if recovering:
             self.startup_error = None
-            self.mcp_defaults_requested = True
             if self.resuming and not self.conversation_shown:
                 # The state first, so a host's terminals know which journal to read.
                 self.view.session_changed()

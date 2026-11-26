@@ -1772,7 +1772,7 @@ class PreviewApp:
 
     def switch(self, argument: str) -> None:
         """`/attach` (once `/attach`): show another running session in this terminal."""
-        if not self.model:
+        if not self.model and not self.hosted:
             raise ValueError("/attach needs a model; this is a local UI preview.")
         argument = argument.strip()
         if argument.split(maxsplit=1)[:1] == ["new"]:
@@ -4435,8 +4435,6 @@ def _run_hosted(args: argparse.Namespace) -> None:
             # unless --fork asked for a copy of it.
             path = resolve_session(args.resume, args.session_dir, workspace)
             resume, model = path.name, read_info(path).model
-        if not model:
-            raise ValueError("A session host needs a model: pass -m or set a default with /model.")
         identity, process, log = spawn_host(
             model=model,
             workspace=workspace,
@@ -4686,15 +4684,11 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         _print_hosted(args, parser)
         return
     # A session runs in a background host when asked (--host, session_host on);
-    # the canned preview (no model) has nothing to host.
-    has_model = bool(args.model or args.resume or load_preferences().get("model"))
+    # with no model set yet, the host starts in preview mode until /model picks one.
     hosted = args.attach is not None or (
-        has_model
-        and (
-            args.host
-            if args.host is not None
-            else load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
-        )
+        args.host
+        if args.host is not None
+        else load_preferences().get("session_host", SETTINGS["session_host"].default) == "on"
     )
     if args.resume and not args.fork and args.attach is None and not args.print:
         running = _running_host(args.resume, args.session_dir, args.workspace or Path.cwd())

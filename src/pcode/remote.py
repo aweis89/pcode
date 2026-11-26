@@ -559,7 +559,7 @@ class HostLaunch:
 
 def spawn_host(
     *,
-    model: str,
+    model: str | None = None,
     workspace: Path,
     resume: str | None = None,
     session_dir: Path | None = None,
@@ -592,7 +592,7 @@ def spawn_host(
         "--id",
         identity,
         "--model",
-        model,
+        model or "",
         "--workspace",
         str(workspace),
     ]

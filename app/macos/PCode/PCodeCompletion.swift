@@ -117,10 +117,8 @@ final class PCodeCompletion: ObservableObject {
         }
     }
 
-    /// SPIKE: the terminal pcode's editor runs in: its docked one while shown.
     private var editorSurface: Ghostty.SurfaceView? {
-        if let dock = surfaceView?.existingPCodeDock, dock.ready, let docked = dock.surface { return docked }
-        return surfaceView
+        surfaceView
     }
 
     func theme(config: Ghostty.Config, fonts: PCodePickFonts?) -> PCodePickTheme {
@@ -135,23 +133,18 @@ final class PCodeCompletion: ObservableObject {
 
     /// The cursor's cell in the pane view, top-left origin, in points.
     ///
-    /// SPIKE: with a dock shown, offsets the dock's cursor into the pane's
-    /// coordinate space (`size`) so the pane-level list layer hangs from the
-    /// docked card even when the underlying terminal is not full-pane.
+    /// When the editor runs in `PCodeDockCard`, offsets the terminal's cursor
+    /// into the pane's coordinate space (`size`) so the pane-level list layer
+    /// hangs from the card.
     func cursorCell(in size: CGSize? = nil) -> CGRect? {
-        guard let surfaceView else { return nil }
-        guard let editor = editorSurface, editor !== surfaceView else { return surfaceView.pcodeCursorCell }
-        guard let cell = editor.pcodeCursorCell else { return nil }
+        guard let surfaceView, let cell = surfaceView.pcodeCursorCell else { return nil }
         if let size,
            let dock = surfaceView.existingPCodeDock,
            let layout = dock.cardLayout(in: size, drawer: surfaceView.existingPCodeDrawer)
         {
             return cell.offsetBy(dx: layout.editorRect.minX, dy: layout.editorRect.minY)
         }
-        let docked = editor.convert(editor.bounds, to: nil)
-        let pane = surfaceView.convert(surfaceView.bounds, to: nil)
-        // Window coordinates have a bottom-left origin; the cell's is top-left.
-        return cell.offsetBy(dx: docked.minX - pane.minX, dy: pane.maxY - docked.maxY)
+        return cell
     }
 }
 

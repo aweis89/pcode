@@ -69,7 +69,7 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     }
 
     func suppressesResizeOverlay(_ view: Ghostty.SurfaceView) -> Bool {
-        view.isPCodeOverlay || view.pcodeHasShownDock
+        view.isPCodeOverlay || view.pcodeIsSessionPane
     }
 
     func clickableHeight(_ view: Ghostty.SurfaceView) -> CGFloat? {
@@ -77,7 +77,7 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     }
 
     func clicksThroughOnFocus(_ view: Ghostty.SurfaceView) -> Bool {
-        view.pcodeHasShownDock
+        false
     }
 
     func ignoresMouse(_ view: Ghostty.SurfaceView) -> Bool { view.pcodeIgnoresMouse }
@@ -86,7 +86,7 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
 
     func didBecomeFirstResponder(_ view: Ghostty.SurfaceView) { view.pcodeDidFocus() }
 
-    func didMouseUp(_ view: Ghostty.SurfaceView) { view.pcodeDidMouseUp() }
+    func didMouseUp(_ view: Ghostty.SurfaceView) {}
 
     func willKeyDown(_ view: Ghostty.SurfaceView, _ event: NSEvent) { view.pcodeWillKeyDown(event) }
 

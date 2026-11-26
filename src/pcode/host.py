@@ -49,7 +49,7 @@ from pcode.host_protocol import (
 )
 from pcode.jobs import registry as job_registry
 from pcode.rpc import Peer
-from pcode.runtime import CommandOutput, EditPreview, TextDelta, ThinkingDelta
+from pcode.runtime import CommandOutput, EditPreview, PreviewRuntime, TextDelta, ThinkingDelta
 from pcode.ui import NOTICE_SECONDS, Activity
 
 # Consecutive events of these kinds merge in the catch-up buffer: deltas join,
@@ -76,6 +76,8 @@ TRANSCRIPT_OBSERVER_CALLS = frozenset(
         "shell_result",
         "drop_output",
         "note",
+        "retained_note",
+        "warning",
         "error",
         "conversation_reset",
         "replay_conversation",
@@ -394,6 +396,17 @@ class HostView:
     def commands_changed(self) -> None:
         self._host.push_state()
 
+    def preview_reply(self, text: str) -> None:
+        self._host.emit("preview_reply", (text,), {})
+        reply = getattr(self._host.controller.runtime, "reply", None)
+        if reply is None:
+            return
+        events = reply(text)
+        for peer in list(self._host.transcript_observers):
+            peer.notify("user", text)
+            for event in events:
+                peer.notify("turn_event", event)
+
     def redraw(self) -> None:
         pass  # Terminals repaint on what they receive.
 
@@ -501,7 +514,7 @@ class SessionHost:
         self.run_ids = itertools.count(1)
         self.view = HostView(self)
         self.activity = MirroredActivity(lambda changes: self.emit("state", (changes,), {}))
-        self.controller = SessionController(self.view, self.activity)
+        self.controller = SessionController(self.view, self.activity, PreviewRuntime())
         self.controller.interactive = True
         # A loop task cancelled while the host shuts down is not a Ctrl+C.
         self.controller.closing = lambda: not self.controller.running
@@ -595,7 +608,7 @@ class SessionHost:
             self.tasks.append(asyncio.create_task(self._refresh_context()))
             self.tasks.append(asyncio.create_task(controller.warn_outdated()))
             profile = remote_profile.active()
-            if profile is None or profile.mcp:
+            if controller.model and (profile is None or profile.mcp):
                 controller.start_mcp_defaults()
         if self.carried is not None:
             # Before the loops start: the continued turn goes ahead of anything
@@ -1072,6 +1085,8 @@ class SessionHost:
         # /attach lists the session by its name once it has one, not its first prompt.
         if (title := state.get("session_title")) and title != self.entry.title:
             self.update(title=title)
+        if (model := state.get("model") or "") != self.entry.model:
+            self.update(model=model)
 
     def own_jobs(self) -> None:
         """Tag the jobs this host launches with its session, and take back that session's.
@@ -1343,7 +1358,7 @@ class SessionHost:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one pcode conversation headless.")
     parser.add_argument("--id", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model", default="")
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--resume")
     parser.add_argument("--fork", action="store_true")
@@ -1490,8 +1505,9 @@ async def _serve(args: argparse.Namespace) -> dict | None:
     host.carried = read_carry(args.carry)
     # An unattended session's worktree is left for its owner to inspect.
     host.keep_worktree = profile is not None
+    model = args.model or None
     controller = host.controller
-    controller.model = args.model
+    controller.model = model
     controller.workspace = workspace
     controller.session_dir = saved.directory.parent if saved is not None else args.session_dir
     controller.save_sessions = not args.no_save
@@ -1499,8 +1515,8 @@ async def _serve(args: argparse.Namespace) -> dict | None:
     controller._session_id = session_id
     controller.worktree_owner = session_id
     controller.resuming = saved is not None
-    controller._needs_runtime = True
-    controller.startup_pending = True
+    controller._needs_runtime = bool(model)
+    controller.startup_pending = bool(model or saved is not None)
     controller.activity.thinking_mode = thinking_mode_preference()
     controller.register_skills()
     await host.serve()

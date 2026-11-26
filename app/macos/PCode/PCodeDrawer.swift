@@ -105,10 +105,6 @@ final class PCodeDrawer: NSObject, ObservableObject {
 
     func focusTerminal() {
         guard let surfaceView else { return }
-        if let dock = surfaceView.existingPCodeDock, dock.ready, let docked = dock.surface {
-            Ghostty.moveFocus(to: docked)
-            return
-        }
         Ghostty.moveFocus(to: surfaceView)
     }
 

@@ -147,7 +147,7 @@ enum PCodeWorkspaceMode {
         "PWD", "OLDPWD", "SHLVL", "_", "TERM", "TERM_PROGRAM",
         "TERM_PROGRAM_VERSION", "COLORTERM", "TERM_SESSION_ID",
         "TERMINFO", "XDG_DATA_DIRS", "MANPATH", "VTE_VERSION", "LANGUAGE",
-        "PCODE_DOCK", "PCODE_NATIVE_TRANSCRIPT", "PCODE_HUSH_LOGIN",
+        "PCODE_DOCK", "PCODE_EDITOR_ONLY", "PCODE_NATIVE_TRANSCRIPT", "PCODE_HUSH_LOGIN",
     ]
 
     private static let envSentinel = "__PCODE_ENV_START__"
@@ -528,7 +528,6 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     private var titleSubscription: AnyCancellable?
     private var hostSubscription: AnyCancellable?
     private var keySubscription: AnyCancellable?
-    private var dockSubscription: AnyCancellable?
     private var dockReadySubscription: AnyCancellable?
     private var progressSubscription: AnyCancellable?
     private var readyFallbackWork: DispatchWorkItem?
@@ -539,8 +538,6 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// not yet seen, or idle.
     enum Activity { case idle, running, failed }
     @Published private(set) var activity: Activity = .idle
-    /// Called when pcode's docked editor comes or goes, so a hidden pane can size it.
-    var onDockChange: (() -> Void)?
     /// Called when the pane's activity state transitions, so collapsed folder headers refresh.
     var onActivityChange: (() -> Void)?
     /// Called when a turn ends (running to idle or failed), so the workspace
@@ -598,12 +595,6 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
                 self.resolver.dismissFailure()
                 self.resolve()
             }
-        dockSubscription = surface.pcodeDock.$surface
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                // After the publish: the new surface is in place by then.
-                DispatchQueue.main.async { self?.onDockChange?() }
-            }
         dockReadySubscription = surface.pcodeDock.$ready
             .filter { $0 }
             .first()
@@ -644,29 +635,25 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         isReady = true
     }
 
-    /// Called when pcode reports its session ID: if no dock opens shortly after
-    /// (e.g. dock disabled or older pcode), dismiss the boot overlay anyway.
+    /// Called when pcode reports its session or host ID: if `pcode;ready` hasn't
+    /// arrived shortly after, dismiss the boot overlay anyway.
     func noteSessionReported() {
         guard !isReady, readyFallbackWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.isReady else { return }
-            if self.surface.existingPCodeDock?.surface == nil {
-                self.markReady()
-            }
+            self?.markReady()
         }
         readyFallbackWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
-    /// Every terminal this pane shows: pcode's, its docked editor's, and the shell.
+    /// Every terminal this pane shows: pcode's editor and the optional bottom shell.
     var surfaces: [Ghostty.SurfaceView] {
-        [surface, surface.existingPCodeDock?.surface, shell].compactMap { $0 }
+        [surface, shell].compactMap { $0 }
     }
 
-    /// The surface keys should go to: pcode's docked editor once shown, else its terminal.
+    /// The surface keys should go to: pcode's editor terminal.
     var keyboardSurface: Ghostty.SurfaceView {
-        if let dock = surface.existingPCodeDock, dock.ready, let docked = dock.surface { return docked }
-        return surface
+        surface
     }
 
     /// Worktree directory name when this pane runs in a worktree under `projectPath`.
@@ -1682,30 +1669,23 @@ final class PCodeWorkspace: ObservableObject {
         guard let window, detailSize.width > 0, detailSize.height > 0 else { return }
         let scale = window.backingScaleFactor
         let shown = selectedPane
-        // The shown terminals' own pixel sizes, as their layout gave them
-        // (scrollers and padding included), else estimates from the area.
-        let transcript = Self.pixels(shown?.surface)
-            ?? (UInt32(detailSize.width * scale), UInt32(detailSize.height * scale))
-        let shownDock = shown?.surface.existingPCodeDrawer?.isOpen == true
+        let shownCard = shown?.surface.existingPCodeDrawer?.isOpen == true
             ? nil
-            : Self.pixels(shown?.surface.existingPCodeDock?.surface)
+            : Self.pixels(shown?.surface)
         for pane in panes where pane.id != selected {
-            Self.setSize(pane.surface, transcript, scale: scale)
-            if let docked = pane.surface.existingPCodeDock?.surface {
-                let cell = docked.cellSize.height > 0 ? docked.cellSize.height : 18
-                let heightPx = UInt32(max(1, PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell) * scale))
-                let dock: (UInt32, UInt32)
-                if let drawer = pane.surface.existingPCodeDrawer, drawer.isOpen {
-                    let drawerWidth = PCodeDrawer.width(
-                        in: detailSize.width,
-                        fraction: drawer.fraction,
-                        minWidth: PCodeDrawer.dockedMinWidth) - 1
-                    dock = (UInt32(max(1, (drawerWidth - 16) * scale)), heightPx)
-                } else {
-                    dock = shownDock ?? (UInt32(max(1, (detailSize.width - 16) * scale)), heightPx)
-                }
-                Self.setSize(docked, dock, scale: scale)
+            let cell = pane.surface.cellSize.height > 0 ? pane.surface.cellSize.height : 18
+            let heightPx = UInt32(max(1, PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell) * scale))
+            let card: (UInt32, UInt32)
+            if let drawer = pane.surface.existingPCodeDrawer, drawer.isOpen {
+                let drawerWidth = PCodeDrawer.width(
+                    in: detailSize.width,
+                    fraction: drawer.fraction,
+                    minWidth: PCodeDrawer.dockedMinWidth) - 1
+                card = (UInt32(max(1, (drawerWidth - 2 * PCodeDock.bottomMargin) * scale)), heightPx)
+            } else {
+                card = shownCard ?? (UInt32(max(1, (detailSize.width - 2 * PCodeDock.bottomMargin) * scale)), heightPx)
             }
+            Self.setSize(pane.surface, card, scale: scale)
         }
     }
 
@@ -1730,7 +1710,6 @@ final class PCodeWorkspace: ObservableObject {
             guard let self, let pane else { return }
             if self.isViewed(pane) { self.markSeen(pane) } else { self.markUnseen(pane) }
         }
-        pane.onDockChange = { [weak self] in self?.schedulePresize() }
         pane.onActivityChange = { [weak self, weak pane] in
             guard let self, let pane else { return }
             if self.collapsedFolders.contains(self.projectPath(for: pane)) {
@@ -1904,8 +1883,8 @@ final class PCodeWorkspace: ObservableObject {
             config.environmentVariables[key] = value
         }
         config.workingDirectory = resolvedDir
-        // The docked editor (PCodeDock) is what the workspace shows under each session.
-        config.environmentVariables["PCODE_DOCK"] = "1"
+        // The pane's single surface runs pcode's editor-only host client (`PCodeDockCard`).
+        config.environmentVariables["PCODE_EDITOR_ONLY"] = "1"
         // Tell pcode the native transcript renders the session, so it leaves out
         // the editor rows only a terminal needs (tool rows, live command previews).
         config.environmentVariables["PCODE_NATIVE_TRANSCRIPT"] = "1"
@@ -1913,6 +1892,7 @@ final class PCodeWorkspace: ObservableObject {
         config.environmentVariables["PCODE_HUSH_LOGIN"] = "1"
         config.waitAfterCommand = false
         let view = Ghostty.SurfaceView(app, baseConfig: config)
+        view.pcodeSession = sessionID
         PCode.applyColorScheme(to: view)
         return PCodeSessionPane(
             surface: view,
