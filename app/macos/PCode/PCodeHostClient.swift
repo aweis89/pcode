@@ -89,7 +89,8 @@ enum PCodeHostEvent: Equatable {
         elapsedSeconds: Double?,
         error: String,
         result: String?,
-        isBackgroundJob: Bool)
+        isBackgroundJob: Bool,
+        exitCode: Int? = nil)
     case commandOutput(callID: String, command: String, output: String)
     case editPreview(callID: String, path: String, text: String, kind: String)
     case editCompleted(
@@ -306,7 +307,8 @@ enum PCodeHostEventDecoder {
                 elapsedSeconds: fields["elapsed_seconds"] as? Double,
                 error: (fields["error"] as? String) ?? "",
                 result: fields["result"] as? String,
-                isBackgroundJob: kind == "JobFinished" || (fields["execution"] as? String) == "background")
+                isBackgroundJob: kind == "JobFinished" || (fields["execution"] as? String) == "background",
+                exitCode: PCodePeekToolCall.exitCode(from: fields["exit_code"]))
         case "CommandOutput":
             let callID = (fields["call_id"] as? String) ?? ""
             guard !callID.isEmpty else { return nil }
@@ -501,7 +503,7 @@ final class PCodeTranscriptEventReducer {
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
             flushOrphans(forParentCallID: callID, reveal: reveal, in: doc)
 
-        case .toolSummary(let callID, let parentCallID, let name, let detail, let command, let failed, let elapsed, let error, let result, let isBackgroundJob):
+        case .toolSummary(let callID, let parentCallID, let name, let detail, let command, let failed, let elapsed, let error, let result, let isBackgroundJob, let exitCode):
             finishActiveStreamIfNeeded(in: doc, reveal: reveal)
             toolCounter += 1
             let key = callID.isEmpty ? "anon-\(toolCounter)" : callID
@@ -555,7 +557,8 @@ final class PCodeTranscriptEventReducer {
                 output: result ?? existing?.output ?? "",
                 isRunning: false,
                 startedAt: nil,
-                isBackgroundJob: isBackgroundJob)
+                isBackgroundJob: isBackgroundJob,
+                exitCode: exitCode)
             toolCallsByID[key] = call
             let depth = toolDepthByID[key] ?? (parentCallID.isEmpty ? 0 : 1)
             let item = PCodeTranscriptItem(
@@ -589,7 +592,8 @@ final class PCodeTranscriptEventReducer {
                 output: capped,
                 isRunning: stillRunning,
                 startedAt: stillRunning ? (existing?.startedAt ?? (liveClock ? Date() : nil)) : nil,
-                isBackgroundJob: existing?.isBackgroundJob ?? false)
+                isBackgroundJob: existing?.isBackgroundJob ?? false,
+                exitCode: existing?.exitCode)
             toolCallsByID[callID] = call
             let depth = toolDepthByID[callID] ?? 0
             let itemID = "call-\(callID)"
@@ -741,7 +745,8 @@ final class PCodeTranscriptEventReducer {
                 output: existing.output,
                 isRunning: false,
                 startedAt: nil,
-                isBackgroundJob: existing.isBackgroundJob)
+                isBackgroundJob: existing.isBackgroundJob,
+                exitCode: existing.exitCode)
             toolCallsByID[callID] = settled
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
@@ -780,7 +785,8 @@ final class PCodeTranscriptEventReducer {
                 output: call.output,
                 isRunning: false,
                 startedAt: nil,
-                isBackgroundJob: call.isBackgroundJob)
+                isBackgroundJob: call.isBackgroundJob,
+                exitCode: call.exitCode)
             toolCallsByID[callID] = settled
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(

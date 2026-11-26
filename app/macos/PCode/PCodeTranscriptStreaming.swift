@@ -617,7 +617,7 @@ final class PCodeTranscriptStreamReplayer {
     enum Step: Equatable {
         case beginTurn(prompt: String, isSide: Bool)
         case settledMessage(id: String, markdown: String)
-        case toolCall(name: String, detail: String, command: String, failed: Bool, elapsed: Double?, id: Int)
+        case toolCall(name: String, detail: String, command: String, failed: Bool, exitCode: Int?, elapsed: Double?, id: Int)
         case finishTurn(PCodePeekTurn.Status)
     }
 
@@ -663,6 +663,7 @@ final class PCodeTranscriptStreamReplayer {
                         detail: call.detail,
                         command: call.command,
                         failed: call.failed,
+                        exitCode: call.exitCode,
                         elapsed: call.elapsedSeconds,
                         id: call.id))
                 }
@@ -726,14 +727,15 @@ final class PCodeTranscriptStreamReplayer {
             documentView.beginStreamingMessage(id: id)
             documentView.appendStreamingDelta(markdown)
             documentView.finishStreamingMessage()
-        case .toolCall(let name, let detail, let command, let failed, let elapsed, let id):
+        case .toolCall(let name, let detail, let command, let failed, let exitCode, let elapsed, let id):
             let call = PCodePeekToolCall(
                 id: id,
                 name: name,
                 detail: detail,
                 failed: failed,
                 elapsedSeconds: elapsed,
-                command: command)
+                command: command,
+                exitCode: exitCode)
             documentView.appendStreamingToolCall(call)
         case .finishTurn(let status):
             documentView.finishStreamingTurn(status: status)

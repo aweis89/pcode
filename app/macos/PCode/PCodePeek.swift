@@ -33,6 +33,9 @@ struct PCodePeekToolCall: Identifiable, Equatable {
     let isRunning: Bool
     let startedAt: Date?
     let isBackgroundJob: Bool
+    /// The command's exit status, when its result reported one (`ToolSummary.exit_code`).
+    /// `failed` stays the verdict; older transcripts carry no status (nil).
+    let exitCode: Int?
 
     init(
         id: Int,
@@ -44,7 +47,8 @@ struct PCodePeekToolCall: Identifiable, Equatable {
         output: String = "",
         isRunning: Bool = false,
         startedAt: Date? = nil,
-        isBackgroundJob: Bool = false
+        isBackgroundJob: Bool = false,
+        exitCode: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -56,6 +60,23 @@ struct PCodePeekToolCall: Identifiable, Equatable {
         self.isRunning = isRunning
         self.startedAt = startedAt
         self.isBackgroundJob = isBackgroundJob
+        self.exitCode = exitCode
+    }
+
+    /// Ran and exited non-zero in the ordinary way (grep found nothing, tests failed):
+    /// settled, but neither a success nor a failure to run.
+    var exitedNonZero: Bool { !failed && (exitCode ?? 0) != 0 }
+
+    /// An `exit_code` field as decoded JSON: an integral number, never a bool
+    /// (`NSNumber` bridging would otherwise read `true` as 1).
+    static func exitCode(from value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID()
+        else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double == double.rounded(),
+              abs(double) <= Double(Int32.max) else { return nil }
+        return number.intValue
     }
 
     var summaryText: String {
@@ -318,7 +339,8 @@ final class PCodeTranscriptLoader {
                     detail: detail,
                     failed: failed,
                     elapsedSeconds: elapsed,
-                    command: command)
+                    command: command,
+                    exitCode: PCodePeekToolCall.exitCode(from: record["exit_code"]))
                 turns[idx].blocks.append(.tool(call))
                 nextBlockID += 1
             case "turn_completed":

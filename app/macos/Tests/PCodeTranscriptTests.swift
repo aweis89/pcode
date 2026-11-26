@@ -1850,6 +1850,76 @@ struct PCodeTranscriptTests {
         }
     }
 
+    @Test func toolSummaryExitCodeDecodesAsIntegerOnly() throws {
+        // Fields arrive as `JSONSerialization` output, where a bool is an NSNumber too.
+        let json = #"{"nonzero": {"name": "shell", "failed": false, "exit_code": 1},"#
+            + #" "hard": {"name": "shell", "failed": true, "exit_code": 127},"#
+            + #" "legacy": {"name": "shell", "failed": true},"#
+            + #" "boolish": {"name": "shell", "failed": false, "exit_code": true}}"#
+        let records = try #require(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: Any]])
+        func decoded(_ key: String, kind: String = "ToolSummary") -> (failed: Bool, exitCode: Int?)? {
+            guard case .toolSummary(_, _, _, _, _, let failed, _, _, _, _, let exitCode)? =
+                PCodeHostEventDecoder.decodeRuntimeEvent(kind: kind, fields: records[key] ?? [:])
+            else { return nil }
+            return (failed, exitCode)
+        }
+        #expect(decoded("nonzero")! == (false, 1))
+        #expect(decoded("nonzero", kind: "JobFinished")! == (false, 1))
+        #expect(decoded("hard")! == (true, 127))
+        #expect(decoded("legacy")! == (true, nil))
+        #expect(decoded("boolish")! == (false, nil))
+        #expect(PCodePeekToolCall.exitCode(from: 1.5) == nil)
+        #expect(PCodePeekToolCall.exitCode(from: "1") == nil)
+        #expect(PCodePeekToolCall.exitCode(from: -9) == -9)
+    }
+
+    @Test func settledToolMarkSeparatesNonZeroExitFromFailure() {
+        func call(failed: Bool, exitCode: Int?) -> PCodePeekToolCall {
+            PCodePeekToolCall(
+                id: 1, name: "shell", detail: "grep x", failed: failed, elapsedSeconds: 0.1,
+                command: "grep x", exitCode: exitCode)
+        }
+        let nonzero = call(failed: false, exitCode: 1)
+        #expect(nonzero.exitedNonZero)
+        #expect(PCodeToolCardView.settledMark(for: nonzero).symbol == "circle.fill")
+
+        let hard = call(failed: true, exitCode: 127)
+        #expect(!hard.exitedNonZero)
+        #expect(PCodeToolCardView.settledMark(for: hard).symbol == "xmark.circle.fill")
+
+        // Older transcripts carry no exit code: `failed` alone decides, as before.
+        #expect(PCodeToolCardView.settledMark(for: call(failed: true, exitCode: nil)).symbol == "xmark.circle.fill")
+        #expect(PCodeToolCardView.settledMark(for: call(failed: false, exitCode: nil)).symbol == "checkmark.circle.fill")
+        #expect(PCodeToolCardView.settledMark(for: call(failed: false, exitCode: 0)).symbol == "checkmark.circle.fill")
+    }
+
+    @Test @MainActor func nonZeroExitIsNotCountedAsFailureAndSurvivesReplay() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Search", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolSummary(callID: "s1", parentCallID: "", name: "shell", detail: "grep x", command: "grep x", failed: false, elapsedSeconds: 0.1, error: "", result: "", isBackgroundJob: false, exitCode: 1), reveal: false)
+        reducer.apply(.toolSummary(callID: "s2", parentCallID: "", name: "shell", detail: "ls", command: "ls", failed: false, elapsedSeconds: 0.1, error: "", result: "a", isBackgroundJob: false, exitCode: 0), reveal: false)
+
+        guard case .toolGroup(let payload) = doc.items[1].payload else {
+            Issue.record("Expected toolGroup payload")
+            return
+        }
+        #expect(payload.failedCount == 0)
+        guard case .tool(let call) = payload.entries[0].content else {
+            Issue.record("Expected tool entry")
+            return
+        }
+        #expect(call.exitCode == 1 && call.exitedNonZero)
+
+        let turn = PCodePeekTurn(id: 0, prompt: "Search", blocks: [.tool(call)], status: .complete, side: false)
+        let steps = PCodeTranscriptStreamReplayer.buildSteps(from: [turn])
+        #expect(steps.contains(.toolCall(name: "shell", detail: "grep x", command: "grep x", failed: false, exitCode: 1, elapsed: 0.1, id: call.id)))
+    }
+
     @Test @MainActor func toolGrouperExcludesDelegatesAndBackgroundJobs() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
