@@ -1732,6 +1732,15 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         return out
     }
 
+    /// A window row's status glyph: running, failed, ran but exited non-zero, or ok.
+    /// Only a hard failure is red; a non-zero exit gets the card's muted dot.
+    static func windowGlyph(for entry: PCodeToolGroupEntry, theme: PCodeTranscriptTheme) -> (String, NSColor) {
+        if entry.isRunning { return ("◌", theme.accent) }
+        if entry.failed { return ("✗", .systemRed) }
+        if entry.exitedNonZero { return ("•", theme.secondaryForeground.withAlphaComponent(0.8)) }
+        return ("✓", NSColor.systemGreen.withAlphaComponent(theme.isDark ? 0.80 : 0.75))
+    }
+
     /// One window row: a status glyph, then the call on a single line. Every row must stay
     /// exactly one line, or the window's fixed height would clip it.
     private static func appendWindowRow(
@@ -1741,18 +1750,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         style: NSParagraphStyle,
         theme: PCodeTranscriptTheme
     ) {
-        let glyph: String
-        let glyphColor: NSColor
-        if entry.isRunning {
-            glyph = "◌"
-            glyphColor = theme.accent
-        } else if entry.failed {
-            glyph = "✗"
-            glyphColor = .systemRed
-        } else {
-            glyph = "✓"
-            glyphColor = NSColor.systemGreen.withAlphaComponent(theme.isDark ? 0.80 : 0.75)
-        }
+        let (glyph, glyphColor) = windowGlyph(for: entry, theme: theme)
         let name: String
         var detail: String
         switch entry.content {

@@ -1896,6 +1896,21 @@ struct PCodeTranscriptTests {
         #expect(PCodeToolCardView.settledMark(for: call(failed: false, exitCode: 0)).symbol == "checkmark.circle.fill")
     }
 
+    @Test func groupWindowRowGlyphSeparatesNonZeroExitFromFailure() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        func glyph(failed: Bool, exitCode: Int?) -> String {
+            let call = PCodePeekToolCall(
+                id: 1, name: "shell", detail: "grep x", failed: failed, elapsedSeconds: 0.1,
+                command: "grep x", exitCode: exitCode)
+            let entry = PCodeToolGroupEntry(id: "call-1", content: .tool(call), depth: 0)
+            return PCodeToolGroupCardView.windowGlyph(for: entry, theme: theme).0
+        }
+        #expect(glyph(failed: false, exitCode: 1) == "•")
+        #expect(glyph(failed: true, exitCode: 127) == "✗")
+        #expect(glyph(failed: false, exitCode: 0) == "✓")
+        #expect(glyph(failed: false, exitCode: nil) == "✓")
+    }
+
     @Test @MainActor func nonZeroExitIsNotCountedAsFailureAndSurvivesReplay() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)

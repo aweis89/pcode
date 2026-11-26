@@ -101,6 +101,12 @@ struct PCodeToolGroupEntry: Equatable {
         }
     }
 
+    /// A shell call that ran and exited non-zero without failing (grep found nothing).
+    var exitedNonZero: Bool {
+        if case .tool(let call) = content { return call.exitedNonZero }
+        return false
+    }
+
     var elapsedSeconds: Double? {
         switch content {
         case .tool(let call): return call.elapsedSeconds
