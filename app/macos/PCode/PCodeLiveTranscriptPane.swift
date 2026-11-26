@@ -160,11 +160,12 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.connectionState = .connected
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
+                documentView.setItems([], pinToBottom: true)
+                reducer.reset()
+                // After clearing, so a change doesn't re-project rows about to be dropped.
                 if let mode = welcome.showThinking {
                     documentView.showThinking = PCodeThinkingVisibility.isShown(mode: mode)
                 }
-                documentView.setItems([], pinToBottom: true)
-                reducer.reset()
                 for event in welcome.history {
                     reducer.apply(event, reveal: false, isLive: false)
                 }

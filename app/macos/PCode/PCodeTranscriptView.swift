@@ -674,7 +674,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         itemIndexByID[id]
     }
 
-    /// Return whether an existing `.tool`, `.diff`, `.thinking`, or `.toolGroup` item is currently expanded by the user.
+    /// Return whether an existing `.tool`, `.diff`, or `.toolGroup` item is currently expanded by the user.
     func isItemExpanded(id: String) -> Bool {
         if expandedGroupIDs.contains(id) { return true }
         if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
@@ -2642,7 +2642,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let lineCount = max(1, min(200, diff.patch.split(separator: "\n", omittingEmptySubsequences: false).count))
             return PCodeDiffCardView.headerHeight + 40 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
         case .thinking(let thinking):
-            let lines = max(1, min(40, thinking.text.count / 80 + 1))
+            // Always shown in full, so long thoughts need an honest estimate.
+            let lines = max(1, min(400, thinking.text.count / 80 + 1))
             return PCodeThinkingCardView.headerHeight
                 + CGFloat(lines) * typography.lineHeight(scale: PCodeThinkingCardView.bodyScale)
         }

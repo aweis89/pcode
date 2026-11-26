@@ -956,6 +956,8 @@ class SessionController:
             "arguments": arguments,
             "skills": list(self.skill_command_names),
             "jobs_directory": str(self._jobs_home() or ""),
+            # What Pcode.app's transcript follows; its editor cycles /show-thinking from it.
+            "thinking_mode": self.activity.thinking_mode,
             # For `/btw $MODEL` completion, which cannot wait on a query per key.
             # Not while starting: the first scan imports provider SDKs.
             "models": [] if self.startup_pending else list(self.model_suggestions()),

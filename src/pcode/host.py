@@ -271,6 +271,7 @@ class _Client:
 
     def set_thinking(self, mode: str) -> None:
         self.host.controller.set_thinking(mode)
+        self.host.push_state()
         # Pcode.app's transcript shows or hides thinking rows to match.
         for peer in list(self.host.transcript_observers):
             peer.notify("thinking_mode", self.host.activity.thinking_mode)
