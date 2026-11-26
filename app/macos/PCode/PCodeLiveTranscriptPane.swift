@@ -775,6 +775,26 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
                 }
             }
         }
+        scrollView.transcriptDocumentView.onVisibleTurnChanged = { turnID in
+            guard let composer,
+                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+            else { return }
+            MainActor.assumeIsolated {
+                pane.treeStore.visibleTurnID = turnID
+            }
+        }
+        if let composer,
+           let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer) {
+            weak var docView = scrollView.transcriptDocumentView
+            pane.onScrollToTurn = { turnID in
+                _ = docView?.scrollToTurn(turnID)
+            }
+            if let sid = sessionID, !sid.isEmpty {
+                MainActor.assumeIsolated {
+                    pane.treeStore.setSessionID(sid)
+                }
+            }
+        }
         scrollView.composerHasSelection = {
             composer?.surface.map(ghostty_surface_has_selection) ?? false
         }

@@ -7,14 +7,16 @@ enum PCodeInspectorTab: String, CaseIterable, Identifiable, Equatable, Hashable,
     case changes
     case agents
     case commands
+    case tree
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .changes: return "Changes"
-        case .agents: return "Sub-agents"
+        case .agents: return "Agents"
         case .commands: return "Commands"
+        case .tree: return "Tree"
         }
     }
 
@@ -23,6 +25,7 @@ enum PCodeInspectorTab: String, CaseIterable, Identifiable, Equatable, Hashable,
         case .changes: return "doc.text.magnifyingglass"
         case .agents: return "person.2"
         case .commands: return "terminal"
+        case .tree: return "point.3.connected.trianglepath.dotted"
         }
     }
 }
@@ -420,6 +423,12 @@ struct PCodeInspectorActions {
         _ text: String,
         _ completion: @escaping @MainActor (Result<String, Error>) -> Void
     ) -> Void)?
+    let scrollToTurn: @MainActor (_ turnID: String) -> Void
+    let navigateTree: (@MainActor (
+        _ nodeID: String?,
+        _ edit: Bool,
+        _ completion: @escaping @MainActor (Result<String, Error>) -> Void
+    ) -> Void)?
 
     init(
         insertIntoComposer: @escaping @MainActor (String) -> Void = { _ in },
@@ -435,6 +444,12 @@ struct PCodeInspectorActions {
             _ workerID: String,
             _ text: String,
             _ completion: @escaping @MainActor (Result<String, Error>) -> Void
+        ) -> Void)? = nil,
+        scrollToTurn: @escaping @MainActor (_ turnID: String) -> Void = { _ in },
+        navigateTree: (@MainActor (
+            _ nodeID: String?,
+            _ edit: Bool,
+            _ completion: @escaping @MainActor (Result<String, Error>) -> Void
         ) -> Void)? = nil
     ) {
         self.insertIntoComposer = insertIntoComposer
@@ -443,6 +458,8 @@ struct PCodeInspectorActions {
         self.stopJob = stopJob
         self.prefillWorkerAction = prefillWorkerAction ?? insertIntoComposer
         self.manageWorker = manageWorker
+        self.scrollToTurn = scrollToTurn
+        self.navigateTree = navigateTree
     }
 
     static let noop = PCodeInspectorActions()
@@ -533,6 +550,11 @@ final class PCodeInspectorState: ObservableObject {
     func openCommand(callID: String? = nil) {
         if let callID { focusedCommandID = callID }
         activeTab = .commands
+        isOpen = true
+    }
+
+    func openTree() {
+        activeTab = .tree
         isOpen = true
     }
 

@@ -188,6 +188,7 @@ HOST_CALLS = frozenset(
         "asides_read",
         "continue_interrupted",
         "manage_worker",
+        "navigate_tree",
     }
 )
 
@@ -367,6 +368,16 @@ class _Client:
 
     def manage_worker(self, action: str, worker_id: str, text: str = "") -> dict[str, object]:
         return self.host.controller.manage_worker(action, worker_id, text)
+
+    async def navigate_tree(
+        self, identity: str | None = None, edit: bool = False
+    ) -> dict[str, object]:
+        try:
+            draft = await self.host.controller.navigate_tree(identity, edit=bool(edit))
+        except ValueError as exc:
+            return {"ok": False, "message": str(exc)}
+        self.host.push_state()
+        return {"ok": True, "draft": draft}
 
     def cancel_asides(self) -> None:
         self.host.controller.cancel_asides()
