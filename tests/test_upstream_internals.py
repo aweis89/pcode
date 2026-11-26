@@ -28,6 +28,7 @@ UPSTREAM = ("pydantic_ai", "pydantic_ai_harness", "anthropic")
 
 PRIVATE_IMPORTS = {
     ("anthropic._models", "construct_type"),
+    ("pydantic_ai._agent_graph", "get_captured_run_messages"),
     ("pydantic_ai._run_context", "dispatch_event_stream"),
     ("pydantic_ai._utils", "PeekableAsyncStream"),
     ("pydantic_ai_harness._background_completion", "make_background_result"),
