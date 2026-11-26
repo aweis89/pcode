@@ -155,6 +155,7 @@ private var pcodeToastKey: UInt8 = 0
 private var pcodeDockKey: UInt8 = 0
 private var pcodeOwnerKey: UInt8 = 0
 private var pcodeSessionKey: UInt8 = 0
+private var pcodeHostKey: UInt8 = 0
 private var pcodeSessionPaneKey: UInt8 = 0
 
 /// Holds the owner weakly: the owner holds its overlay's surface, not the other way round.
@@ -248,6 +249,16 @@ extension Ghostty.SurfaceView {
         }
     }
 
+    /// The pcode session host this terminal attaches to (`pcode;host;<id>`).
+    var pcodeHost: String? {
+        get { objc_getAssociatedObject(self, &pcodeHostKey) as? String }
+        set {
+            guard newValue != pcodeHost else { return }
+            objc_setAssociatedObject(self, &pcodeHostKey, newValue, .OBJC_ASSOCIATION_COPY_NONATOMIC)
+            NotificationCenter.default.post(name: PCodeWorkspace.sessionChanged, object: self)
+        }
+    }
+
     /// What a restored terminal types to reopen `session`, or nil if it is not a session ID.
     static func pcodeResumeInput(_ session: String?) -> String? {
         guard let session, !session.isEmpty, session.count <= 64,
@@ -299,6 +310,9 @@ extension Ghostty.SurfaceView {
         case "session":
             let id = String(payload.dropFirst("session;".count))
             pcodeSession = Self.pcodeResumeInput(id) == nil ? nil : id
+        case "host":
+            let id = String(payload.dropFirst("host;".count))
+            pcodeHost = PCode.valid(id, length: 8...8, hex: true) ? id : nil
         case "popup", "pick", "popup-close":
             pcodePopup.handle(payload)
         case "complete":

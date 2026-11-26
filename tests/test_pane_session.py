@@ -9,6 +9,28 @@ def test_session_marker_rejects_unsafe_ids():
     assert drawer.session_marker(None) == "\x1b_pcode;session;\x1b\\"
 
 
+def test_host_marker_rejects_unsafe_ids():
+    assert drawer.host_marker("8f3a1b2c") == "\x1b_pcode;host;8f3a1b2c\x1b\\"
+    assert drawer.host_marker("not-hex!") == "\x1b_pcode;host;\x1b\\"
+    assert drawer.host_marker("8f3a1b2C") == "\x1b_pcode;host;\x1b\\"
+    assert drawer.host_marker(None) == "\x1b_pcode;host;\x1b\\"
+
+
+def test_pane_host_sends_changes_and_clears_on_close():
+    current = ["8f3a1b2c"]
+    read, write = os.pipe()
+    pane = drawer.PaneHost(lambda: current[0], write)
+    pane.tick()
+    pane.tick()
+    current[0] = "1234abcd"
+    pane.tick()
+    pane.close()
+    os.close(write)
+    assert os.read(read, 1024) == (
+        b"\x1b_pcode;host;8f3a1b2c\x1b\\\x1b_pcode;host;1234abcd\x1b\\\x1b_pcode;host;\x1b\\"
+    )
+
+
 def test_pane_session_sends_changes_and_clears_on_close():
     current = ["one"]
     read, write = os.pipe()

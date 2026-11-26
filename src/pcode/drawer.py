@@ -105,12 +105,20 @@ def session_marker(identity: str | None) -> str:
     return f"\x1b_pcode;session;{identity}\x1b\\"
 
 
+def host_marker(identity: str | None) -> str:
+    """Tell the terminal which session host this pane is attached to (`pcode;host;<id>`)."""
+    identity = identity if identity and _ID.fullmatch(identity) else ""
+    return f"\x1b_pcode;host;{identity}\x1b\\"
+
+
 class PaneSession:
     """Keep Ghostty Smooth told of the session on screen (a `Reconciler` item).
 
     `source` is read each tick, so /attach, /resume and /new need no hook.
     On close the marker is cleared: a pane whose pcode quit reopens a shell.
     """
+
+    marker: Callable[[str | None], str] = staticmethod(session_marker)
 
     def __init__(self, source: Callable[[], str | None], fd: int | None) -> None:
         self.source = source
@@ -124,14 +132,20 @@ class PaneSession:
             identity = self.source() or ""
         except Exception:  # noqa: BLE001 - never worth an error.
             return
-        if identity != self.sent and _write_all(self.fd, session_marker(identity).encode()):
+        if identity != self.sent and _write_all(self.fd, self.marker(identity).encode()):
             self.sent = identity
 
     def close(self) -> None:
         from pcode.terminal_notify import _write_all
 
-        if self.sent and _write_all(self.fd, session_marker(None).encode()):
+        if self.sent and _write_all(self.fd, self.marker(None).encode()):
             self.sent = None
+
+
+class PaneHost(PaneSession):
+    """Keep Ghostty Smooth told of the session host this pane is attached to."""
+
+    marker = staticmethod(host_marker)
 
 
 def default_host_dir() -> Path:

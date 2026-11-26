@@ -7,61 +7,102 @@ import SwiftUI
 
 /// Drives the live `PCodeTranscriptDocumentView` that renders a workspace session.
 ///
-/// Connects via `PCodeHostSocketClient` (`observe_transcript` v1) whenever a running
-/// session host owns the session, and falls back to live-tailing
-/// `~/.local/state/pcode/sessions/<id>/transcript.jsonl` for local non-hosted sessions.
+/// Connects via `PCodeHostSocketClient` (`observe_transcript` v1) to the session's
+/// background host (`pcode --host`), preloading settled `transcript.jsonl` history
+/// while a resumed session's host boots and publishing `ConnectionState` so the
+/// pane can show native startup, error and host-stopped cards instead of tailing
+/// the journal.
 final class PCodeLiveTranscriptController: ObservableObject {
-    private static let maxTailLineBytes = 16 * 1024 * 1024
+    enum ConnectionState: Equatable {
+        /// Waiting for the session host to boot and open its socket.
+        case starting
+        /// Connected to the session host's `observe_transcript` stream.
+        case connected
+        /// The session host stopped or disconnected; polling to reconnect (e.g. across `/restart`).
+        case hostStopped(String)
+        /// The session host reported a handshake or protocol error.
+        case error(String)
+    }
 
     @Published var paceMode: PCodeStreamingPaceMode = PCodeStreamingPaceMode.loadDefaultFromPreferences()
     /// Busy, prompt state, turn outcome and session id as the session host reports them.
-    /// Only a hosted session updates it; a journal-tailed one keeps just the attached id.
     @Published private(set) var sessionState = PCodeHostSessionState()
+    /// Host connection lifecycle state for native startup, error and host-stopped cards.
+    @Published private(set) var connectionState: ConnectionState = .starting
 
     private let socketClient = PCodeHostSocketClient()
+    private let resolveSocketPath: (String?, String?) -> String?
+    private let retryInterval: TimeInterval
     private var reducer: PCodeTranscriptEventReducer?
     private weak var documentView: PCodeTranscriptDocumentView?
     private var attachedSessionID: String?
+    private var attachedHostID: String?
+    private var connectedSocketPath: String?
+    private var isConnectingSocket = false
     private var attachGeneration: UInt64 = 0
-
-    // Local journal tailing state (fallback when session is not hosted)
-    private var tailSource: DispatchSourceFileSystemObject?
-    private var tailFD: Int32 = -1
-    private var tailOffset: UInt64 = 0
-    private var tailInode: UInt64 = 0
-    private var tailDev: Int32 = 0
-    private var tailLineRemainder = Data()
     private var hostRetryTimer: Timer?
+
+    init(
+        retryInterval: TimeInterval = 0.5,
+        resolveSocketPath: @escaping (String?, String?) -> String? = { sessionID, hostID in
+            PCodeSessionInfo.hostSocketPath(forSessionID: sessionID, hostID: hostID)
+        }
+    ) {
+        self.retryInterval = retryInterval
+        self.resolveSocketPath = resolveSocketPath
+    }
 
     deinit {
         detach()
     }
 
-    func attach(sessionID: String?, documentView: PCodeTranscriptDocumentView) {
-        let normalized = (sessionID?.isEmpty == false) ? sessionID : nil
-        if attachedSessionID == normalized && self.documentView === documentView {
+    func attach(sessionID: String?, hostID: String? = nil, documentView: PCodeTranscriptDocumentView) {
+        let normalizedSession = (sessionID?.isEmpty == false && PCode.valid(sessionID!, length: 1...64)) ? sessionID : nil
+        let normalizedHost = (hostID?.isEmpty == false && PCode.valid(hostID!, length: 8...8, hex: true)) ? hostID : nil
+        if attachedSessionID == normalizedSession && attachedHostID == normalizedHost && self.documentView === documentView {
+            return
+        }
+        // If a brand-new session gains its session ID on turn 1 (or `/restart` swaps the host ID)
+        // while we are already connected to that same host socket, keep the live stream intact.
+        if self.documentView === documentView,
+           let currentSocket = connectedSocketPath,
+           let targetSocket = resolveSocketPath(normalizedSession, normalizedHost),
+           currentSocket == targetSocket,
+           (connectionState == .connected || isConnectingSocket)
+        {
+            attachedSessionID = normalizedSession ?? attachedSessionID
+            attachedHostID = normalizedHost ?? attachedHostID
+            if sessionState.sessionID.isEmpty, let normalizedSession {
+                sessionState.sessionID = normalizedSession
+            }
             return
         }
         detach()
         attachGeneration &+= 1
         let gen = attachGeneration
         self.documentView = documentView
-        self.attachedSessionID = normalized
+        self.attachedSessionID = normalizedSession
+        self.attachedHostID = normalizedHost
         documentView.paceMode = paceMode
-        resetSessionState(sessionID: normalized ?? "")
+        resetSessionState(sessionID: normalizedSession ?? "")
+        connectionState = .starting
 
         let newReducer = PCodeTranscriptEventReducer(documentView: documentView)
         self.reducer = newReducer
 
-        guard let sid = normalized, PCode.valid(sid, length: 1...64) else {
+        guard normalizedSession != nil || normalizedHost != nil else {
             documentView.setItems([], pinToBottom: true)
             return
         }
 
-        if let sockPath = PCodeSessionInfo.hostSocketPath(forSessionID: sid) {
-            connectToHost(socketPath: sockPath, sessionID: sid, generation: gen, documentView: documentView, reducer: newReducer)
+        if let sockPath = resolveSocketPath(normalizedSession, normalizedHost) {
+            connectToHost(socketPath: sockPath, generation: gen, documentView: documentView, reducer: newReducer)
         } else {
-            startJournalTail(sessionID: sid, generation: gen, documentView: documentView, reducer: newReducer)
+            loadInitialHistoryAndWaitForHost(
+                sessionID: normalizedSession,
+                generation: gen,
+                documentView: documentView,
+                reducer: newReducer)
         }
     }
 
@@ -70,10 +111,12 @@ final class PCodeLiveTranscriptController: ObservableObject {
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
         socketClient.close()
-        stopJournalTail()
+        connectedSocketPath = nil
+        isConnectingSocket = false
         reducer = nil
         documentView = nil
         attachedSessionID = nil
+        attachedHostID = nil
         resetSessionState(sessionID: "")
     }
 
@@ -91,6 +134,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
         var next = sessionState
         if next.apply(event) {
             sessionState = next
+            if (attachedSessionID ?? "").isEmpty, !next.sessionID.isEmpty {
+                attachedSessionID = next.sessionID
+            }
         }
     }
 
@@ -98,15 +144,20 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
     private func connectToHost(
         socketPath: String,
-        sessionID: String,
         generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
+        hostRetryTimer?.invalidate()
+        hostRetryTimer = nil
+        connectedSocketPath = socketPath
+        isConnectingSocket = true
         socketClient.connect(
             socketPath: socketPath,
             onReady: { [weak self, weak documentView] welcome in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
+                self.isConnectingSocket = false
+                self.connectionState = .connected
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
                 documentView.setItems([], pinToBottom: true)
@@ -120,6 +171,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     state.apply(event)
                     reducer.apply(event, reveal: false, isLive: true)
                 }
+                if (self.attachedSessionID ?? "").isEmpty, !state.sessionID.isEmpty {
+                    self.attachedSessionID = state.sessionID
+                }
                 if state != self.sessionState {
                     self.sessionState = state
                 }
@@ -130,143 +184,78 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.applySessionEvent(event)
                 reducer.apply(event, reveal: true)
             },
-            onError: { [weak self, weak documentView] _ in
+            onError: { [weak self, weak documentView] message in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
-                self.resetSessionState(sessionID: sessionID)
-                self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
+                self.isConnectingSocket = false
+                self.connectedSocketPath = nil
+                self.resetSessionState(sessionID: self.attachedSessionID ?? "")
+                let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.connectionState = .error(text.isEmpty ? "Could not connect to the session host." : text)
+                self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer)
             },
             onClosed: { [weak self, weak documentView] in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
-                self.resetSessionState(sessionID: sessionID)
-                self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
+                self.isConnectingSocket = false
+                self.connectedSocketPath = nil
+                self.resetSessionState(sessionID: self.attachedSessionID ?? "")
+                self.connectionState = .hostStopped("The session host stopped.")
+                self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer)
             })
     }
 
-    // MARK: - Local Non-Hosted Session (Live Journal Tail)
+    // MARK: - Initial History Preload & Host Reconnection
 
-    private func startJournalTail(
-        sessionID: String,
+    private func loadInitialHistoryAndWaitForHost(
+        sessionID: String?,
         generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
-        stopJournalTail()
-        let dir = PCodeSessionInfo.root.appendingPathComponent(sessionID)
-        let path = dir.appendingPathComponent("transcript.jsonl").path
-        guard Self.isSafeOwnedDirectory(dir.path) else {
-            return
-        }
-
-        tailOffset = 0
-        tailInode = 0
-        tailDev = 0
-        tailLineRemainder.removeAll(keepingCapacity: true)
-
         documentView.setItems([], pinToBottom: true)
         reducer.reset()
+        startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer)
 
-        // Load settled history off the main thread (skipping historical TextDelta/ThinkingDelta
-        // so large sessions never stall the UI), then arm kqueue and drain any tail delta.
+        guard let sessionID else { return }
+        let dir = PCodeSessionInfo.root.appendingPathComponent(sessionID)
+        let path = dir.appendingPathComponent("transcript.jsonl").path
+        guard Self.isSafeOwnedDirectory(dir.path) else { return }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self, weak documentView] in
             let initial = Self.readSettledInitialJournal(atPath: path)
             DispatchQueue.main.async {
-                guard let self, let documentView, self.attachGeneration == generation else { return }
-                self.tailOffset = initial.offset
-                self.tailInode = initial.inode
-                self.tailDev = initial.dev
+                guard let self, let documentView,
+                      self.attachGeneration == generation,
+                      self.connectedSocketPath == nil,
+                      !self.isConnectingSocket
+                else { return }
                 for event in initial.events {
                     reducer.apply(event, reveal: false, isLive: false)
                 }
                 reducer.settleHistory()
                 documentView.scrollToBottomAndPin()
-
-                // Arm kqueue watcher first, then drain any bytes written during initial load.
-                self.openTailWatcher(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
-                self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
-                self.startHostPromotionTimer(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
             }
         }
     }
 
-    private func openTailWatcher(
-        atPath path: String,
-        sessionID: String,
-        generation: UInt64,
-        documentView: PCodeTranscriptDocumentView,
-        reducer: PCodeTranscriptEventReducer
-    ) {
-        stopTailSourceOnly()
-        guard Self.isSafeOwnedRegularFile(path) else { return }
-        let fd = Darwin.open(path, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return }
-        tailFD = fd
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .extend, .rename, .delete],
-            queue: .main)
-        source.setEventHandler { [weak self, weak documentView] in
-            guard let self, let documentView, self.attachGeneration == generation else { return }
-            let flags = source.data
-            if flags.contains(.rename) || flags.contains(.delete) {
-                self.openTailWatcher(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
-            }
-            self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
-        }
-        source.setCancelHandler { [fd] in
-            Darwin.close(fd)
-        }
-        source.resume()
-        tailSource = source
-    }
-
-    private func startHostPromotionTimer(
-        atPath path: String,
-        sessionID: String,
+    private func startHostReconnectTimer(
         generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
         hostRetryTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self, weak documentView] t in
+        let timer = Timer(timeInterval: retryInterval, repeats: true) { [weak self, weak documentView] t in
             guard let self, let documentView, self.attachGeneration == generation else {
                 t.invalidate()
                 return
             }
-            if let sockPath = PCodeSessionInfo.hostSocketPath(forSessionID: sessionID) {
+            if let sockPath = self.resolveSocketPath(self.attachedSessionID, self.attachedHostID) {
                 t.invalidate()
                 self.hostRetryTimer = nil
-                self.stopJournalTail()
-                self.connectToHost(socketPath: sockPath, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
-                return
-            }
-            if self.tailSource == nil && Self.isSafeOwnedRegularFile(path) {
-                self.openTailWatcher(atPath: path, sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
-                self.readNewJournalBytes(atPath: path, reveal: true, reducer: reducer)
+                self.connectToHost(socketPath: sockPath, generation: generation, documentView: documentView, reducer: reducer)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         hostRetryTimer = timer
-    }
-
-    private func stopTailSourceOnly() {
-        if let source = tailSource {
-            source.cancel()
-            tailSource = nil
-            tailFD = -1
-        } else if tailFD >= 0 {
-            Darwin.close(tailFD)
-            tailFD = -1
-        }
-    }
-
-    private func stopJournalTail() {
-        hostRetryTimer?.invalidate()
-        hostRetryTimer = nil
-        stopTailSourceOnly()
-        tailOffset = 0
-        tailInode = 0
-        tailDev = 0
-        tailLineRemainder.removeAll(keepingCapacity: true)
     }
 
     private static func isSafeOwnedDirectory(_ path: String) -> Bool {
@@ -331,87 +320,13 @@ final class PCodeLiveTranscriptController: ObservableObject {
         }
         return (events, UInt64(scan), st.st_ino, st.st_dev)
     }
-
-    private func readNewJournalBytes(
-        atPath path: String,
-        reveal: Bool,
-        reducer: PCodeTranscriptEventReducer
-    ) {
-        guard Self.isSafeOwnedRegularFile(path) else { return }
-        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return }
-        defer { Darwin.close(fd) }
-
-        var st = stat()
-        guard Darwin.fstat(fd, &st) == 0,
-              (st.st_mode & S_IFMT) == S_IFREG,
-              st.st_uid == Darwin.getuid()
-        else { return }
-
-        let fileSize = UInt64(max(0, st.st_size))
-        let replaced = (tailInode != 0 && (st.st_ino != tailInode || st.st_dev != tailDev))
-        if replaced || fileSize < tailOffset {
-            tailOffset = 0
-            tailInode = st.st_ino
-            tailDev = st.st_dev
-            tailLineRemainder.removeAll(keepingCapacity: true)
-            reducer.reset()
-            documentView?.setItems([], pinToBottom: true)
-        } else if tailInode == 0 {
-            tailInode = st.st_ino
-            tailDev = st.st_dev
-        }
-
-        guard fileSize > tailOffset else { return }
-        guard Darwin.lseek(fd, off_t(tailOffset), SEEK_SET) >= 0 else { return }
-
-        let toRead = Int(min(fileSize - tailOffset, UInt64(Self.maxTailLineBytes)))
-        var chunk = Data(count: toRead)
-        var got = 0
-        chunk.withUnsafeMutableBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            while got < toRead {
-                let n = Darwin.read(fd, base.advanced(by: got), toRead - got)
-                if n < 0 {
-                    if errno == EINTR { continue }
-                    break
-                }
-                if n == 0 { break }
-                got += n
-            }
-        }
-        chunk.count = got
-        tailOffset += UInt64(got)
-        guard !chunk.isEmpty else { return }
-
-        tailLineRemainder.append(chunk)
-        if tailLineRemainder.count > Self.maxTailLineBytes {
-            tailLineRemainder.removeAll(keepingCapacity: true)
-            return
-        }
-
-        var scan = 0
-        while scan < tailLineRemainder.count,
-              let nl = tailLineRemainder[scan...].firstIndex(of: 0x0A)
-        {
-            let line = tailLineRemainder[scan..<nl]
-            scan = nl + 1
-            guard !line.isEmpty,
-                  let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let event = PCodeHostEventDecoder.decodeJournalRecord(obj)
-            else { continue }
-            reducer.apply(event, reveal: reveal)
-        }
-        if scan > 0 {
-            tailLineRemainder.removeSubrange(0..<scan)
-        }
-    }
 }
 
 /// SwiftUI `NSViewRepresentable` hosting `PCodeTranscriptScrollView` connected to
 /// `PCodeLiveTranscriptController`.
 struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     let sessionID: String?
+    var hostID: String? = nil
     let theme: PCodeTranscriptTheme
     let typography: PCodeTypography
     let controller: PCodeLiveTranscriptController
@@ -430,11 +345,13 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         context.coordinator.lastTypographySnapshot = typography.snapshot
         context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
         context.coordinator.lastRequestedSessionID = sessionID
+        context.coordinator.lastRequestedHostID = hostID
         context.coordinator.controller = controller
         let sid = sessionID
+        let hid = hostID
         DispatchQueue.main.async { [weak controller, weak doc = scrollView.transcriptDocumentView] in
             guard let controller, let doc else { return }
-            controller.attach(sessionID: sid, documentView: doc)
+            controller.attach(sessionID: sid, hostID: hid, documentView: doc)
         }
         return scrollView
     }
@@ -458,11 +375,13 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
             nsView.applyTheme(theme)
         }
         let sid = sessionID
-        if coord.lastRequestedSessionID != sid {
+        let hid = hostID
+        if coord.lastRequestedSessionID != sid || coord.lastRequestedHostID != hid {
             coord.lastRequestedSessionID = sid
+            coord.lastRequestedHostID = hid
             DispatchQueue.main.async { [weak controller, weak doc = nsView.transcriptDocumentView] in
                 guard let controller, let doc else { return }
-                controller.attach(sessionID: sid, documentView: doc)
+                controller.attach(sessionID: sid, hostID: hid, documentView: doc)
             }
         }
     }
@@ -505,6 +424,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         var lastTypographySnapshot: PCodeTypographySnapshot?
         var lastTypographyObjectID: ObjectIdentifier?
         var lastRequestedSessionID: String?
+        var lastRequestedHostID: String?
         weak var controller: PCodeLiveTranscriptController?
     }
 }
@@ -514,6 +434,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
 struct PCodeMainWindowTranscriptView: View {
     @EnvironmentObject var ghostty: Ghostty.App
     let sessionID: String?
+    var hostID: String? = nil
     let bottomContentInset: CGFloat
     var composerSurface: Ghostty.SurfaceView? = nil
     @ObservedObject private var typography = PCodeTypography.shared
@@ -530,15 +451,97 @@ struct PCodeMainWindowTranscriptView: View {
     }
 
     var body: some View {
-        PCodeLiveTranscriptRepresentable(
-            sessionID: sessionID,
-            theme: transcriptTheme,
-            typography: typography,
-            controller: controller,
-            bottomContentInset: bottomContentInset,
-            composerSurface: composerSurface)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ghostty.config.backgroundColor)
-            .environment(\.colorScheme, colorScheme)
+        ZStack(alignment: .bottom) {
+            PCodeLiveTranscriptRepresentable(
+                sessionID: sessionID,
+                hostID: hostID,
+                theme: transcriptTheme,
+                typography: typography,
+                controller: controller,
+                bottomContentInset: bottomContentInset,
+                composerSurface: composerSurface)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if controller.connectionState != .connected {
+                PCodeHostConnectionCard(state: controller.connectionState)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, max(12, bottomContentInset + 10))
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: controller.connectionState)
+        .background(ghostty.config.backgroundColor)
+        .environment(\.colorScheme, colorScheme)
+    }
+}
+
+/// Native status card shown in the transcript pane while a session host is starting,
+/// has stopped and is waiting to reconnect (e.g. across `/restart`), or reported an error.
+struct PCodeHostConnectionCard: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    let state: PCodeLiveTranscriptController.ConnectionState
+
+    var body: some View {
+        switch state {
+        case .connected:
+            EmptyView()
+        case .starting:
+            card(
+                title: "Starting session host…",
+                detail: nil,
+                isError: false,
+                showsSpinner: true)
+        case .hostStopped(let message):
+            card(
+                title: message,
+                detail: "Waiting to reconnect…",
+                isError: false,
+                showsSpinner: true)
+        case .error(let message):
+            card(
+                title: "Session host error",
+                detail: message,
+                isError: true,
+                showsSpinner: false)
+        }
+    }
+
+    private func card(title: String, detail: String?, isError: Bool, showsSpinner: Bool) -> some View {
+        HStack(spacing: 10) {
+            if showsSpinner {
+                ProgressView()
+                    .controlSize(.small)
+            } else if isError {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 7, height: 7)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isError ? Color.red : ghostty.config.foregroundColor.opacity(0.88))
+                    .lineLimit(1)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ghostty.config.foregroundColor.opacity(0.58))
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(ghostty.config.backgroundColor)
+                .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 3)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(
+                    isError ? Color.red.opacity(0.45) : ghostty.config.splitDividerColor,
+                    lineWidth: 1)
+        )
     }
 }

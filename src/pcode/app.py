@@ -2951,6 +2951,9 @@ class PreviewApp:
         current = getattr(self.runtime, "session", None)
         return current.info.id if current else None
 
+    def active_host_id(self) -> str | None:
+        return (self.runtime.id or None) if self.hosted else None
+
     async def open_saved_session(self, identity: str, active_id: str | None) -> None:
         """Show a saved session here: where it runs, else resumed in a host or this process."""
         from pcode.host_protocol import list_hosts
@@ -3589,6 +3592,7 @@ class PreviewApp:
             # Over ssh the session is the remote machine's: a restored local pane can't reopen it.
             if theme.drawer_supported() and not os.environ.get("SSH_CONNECTION"):
                 items.append(drawer.PaneSession(self.active_session_id, terminal))
+                items.append(drawer.PaneHost(self.active_host_id, terminal))
             self._reconciler = Reconciler(items)
             # Docked, `terminal` is pcode's own pane, not the tinted dock, and its
             # replies reach `Dock.attach`'s reply filter, so this follows a

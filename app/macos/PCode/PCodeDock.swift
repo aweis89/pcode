@@ -215,6 +215,7 @@ struct PCodeDockedSurface: View {
     @ObservedObject var dock: PCodeDock
     @ObservedObject var drawer: PCodeDrawer
     @State private var sessionID: String?
+    @State private var hostID: String?
     var isSplit: Bool
 
     private static let fallbackLineHeight: CGFloat = 18
@@ -224,6 +225,7 @@ struct PCodeDockedSurface: View {
         self.dock = dock
         self.drawer = surfaceView.pcodeDrawer
         self._sessionID = State(initialValue: surfaceView.pcodeSession)
+        self._hostID = State(initialValue: surfaceView.pcodeHost)
         self.isSplit = isSplit
     }
 
@@ -245,16 +247,19 @@ struct PCodeDockedSurface: View {
 
                 // The native AppKit transcript, the session's only view. It covers the
                 // terminal, which stays underneath as pcode's pty and message channel.
-                // Only shown while the docked composer card is active so undocked inline
-                // editors or exited shells underneath are never hidden.
+                // Shown whenever the docked composer card is active on a hosted or
+                // saved session; the no-model in-process preview (neither sessionID
+                // nor hostID) leaves the underlying terminal visible.
+                let sid = surfaceView.pcodeSession ?? sessionID
+                let hid = surfaceView.pcodeHost ?? hostID
                 if !isSplit,
                    let docked = dock.surface,
                    dock.ready,
-                   let sid = surfaceView.pcodeSession ?? sessionID,
-                   !sid.isEmpty
+                   ((sid?.isEmpty == false) || (hid?.isEmpty == false))
                 {
                     PCodeDockedTranscriptLayer(
                         sessionID: sid,
+                        hostID: hid,
                         dock: dock,
                         docked: docked,
                         fallbackCell: paneCell,
@@ -292,13 +297,18 @@ struct PCodeDockedSurface: View {
             .animation(.spring(response: 0.28, dampingFraction: 0.86), value: dock.ready)
             .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
                 sessionID = surfaceView.pcodeSession
+                hostID = surfaceView.pcodeHost
             }
             .onChange(of: ObjectIdentifier(surfaceView)) { _ in
                 sessionID = surfaceView.pcodeSession
+                hostID = surfaceView.pcodeHost
             }
             .onAppear {
                 if sessionID != surfaceView.pcodeSession {
                     sessionID = surfaceView.pcodeSession
+                }
+                if hostID != surfaceView.pcodeHost {
+                    hostID = surfaceView.pcodeHost
                 }
             }
         }
@@ -312,7 +322,8 @@ struct PCodeDockedSurface: View {
 /// Observes `dock` and `dock.surface` so the main-window native transcript reserves
 /// the exact live bottom footprint of `PCodeDockCard` as the editor grows or zooms.
 private struct PCodeDockedTranscriptLayer: View {
-    let sessionID: String
+    let sessionID: String?
+    var hostID: String? = nil
     @ObservedObject var dock: PCodeDock
     @ObservedObject var docked: Ghostty.SurfaceView
     var fallbackCell: CGFloat
@@ -326,6 +337,7 @@ private struct PCodeDockedTranscriptLayer: View {
             : 0
         PCodeMainWindowTranscriptView(
             sessionID: sessionID,
+            hostID: hostID,
             bottomContentInset: bottomInset,
             composerSurface: docked)
     }
