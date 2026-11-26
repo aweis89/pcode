@@ -7,6 +7,7 @@ final class PCodeTranscriptPreferences: ObservableObject {
 
     private enum Keys {
         static let groupTools = "PCodeTranscriptGroupTools"
+        static let promptStyle = "PCodeTranscriptPromptStyle"
     }
 
     private let defaults: UserDefaults
@@ -20,12 +21,40 @@ final class PCodeTranscriptPreferences: ObservableObject {
         }
     }
 
+    /// How submitted prompts are framed in the transcript.
+    @Published var promptStyle: PCodePromptStyle {
+        didSet {
+            guard promptStyle != oldValue else { return }
+            defaults.set(promptStyle.rawValue, forKey: Keys.promptStyle)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         if defaults.object(forKey: Keys.groupTools) == nil {
             self.groupTools = true
         } else {
             self.groupTools = defaults.bool(forKey: Keys.groupTools)
+        }
+        self.promptStyle = defaults.string(forKey: Keys.promptStyle)
+            .flatMap(PCodePromptStyle.init(rawValue:)) ?? .classic
+    }
+}
+
+/// Framing for prompt rows (`PCodePromptRowView`).
+enum PCodePromptStyle: String, CaseIterable {
+    /// Neutral card plus a left accent bar.
+    case classic
+    /// Accent-tinted card with a hairline border, no bar.
+    case tinted
+    /// Left accent bar only, like the terminal's `▌` rail.
+    case bar
+
+    var title: String {
+        switch self {
+        case .classic: return "Card with Bar"
+        case .tinted: return "Tinted Card"
+        case .bar: return "Accent Bar Only"
         }
     }
 }
