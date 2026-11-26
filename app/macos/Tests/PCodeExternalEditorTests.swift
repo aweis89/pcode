@@ -433,10 +433,47 @@ struct PCodeExternalEditorTests {
                 PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: 88)
         )
 
+        let colonLineOnly = URL(string: "file:///Users/dev/app.py:42")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: colonLineOnly, fileExists: { $0 == "/Users/dev/app.py" }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: 42)
+        )
+
+        let colonZero = URL(string: "file:///Users/dev/app.py:0")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: colonZero, fileExists: { $0 == "/Users/dev/app.py" }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: nil)
+        )
+
+        // When a literal filename containing ":42" exists, do not strip the suffix.
+        let literalColonFile = URL(string: "file:///Users/dev/app.py:42")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: literalColonFile, fileExists: { $0 == "/Users/dev/app.py:42" }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py:42", line: nil)
+        )
+
+        // When neither the full path nor the stripped path exists, leave path intact.
+        #expect(
+            PCodeExternalEditor.fileTarget(for: colonLineOnly, fileExists: { _ in false }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py:42", line: nil)
+        )
+
+        let upperAndColonFrag = URL(string: "FILE://LOCALHOST/Users/dev/a%23b.py#l10:5")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: upperAndColonFrag, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/a#b.py", line: 10)
+        )
+
         let nonNumericFragment = URL(string: "file:///Users/dev/README.md#overview")!
         #expect(
             PCodeExternalEditor.fileTarget(for: nonNumericFragment, fileExists: { _ in true }) ==
                 PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/README.md", line: nil)
+        )
+
+        let partialNumericFragment = URL(string: "file:///Users/dev/CHANGELOG.md#1-overview")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: partialNumericFragment, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/CHANGELOG.md", line: nil)
         )
 
         let zeroLine = URL(string: "file:///Users/dev/app.py#L0")!
@@ -451,5 +488,92 @@ struct PCodeExternalEditorTests {
         #expect(PCodeExternalEditor.fileTarget(for: URL(string: "javascript:alert(1)")!) == nil)
         #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file://remote-host/share/a.txt")!) == nil)
         #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file://")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file:relative.py")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file:~/notes.md")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file://user@localhost/tmp/a.py")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file://localhost:8080/tmp/a.py")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file:///tmp/evil%00.py")!) == nil)
+    }
+
+    @Test func openFileURLRoutesTextNonTextDirectoryPackageAndMissing() {
+        var editorCalls: [(String, Int?)] = []
+        var workspaceCalls: [URL] = []
+        var revealedCalls: [URL] = []
+
+        // Regular text file opens in the editor with parsed line number.
+        let textOpened = PCodeExternalEditor.open(
+            fileURL: URL(string: "file:///repo/app.py#L25-L30")!,
+            fileStatus: { _ in .regularFile },
+            isTextFile: { _ in true },
+            editorOpener: { path, line in editorCalls.append((path, line)); return true },
+            workspaceOpener: { workspaceCalls.append($0); return true },
+            packageRevealer: { revealedCalls.append($0) }
+        )
+        #expect(textOpened)
+        #expect(editorCalls.count == 1 && editorCalls[0].0 == "/repo/app.py" && editorCalls[0].1 == 25)
+        #expect(workspaceCalls.isEmpty && revealedCalls.isEmpty)
+
+        // Non-text file (e.g. PNG/PDF) opens via NSWorkspace rather than the editor.
+        editorCalls.removeAll()
+        let imageOpened = PCodeExternalEditor.open(
+            fileURL: URL(string: "file:///repo/shot.png")!,
+            fileStatus: { _ in .regularFile },
+            isTextFile: { _ in false },
+            editorOpener: { path, line in editorCalls.append((path, line)); return true },
+            workspaceOpener: { workspaceCalls.append($0); return true },
+            packageRevealer: { revealedCalls.append($0) }
+        )
+        #expect(imageOpened)
+        #expect(editorCalls.isEmpty)
+        #expect(workspaceCalls == [URL(fileURLWithPath: "/repo/shot.png")])
+
+        // Plain directory opens in Finder via NSWorkspace.
+        workspaceCalls.removeAll()
+        let dirOpened = PCodeExternalEditor.open(
+            fileURL: URL(string: "file:///repo/src")!,
+            fileStatus: { _ in .directory },
+            isTextFile: { _ in false },
+            editorOpener: { _, _ in true },
+            workspaceOpener: { workspaceCalls.append($0); return true },
+            packageRevealer: { revealedCalls.append($0) }
+        )
+        #expect(dirOpened)
+        #expect(workspaceCalls == [URL(fileURLWithPath: "/repo/src", isDirectory: true)])
+
+        // macOS file package (.app/.pkg) is revealed in Finder rather than launched.
+        workspaceCalls.removeAll()
+        let pkgOpened = PCodeExternalEditor.open(
+            fileURL: URL(string: "file:///Applications/Calculator.app")!,
+            fileStatus: { _ in .package },
+            isTextFile: { _ in false },
+            editorOpener: { _, _ in true },
+            workspaceOpener: { workspaceCalls.append($0); return true },
+            packageRevealer: { revealedCalls.append($0) }
+        )
+        #expect(pkgOpened)
+        #expect(workspaceCalls.isEmpty)
+        #expect(revealedCalls == [URL(fileURLWithPath: "/Applications/Calculator.app")])
+
+        // Missing file returns false without invoking any opener.
+        let missingOpened = PCodeExternalEditor.open(
+            fileURL: URL(string: "file:///repo/does-not-exist.py")!,
+            fileStatus: { _ in .missing },
+            isTextFile: { _ in true },
+            editorOpener: { _, _ in Issue.record("Should not open missing file"); return true },
+            workspaceOpener: { _ in Issue.record("Should not open missing file"); return true },
+            packageRevealer: { _ in Issue.record("Should not reveal missing file") }
+        )
+        #expect(!missingOpened)
+
+        // Editor failure propagates false so caller can beep.
+        let failedOpen = PCodeExternalEditor.open(
+            fileURL: URL(string: "file:///repo/app.py")!,
+            fileStatus: { _ in .regularFile },
+            isTextFile: { _ in true },
+            editorOpener: { _, _ in false },
+            workspaceOpener: { _ in false },
+            packageRevealer: { _ in }
+        )
+        #expect(!failedOpen)
     }
 }

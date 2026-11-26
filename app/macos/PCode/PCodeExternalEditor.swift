@@ -257,18 +257,32 @@ enum PCodeExternalEditor {
     private static let colonLineColRegex = try! NSRegularExpression(pattern: #"^(.*):(\d+):\d+$"#)
     private static let colonLineRegex = try! NSRegularExpression(pattern: #"^(.*):(\d+)$"#)
 
+    private static let nonTextExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "icns", "tiff", "tif", "heic", "heif", "avif",
+        "mp3", "wav", "m4a", "aac", "flac", "ogg", "opus",
+        "mp4", "mov", "m4v", "avi", "mkv", "webm",
+        "ttf", "otf", "woff", "woff2",
+        "pdf", "zip", "gz", "tgz", "tar", "bz2", "xz", "7z", "rar",
+        "dmg", "pkg", "iso", "bin", "exe", "dll", "dylib", "so", "o", "a", "wasm",
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pages", "numbers", "key",
+    ]
+
     /// Decodes a local `file://` URL into its filesystem path and optional 1-based line number.
-    /// Returns `nil` for non-`file` URLs, non-local hosts, or empty paths.
+    /// Returns `nil` for non-`file` URLs, relative `file:` URLs, non-local hosts, credentials/ports,
+    /// NUL bytes, or empty paths.
     static func fileTarget(
         for url: URL,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> FileLinkTarget? {
         guard url.scheme?.lowercased() == "file" else { return nil }
+        guard url.absoluteString.lowercased().hasPrefix("file://") else { return nil }
+        guard url.user == nil, url.password == nil, url.port == nil else { return nil }
         if let host = url.host, !host.isEmpty, host.lowercased() != "localhost" {
             return nil
         }
+        guard !url.path(percentEncoded: true).lowercased().contains("%00") else { return nil }
         var path = url.path
-        guard !path.isEmpty else { return nil }
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
 
         var line: Int? = url.fragment.flatMap(parseLineFragment)
         if line == nil, !fileExists(path) {
@@ -279,7 +293,7 @@ enum PCodeExternalEditor {
                    match.numberOfRanges >= 3
                 {
                     let candidate = nsPath.substring(with: match.range(at: 1))
-                    if !candidate.isEmpty, fileExists(candidate) {
+                    if candidate.hasPrefix("/"), fileExists(candidate) {
                         path = candidate
                         if let parsed = Int(nsPath.substring(with: match.range(at: 2))), parsed >= 1 {
                             line = parsed
@@ -310,29 +324,91 @@ enum PCodeExternalEditor {
         return nil
     }
 
-    /// Opens a local `file://` URL (supporting `#L<n>`, `#L<n>-L<m>`, and `:line` suffixes).
-    /// Directories open in Finder via `NSWorkspace`; regular files open in the preferred GUI editor.
-    /// Returns `false` if the URL is not a local file URL or the target does not exist on disk.
-    @discardableResult
-    static func open(fileURL url: URL) -> Bool {
-        guard let target = fileTarget(for: url) else { return false }
-        let expandedPath = (target.path as NSString).expandingTildeInPath
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: expandedPath, isDirectory: &isDirectory) else {
+    /// Best-effort check for whether a regular file at `path` is text suitable for a code editor
+    /// rather than an image, PDF, archive, or binary file that belongs in the OS default handler.
+    static func isLikelyTextFile(atPath path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        if !ext.isEmpty, nonTextExtensions.contains(ext) {
             return false
         }
-        if isDirectory.boolValue {
-            return NSWorkspace.shared.open(URL(fileURLWithPath: expandedPath, isDirectory: true))
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            return false
         }
-        open(path: expandedPath, line: target.line)
-        return true
+        defer { try? handle.close() }
+        let chunk = handle.readData(ofLength: 8192)
+        if chunk.isEmpty {
+            return true
+        }
+        return !chunk.contains(0)
+    }
+
+    /// Opens a local `file://` URL (supporting `#L<n>`, `#L<n>-L<m>`, and `:line` suffixes).
+    /// Plain directories open in Finder, macOS file packages (`.app`, `.pkg`, etc.) are revealed
+    /// rather than executed, non-text files open with `NSWorkspace`, and text files open in the
+    /// preferred GUI editor. Returns `false` if the URL is invalid, missing, or fails to open.
+    @discardableResult
+    static func open(fileURL url: URL) -> Bool {
+        open(
+            fileURL: url,
+            fileStatus: { path in
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else {
+                    return .missing
+                }
+                if NSWorkspace.shared.isFilePackage(atPath: path) {
+                    return .package
+                }
+                return isDir.boolValue ? .directory : .regularFile
+            },
+            isTextFile: { isLikelyTextFile(atPath: $0) },
+            editorOpener: { path, line in open(path: path, line: line) },
+            workspaceOpener: { NSWorkspace.shared.open($0) },
+            packageRevealer: { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+        )
+    }
+
+    enum FileURLStatus: Equatable {
+        case missing
+        case directory
+        case package
+        case regularFile
+    }
+
+    /// Testable core implementation of `open(fileURL:)`.
+    @discardableResult
+    static func open(
+        fileURL url: URL,
+        fileStatus: (String) -> FileURLStatus,
+        isTextFile: (String) -> Bool,
+        editorOpener: (String, Int?) -> Bool,
+        workspaceOpener: (URL) -> Bool,
+        packageRevealer: (URL) -> Void
+    ) -> Bool {
+        guard let target = fileTarget(for: url, fileExists: { fileStatus($0) != .missing }) else {
+            return false
+        }
+        switch fileStatus(target.path) {
+        case .missing:
+            return false
+        case .package:
+            packageRevealer(URL(fileURLWithPath: target.path))
+            return true
+        case .directory:
+            return workspaceOpener(URL(fileURLWithPath: target.path, isDirectory: true))
+        case .regularFile:
+            if isTextFile(target.path) {
+                return editorOpener(target.path, target.line)
+            }
+            return workspaceOpener(URL(fileURLWithPath: target.path))
+        }
     }
 
     /// Opens `path` (at `line` when supported) in the user's preferred GUI editor,
     /// falling back to `NSWorkspace.shared.open` if no GUI editor is resolved or launch fails.
-    static func open(path: String, line: Int? = nil) {
+    @discardableResult
+    static func open(path: String, line: Int? = nil) -> Bool {
         let editorEnv = preferredEditorCommand()
-        _ = open(
+        return open(
             path: path,
             line: line,
             editorEnv: editorEnv,

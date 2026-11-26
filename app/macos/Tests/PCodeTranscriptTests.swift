@@ -445,7 +445,7 @@ struct PCodeTranscriptTests {
         let md = """
         # Heading `codeInHeading`
 
-        Visit [safe](https://example.com), [local](file:///repo/app.py#L10-L20), [`submit()`](file:///repo/controller.py#L42), [remote](file://evil.example/share), and [bad](javascript:alert(1)).
+        Visit [safe](https://example.com), [local](file:///repo/app.py#L10-L20), [localhost](file://localhost/repo/b.py#L3), [`submit()`](file:///repo/controller.py#L42), [remote](file://evil.example/share), [rel](file:relative.py), and [bad](javascript:alert(1)).
 
         > Quoted line
 
@@ -466,17 +466,21 @@ struct PCodeTranscriptTests {
         }
         #expect(attr.attribute(.pcodeInlineCodeFill, at: codeRange.location, effectiveRange: nil) != nil)
 
-        // Safe https and local file links have .link; remote file:// and javascript: links do not.
+        // Safe https and local file links have .link; remote/relative file and javascript: links do not.
         let safeRange = str.range(of: "safe")
         let localRange = str.range(of: "local")
+        let localhostRange = str.range(of: "localhost")
         let codeLinkRange = str.range(of: "submit()")
         let remoteRange = str.range(of: "remote")
+        let relRange = str.range(of: "rel")
         let badRange = str.range(of: "bad")
         #expect(attr.attribute(.link, at: safeRange.location, effectiveRange: nil) as? URL == URL(string: "https://example.com"))
         #expect(attr.attribute(.link, at: localRange.location, effectiveRange: nil) as? URL == URL(string: "file:///repo/app.py#L10-L20"))
+        #expect(attr.attribute(.link, at: localhostRange.location, effectiveRange: nil) as? URL == URL(string: "file://localhost/repo/b.py#L3"))
         #expect(attr.attribute(.link, at: codeLinkRange.location, effectiveRange: nil) as? URL == URL(string: "file:///repo/controller.py#L42"))
         #expect(attr.attribute(.underlineStyle, at: localRange.location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue)
         #expect(attr.attribute(.link, at: remoteRange.location, effectiveRange: nil) == nil)
+        #expect(attr.attribute(.link, at: relRange.location, effectiveRange: nil) == nil)
         #expect(attr.attribute(.link, at: badRange.location, effectiveRange: nil) == nil)
 
         // Blockquote carries depth attribute.
