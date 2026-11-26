@@ -282,6 +282,16 @@ def prepare_hosts(bench: Bench, count: int) -> list[str]:
     return [e["session_id"] for e in entries]
 
 
+def pad_sessions(bench: Bench, count: int, model: str) -> None:
+    """Add `count` idle saved sessions (metadata only), as a long-used store has."""
+    root = bench.root / "s" / "pcode" / "sessions"
+    info = json.loads((root / model / "session.json").read_text())
+    for _ in range(count):
+        identity = str(uuid.uuid4())
+        (root / identity).mkdir()
+        (root / identity / "session.json").write_text(json.dumps({**info, "id": identity}))
+
+
 def attach(bench: Bench, runs: int, concurrency: int, sessions: list[str]) -> list[Client]:
     """Restored panes: each client attaches to its session's running host."""
     results = []
@@ -343,6 +353,9 @@ def main() -> None:
     )
     parser.add_argument("--only", choices=("cold", "attach", "idle"), help="run one scenario")
     parser.add_argument(
+        "--saved", type=int, default=0, help="extra saved sessions in the store when attaching"
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE", help="a `pcode config set` first"
     )
     args = parser.parse_args()
@@ -356,6 +369,7 @@ def main() -> None:
             summary(f"cold x{args.concurrency}", cold(bench, 1, args.concurrency))
         if args.only in (None, "attach", "idle"):
             sessions = prepare_hosts(bench, args.concurrency)
+            pad_sessions(bench, args.saved, sessions[0])
             if args.only in (None, "attach"):
                 summary("attach x1", attach(bench, args.runs, 1, sessions))
                 summary(
