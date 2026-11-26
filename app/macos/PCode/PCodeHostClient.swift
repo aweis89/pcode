@@ -488,7 +488,7 @@ final class PCodeTranscriptEventReducer {
                 in: doc,
                 reveal: reveal)
 
-        case .toolStarted(let callID, let parentCallID, let name, let detail, let command, _):
+        case .toolStarted(let callID, let parentCallID, let name, let detail, let command, let purpose):
             // A retried request can skip the `Thinking` marker; never leave a block pulsing.
             if parentCallID.isEmpty { settleActiveThinking(in: doc, reveal: reveal) }
             finishActiveStreamIfNeeded(in: doc, reveal: reveal)
@@ -506,7 +506,8 @@ final class PCodeTranscriptEventReducer {
                 output: existing?.output ?? "",
                 isRunning: true,
                 startedAt: existing?.startedAt ?? (liveClock ? Date() : nil),
-                isBackgroundJob: existing?.isBackgroundJob ?? false)
+                isBackgroundJob: existing?.isBackgroundJob ?? false,
+                purpose: purpose.isEmpty ? (existing?.purpose ?? "") : purpose)
             toolCallsByID[callID] = call
             let depth = parentCallID.isEmpty ? 0 : 1
             toolDepthByID[callID] = depth
@@ -574,7 +575,8 @@ final class PCodeTranscriptEventReducer {
                 isRunning: false,
                 startedAt: nil,
                 isBackgroundJob: isBackgroundJob,
-                exitCode: exitCode)
+                exitCode: exitCode,
+                purpose: existing?.purpose ?? "")
             toolCallsByID[key] = call
             let depth = toolDepthByID[key] ?? (parentCallID.isEmpty ? 0 : 1)
             let item = PCodeTranscriptItem(
@@ -609,7 +611,8 @@ final class PCodeTranscriptEventReducer {
                 isRunning: stillRunning,
                 startedAt: stillRunning ? (existing?.startedAt ?? (liveClock ? Date() : nil)) : nil,
                 isBackgroundJob: existing?.isBackgroundJob ?? false,
-                exitCode: existing?.exitCode)
+                exitCode: existing?.exitCode,
+                purpose: existing?.purpose ?? "")
             toolCallsByID[callID] = call
             let depth = toolDepthByID[callID] ?? 0
             let itemID = "call-\(callID)"
@@ -762,7 +765,8 @@ final class PCodeTranscriptEventReducer {
                 isRunning: false,
                 startedAt: nil,
                 isBackgroundJob: existing.isBackgroundJob,
-                exitCode: existing.exitCode)
+                exitCode: existing.exitCode,
+                purpose: existing.purpose)
             toolCallsByID[callID] = settled
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(
@@ -802,7 +806,8 @@ final class PCodeTranscriptEventReducer {
                 isRunning: false,
                 startedAt: nil,
                 isBackgroundJob: call.isBackgroundJob,
-                exitCode: call.exitCode)
+                exitCode: call.exitCode,
+                purpose: call.purpose)
             toolCallsByID[callID] = settled
             let itemID = "call-\(callID)"
             let item = PCodeTranscriptItem(

@@ -1288,7 +1288,20 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                 .paragraphStyle: style,
             ]))
 
-        let summary = call.summaryText
+        if let badge = call.asyncBadgeText {
+            let badgeColor = call.isRunning
+                ? theme.accent.withAlphaComponent(0.78)
+                : theme.secondaryForeground.withAlphaComponent(0.68)
+            out.append(NSAttributedString(
+                string: "  " + badge,
+                attributes: [
+                    .font: typography.codeNSFont(scale: 0.78, weight: .medium),
+                    .foregroundColor: badgeColor,
+                    .paragraphStyle: style,
+                ]))
+        }
+
+        let summary = call.isJobWait ? call.jobSubjectText : call.summaryText
         if !summary.isEmpty {
             let displaySummary: String
             if isExpanded {
@@ -1324,19 +1337,21 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                     // A running command's newest line, on a line of its own so a long
                     // command on the header can't push it (or the count) out of view:
                     // the stream is visible without expanding the card.
+                    let liveStyle = (style.mutableCopy() as? NSMutableParagraphStyle) ?? style
+                    liveStyle.paragraphSpacingBefore = 2
                     out.append(NSAttributedString(
                         string: "\nlive · \(lines)  ",
                         attributes: [
                             .font: typography.codeNSFont(scale: 0.78),
                             .foregroundColor: theme.accent.withAlphaComponent(0.85),
-                            .paragraphStyle: style,
+                            .paragraphStyle: liveStyle,
                         ]))
                     out.append(NSAttributedString(
                         string: latest,
                         attributes: [
                             .font: typography.codeNSFont(scale: 0.80),
                             .foregroundColor: theme.foreground.withAlphaComponent(0.84),
-                            .paragraphStyle: style,
+                            .paragraphStyle: liveStyle,
                         ]))
                 } else {
                     out.append(NSAttributedString(

@@ -36,6 +36,8 @@ struct PCodePeekToolCall: Identifiable, Equatable {
     /// The command's exit status, when its result reported one (`ToolSummary.exit_code`).
     /// `failed` stays the verdict; older transcripts carry no status (nil).
     let exitCode: Int?
+    /// Optional human-readable purpose (`ToolStarted.purpose`, e.g. for `wait_for_job`).
+    let purpose: String
 
     init(
         id: Int,
@@ -48,7 +50,8 @@ struct PCodePeekToolCall: Identifiable, Equatable {
         isRunning: Bool = false,
         startedAt: Date? = nil,
         isBackgroundJob: Bool = false,
-        exitCode: Int? = nil
+        exitCode: Int? = nil,
+        purpose: String = ""
     ) {
         self.id = id
         self.name = name
@@ -61,6 +64,7 @@ struct PCodePeekToolCall: Identifiable, Equatable {
         self.startedAt = startedAt
         self.isBackgroundJob = isBackgroundJob
         self.exitCode = exitCode
+        self.purpose = purpose
     }
 
     /// Ran and exited non-zero in the ordinary way (grep found nothing, tests failed):
@@ -79,12 +83,24 @@ struct PCodePeekToolCall: Identifiable, Equatable {
         return number.intValue
     }
 
+    /// Short inline tag identifying an async job wait (e.g. `"async · j2"`, `"async · j2 · exit 2"`).
+    var asyncBadgeText: String? {
+        guard isJobWait else { return nil }
+        return detail.isEmpty ? "async" : "async · \(detail)"
+    }
+
+    /// Purpose and command for a job wait, mirroring foreground `shell` rows (`"<purpose> · <command>"`).
+    var jobSubjectText: String {
+        if !purpose.isEmpty && !command.isEmpty {
+            return "\(purpose) · \(command)"
+        }
+        return !purpose.isEmpty ? purpose : command
+    }
+
     var summaryText: String {
-        // A wait's detail is only the job id (`j3`, `j3 · exit 2`). The command it
-        // watches comes from the `shell` call that started the job; without it the
-        // row says a job is being waited on but never what that job runs.
-        if isJobWait, !command.isEmpty {
-            return detail.isEmpty ? command : "\(detail) · \(command)"
+        if isJobWait {
+            let parts = [asyncBadgeText, jobSubjectText.isEmpty ? nil : jobSubjectText].compactMap { $0 }
+            return parts.joined(separator: " · ")
         }
         if !detail.isEmpty { return detail }
         if !command.isEmpty { return command }
@@ -95,13 +111,11 @@ struct PCodePeekToolCall: Identifiable, Equatable {
     /// output is that sub-agent's Markdown report.
     var isDelegate: Bool { PCodeToolGrouper.isDelegateTool(name) }
 
-    /// The row's title. Tool names stay as-is except delegation, whose internal
-    /// name says nothing to a reader about the sub-agent run it contains.
+    /// The row's title. Matches the Swift app's lowercase tool names (`shell` for
+    /// job waits, paired with `asyncBadgeText` to mark them as async).
     var displayName: String {
         if isDelegate { return "Sub-agent" }
-        // Pairs with the `shell` row it continues: the call watches a shell
-        // command and streams its output, it does not run anything new.
-        if isJobWait { return "Wait for shell" }
+        if isJobWait { return "shell" }
         return name
     }
 

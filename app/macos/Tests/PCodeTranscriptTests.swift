@@ -1152,10 +1152,11 @@ struct PCodeTranscriptTests {
             command: "make e2e",
             output: "checks: 1/12\nchecks: 2/12",
             isRunning: true,
-            startedAt: Date())
+            startedAt: Date(),
+            purpose: "watching CI")
 
         let compact = PCodeToolCardView.attributedText(for: call, isExpanded: false, typography: snap, theme: theme)
-        #expect(compact.string.hasPrefix("Wait for shell  j3 · make e2e"))
+        #expect(compact.string.hasPrefix("shell  async · j3  watching CI · make e2e"))
         // The newest line streams on a row of its own, under the command, while collapsed.
         #expect(compact.string.hasSuffix("\nlive · 2 lines  checks: 2/12"))
         #expect(!compact.string.contains("checks: 1/12"))
@@ -1163,21 +1164,39 @@ struct PCodeTranscriptTests {
         #expect(call.canExpand)
 
         let expanded = PCodeToolCardView.attributedText(for: call, isExpanded: true, typography: snap, theme: theme)
-        #expect(expanded.string.contains("make e2e"))
+        #expect(expanded.string.hasPrefix("shell  async · j3\nwatching CI · make e2e\n"))
         #expect(expanded.string.contains("checks: 2/12"))
 
         // The btw drawer redraws a running card when its output grows.
         let more = PCodePeekToolCall(
             id: 1, name: "wait_for_job", detail: "j3", failed: false, elapsedSeconds: nil,
             command: "make e2e", output: call.output + "\nchecks: 3/12", isRunning: true,
-            startedAt: call.startedAt)
+            startedAt: call.startedAt, purpose: "watching CI")
         #expect(PCodeTranscriptItemSync.signature(PCodeTranscriptItem(id: "w", payload: .tool(call, isExpanded: false)))
             != PCodeTranscriptItemSync.signature(PCodeTranscriptItem(id: "w", payload: .tool(more, isExpanded: false))))
+
+        // Host reducer preserves purpose from ToolStarted through CommandOutput and ToolSummary.
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        doc.minimumLiveCardSeconds = 0
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+        reducer.apply(.toolStarted(
+            callID: "w1", parentCallID: "", name: "wait_for_job",
+            detail: "j4", command: "pytest", purpose: "run suite"), reveal: true)
+        reducer.apply(.commandOutput(callID: "w1", command: "pytest", output: "1 passed"), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-w1"), case .tool(let streaming, _) = doc.items[idx].payload {
+            #expect(streaming.purpose == "run suite")
+            #expect(streaming.summaryText == "async · j4 · run suite · pytest")
+        } else {
+            Issue.record("Expected streaming wait_for_job item")
+        }
 
         // A job the runtime could not name still says which one is waited on.
         let unknown = PCodePeekToolCall(
             id: 2, name: "wait_for_job", detail: "j9", failed: false, elapsedSeconds: nil, command: "")
-        #expect(unknown.summaryText == "j9")
+        #expect(unknown.summaryText == "async · j9")
     }
 
     @Test @MainActor func toolCardShowsCompactLineCountAndBottomCollapseWhenExpanded() {
