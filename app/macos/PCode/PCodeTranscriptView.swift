@@ -2519,6 +2519,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Plain-text string for the current selection (used by `copy(_:)` and unit tests).
     func selectedPlainText() -> String {
         guard let selection, !selection.isEmpty else { return "" }
+        // Rendered Markdown keeps a code block or hard break in one paragraph by
+        // breaking lines with U+2028; pasted into a shell or editor it must be `\n`.
         return selection.extractText(
             itemCount: items.count,
             separatorBetween: { prev, next in
@@ -2533,6 +2535,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             textForItem: { idx in
                 plainTextForCopy(at: idx)
             })
+            .replacingOccurrences(of: "\u{2028}", with: "\n")
     }
 
     @objc func copy(_ sender: Any?) {
