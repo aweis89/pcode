@@ -685,7 +685,14 @@ def session_scope(info) -> Path:
 
 
 def leave_worktree(
-    workspace: Path, session, *, ask, notify, merge: bool = True, owner: str | None = None
+    workspace: Path,
+    session,
+    *,
+    ask,
+    notify,
+    merge: bool = True,
+    owner: str | None = None,
+    session_dir: Path | None = None,
 ) -> bool:
     """Tidy a session worktree on the way out of it, never losing work.
 
@@ -704,7 +711,8 @@ def leave_worktree(
     `owner` is the session ID this process made the worktree for, which still
     counts after `/new` swaps the session or when none was saved (`--no-save`,
     or open elsewhere). A worktree made before owners were recorded keeps the
-    older rules.
+    older rules. `session_dir` is where to look for other sessions in the
+    worktree when no `session` is given (the default root otherwise).
     """
     import shutil
 
@@ -734,19 +742,21 @@ def leave_worktree(
         untouched = untouched or abandoned_fork
     except WorktreeError:
         return False
-    if session is not None:
-        # A copied session shares its original's worktree; never pull it out
-        # from under the other one, open or waiting to be resumed. Only asked
-        # with a session, whose module is then already loaded: a bare exit
-        # must not import the agent stack.
-        from pcode.sessions import sharing
+    # A copied session shares its original's worktree; never pull it out from
+    # under the other one, open or waiting to be resumed. Asked even without a
+    # session: a host stopped before its runtime loaded has none, yet its
+    # owner ID passes the check above while a fork of it works here.
+    from pcode.sessions import sharing
 
+    if session is not None:
         others = sharing(linked.path, session.directory.parent, exclude=session.info.id)
-        if others:
-            other, running = others[0]
-            state = "is still open in" if running else "still works in"
-            notify(f"worktree: kept; session {other} {state} {linked.path}")
-            return False
+    else:
+        others = sharing(linked.path, session_dir, exclude=owner)
+    if others:
+        other, running = others[0]
+        state = "is still open in" if running else "still works in"
+        notify(f"worktree: kept; session {other} {state} {linked.path}")
+        return False
     resume = f"`pcode -C {linked.path} -c` resumes there"
 
     def repoint():

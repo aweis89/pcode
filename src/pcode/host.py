@@ -1627,6 +1627,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
                 # so its branch waits to be resumed rather than merged.
                 merge=not host.idle_stopped,
                 owner=session_id or entry.session_id or None,
+                session_dir=controller.session_dir,
             )
     if host.successor is None:
         return None

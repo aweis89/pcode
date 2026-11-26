@@ -3863,7 +3863,12 @@ class SessionController:
             # The worktree being left is tidied like at exit, but nobody is
             # asked: unmerged work stays put with a note on how to get back.
             leave_worktree(
-                self.workspace, current, ask=None, notify=self.view.note, owner=self.worktree_owner
+                self.workspace,
+                current,
+                ask=None,
+                notify=self.view.note,
+                owner=self.worktree_owner,
+                session_dir=self.session_dir,
             )
         # Side questions settled so far belong in the session being left.
         await self.side_records_settled()

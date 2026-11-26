@@ -4239,6 +4239,7 @@ def _leave_worktree_on_exit(app, ask=input, stream=None, owner: str | None = Non
         ask=ask,
         notify=lambda text: print(text, file=stream),
         owner=owner,
+        session_dir=getattr(app, "session_dir", None),
     )
     if deleted:
         app.runtime.session = None
@@ -4572,6 +4573,7 @@ def _tidy_stopped_host(app) -> None:
             ask=ask,
             notify=lambda text: print(text, file=sys.stderr),
             owner=runtime.session_id or None,
+            session_dir=app.session_dir,
         )
     finally:
         if saved is not None:

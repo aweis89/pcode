@@ -367,6 +367,24 @@ def test_owner_tidies_its_worktree_without_a_saved_session(repo, tmp_path):
     assert not created.path.exists()
 
 
+def test_owner_without_a_session_keeps_a_worktree_its_fork_works_in(repo, tmp_path):
+    """A host stopped before its runtime loaded has no session, only the owner ID.
+
+    A fork of that session (made because the original was busy) shares the
+    worktree, so the owner's exit must still ask who else works there.
+    """
+    root = tmp_path / "sessions"
+    created = worktree.create(repo, "pcode-abc")
+    worktree.claim(created, "creator-session-id")
+    fork = SavedSession.create("test:local", created.path, root)
+    app = PreviewApp(workspace=created.path, session_dir=root)
+    app.runtime = FakeRuntime(None)
+    out = leave(app, owner="creator-session-id")
+    assert f"session {fork.info.id} is still open in" in out
+    assert created.path.exists()
+    fork.close()
+
+
 def test_owner_tidies_its_worktree_after_new(repo, tmp_path):
     created, session, app = make(repo, tmp_path)
     worktree.claim(created, "creator-session-id")  # `session` came later, from /new.
