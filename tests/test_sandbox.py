@@ -288,22 +288,6 @@ def test_a_broken_config_blocks_writes_instead_of_dropping_the_policy(repo, monk
     assert not (repo / "a.txt").exists()
 
 
-def test_code_mode_reads_pass_through_the_same_guard(repo, tmp_path, monkeypatch):
-    from pcode.preferences import save_preferences
-
-    monkeypatch.delenv("EXA_API_KEY", raising=False)
-    save_preferences(code_mode="on")
-    secret = tmp_path / "home" / ".aws" / "credentials"
-    secret.parent.mkdir(parents=True)
-    secret.write_text("TOKEN")
-    monkeypatch.setattr(sandbox, "DEFAULT_DENY_READ", (str(secret.parent),))
-    api = load(repo, monkeypatch)
-    code = f"await read_file(path={str(secret)!r})"
-    results = run(repo, api.capabilities(), [("run_code", {"code": code})])
-    assert "TOKEN" not in json.dumps(results[0])
-    assert "holds credentials" in json.dumps(results[0])
-
-
 @pytest.mark.skipif(sandbox.backend() != "seatbelt", reason="needs macOS sandbox-exec")
 def test_shell_commands_run_inside_the_sandbox(repo, tmp_path, monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)

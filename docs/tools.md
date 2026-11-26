@@ -5,7 +5,6 @@
 | Built-in / extension | Default | Provides | How to toggle |
 | --- | --- | --- | --- |
 | **Core tools** | On | `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, `shell` + job tools, planning, `delegate_task` / `manage_worker` / `task_worktree` | Always on ([sandbox](#write-policy-and-shell-sandbox-opt-in) restricts writes) |
-| **Code mode** | On | `run_code` sandboxed Python batching for read-only lookups | `pcode config set code_mode off` |
 | `web_research` | On | `web_search` and `get_page` (or provider-native search/fetch) | `/extensions off web_research` or `web_search off` |
 | `session_history` | On | `search_sessions` and `read_session` for [recalling earlier sessions](sessions.md#recalling-earlier-sessions) | `/extensions off session_history` |
 | `conductor` | On | `list_hosts`, `inspect_host`, `ask_host`, `send_to_host`, `wait_for_hosts`, `stop_host` for [orchestrating other sessions](sessions.md#conductor-orchestrating-other-sessions) | `/extensions off conductor` |
@@ -555,33 +554,3 @@ usual target. The trade-off of turning it on at all: any page the model reads
 can tell it to act with your login, and nothing enforces otherwise beyond you
 watching the window. This is the bundled `browser` extension; a user file of the
 same name replaces it.
-
-## Code mode
-
-[Code mode](https://pydantic.dev/docs/ai/harness/code-mode/) replaces individual
-tool calls with a single sandboxed Python snippet, so the model can fan out
-lookups with `asyncio.gather`, filter results, and return only what matters
-without a model turn per dependent batch. It is on by default:
-
-```sh
-pcode config set code_mode off   # Back to plain tool calling (applies on next launch)
-pcode config unset code_mode     # Restore the default (on)
-```
-
-Only read-only lookups are available inside a snippet: `read_file`,
-`list_files`, `grep`, `web_search`, and `get_page`. Edits, plan updates, the
-shell, delegation, and the readers for stored large output (`read_tool_result`,
-`grep_tool_result`) stay ordinary tool calls, so diffs,
-command previews, and the plan panel still show what happened. A `run_code` call is displayed by the calls the
-snippet makes and its size (`grep · read_file ×2 · 12 lines`); the snippet
-itself is visible in the tool-call inspector.
-
-With `live_edits` on (off by default), the snippet also streams into the pinned
-preview box as the model writes it, titled `Preparing code · not yet run`, in
-the same place edit diffs and command output appear. Only complete lines are
-shown, the box clears once the snippet runs, and the text never enters the
-transcript. `/show-edits off` hides it along with edit previews.
-
-Snippets run in a sandbox with no access to the host filesystem or environment;
-the lookup tools above are the only way out, and they follow the usual workspace
-rules. Each snippet is limited to 30 seconds and 256 MiB of memory.

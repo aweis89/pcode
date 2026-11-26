@@ -284,25 +284,11 @@ def isolated_preferences(monkeypatch, tmp_path, request):
             name,
             replace_setting(preferences.SETTINGS[name], default="off"),
         )
-    # Code mode is on by default, but existing tool, image, and delegation tests
-    # call read_file/list_files/grep directly; tests/test_code_mode.py exercises
-    # the shipped default via shipped_code_mode.
-    if "shipped_code_mode" not in request.fixturenames:
-        monkeypatch.setitem(
-            preferences.SETTINGS,
-            "code_mode",
-            replace_setting(preferences.SETTINGS["code_mode"], default="off"),
-        )
 
 
 @pytest.fixture
 def shipped_key_prefix():
     """Opt out of the suite's legacy chord default without replacing the real one."""
-
-
-@pytest.fixture
-def shipped_code_mode():
-    """Opt out of the suite's plain-tool default without replacing the real one."""
 
 
 @pytest.fixture(autouse=True)

@@ -33,7 +33,6 @@ from pcode.background_delegation import BackgroundDelegation
 from pcode.cache_settings import ProviderCacheSettings, model_settings
 from pcode.cache_warnings import CacheBustReporting
 from pcode.claude_sdk import ClaudeWorkspace
-from pcode.code_mode import create_code_mode
 from pcode.delegation import DelegationReporting, stream_child_activity
 from pcode.ext import EXTENSION_GUIDE, ExtensionCapabilities
 from pcode.filesystem import DisplayFileSystem
@@ -455,9 +454,6 @@ def create_coder(
         capabilities.append(cache_notices)
 
     worker_capabilities = _worker_capabilities(capabilities)
-    if code_mode := create_code_mode():
-        capabilities.append(code_mode)
-        worker_capabilities.append(copy(code_mode))
     if not delegation or delegation_depth >= MAX_DELEGATION_DEPTH - 1:
         return CombinedCapability(worker_capabilities)
 

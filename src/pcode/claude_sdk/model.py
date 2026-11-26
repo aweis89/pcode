@@ -200,7 +200,10 @@ class ClaudeModel(AnthropicModel):
                 answer = normalize(answer)
                 if len(answer) == 1 and answer[0]["role"] == "assistant":
                     sessions.record(session, _digest(chain[-1], answer[0]))
-                    ok = not session.dead
+                    # An unknown tool call is refused and answered by the CLI
+                    # itself; retiring the live process now lets the next
+                    # request fork with pcode's error result instead of diverging.
+                    ok = not session.dead and not session.unknown_tool
         finally:
             sessions.release(session, ok=ok)
 

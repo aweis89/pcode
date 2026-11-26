@@ -30,7 +30,6 @@ REPO_CONTEXT = "repo_context"
 SOURCE_LABELS = {
     REPO_CONTEXT: "Repository context",
     "coding_guidance": "Coding guidance",
-    "code_mode": "Code mode",
     "file_tools": "File tools",
     "mcp_servers": "MCP servers",
     "planning": "Planning tool",

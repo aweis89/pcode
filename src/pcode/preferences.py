@@ -581,7 +581,7 @@ SETTINGS = {
     "live_edits": Setting(
         "off",
         ("on", "off"),
-        description="Preview an edit or run_code snippet at the bottom while the model writes it",
+        description="Preview an edit or workflow script at the bottom while the model writes it",
     ),
     # Read at launch, like show_edits.
     "diff_renderer": Setting(
@@ -838,12 +838,6 @@ SETTINGS = {
         "on",
         ("on", "off"),
         description="Start a turn when a job the model backgrounded finishes while idle",
-    ),
-    # Edits, plans, shell, and delegation stay native so their transcript display survives.
-    "code_mode": Setting(
-        "on",
-        ("on", "off"),
-        description="Batch read-only tool calls through one sandboxed run_code snippet",
     ),
     # Read by the bundled web_research extension. Applies on /reload or next launch.
     "web_search": Setting(

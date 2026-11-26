@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 
 from pcode import glyphs
-from pcode.code_mode import SANDBOXED_TOOLS
 from pcode.diagnostics import strip_controls
+
+# Read-only tool names summarized inside workflow scripts and saved `run_code` transcripts.
+_CODE_CALL_TOOLS = frozenset({"read_file", "list_files", "grep", "web_search", "get_page"})
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import BinaryContent
@@ -173,7 +175,7 @@ def sandboxed_calls(code: str) -> list[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id in SANDBOXED_TOOLS
+        and node.func.id in _CODE_CALL_TOOLS
     )
     return [f"{tool} ×{count}" if count > 1 else tool for tool, count in counts.items()]
 
