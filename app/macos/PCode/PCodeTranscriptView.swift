@@ -329,6 +329,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let revision: UInt64
         let width: CGFloat
         let appearanceGeneration: UInt64
+        let stackPosition: PCodeToolStackPosition
     }
 
     private(set) var rawItems: [PCodeTranscriptItem] = []
@@ -1005,7 +1006,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
 
         let oldItems = items
-        let newItems = projection.items
+        var newItems = projection.items
+        // Collapse vertical gaps between consecutive settled, collapsed tool rows at the same
+        // depth so they render as one continuous rounded container with hairline dividers.
+        if newItems.count > 1 {
+            for i in 0..<(newItems.count - 1) {
+                if Self.isSettledStackableTool(newItems[i]),
+                   Self.isSettledStackableTool(newItems[i + 1]),
+                   newItems[i].depth == newItems[i + 1].depth
+                {
+                    newItems[i] = newItems[i].withSpacingAfter(0)
+                }
+            }
+        }
         groupIDByRawItemID = projection.groupIDByRawItemID
 
         let oldCount = oldItems.count
@@ -1794,11 +1807,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let indent = CGFloat(item.depth) * 16
             let isFullBleedBand = (item.kind == .prompt && promptStyle == .band && item.depth == 0)
             let effectiveWidth = isFullBleedBand ? availableWidth : max(1, contentWidth - indent)
+            let stackPos = toolStackPosition(at: idx)
             let targetState = AppliedRowState(
                 itemID: item.id,
                 revision: item.revision,
                 width: effectiveWidth,
-                appearanceGeneration: appearanceGeneration)
+                appearanceGeneration: appearanceGeneration,
+                stackPosition: stackPos)
 
             let needsConfigure = isFreshMount
                 || appliedStates[item.id] != targetState
@@ -1810,7 +1825,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     item: item,
                     index: idx,
                     width: effectiveWidth,
-                    contentInsetX: isFullBleedBand ? column.originX : 0)
+                    contentInsetX: isFullBleedBand ? column.originX : 0,
+                    stackPosition: stackPos)
                 appliedStates[item.id] = targetState
 
                 let pinned = stickyBottom.shouldProgrammaticallyPin
@@ -1884,12 +1900,43 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    private static func isSettledStackableTool(_ item: PCodeTranscriptItem) -> Bool {
+        switch item.payload {
+        case .tool(let call, let isExpanded):
+            return !call.isRunning && !isExpanded
+        case .toolGroup(let payload):
+            return !payload.isExpanded && payload.failedCount == 0 && payload.runningCount == 0
+        default:
+            return false
+        }
+    }
+
+    private func toolStackPosition(at index: Int) -> PCodeToolStackPosition {
+        guard index >= 0 && index < items.count, Self.isSettledStackableTool(items[index]) else {
+            return .standalone
+        }
+        let depth = items[index].depth
+        let joinsPrev = index > 0
+            && Self.isSettledStackableTool(items[index - 1])
+            && items[index - 1].depth == depth
+        let joinsNext = (index + 1) < items.count
+            && Self.isSettledStackableTool(items[index + 1])
+            && items[index + 1].depth == depth
+        switch (joinsPrev, joinsNext) {
+        case (false, false): return .standalone
+        case (false, true): return .top
+        case (true, true): return .middle
+        case (true, false): return .bottom
+        }
+    }
+
     private func applyRowView(
         _ rowView: any PCodeTranscriptRowHosting,
         item: PCodeTranscriptItem,
         index: Int,
         width: CGFloat,
-        contentInsetX: CGFloat = 0
+        contentInsetX: CGFloat = 0,
+        stackPosition: PCodeToolStackPosition = .standalone
     ) -> CGFloat {
         switch (rowView, item.payload) {
         case (let view as PCodePromptRowView, .prompt(let label, let text, let isSide)):
@@ -1951,6 +1998,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 width: width,
                 theme: theme,
                 selectedRange: localSel,
+                stackPosition: stackPosition,
                 onToggle: { [weak self] in
                     self?.toggleToolExpansion(id: item.id)
                 })
@@ -1965,6 +2013,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 lineHeight: PCodeToolGroupCardView.lineHeight(typography),
                 theme: theme,
                 selectedRange: localSel,
+                stackPosition: stackPosition,
                 onToggle: { [weak self] in
                     self?.toggleToolGroupExpansion(id: item.id)
                 })
@@ -2958,7 +3007,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
             }
             let bodyAttrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(weight: typography.weight.nsEmphasisWeight),
+                .font: typography.proseNSFont(),
                 .foregroundColor: theme.foreground,
                 .paragraphStyle: paragraph,
             ]

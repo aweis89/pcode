@@ -1657,38 +1657,37 @@ struct PCodeTranscriptTests {
         #expect(reloaded.groupTools == false)
     }
 
-    @Test func promptStyleDefaultsToEditorialAndPersists() {
+    @Test func promptStyleDefaultsToRightPillAndPersists() {
         let suiteName = "com.pcode.test.prefs.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .editorial)
-        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .band
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .band)
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .rightPill)
+        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .leftWash
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .leftWash)
         defaults.set("bogus", forKey: "PCodeTranscriptPromptStyle")
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .editorial)
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .rightPill)
     }
 
     @Test @MainActor func promptStylesFrameTheRowDifferently() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let text = NSAttributedString(string: "Hello")
-        func height(_ style: PCodePromptStyle, isFirst: Bool = false) -> (CGFloat, PCodePromptRowView) {
+        func configure(_ style: PCodePromptStyle) -> (CGFloat, PCodePromptRowView) {
             let row = PCodePromptRowView()
             let h = row.configure(
                 attributedText: text, isSidePrompt: false, style: style,
-                width: 400, theme: theme, selectedRange: nil, isFirstItem: isFirst)
+                width: 400, theme: theme, selectedRange: nil)
             return (h, row)
         }
-        let (editorial, editorialRow) = height(.editorial, isFirst: false)
-        let (editorialFirst, _) = height(.editorial, isFirst: true)
-        let (band, _) = height(.band)
-        let (pill, _) = height(.pill)
-        let (bar, barRow) = height(.bar)
-        // Editorial gives later turns extra top room for the hairline divider; first turn stays compact.
-        #expect(editorial > editorialFirst)
-        #expect(band > pill)
-        #expect(pill > bar)
-        #expect(editorialRow.layer?.backgroundColor == nil)
+        let (rightH, rightRow) = configure(.rightPill)
+        let (leftH, leftRow) = configure(.leftWash)
+        let (bandH, _) = configure(.band)
+        let (barH, barRow) = configure(.bar)
+        // Right pill aligns text to the right edge; left wash stays on the left rail.
+        #expect(rightRow.textView.frame.minX > leftRow.textView.frame.minX)
+        #expect(rightH == leftH)
+        #expect(bandH > rightH)
+        #expect(rightH > barH)
         #expect(barRow.layer?.backgroundColor == nil)
     }
 
