@@ -829,12 +829,15 @@ struct PCodeTranscriptTests {
             kwargs: [:])
         #expect(rpcEvent == .editPreview(callID: "c4", path: "src/app.py", text: "+new", kind: "edit"))
 
-        // Display-only ChildText and terminal-only redraw are ignored cleanly
+        // Display-only ChildText, plan snapshots, and terminal-only redraw are ignored cleanly
         #expect(PCodeHostEventDecoder.decodeRPCCall(method: "redraw", args: [], kwargs: [:]) == nil)
         #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "ChildText", fields: ["call_id": "c1", "text": "hi"]) == nil)
+        let planFields: [String: Any] = ["items": [["content": "Step", "status": "pending"]]]
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "PlanUpdated", fields: planFields) == nil)
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "PlanPreview", fields: planFields) == nil)
     }
 
-    @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsThinkingAndPlan() {
+    @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsAndThinking() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
         scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
@@ -887,24 +890,6 @@ struct PCodeTranscriptTests {
             #expect(doc.plainTextForCopy(at: idx).contains("+x = 1"))
         } else {
             Issue.record("Expected coalesced collapsible diff row for call-e1")
-        }
-
-        // PlanUpdated upserts single card; PlanPreview(nil) restores authoritative plan instead of deleting it!
-        reducer.apply(.planUpdated(items: [
-            PCodePlanItem(content: "Inspect code", status: "completed"),
-            PCodePlanItem(content: "Write tests", status: "in_progress"),
-        ]), reveal: false)
-        #expect(doc.items.filter { $0.kind == .plan }.count == 1)
-        reducer.apply(.planPreview(items: [PCodePlanItem(content: "Draft step", status: "pending")]), reveal: false)
-        reducer.apply(.planPreview(items: nil), reveal: false)
-        #expect(doc.items.filter { $0.kind == .plan }.count == 1)
-        if let planItem = doc.items.first(where: { $0.kind == .plan }),
-           case .plan(let restored) = planItem.payload
-        {
-            #expect(restored.count == 2)
-            #expect(restored[0].content == "Inspect code")
-        } else {
-            Issue.record("Expected restored authoritative plan")
         }
 
         // Streamed TextDelta followed by closing Message must NOT duplicate the assistant prose!

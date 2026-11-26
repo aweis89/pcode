@@ -50,7 +50,6 @@ struct PCodeTranscriptItem: Identifiable {
         case toolGroup
         case diff
         case thinking
-        case plan
         case status
     }
 
@@ -63,7 +62,6 @@ struct PCodeTranscriptItem: Identifiable {
         case toolGroup(PCodeToolGroupPayload)
         case diff(PCodeDiffPayload, isExpanded: Bool)
         case thinking(text: String, isExpanded: Bool)
-        case plan([PCodePlanItem])
         case status(PCodePeekTurn.Status)
     }
 
@@ -85,7 +83,6 @@ struct PCodeTranscriptItem: Identifiable {
         case .toolGroup: return .toolGroup
         case .diff: return .diff
         case .thinking: return .thinking
-        case .plan: return .plan
         case .status: return .status
         }
     }
@@ -118,8 +115,6 @@ struct PCodeTranscriptItem: Identifiable {
             return isExpanded ? "\(diff.path)\n\(diff.patch)" : PCodeDiffCardView.summaryLine(for: diff)
         case .thinking(let text, _):
             return text
-        case .plan(let items):
-            return items.map(\.content).joined(separator: "\n")
         case .status(let status):
             return PCodeStatusRowView.displayLabel(for: status)
         }
@@ -198,8 +193,6 @@ struct PCodeTranscriptItem: Identifiable {
                 depth: 0), isExpanded: false)
         case .thinking:
             self.payload = .thinking(text: plainText, isExpanded: false)
-        case .plan:
-            self.payload = .plan([PCodePlanItem(content: plainText, status: "pending")])
         case .status:
             let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
             self.payload = .status(status)
@@ -1741,15 +1734,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     self?.toggleThinkingExpansion(id: item.id)
                 })
 
-        case (let view as PCodePlanCardView, .plan(let planItems)):
-            let attr = cachedPlanAttributedString(for: item.id, planItems: planItems)
-            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
-            return view.configure(
-                attributedText: attr,
-                width: width,
-                theme: theme,
-                selectedRange: localSel)
-
         case (let view as PCodeStatusRowView, .status(let status)):
             let attr = cachedStatusAttributedString(for: item.id, status: status)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
@@ -1930,7 +1914,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .toolGroup: return PCodeToolGroupCardView()
         case .diff: return PCodeDiffCardView()
         case .thinking: return PCodeThinkingCardView()
-        case .plan: return PCodePlanCardView()
         case .status: return PCodeStatusRowView()
         }
     }
@@ -2535,8 +2518,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 : PCodeDiffCardView.summaryLine(for: payload)
         case .thinking(let text, let isExpanded):
             return cachedThinkingAttributedString(for: item.id, text: text, isExpanded: isExpanded).string
-        case .plan(let planItems):
-            return cachedPlanAttributedString(for: item.id, planItems: planItems).string
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
         }
@@ -2624,8 +2605,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return PCodeDiffCardView.headerHeight + 40 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
         case .thinking:
             return 34
-        case .plan(let planItems):
-            return 28 + CGFloat(max(1, planItems.count)) * typography.lineHeight(scale: 0.88)
         }
     }
 
@@ -2765,21 +2744,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let built = PCodeThinkingCardView.attributedText(
             for: text,
             isExpanded: isExpanded,
-            typography: typography,
-            theme: theme)
-        storeAttributedCache(built, for: id)
-        return built
-    }
-
-    private func cachedPlanAttributedString(
-        for id: String,
-        planItems: [PCodePlanItem]
-    ) -> NSAttributedString {
-        if let cached = attributedCache[id] {
-            return cached
-        }
-        let built = PCodePlanCardView.attributedText(
-            for: planItems,
             typography: typography,
             theme: theme)
         storeAttributedCache(built, for: id)

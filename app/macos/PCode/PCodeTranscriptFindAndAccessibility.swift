@@ -377,8 +377,6 @@ extension PCodeTranscriptDocumentView {
         case .thinking(_, let isExpanded):
             let state = isExpanded ? "expanded" : "collapsed"
             return (.group, "Thinking", "Thinking (\(state))", true)
-        case .plan(let planItems):
-            return (.group, "Plan", "Plan (\(planItems.count) steps)", false)
         case .status(let status):
             return (.staticText, "Status", PCodeStatusRowView.displayLabel(for: status), false)
         }
