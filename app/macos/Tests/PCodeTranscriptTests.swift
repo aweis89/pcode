@@ -2202,6 +2202,9 @@ struct PCodeTranscriptTests {
         let line = Data(#"{"version": 1, "time": "2026-01-01T00:00:00+00:00", "kind": "RunStatus", "text": "x"}"#.utf8)
         #expect(PCodeLiveTranscriptController.sniffJournalKind(line) == "RunStatus")
         #expect(PCodeLiveTranscriptController.sniffJournalKind(Data("{}".utf8)) == nil)
+        // At the call site a line is a slice of the whole journal, indexed from its offset.
+        let journal = Data("{\"kind\": \"Message\"}\n".utf8) + line
+        #expect(PCodeLiveTranscriptController.sniffJournalKind(journal[20...]) == "RunStatus")
     }
 
     @Test @MainActor func loadedHistoryLandsOnTheTrueBottomWithNoBlankSlack() {

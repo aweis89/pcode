@@ -103,6 +103,17 @@ def decode(value: Any) -> Any:
     return {key: decode(item) for key, item in value.items()}
 
 
+def broadcast(peers: "list[Peer]", method: str, *args: Any, **kwargs: Any) -> None:
+    """`Peer.notify` to every peer, encoding a large message once rather than per peer."""
+    if not peers:
+        return
+    data = dumps(
+        {"type": "notify", "method": method, "args": encode(args), "kwargs": encode(kwargs)}
+    )
+    for peer in peers:
+        peer._send_encoded(data)
+
+
 class RemoteError(Exception):
     """The other side's handler raised; `type_name` is its exception class."""
 
@@ -210,6 +221,10 @@ class Peer:
     def _send(self, message: dict) -> None:
         if not self.closed.is_set():
             self._outgoing.put_nowait(dumps(message))
+
+    def _send_encoded(self, data: bytes) -> None:
+        if not self.closed.is_set():
+            self._outgoing.put_nowait(data)
 
     async def _write(self) -> None:
         try:

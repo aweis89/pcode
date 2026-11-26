@@ -160,6 +160,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.connectionState = .connected
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
+                // `loadHistory` replaces everything; clearing first keeps a `showThinking`
+                // change below from re-projecting rows about to be dropped.
                 documentView.setItems([], pinToBottom: true)
                 // After clearing, so a change doesn't re-project rows about to be dropped.
                 if let mode = welcome.showThinking {

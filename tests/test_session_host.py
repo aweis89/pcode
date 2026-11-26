@@ -3179,11 +3179,12 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             assert msg["method"] == "turn_event"
             assert msg["args"][0]["$event"]["fields"]["markdown"] == "side answer"
 
-            # A conversation redrawn from the journal reaches the observer as its records.
+            # With nothing saved to redraw from, a replay leaves the observer's view alone
+            # (`test_a_booting_host_...` covers the `history` it sends otherwise).
             host.emit("replay_conversation", (), {})
+            host.emit("note", ("after replay",), {})
             msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
-            assert msg["method"] == "history"
-            assert isinstance(msg["args"][0], list)
+            assert (msg["method"], msg["args"]) == ("note", ["after replay"])
 
             # Observer is read-only: RPC requests are refused with PermissionError.
             req = {"type": "request", "id": 1, "method": "submit", "args": ["hi", "queue"]}
@@ -3210,16 +3211,45 @@ def test_observer_history_drops_what_the_app_never_draws(tmp_path):
         {"version": 1, "kind": "compaction_checkpoint", "messages": []},
         {"version": 1, "kind": "Message", "markdown": "done"},
     ]
+    from types import SimpleNamespace
+
     path = tmp_path / "transcript.jsonl"
     lines = [json.dumps(record).encode() + b"\n" for record in records]
     path.write_bytes(b"".join(lines) + b"not json\n")
+    journal = SimpleNamespace(directory=tmp_path, tree=SimpleNamespace(nodes={}))
 
-    history = observer_history(path)
+    history = observer_history(journal)
     assert [r["kind"] for r in history] == ["turn_started", "ToolStarted", "Message"]
     assert "arguments" not in history[1] and history[1]["call_id"] == "c1"
     # Up to the settled end only.
-    assert [r["kind"] for r in observer_history(path, len(lines[0]))] == ["turn_started"]
-    assert observer_history(tmp_path / "missing.jsonl") == []
+    assert [r["kind"] for r in observer_history(journal, len(lines[0]))] == ["turn_started"]
+    missing = SimpleNamespace(directory=tmp_path / "missing", tree=journal.tree)
+    assert observer_history(missing) == []
+
+
+def test_observer_history_shows_only_the_selected_branch(tmp_path):
+    """As the terminal's `/tree` redraw does (`SessionJournal.active_records`)."""
+    from types import SimpleNamespace
+
+    from pcode.host import observer_history
+
+    records = [
+        {"kind": "turn_started", "prompt": "root", "run_id": "a"},
+        {"kind": "Message", "markdown": "root answer"},
+        {"kind": "turn_started", "prompt": "abandoned", "run_id": "b"},
+        {"kind": "Message", "markdown": "abandoned answer", "run_id": "b"},
+        {"kind": "turn_started", "prompt": "chosen", "run_id": "c"},
+        {"kind": "Message", "markdown": "chosen answer"},
+    ]
+    (tmp_path / "transcript.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    tree = SimpleNamespace(nodes={"a": 1, "b": 1, "c": 1}, active="c", path=lambda _: ["a", "c"])
+    history = observer_history(SimpleNamespace(directory=tmp_path, tree=tree))
+    assert [r.get("prompt") or r.get("markdown") for r in history] == [
+        "root",
+        "root answer",
+        "chosen",
+        "chosen answer",
+    ]
 
 
 def test_a_booting_host_shows_observers_the_conversation_it_is_resuming(tmp_path):
@@ -3229,14 +3259,33 @@ def test_a_booting_host_shows_observers_the_conversation_it_is_resuming(tmp_path
     (tmp_path / "transcript.jsonl").write_text(
         json.dumps({"version": 1, "kind": "Message", "markdown": "earlier"}) + "\n"
     )
-    saved = SimpleNamespace(directory=tmp_path)
+    journal = tmp_path / "transcript.jsonl"
+    saved = SimpleNamespace(
+        directory=tmp_path,
+        tree=SimpleNamespace(nodes={}),
+        journal_size=lambda: journal.stat().st_size,
+    )
     booting = SimpleNamespace(
-        controller=SimpleNamespace(runtime=None, _saved_session=saved), settled_end=None
+        controller=SimpleNamespace(runtime=None, _saved_session=saved),
+        settled_end=None,
+        boot_history_end=None,
     )
     history = SessionHost._read_settled_history(booting)
     assert [r["markdown"] for r in history] == ["earlier"]
+    assert booting.boot_history_end == journal.stat().st_size
     booting.controller._saved_session = None
     assert SessionHost._read_settled_history(booting) == []
+
+    # Once loaded, boot's replay skips observers already shown that journal...
+    sent = []
+    booting.controller.runtime = SimpleNamespace(session=saved)
+    booting.transcript_observers = [SimpleNamespace(_send_encoded=sent.append)]
+    booting._read_settled_history = lambda: SessionHost._read_settled_history(booting)
+    SessionHost._replay_to_observers(booting, "replay_conversation")
+    assert sent == [] and booting.boot_history_end is None
+    # ...and any later replay sends it.
+    SessionHost._replay_to_observers(booting, "replay_conversation")
+    assert len(sent) == 1 and b'"history"' in sent[0] and b"earlier" in sent[0]
 
 
 def test_host_starts_without_a_model_and_activates_one_later(tmp_path, host_dir, monkeypatch):
