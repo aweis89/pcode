@@ -90,7 +90,8 @@ app-build: ## Build Pcode.app without installing it (any checkout)
 app-test: ## Run Pcode.app's Swift unit tests (after make app or app-build)
 	@# Holds build.sh's lock on the shared tmp/ghostty, so a build can't switch it mid-test.
 	@if [ -z "$${GHOSTTY_SRC:-}" ]; then mkdir tmp/ghostty.building 2>/dev/null || { echo 'a build is using tmp/ghostty' >&2; exit 1; }; fi; \
-	trap '[ -n "$${GHOSTTY_SRC:-}" ] || rmdir tmp/ghostty.building' EXIT; \
+	lock="$$(pwd)/tmp/ghostty.building"; \
+	trap '[ -n "$${GHOSTTY_SRC:-}" ] || rmdir "$$lock"' EXIT; \
 	cd $${GHOSTTY_SRC:-tmp/ghostty}/macos && xcodebuild test -scheme Ghostty -only-testing:GhosttyTests/PCodeCompletionTests -only-testing:GhosttyTests/PCodeLaunchTests -only-testing:GhosttyTests/PCodePickMatchTests -only-testing:GhosttyTests/PCodePickStyleTests -only-testing:GhosttyTests/PCodeSidebarTests -only-testing:GhosttyTests/PCodeTypographyTests -only-testing:GhosttyTests/PCodeTranscriptTests -only-testing:GhosttyTests/PCodeBtwDrawerTests
 
 app-lock: ## Point app/ghostty.lock at a fork branch, or a full commit SHA (not checked; must be pushed) (make app-lock [REF=pcode-smooth])

@@ -53,6 +53,8 @@ def test_code_mode_is_on_by_default(shipped_code_mode, preferences, tmp_path):
     assert not set(SANDBOXED_TOOLS) & names
     # Tools whose terminal display is the point keep issuing their own calls.
     assert {"edit_file", "write_file", "shell", "write_plan", "delegate_task"} <= names
+    # Spill markers tell the model to call these directly.
+    assert {"read_tool_result", "grep_tool_result"} <= names
 
 
 def test_disabling_code_mode_restores_plain_read_only_tools(

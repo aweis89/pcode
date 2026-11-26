@@ -1227,4 +1227,162 @@ struct PCodeTranscriptTests {
         reducer.apply(.toolSummary(callID: "s1", parentCallID: "", name: "shell", detail: "sleep 1", command: "sleep 1", failed: false, elapsedSeconds: 1.0, error: "", result: "", isBackgroundJob: false), reveal: true)
         #expect(!doc.isItemExpanded(id: "call-s1"))
     }
+
+    // MARK: - Copy
+
+    @MainActor private func commandKey(_ characters: String, keyCode: UInt16) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: 0,
+            context: nil, characters: characters, charactersIgnoringModifiers: characters,
+            isARepeat: false, keyCode: keyCode)!
+    }
+
+    @Test @MainActor func commandCCopiesSelectionWithoutAMenuShortcut() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        doc.pasteboard = pasteboard
+
+        doc.beginStreamingTurn(prompt: "Explain")
+        doc.beginStreamingMessage(id: "msg-1")
+        doc.appendStreamingDelta("First paragraph with **bold** words.\n\n```swift\nlet x = 42\n```\n\n")
+        doc.finishStreamingMessage()
+
+        // No selection: Cmd+C leaves the pasteboard alone.
+        doc.keyDown(with: commandKey("c", keyCode: 8))
+        #expect(pasteboard.string(forType: .string) == nil)
+
+        let rendered = doc.plainTextForCopy(at: 1) as NSString
+        let range = rendered.range(of: "paragraph with bold")
+        #expect(range.location != NSNotFound)
+        doc.setSelection(PCodeTranscriptSelection(
+            anchor: .init(itemIndex: 1, utf16Offset: range.location),
+            focus: .init(itemIndex: 1, utf16Offset: NSMaxRange(range))))
+        doc.keyDown(with: commandKey("c", keyCode: 8))
+        #expect(pasteboard.string(forType: .string) == "paragraph with bold")
+
+        // Cmd+A then Cmd+C takes every block, prose into code.
+        doc.keyDown(with: commandKey("a", keyCode: 0))
+        doc.keyDown(with: commandKey("c", keyCode: 8))
+        let all = pasteboard.string(forType: .string) ?? ""
+        #expect(all.contains("First paragraph with bold words."))
+        #expect(all.contains("let x = 42"))
+    }
+
+    @Test @MainActor func everyProseBlockOfAnAnswerOffersItsMarkdown() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        doc.pasteboard = pasteboard
+
+        let markdown = "Intro **paragraph**.\n\n```swift\nlet x = 42\n```\n\n- one\n- two\n"
+        doc.beginStreamingTurn(prompt: "Explain")
+        doc.beginStreamingMessage(id: "msg-1")
+        doc.appendStreamingDelta(markdown)
+        doc.finishStreamingMessage()
+
+        var proseCount = 0
+        for item in doc.items {
+            guard case .prose(_, _, let copyMarkdown) = item.payload else { continue }
+            proseCount += 1
+            #expect(copyMarkdown == markdown)
+        }
+        #expect(proseCount == 2)
+
+        // Hovering any of them shows its button, which copies the whole answer.
+        let rows = doc.subviews.compactMap { $0 as? PCodeProseRowView }
+        #expect(rows.count == 2)
+        for row in rows {
+            let button = row.subviews.compactMap { $0 as? NSButton }.first
+            #expect(button?.isHidden == true)
+            row.setHovered(true)
+            #expect(button?.isHidden == false)
+            pasteboard.clearContents()
+            button?.performClick(nil)
+            #expect(pasteboard.string(forType: .string) == markdown)
+        }
+
+        // Saved turns flattened for Peek carry it the same way.
+        let flattened = PCodeTranscriptItem.flatten(turns: [
+            PCodePeekTurn(id: 0, prompt: "Explain", blocks: [.markdown(id: 0, text: markdown)], status: .complete, side: false),
+        ])
+        let payloads = flattened.compactMap { item -> String? in
+            guard case .prose(_, _, let copyMarkdown) = item.payload else { return nil }
+            return copyMarkdown
+        }
+        #expect(payloads == [markdown, markdown])
+    }
+
+    @Test @MainActor func contextMenuOffersCopySelectAllAndTheAnswer() throws {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        doc.pasteboard = pasteboard
+
+        let markdown = "Only **paragraph**.\n"
+        doc.beginStreamingTurn(prompt: "Explain")
+        doc.beginStreamingMessage(id: "msg-1")
+        doc.appendStreamingDelta(markdown)
+        doc.finishStreamingMessage()
+
+        // The prompt row has no answer to copy; the prose row does.
+        #expect(doc.answerMarkdown(at: CGPoint(x: 40, y: 4)) == nil)
+        let proseRect = try #require(doc.characterRects(forItemAt: 1, localRange: NSRange(location: 0, length: 4)).first)
+        let prosePoint = CGPoint(x: proseRect.midX, y: proseRect.midY)
+        #expect(doc.answerMarkdown(at: prosePoint) == markdown)
+        // Blank space under the last row belongs to no answer.
+        #expect(doc.answerMarkdown(at: CGPoint(x: prosePoint.x, y: doc.frame.height + 200)) == nil)
+
+        let windowPoint = doc.convert(prosePoint, to: nil)
+        let event = try #require(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: windowPoint, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        let menu = try #require(doc.menu(for: event))
+        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All"])
+
+        // Copy is offered only with a selection; the other two always.
+        #expect(!doc.validateUserInterfaceItem(menu.items[0]))
+        #expect(doc.validateUserInterfaceItem(menu.items[1]))
+        doc.selectAll(nil)
+        #expect(doc.validateUserInterfaceItem(menu.items[0]))
+
+        doc.copyAnswerMarkdown(menu.items[1])
+        #expect(pasteboard.string(forType: .string) == markdown)
+    }
+
+    @Test @MainActor func composerFocusStillCopiesTheTranscriptSelection() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let composer = NSView()
+
+        doc.beginStreamingTurn(prompt: "Explain")
+        doc.appendStreamingDelta("A paragraph.\n")
+        doc.finishStreamingMessage()
+
+        // Nothing selected: Cmd+C stays with the composer.
+        #expect(!scrollView.copiesSelectionForComposer(firstResponder: composer))
+
+        doc.selectAll(nil)
+        #expect(scrollView.copiesSelectionForComposer(firstResponder: composer))
+        // The document view handles its own Cmd+C in keyDown.
+        #expect(!scrollView.copiesSelectionForComposer(firstResponder: doc))
+        // A selection in the composer wins.
+        scrollView.composerHasSelection = { true }
+        #expect(!scrollView.copiesSelectionForComposer(firstResponder: composer))
+    }
 }

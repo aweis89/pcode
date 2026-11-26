@@ -17,12 +17,13 @@ if TYPE_CHECKING:
 # Read-only lookups worth batching. Shell tools are already kept native by
 # CodeMode itself; naming the sandboxed set explicitly also keeps MCP and future
 # tools native until they are reviewed for it.
+# The spill readers (read_tool_result, grep_tool_result) stay native: Harness's
+# spill marker and our instructions name them as direct calls, so sandboxing them
+# made the model call a tool it no longer had ("Unknown tool name").
 SANDBOXED_TOOLS = (
     "read_file",
     "list_files",
     "grep",
-    "read_tool_result",
-    "grep_tool_result",
     "web_search",
     "get_page",
 )
