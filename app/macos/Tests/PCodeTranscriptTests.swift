@@ -146,6 +146,11 @@ struct PCodeTranscriptTests {
         #expect(state.mode == .userScrolledUp)
         state.didLegacyWheelScroll(distanceFromBottom: 0, movedUpward: false)
         #expect(state.mode == .pinnedToBottom)
+
+        // Landing exactly on the bottom re-pins even when the move was upward (a clamp).
+        state.unpinForUserAction()
+        state.didLegacyWheelScroll(distanceFromBottom: 0, movedUpward: true)
+        #expect(state.mode == .pinnedToBottom)
     }
 
     @Test @MainActor func userScrollUpIsNotPulledBackByStreaming() {
@@ -178,6 +183,32 @@ struct PCodeTranscriptTests {
             #expect(abs(clip.bounds.origin.y - readingY) < 0.5)
             #expect(doc.stickyBottom.mode == .userScrolledUp)
         }
+    }
+
+    @Test @MainActor func overshootBounceBackDoesNotUnpin() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 300)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let clip = scrollView.contentView
+
+        doc.beginStreamingTurn(prompt: "Stream a long answer")
+        doc.beginStreamingMessage(id: "msg-1")
+        for i in 0..<40 {
+            doc.appendStreamingDelta("Paragraph \(i) with enough words to wrap a little.\n\n")
+        }
+        let bottomY = clip.bounds.origin.y
+
+        // Flick past the bottom, then the elastic bounce moves the origin back up.
+        doc.handleWillStartLiveScroll()
+        clip.setBoundsOrigin(CGPoint(x: 0, y: bottomY + 30))
+        doc.handleBoundsDidChange()
+        clip.setBoundsOrigin(CGPoint(x: 0, y: bottomY + 10))
+        doc.handleBoundsDidChange()
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+        doc.handleDidEndLiveScroll()
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
     }
 
     @Test func stickyBottomHandlesLegacyWheelAndUserActions() {

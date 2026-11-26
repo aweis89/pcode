@@ -1458,8 +1458,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         let delta = originY - lastClipOriginY
         if abs(delta) > 0.5 {
-            let movedUp = delta < 0
             let dist = distanceFromBottom(in: scrollView)
+            // dist + delta is the distance before this move. Moving up from past the bottom
+            // (negative distance) is the elastic bounce-back of an overshoot, not the user
+            // scrolling up; moving up from exactly the bottom is.
+            let movedUp = delta < 0 && dist + delta > -0.5
             if stickyBottom.isLiveScrolling {
                 stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
             } else {
