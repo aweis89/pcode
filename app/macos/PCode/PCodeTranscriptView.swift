@@ -372,9 +372,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// When each live tool/diff card started showing as active, so a fast one is held open.
     private var activeSinceByRawID: [String: CFTimeInterval] = [:]
     /// Settled cards still shown on their own until `minimumLiveCardSeconds` has passed.
-    private var heldOpenRawIDs: Set<String> = []
-    /// Bumped by `setItems` so a fold scheduled for the previous transcript does nothing.
-    private var foldHoldGeneration: UInt64 = 0
+    /// Each held card's token: a timer folds its card only if the hold it was armed for still
+    /// stands, so an older hold's timer cannot cut a later one short.
+    private var heldOpenTokens: [String: UInt64] = [:]
+    private var nextHoldToken: UInt64 = 0
     /// A live card that settles sooner than this stays visible until it has shown this long,
     /// rather than flashing in and folding straight into its group.
     var minimumLiveCardSeconds: CFTimeInterval = 3
@@ -609,8 +610,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         expandedGroupIDs.removeAll(keepingCapacity: false)
         absorbPulseByGroupID.removeAll(keepingCapacity: false)
         activeSinceByRawID.removeAll(keepingCapacity: false)
-        heldOpenRawIDs.removeAll(keepingCapacity: false)
-        foldHoldGeneration &+= 1
+        heldOpenTokens.removeAll(keepingCapacity: false)
         clearActiveFoldGhostLayers()
         rawItems = newItems
         resetBottomSlack()
@@ -760,7 +760,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if isActiveAfter && !wasActiveBefore {
             activeSinceByRawID[item.id] = now
             // Running again: its pending fold no longer applies.
-            heldOpenRawIDs.remove(item.id)
+            heldOpenTokens.removeValue(forKey: item.id)
         }
         var settlesLive = reveal && isGroupableItem && wasActiveBefore && !isActiveAfter
         if !isActiveAfter {
@@ -770,7 +770,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if settlesLive, groupTools, let since = shownSince {
                 let remaining = minimumLiveCardSeconds - (now - since)
                 if remaining > 0 {
-                    heldOpenRawIDs.insert(item.id)
                     scheduleHeldFold(rawItemID: item.id, after: remaining)
                     settlesLive = false
                 }
@@ -838,19 +837,27 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             hideThinking: !showThinking,
             expandedGroupIDs: expandedGroupIDs,
             absorbPulses: absorbPulseByGroupID,
-            heldOpenIDs: heldOpenRawIDs)
+            heldOpenIDs: Set(heldOpenTokens.keys))
     }
 
     /// Fold a held-open card into its group once its minimum time on screen is up.
+    /// A card the user has expanded or selected text in waits another round rather than
+    /// vanishing into the pill under them.
     private func scheduleHeldFold(rawItemID: String, after delay: CFTimeInterval) {
-        let generation = foldHoldGeneration
+        nextHoldToken &+= 1
+        let token = nextHoldToken
+        heldOpenTokens[rawItemID] = token
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self,
-                  self.foldHoldGeneration == generation,
-                  self.heldOpenRawIDs.remove(rawItemID) != nil,
-                  self.rawItemIndexByID[rawItemID] != nil
-            else { return }
-            guard self.groupTools else { return }
+            guard let self, self.heldOpenTokens[rawItemID] == token else { return }
+            guard let rawIdx = self.rawItemIndexByID[rawItemID], self.groupTools else {
+                self.heldOpenTokens.removeValue(forKey: rawItemID)
+                return
+            }
+            if self.isInUse(rawItem: self.rawItems[rawIdx]) {
+                self.scheduleHeldFold(rawItemID: rawItemID, after: self.minimumLiveCardSeconds)
+                return
+            }
+            self.heldOpenTokens.removeValue(forKey: rawItemID)
             let snapshot = self.captureFoldSnapshot(for: rawItemID)
             self.syncProjectedItems(
                 revealNewIDs: [],
@@ -858,6 +865,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 pulseForRawItemID: rawItemID,
                 animateShift: true)
         }
+    }
+
+    private func isInUse(rawItem: PCodeTranscriptItem) -> Bool {
+        switch rawItem.payload {
+        case .tool(_, true), .diff(_, true):
+            return true
+        default:
+            break
+        }
+        guard let sel = selection, let index = itemIndexByID[rawItem.id] else { return false }
+        let low = min(sel.anchor.itemIndex, sel.focus.itemIndex)
+        let high = max(sel.anchor.itemIndex, sel.focus.itemIndex)
+        return (low...high).contains(index)
     }
 
     @discardableResult
@@ -1273,7 +1293,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             rebuildRawItemIndexMap()
         }
         activeSinceByRawID.removeValue(forKey: id)
-        heldOpenRawIDs.remove(id)
+        heldOpenTokens.removeValue(forKey: id)
         if groupTools {
             syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: false)
             return
