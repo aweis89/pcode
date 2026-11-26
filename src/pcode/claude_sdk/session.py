@@ -166,6 +166,10 @@ class ClaudeSession:
         # name). The CLI refuses such a call, and a transcript that holds one
         # teaches the model to repeat it, so it must never be forked.
         self.stray_call = False
+        # Whether it called a prefixed tool pcode did not offer. The CLI refuses
+        # and answers such calls itself, so the live process must not be reused.
+        self.unknown_tool = False
+        self._tool_names = frozenset(tool["name"] for tool in json.loads(config.tools))
         self.busy = False
         self.dead = False
         self.last_used = time.monotonic()
@@ -588,6 +592,7 @@ class ClaudeSession:
         web_ids: list[str] = []
         stop_reason = None
         self.stray_call = False
+        self.unknown_tool = False
         started = False
         early: list[dict] = []  # web results that came before this message did
         shift = emitted = 0  # added to the current message's indices; blocks so far
@@ -638,6 +643,7 @@ class ClaudeSession:
                     tool_ids.append(block.get("id"))
                     self.stray_call = self.stray_call or not wire.startswith(TOOL_PREFIX)
                     name = wire.removeprefix(TOOL_PREFIX)
+                    self.unknown_tool = self.unknown_tool or name not in self._tool_names
                     value = {**value, "content_block": {**block, "name": name}}
             elif event_type == "message_delta":
                 stop_reason = (value.get("delta") or {}).get("stop_reason") or stop_reason

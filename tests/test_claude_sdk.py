@@ -961,6 +961,26 @@ def test_a_later_call_the_cli_refuses_fails_the_request_for_a_retry(world):
     assert world.clients[0].disconnected
 
 
+def test_unknown_tool_beside_a_real_call_forks_without_diverging(world):
+    """A prefixed call to a tool pcode never offered retires the live process
+    immediately, so the next request forks with pcode's own error result instead
+    of colliding with the CLI answering the unknown call itself."""
+    agent, calls = make_agent()
+    world.replies = [
+        ("serial", [("tool", "lookup", {"key": "a"}), ("refused", "no_such_tool", {"x": 1})]),
+        [("text", "recovered")],
+    ]
+    result = run(lambda: agent.run("look up a"))
+    assert result.output == "recovered" and calls == ["a"]
+    old, new = world.clients
+    assert old.disconnected
+    assert new.options.resume == old.session_id
+    # Both results reach the forked CLI as structured tool_result blocks.
+    results = {b["tool_use_id"]: b for b in new.requests[0] if b.get("type") == "tool_result"}
+    assert len(results) == 2
+    assert any("Unknown tool name" in str(b["content"]) for b in results.values())
+
+
 def test_shutdown_fails_a_waiting_request(world):
     model = claude.claude_model(f"claude:{MODEL}")
     world.replies = [("hang",)]
