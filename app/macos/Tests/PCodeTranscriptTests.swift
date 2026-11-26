@@ -1096,6 +1096,30 @@ struct PCodeTranscriptTests {
         #expect(shortH <= snap.lineHeight() * 2.5)
     }
 
+    @Test @MainActor func delegateCardNamesSubAgentAndRendersReportMarkdown() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let snap = PCodeTypography.shared.snapshot
+        let call = PCodePeekToolCall(
+            id: 1,
+            name: "delegate_task",
+            detail: "worker · auditing the cache",
+            failed: false,
+            elapsedSeconds: 12,
+            command: "",
+            output: "## Findings\n\n- **cache** is `stale`")
+
+        let compact = PCodeToolCardView.attributedText(for: call, isExpanded: false, typography: snap, theme: theme)
+        #expect(compact.string.hasPrefix("Sub-agent  worker · auditing the cache"))
+        #expect(!compact.string.contains("delegate_task"))
+
+        let expanded = PCodeToolCardView.attributedText(for: call, isExpanded: true, typography: snap, theme: theme)
+        #expect(expanded.string.contains("Findings"))
+        #expect(expanded.string.contains("cache is stale"))
+        #expect(!expanded.string.contains("##"))
+        #expect(!expanded.string.contains("**"))
+        #expect(!expanded.string.contains("`"))
+    }
+
     @Test @MainActor func toolCardShowsCompactLineCountAndBottomCollapseWhenExpanded() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let snap = PCodeTypography.shared.snapshot
