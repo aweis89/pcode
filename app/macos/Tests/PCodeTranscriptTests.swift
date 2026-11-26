@@ -1924,6 +1924,29 @@ struct PCodeTranscriptTests {
         #expect(doc.items.count == 4)
     }
 
+    @Test @MainActor func expandedWindowSummaryTracksNonGroupableChildren() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        doc.minimumLiveCardSeconds = 0
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Delegate", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "d1", parentCallID: "", name: "delegate_task", detail: "audit", command: "", purpose: ""), reveal: true)
+        // A nested delegate is never groupable, so its updates once skipped re-projection.
+        reducer.apply(.toolStarted(callID: "n1", parentCallID: "d1", name: "delegate_task", detail: "inner", command: "", purpose: ""), reveal: true)
+        doc.toggleExpansionForAccessibility(id: doc.items[2].id)
+        #expect(doc.indexOfItem(id: "call-n1") != nil)
+
+        reducer.apply(.toolSummary(callID: "n1", parentCallID: "d1", name: "delegate_task", detail: "inner", command: "", failed: false, elapsedSeconds: 1.0, error: "", result: nil, isBackgroundJob: false), reveal: true)
+        guard case .toolGroup(let payload) = doc.items[2].payload else {
+            Issue.record("Expected the window below the delegate")
+            return
+        }
+        #expect(payload.runningCount == 0)
+        #expect(payload.succeededCount == 1)
+    }
+
     @Test @MainActor func toolGroupExpandCollapseAndLivePreferenceToggle() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
