@@ -1996,10 +1996,15 @@ class PreviewApp:
                 # Busy (a host too old to interrupt): stopping it would lose the turn.
                 self.transcript.warning(f"The session host did not restart: {skipped}.")
                 return
-        # Kept: the new host resumes in the same worktree.
-        runtime.stop(keep_worktree=True)
-        with self.activity.waiting("Stopping the session host"):
-            await wait_for_exit(runtime.pid)
+        # Kept: the new host resumes in the same worktree. Its going is
+        # expected: an app pane must not take it for a stop and exit.
+        self.restarting = True
+        try:
+            runtime.stop(keep_worktree=True)
+            with self.activity.waiting("Stopping the session host"):
+                await wait_for_exit(runtime.pid)
+        finally:
+            self.restarting = False
         if runtime.session_id:
             await self.start_host_session(
                 resume=runtime.session_id, note="Restarted on the current pcode"
@@ -2344,8 +2349,10 @@ class PreviewApp:
         """The host: a command from this terminal ended the session, so the host is stopping."""
         self.session_over = True
         self.running = False
-        if self.prompt_session is not None and self.prompt_session.app.is_running:
-            self.prompt_session.app.exit()
+        app = self.prompt_session.app if self.prompt_session is not None else None
+        # Not twice: `/stop` may already have asked it to exit.
+        if app is not None and app.is_running and not (app.future is None or app.future.done()):
+            app.exit()
 
     def host_closed(self) -> None:
         """The host this terminal was showing went away (stopped elsewhere, or crashed)."""
@@ -2356,6 +2363,12 @@ class PreviewApp:
         if self.editor_only and not successor:
             self._app_host_closed(runtime)
             return
+        if self.editor_only:
+            # The warning below goes nowhere in an app pane: say it in the editor.
+            self.activity.flash(
+                f"The session host is restarting as {successor}: /attach {successor}.",
+                seconds=24 * 3600,
+            )
         if successor:
             self.transcript.warning(
                 f"The session host {runtime.id} is restarting on the current pcode as "
