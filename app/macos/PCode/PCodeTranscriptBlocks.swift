@@ -283,6 +283,7 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     private let accentBar = NSView()
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsSide = false
+    private var lastStyle: PCodePromptStyle = .classic
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -314,20 +315,36 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     func configure(
         attributedText: NSAttributedString,
         isSidePrompt: Bool,
+        style: PCodePromptStyle = .classic,
         width: CGFloat,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?
     ) -> CGFloat {
         lastTheme = theme
         lastIsSide = isSidePrompt
-        let insets = NSEdgeInsets(top: 10, left: 22, bottom: 10, right: 12)
+        lastStyle = style
+        let insets: NSEdgeInsets
+        switch style {
+        case .classic: insets = NSEdgeInsets(top: 10, left: 22, bottom: 10, right: 12)
+        case .tinted: insets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        case .bar: insets = NSEdgeInsets(top: 2, left: 16, bottom: 2, right: 12)
+        }
         let textWidth = max(1, width - insets.left - insets.right)
         let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
         textView.selectedRange = selectedRange
         textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
 
         let totalHeight = textHeight + insets.top + insets.bottom
-        accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
+        switch style {
+        case .classic:
+            accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
+        case .tinted:
+            accentBar.frame = .zero
+        case .bar:
+            // Spans the text exactly, like the terminal rail on every wrapped line.
+            accentBar.frame = CGRect(x: 4, y: insets.top, width: 3, height: max(12, textHeight))
+        }
+        accentBar.isHidden = style == .tinted
         applyLayerColors()
         return totalHeight
     }
@@ -335,9 +352,23 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     private func applyLayerColors() {
         guard let theme = lastTheme else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = theme.promptBackground.cgColor
-            layer?.cornerRadius = 8
-            accentBar.layer?.backgroundColor = (lastIsSide ? NSColor.systemOrange : theme.accent).cgColor
+            let accent = lastIsSide ? NSColor.systemOrange : theme.accent
+            accentBar.layer?.backgroundColor = accent.cgColor
+            switch lastStyle {
+            case .classic:
+                layer?.backgroundColor = theme.promptBackground.cgColor
+                layer?.cornerRadius = 8
+                layer?.borderWidth = 0
+            case .tinted:
+                layer?.backgroundColor = accent.withAlphaComponent(theme.isDark ? 0.10 : 0.08).cgColor
+                layer?.cornerRadius = 8
+                layer?.borderWidth = 1
+                layer?.borderColor = accent.withAlphaComponent(theme.isDark ? 0.24 : 0.20).cgColor
+            case .bar:
+                layer?.backgroundColor = nil
+                layer?.cornerRadius = 0
+                layer?.borderWidth = 0
+            }
         }
     }
 }

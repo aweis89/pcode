@@ -394,7 +394,11 @@ struct PCodeStickyBottomState: Equatable {
     mutating func didLegacyWheelScroll(distanceFromBottom: CGFloat, movedUpward: Bool) {
         if movedUpward && distanceFromBottom > unpinThreshold {
             mode = .userScrolledUp
-        } else if !movedUpward && distanceFromBottom <= bottomThreshold {
+        } else if distanceFromBottom <= unpinThreshold
+            || (!movedUpward && distanceFromBottom <= bottomThreshold)
+        {
+            // Landing on the bottom re-pins whatever the direction (e.g. AppKit clamping
+            // the origin up when the window grows while unpinned near the bottom).
             mode = .pinnedToBottom
         }
     }

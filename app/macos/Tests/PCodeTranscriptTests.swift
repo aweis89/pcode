@@ -146,6 +146,11 @@ struct PCodeTranscriptTests {
         #expect(state.mode == .userScrolledUp)
         state.didLegacyWheelScroll(distanceFromBottom: 0, movedUpward: false)
         #expect(state.mode == .pinnedToBottom)
+
+        // Landing exactly on the bottom re-pins even when the move was upward (a clamp).
+        state.unpinForUserAction()
+        state.didLegacyWheelScroll(distanceFromBottom: 0, movedUpward: true)
+        #expect(state.mode == .pinnedToBottom)
     }
 
     @Test @MainActor func userScrollUpIsNotPulledBackByStreaming() {
@@ -178,6 +183,32 @@ struct PCodeTranscriptTests {
             #expect(abs(clip.bounds.origin.y - readingY) < 0.5)
             #expect(doc.stickyBottom.mode == .userScrolledUp)
         }
+    }
+
+    @Test @MainActor func overshootBounceBackDoesNotUnpin() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 300)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let clip = scrollView.contentView
+
+        doc.beginStreamingTurn(prompt: "Stream a long answer")
+        doc.beginStreamingMessage(id: "msg-1")
+        for i in 0..<40 {
+            doc.appendStreamingDelta("Paragraph \(i) with enough words to wrap a little.\n\n")
+        }
+        let bottomY = clip.bounds.origin.y
+
+        // Flick past the bottom, then the elastic bounce moves the origin back up.
+        doc.handleWillStartLiveScroll()
+        clip.setBoundsOrigin(CGPoint(x: 0, y: bottomY + 30))
+        doc.handleBoundsDidChange()
+        clip.setBoundsOrigin(CGPoint(x: 0, y: bottomY + 10))
+        doc.handleBoundsDidChange()
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+        doc.handleDidEndLiveScroll()
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
     }
 
     @Test func stickyBottomHandlesLegacyWheelAndUserActions() {
@@ -1471,7 +1502,15 @@ struct PCodeTranscriptTests {
             with: .rightMouseDown, location: windowPoint, modifierFlags: [], timestamp: 0,
             windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
         let menu = try #require(doc.menu(for: event))
-        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls"])
+        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls", "Prompt Style"])
+        let styles = try #require(menu.items.last?.submenu)
+        #expect(styles.items.map(\.title) == PCodePromptStyle.allCases.map(\.title))
+        #expect(styles.items.filter { $0.state == .on }.count == 1)
+        let original = PCodeTranscriptPreferences.shared.promptStyle
+        defer { PCodeTranscriptPreferences.shared.promptStyle = original }
+        let barItem = try #require(styles.items.first { $0.representedObject as? String == "bar" })
+        doc.setPromptStyleFromMenu(barItem)
+        #expect(doc.promptStyle == .bar)
 
         // Copy is offered only with a selection; the other two always.
         #expect(!doc.validateUserInterfaceItem(menu.items[0]))
@@ -1520,6 +1559,39 @@ struct PCodeTranscriptTests {
         prefs.groupTools = false
         let reloaded = PCodeTranscriptPreferences(defaults: defaults)
         #expect(reloaded.groupTools == false)
+    }
+
+    @Test func promptStyleDefaultsToClassicAndPersists() {
+        let suiteName = "com.pcode.test.prefs.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .classic)
+        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .bar
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .bar)
+        defaults.set("bogus", forKey: "PCodeTranscriptPromptStyle")
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .classic)
+    }
+
+    @Test @MainActor func promptStylesFrameTheRowDifferently() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let text = NSAttributedString(string: "Hello")
+        func height(_ style: PCodePromptStyle) -> (CGFloat, PCodePromptRowView) {
+            let row = PCodePromptRowView()
+            let h = row.configure(
+                attributedText: text, isSidePrompt: false, style: style,
+                width: 400, theme: theme, selectedRange: nil)
+            return (h, row)
+        }
+        let (classic, classicRow) = height(.classic)
+        let (tinted, tintedRow) = height(.tinted)
+        let (bar, barRow) = height(.bar)
+        // Tighter padding per style: classic 10pt, tinted 8pt, bar 2pt.
+        #expect(classic - tinted == 4)
+        #expect(tinted - bar == 12)
+        #expect(classicRow.layer?.borderWidth == 0)
+        #expect(tintedRow.layer?.borderWidth == 1)
+        #expect(barRow.layer?.backgroundColor == nil)
     }
 
     @Test @MainActor func toolGrouperFoldsSettledToolsAboveActiveRunningTools() {

@@ -349,6 +349,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
         }
     }
+    /// Framing for prompt rows; changing it re-measures, since padding differs per style.
+    var promptStyle: PCodePromptStyle = PCodeTranscriptPreferences.shared.promptStyle {
+        didSet {
+            guard promptStyle != oldValue else { return }
+            appearanceGeneration &+= 1
+            layoutEngine.invalidateAllMeasurements()
+            remountVisibleViews()
+        }
+    }
 
     var typography: PCodeTypographySnapshot
     var theme: PCodeTranscriptTheme
@@ -1484,8 +1493,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         let delta = originY - lastClipOriginY
         if abs(delta) > 0.5 {
-            let movedUp = delta < 0
             let dist = distanceFromBottom(in: scrollView)
+            // dist + delta is the distance before this move. Moving up from past the bottom
+            // (negative distance) is the elastic bounce-back of an overshoot, not the user
+            // scrolling up; moving up from exactly the bottom is.
+            let movedUp = delta < 0 && dist + delta > -0.5
             if stickyBottom.isLiveScrolling {
                 stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
             } else {
@@ -1663,6 +1675,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return view.configure(
                 attributedText: attr,
                 isSidePrompt: isSide,
+                style: promptStyle,
                 width: width,
                 theme: theme,
                 selectedRange: localSel)
@@ -2279,6 +2292,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if item.action == #selector(copyAnswerMarkdown(_:)) {
             return (item as? NSMenuItem)?.representedObject is String
         }
+        if item.action == #selector(setPromptStyleFromMenu(_:)) {
+            if let menuItem = item as? NSMenuItem {
+                menuItem.state = menuItem.representedObject as? String == promptStyle.rawValue ? .on : .off
+            }
+            return true
+        }
         if item.action == #selector(toggleGroupToolsFromMenu(_:)) {
             if let menuItem = item as? NSMenuItem {
                 menuItem.state = groupTools ? .on : .off
@@ -2454,7 +2473,29 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         groupItem.target = self
         groupItem.state = groupTools ? .on : .off
         menu.addItem(groupItem)
+        let styleMenu = NSMenu()
+        for style in PCodePromptStyle.allCases {
+            let item = NSMenuItem(
+                title: style.title,
+                action: #selector(setPromptStyleFromMenu(_:)),
+                keyEquivalent: "")
+            item.target = self
+            item.representedObject = style.rawValue
+            item.state = style == promptStyle ? .on : .off
+            styleMenu.addItem(item)
+        }
+        let styleItem = NSMenuItem(title: "Prompt Style", action: nil, keyEquivalent: "")
+        styleItem.submenu = styleMenu
+        menu.addItem(styleItem)
         return menu
+    }
+
+    @objc func setPromptStyleFromMenu(_ sender: Any?) {
+        guard let raw = (sender as? NSMenuItem)?.representedObject as? String,
+              let style = PCodePromptStyle(rawValue: raw)
+        else { return }
+        PCodeTranscriptPreferences.shared.promptStyle = style
+        promptStyle = style
     }
 
     @objc func toggleGroupToolsFromMenu(_ sender: Any?) {
@@ -2863,6 +2904,7 @@ final class PCodeTranscriptScrollView: NSScrollView {
     private var observers: [NSObjectProtocol] = []
     private var typographyCancellable: AnyCancellable?
     private var preferencesCancellable: AnyCancellable?
+    private var promptStyleCancellable: AnyCancellable?
     private var bottomContentInsetValue: CGFloat = 0
     private var lastClipHeight: CGFloat = 0
     /// Optional predicate gating `⌘F`/`⌘G`/`⌘⇧G` so the scroll view never steals shortcuts
@@ -2959,6 +3001,12 @@ final class PCodeTranscriptScrollView: NSScrollView {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] grouped in
                 self?.transcriptDocumentView.groupTools = grouped
+            }
+        promptStyleCancellable = PCodeTranscriptPreferences.shared.$promptStyle
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] style in
+                self?.transcriptDocumentView.promptStyle = style
             }
     }
 
