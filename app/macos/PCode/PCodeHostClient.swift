@@ -183,6 +183,10 @@ enum PCodeHostEventDecoder {
             }
             let runID = (record["run_id"] as? String) ?? ""
             return .turnStarted(prompt: prompt, isSide: isAside || hasSidePayload, runID: runID)
+        case "steering":
+            // A message the user sent mid-turn, journaled when it was delivered.
+            guard let prompt = record["prompt"] as? String, !prompt.isEmpty else { return nil }
+            return .user(text: prompt)
         case "turn_completed":
             return .turnEnded(status: .complete)
         case "turn_cancelled":
@@ -683,9 +687,15 @@ final class PCodeTranscriptEventReducer {
             doc.finishStreamingTurn(status: status, reveal: reveal)
 
         case .user(let text):
-            // User `!command` shell mode emits `user` outside a model turn.
-            guard text.hasPrefix("!") else { return }
-            activeShellModeCallID = nil
+            // `!command` shell mode emits `user` outside a model turn; a steering
+            // message emits it mid-turn, when it joins the next model request.
+            // Either way it is a prompt row, and a running turn carries on below it.
+            if text.hasPrefix("!") {
+                activeShellModeCallID = nil
+            } else {
+                settleActiveThinking(in: doc, reveal: reveal)
+                streamedTextInCurrentMessage = false
+            }
             doc.beginStreamingTurn(prompt: text, isSide: false, forcePin: false, reveal: reveal)
 
         case .shellResult(let command, let output, let failed, let elapsedSeconds):
