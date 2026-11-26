@@ -601,7 +601,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         absorbPulseByGroupID.removeAll(keepingCapacity: false)
         clearActiveFoldGhostLayers()
         rawItems = newItems
-        bottomSlack = 0
+        resetBottomSlack()
         rebuildRawItemIndexMap()
         let projection = PCodeToolGrouper.project(
             rawItems: rawItems,
@@ -1454,7 +1454,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         resetSmoothGlide()
         stickyBottom.pinToBottom()
         setHasUnreadStreamingContent(false)
-        bottomSlack = 0
+        resetBottomSlack()
         applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
         mountViews(in: visibleRect)
         if !revealQueue.isEmpty {
@@ -1518,11 +1518,35 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if widthChanged {
             lastContentWidth = newSize.width
             // Rewrapping is a resize, not streaming: let the view settle at the true bottom.
-            bottomSlack = 0
-            lastAppliedContentHeight = 0
+            resetBottomSlack()
             layoutEngine.invalidateAllMeasurements()
             remountVisibleViews()
         }
+    }
+
+    /// Drop the slack and forget the last content height, so the next pinned apply lands on the
+    /// content's true bottom instead of reading a reload or resize as a streaming shrink.
+    private func resetBottomSlack() {
+        bottomSlack = 0
+        lastAppliedContentHeight = 0
+    }
+
+    /// Once the reader scrolls up, trim slack the viewport no longer reaches into, so the
+    /// document ends at the content again and scrolling back down re-pins at the last line.
+    /// Only blank space below the viewport is removed, so nothing on screen moves.
+    private func trimBottomSlackAfterUserScroll(in scrollView: NSScrollView) {
+        guard bottomSlack > 0, stickyBottom.mode == .userScrolledUp else { return }
+        let clipView = scrollView.contentView
+        let contentHeight = layoutEngine.totalHeight
+        let reachedSlack = max(
+            0, clipView.bounds.origin.y + clipView.bounds.height - scrollView.contentInsets.bottom - contentHeight)
+        guard reachedSlack < bottomSlack - 0.5 else { return }
+        bottomSlack = reachedSlack
+        let targetHeight = max(contentHeight + bottomSlack, unobstructedViewportHeight(in: scrollView))
+        isApplyingDocumentHeight = true
+        frame.size = CGSize(width: frame.width, height: targetHeight)
+        lastClipOriginY = clipView.bounds.origin.y
+        isApplyingDocumentHeight = false
     }
 
     // MARK: - Scroll Notifications (called by PCodeTranscriptScrollView)
@@ -1571,6 +1595,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 resetSmoothGlide()
             }
             lastClipOriginY = originY
+            trimBottomSlackAfterUserScroll(in: scrollView)
         }
         mountViews(in: visibleRect)
         if !revealQueue.isEmpty, window != nil {
