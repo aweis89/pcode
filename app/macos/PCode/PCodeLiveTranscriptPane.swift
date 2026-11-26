@@ -171,9 +171,10 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 documentView.paceMode = welcome.pacedScrollback
                 self.hostHistoryDrawn = true
                 let thinking = welcome.showThinking.map(PCodeThinkingVisibility.isShown(mode:))
-                if Self.welcomeNeedsRedraw(
+                let redraw = Self.welcomeNeedsRedraw(
                     shown: self.shownHistory, welcome: welcome.history,
-                    showThinking: thinking, shownThinking: documentView.showThinking) {
+                    showThinking: thinking, shownThinking: documentView.showThinking)
+                if redraw {
                     // `loadHistory` replaces everything; clearing first keeps a `showThinking`
                     // change below from re-projecting rows about to be dropped.
                     documentView.setItems([], pinToBottom: true)
@@ -194,7 +195,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 if state != self.sessionState {
                     self.sessionState = state
                 }
-                if self.shownHistory == nil { documentView.scrollToBottomAndPin() }
+                // Kept rows keep the reader's scroll position; catch-up on top of them
+                // follows the bottom only if they were already pinned there.
+                if redraw { documentView.scrollToBottomAndPin() }
             },
             onEvent: { [weak self] event in
                 guard let self, self.attachGeneration == generation else { return }
@@ -340,21 +343,92 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
         // Decode settled records only, skipping the deltas and status ticks that are most of a
         // long journal before parsing them (as the host's `observer_history` does).
-        var events: [PCodeHostEvent] = []
+        let (events, scan) = settledEvents(inJournal: data)
+        return (events, UInt64(scan), st.st_ino, st.st_dev)
+    }
+
+    /// The selected branch's drawn events in `data` and the end of its last whole line,
+    /// as the host's `observer_history` sends them, so a host's welcome can match it.
+    static func settledEvents(inJournal data: Data) -> (events: [PCodeHostEvent], end: Int) {
+        // Decode settled records only, skipping the deltas and status ticks that are most of a
+        // long journal before parsing them (as the host's `observer_history` does).
+        var drawn: [(event: PCodeHostEvent, turn: String?)] = []
+        var branches = PCodeJournalBranches()
+        var recording: String?
         var scan = 0
         while scan < data.count, let nl = data[scan...].firstIndex(of: 0x0A) {
             let line = data[scan..<nl]
             scan = nl + 1
-            if let kind = Self.sniffJournalKind(line), Self.undrawnJournalKinds.contains(kind) {
+            let kind = sniffJournalKind(line)
+            if let kind, undrawnJournalKinds.contains(kind) {
+                // Never drawn, but a compaction moves the selected branch.
+                if kind == "compaction_checkpoint",
+                   let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] {
+                    branches.consume(obj)
+                }
                 continue
             }
             guard !line.isEmpty,
-                  let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let event = PCodeHostEventDecoder.decodeJournalRecord(obj)
+                  let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
             else { continue }
-            events.append(event)
+            branches.consume(obj)
+            if PCodeJournalBranches.isMainTurnStart(obj) {
+                recording = obj["run_id"] as? String
+            }
+            guard let event = PCodeHostEventDecoder.decodeJournalRecord(obj) else { continue }
+            drawn.append((event, (obj["run_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? recording))
         }
-        return (events, UInt64(scan), st.st_ino, st.st_dev)
+        guard let selected = branches.selectedTurns() else { return (drawn.map(\.event), scan) }
+        return (drawn.filter { $0.turn.map(selected.contains) == true }.map(\.event), scan)
+    }
+}
+
+/// Which turns a journal's selected `/tree` branch holds: pcode's `ConversationTree`,
+/// reduced to the parent links and the active node that `observer_history` filters by.
+struct PCodeJournalBranches {
+    private var parents: [String: String?] = [:]
+    private var active: String?
+
+    /// A turn of the conversation itself, not a `/btw` side question (`side_record`).
+    static func isMainTurnStart(_ record: [String: Any]) -> Bool {
+        guard record["kind"] as? String == "turn_started" else { return false }
+        switch record["side"] {
+        case nil, is NSNull: return true
+        case let side as [String: Any]: return side.isEmpty
+        case let side as Bool: return !side
+        case let side as String: return side.isEmpty
+        default: return false
+        }
+    }
+
+    mutating func consume(_ record: [String: Any]) {
+        switch record["kind"] as? String {
+        case "turn_started":
+            guard let id = record["run_id"] as? String, !id.isEmpty else { return }
+            // Absent: an old, linear session. Null: a root.
+            let parent: String? = record.keys.contains("parent_id") ? record["parent_id"] as? String : active
+            parents[id] = parent
+            if Self.isMainTurnStart(record) { active = id }
+        case "compaction_checkpoint":
+            guard let id = record["node_id"] as? String else { return }
+            parents[id] = record["parent_id"] as? String
+            active = id
+        case "tree_selected":
+            if let id = record["node_id"] as? String { active = id }
+        default:
+            break
+        }
+    }
+
+    /// The selected branch's turns, or nil for a journal with no turns to choose between.
+    func selectedTurns() -> Set<String>? {
+        guard !parents.isEmpty else { return nil }
+        var path: Set<String> = []
+        var node = active
+        while let id = node, path.insert(id).inserted {
+            node = parents[id] ?? nil
+        }
+        return path
     }
 }
 

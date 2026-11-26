@@ -16,7 +16,10 @@ import SwiftUI
 /// - `pcode;dock-rows;<n>`: the rows its layout needs.
 final class PCodeDock: NSObject, ObservableObject {
     @Published private(set) var ready = false
-    @Published private(set) var rows = 3
+    /// Starts at the last count any dock reported, so a resumed pane's boot card
+    /// and the room its transcript keeps usually match the first real frame.
+    @Published private(set) var rows = PCodeDock.lastReportedRows
+    private static var lastReportedRows = 3
     /// pcode waits on the user before its editor starts (`pcode;startup-input`):
     /// the trust prompt or a held startup error, which the boot cover must not hide.
     @Published private(set) var needsInput = false
@@ -42,10 +45,16 @@ final class PCodeDock: NSObject, ObservableObject {
     /// When `surfaceRows` is given and smaller than `gridRows` (e.g. a user
     /// configured `window-padding-y` > `cardPadding / 2`), expands the clip by
     /// the surface's actual vertical padding so the top row is never clipped.
+    static let paddingRowsSlack = 2
+
     static func cardHeight(rows: Int, cell: CGFloat, surfaceRows: Int? = nil) -> CGFloat {
         let surfaceHeight = CGFloat(gridRows) * cell + cardPadding
         let padding: CGFloat
-        if let surfaceRows, surfaceRows > 0, surfaceRows < gridRows {
+        // Only a grid within `paddingRowsSlack` of `gridRows` is the card's own: a
+        // smaller one is the pre-ready full-pane grid, still reported for a frame
+        // after the switch (Ghostty publishes `surfaceSize` asynchronously), and
+        // taking its padding would jump the card and the transcript above it.
+        if let surfaceRows, surfaceRows >= gridRows - paddingRowsSlack, surfaceRows < gridRows {
             padding = max(cardPadding, surfaceHeight - CGFloat(surfaceRows) * cell)
         } else {
             padding = cardPadding
@@ -154,6 +163,7 @@ final class PCodeDock: NSObject, ObservableObject {
             guard let wanted = Int(parts[1]) else { return }
             let clamped = min(Self.maxRows, max(1, wanted))
             if clamped != rows { rows = clamped }
+            Self.lastReportedRows = clamped
         default:
             break
         }
@@ -346,6 +356,7 @@ private struct PCodeDockCard: View {
             card(cell: cell, surfaceRows: surfaceRows)
                 // Not removed: the view tree stays put so the terminal keeps its grid and focus.
                 .opacity(dock.ready || !dock.bootCovered ? 1 : 0)
+                .allowsHitTesting(dock.ready || !dock.bootCovered)
         }
         // Only the card's clip animates as `dock.rows` changes, never its width.
         .animation(.easeOut(duration: 0.12), value: dock.rows)

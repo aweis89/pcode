@@ -2222,6 +2222,53 @@ struct PCodeTranscriptTests {
         #expect(PCodeLiveTranscriptController.sniffJournalKind(journal[20...]) == "RunStatus")
     }
 
+    @Test func diskPreloadKeepsOnlyTheSelectedTreeBranch() throws {
+        func line(_ record: [String: Any]) throws -> String {
+            var record = record
+            record["version"] = 1
+            return String(decoding: try JSONSerialization.data(withJSONObject: record), as: UTF8.self)
+        }
+        func turn(_ id: String, parent: Any?, _ text: String) throws -> [String] {
+            var start: [String: Any] = ["kind": "turn_started", "run_id": id, "prompt": "ask \(text)"]
+            if let parent { start["parent_id"] = parent }
+            return [
+                try line(start),
+                try line(["kind": "Message", "run_id": id, "markdown": text]),
+                try line(["kind": "turn_completed", "run_id": id]),
+            ]
+        }
+        func messages(_ journal: [String]) -> [String] {
+            let data = Data((journal.joined(separator: "\n") + "\n").utf8)
+            return PCodeLiveTranscriptController.settledEvents(inJournal: data).events.compactMap {
+                if case .message(let markdown) = $0 { return markdown }
+                return nil
+            }
+        }
+
+        // Linear, and an old journal with no parent links: everything.
+        let linear = try turn("a", parent: NSNull(), "A") + turn("b", parent: "a", "B")
+        #expect(messages(linear) == ["A", "B"])
+        #expect(messages(try turn("a", parent: nil, "A") + turn("b", parent: nil, "B")) == ["A", "B"])
+        // `/tree` went back to `a` and branched: `b` is off the selected path.
+        let branched = linear + [try line(["kind": "tree_selected", "node_id": "a"])]
+            + (try turn("c", parent: "a", "C"))
+        #expect(messages(branched) == ["A", "C"])
+        // Selecting `b` again shows that branch instead.
+        #expect(messages(branched + [try line(["kind": "tree_selected", "node_id": "b"])]) == ["A", "B"])
+        // A compaction starts a new root the next turn hangs off.
+        let compacted = linear + [try line(["kind": "compaction_checkpoint", "node_id": "k", "parent_id": "b", "messages": []])]
+            + (try turn("d", parent: "k", "D"))
+        #expect(messages(compacted) == ["A", "B", "D"])
+    }
+
+    @Test func dockCardIgnoresTheFullPaneGridStillReportedAfterReady() {
+        let card = PCodeDock.cardHeight(rows: 4, cell: 20)
+        // A stale full-pane grid of 20 rows would add 20 rows of padding.
+        #expect(PCodeDock.cardHeight(rows: 4, cell: 20, surfaceRows: 20) == card)
+        // A grid a row short of `gridRows` is the card's own, with tall padding.
+        #expect(PCodeDock.cardHeight(rows: 4, cell: 20, surfaceRows: PCodeDock.gridRows - 1) == card + 20)
+    }
+
     @Test func hostWelcomeRedrawsOnlyWhatDiffersFromThePreload() {
         let history = Self.sampleHistory(turns: 3)
         func redraw(_ shown: [PCodeHostEvent]?, _ thinking: Bool? = nil) -> Bool {
