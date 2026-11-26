@@ -717,10 +717,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let ghost = CALayer()
         ghost.contents = cgImage
         ghost.contentsScale = window?.backingScaleFactor ?? 2.0
-        ghost.frame = view.frame
+        // Start from where the row is drawn, including any shift still sliding it into place.
+        let drawnFrame = view.frame.offsetBy(dx: 0, dy: Self.inFlightShift(of: view))
+        ghost.frame = drawnFrame
         ghost.cornerRadius = view.layer?.cornerRadius ?? 5
         ghost.masksToBounds = true
-        return FoldSnapshot(rawItemID: itemID, layer: ghost, originFrame: view.frame)
+        return FoldSnapshot(rawItemID: itemID, layer: ghost, originFrame: drawnFrame)
     }
 
     /// Insert or update a transcript item by its stable `id` (used by both live streaming
