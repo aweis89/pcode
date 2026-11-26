@@ -361,6 +361,21 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         updatedDate = PCodeWorkspace.parseISO8601(updated)
     }
 
+    /// Rebuild a session from its persisted index row, derived fields included
+    /// (parsing `updated` again for every session would cost a cold launch).
+    fileprivate init(_ row: LoadCache.Summary) {
+        id = row.id
+        workspace = row.workspace
+        updated = row.updated
+        name = row.name
+        title = row.title
+        turns = row.turns
+        project = row.project
+        normalizedProjectPath = row.normalizedProjectPath
+        worktreeName = row.worktreeName
+        updatedDate = row.updatedReference.map(Date.init(timeIntervalSinceReferenceDate:))
+    }
+
     /// What the sidebar groups by (main checkout for worktrees, else workspace).
     var projectPath: String { project.flatMap { $0.isEmpty ? nil : $0 } ?? workspace }
 
@@ -508,60 +523,148 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         return stateRoot.appendingPathComponent("pcode/sessions")
     }
 
-    /// Saved sessions with at least one turn (or held by a live host), newest first.
-    /// Live hosted sessions are always retained even when they fall beyond `limit`.
+    /// Saved sessions with at least one turn (or held by a live host), newest
+    /// first by `updated`: every one, for the sidebar to slice per project.
     static func load(
         root: URL = root,
-        limit: Int = 200,
-        hosted: Set<String> = hosted()
+        hosted: Set<String> = hosted(),
+        cache: LoadCache = .shared
     ) -> [PCodeSessionInfo] {
-        let fm = FileManager.default
-        guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
-        let all = loadCache.infos(dirs).filter { $0.turns > 0 || hosted.contains($0.id) }
-        let sorted = all.sorted { $0.updated > $1.updated }
-        if limit == .max || sorted.count <= limit { return sorted }
-        var trimmed = Array(sorted.prefix(limit))
-        let trimmedIDs = Set(trimmed.map(\.id))
-        for info in sorted.dropFirst(limit) where hosted.contains(info.id) && !trimmedIDs.contains(info.id) {
-            trimmed.append(info)
-        }
-        return trimmed
+        cache.infos(root: root).filter { $0.turns > 0 || hosted.contains($0.id) }
     }
 
-    private static let loadCache = LoadCache()
-
-    /// Decoded `session.json`s keyed by path, reused while the file's mtime and
-    /// size are unchanged: a reload then stats every session but parses only
-    /// the few that changed since the last one.
+    /// An index of every saved session's summary, keyed by directory name and
+    /// reused while its `session.json`'s mtime and size are unchanged: a reload
+    /// lists and stats every session but parses only the few that changed.
+    /// It is persisted (`session-index.json` in the app's caches folder), so a
+    /// cold launch parses only what changed while the app was closed too.
+    /// `session.json` stays the source of truth; the index is disposable.
     final class LoadCache {
+        /// Bump whenever `Summary` or what it derives (paths, dates) changes.
+        static let indexVersion = 1
+
+        /// The app's instance: persisted only for the session root it was made
+        /// for, so a test (or caller) loading another root never touches it.
+        static let shared = LoadCache(indexURL: defaultIndexURL, persistingFor: PCodeSessionInfo.root)
+
+        static var defaultIndexURL: URL? {
+            guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+                return nil
+            }
+            return caches
+                .appendingPathComponent(Bundle.main.bundleIdentifier ?? "pcode", isDirectory: true)
+                .appendingPathComponent("session-index.json")
+        }
+
+        /// A session's sidebar fields, decoded and derived once.
+        struct Summary: Codable, Equatable {
+            let id: String
+            let workspace: String
+            let updated: String
+            let name: String?
+            let title: String?
+            let turns: Int
+            let project: String?
+            let normalizedProjectPath: String
+            let worktreeName: String?
+            let updatedReference: Double?
+
+            init(_ info: PCodeSessionInfo) {
+                id = info.id
+                workspace = info.workspace
+                updated = info.updated
+                name = info.name
+                title = info.title
+                turns = info.turns
+                project = info.project
+                normalizedProjectPath = info.normalizedProjectPath
+                worktreeName = info.worktreeName
+                updatedReference = info.updatedDate?.timeIntervalSinceReferenceDate
+            }
+        }
+
+        /// One session directory: its `session.json`'s stamp and summary, or no
+        /// summary when the file didn't parse or names another id (so it isn't
+        /// reread until it changes).
+        struct Row: Codable, Equatable {
+            let dir: String
+            let sec: Int
+            let nsec: Int
+            let size: Int64
+            let summary: Summary?
+        }
+
+        private struct IndexFile: Codable {
+            let version: Int
+            let root: String
+            let rows: [Row]
+        }
+
         private struct Entry {
-            let stamp: timespec
-            let size: off_t
+            let row: Row
             let info: PCodeSessionInfo?
         }
 
+        let indexURL: URL?
+        private let persistRoot: String?
         private let lock = NSLock()
+        private var root: String?
         private var entries: [String: Entry] = [:]
+        /// What the last load returned, reused while nothing changed.
+        private var sorted: [PCodeSessionInfo] = []
+        private var indexRead = false
+        /// Whether the index file on disk matches `entries`.
+        private var persisted = false
+        private let writer = DispatchQueue(label: "com.pcode.session-index", qos: .utility)
+        /// `session.json`s parsed since this cache was made (not counting the index).
         private(set) var decodes = 0
 
-        func infos(_ dirs: [URL]) -> [PCodeSessionInfo] {
+        /// `indexURL` persists the index for loads of `root` (defaults to
+        /// `PCodeSessionInfo.root`); nil keeps it in memory only.
+        init(indexURL: URL? = nil, persistingFor root: URL? = nil) {
+            self.indexURL = indexURL
+            persistRoot = indexURL == nil ? nil : (root ?? PCodeSessionInfo.root).standardizedFileURL.path
+        }
+
+        /// Every session under `root` that parsed, newest first by `updated`.
+        /// Blocks on disk: call it off the main thread.
+        func infos(root rootURL: URL) -> [PCodeSessionInfo] {
             lock.lock()
             defer { lock.unlock() }
-            // Stat every file; keep cached entries whose stamp still matches.
-            var slots: [(path: String, id: String, stat: Darwin.stat, entry: Entry?)] = []
-            slots.reserveCapacity(dirs.count)
-            for dir in dirs {
-                let path = dir.appendingPathComponent("session.json").path
-                var st = Darwin.stat()
-                guard Darwin.lstat(path, &st) == 0 else { continue }
+            let rootPath = rootURL.standardizedFileURL.path
+            let persisting = indexURL != nil && rootPath == persistRoot
+            if root != rootPath {
+                root = rootPath
+                entries = [:]
+                sorted = []
+                indexRead = false
+                persisted = false
+            }
+            if !indexRead {
+                indexRead = true
+                if persisting, let rows = readIndex(root: rootPath) {
+                    entries.reserveCapacity(rows.count)
+                    for row in rows {
+                        entries[row.dir] = Entry(row: row, info: row.summary.map(PCodeSessionInfo.init))
+                    }
+                    sorted = Self.sortedInfos(entries.values)
+                    persisted = true
+                }
+            }
+
+            // List and stat every session; keep entries whose stamp still matches.
+            var slots: [(dir: String, path: String, stat: Darwin.stat, entry: Entry?)] = []
+            slots.reserveCapacity(entries.count + 16)
+            for (dir, st) in Self.sessionFiles(rootPath) {
+                let path = rootPath + "/" + dir + "/session.json"
                 var cached: Entry?
-                if let old = entries[path], old.size == st.st_size,
-                   old.stamp.tv_sec == st.st_mtimespec.tv_sec, old.stamp.tv_nsec == st.st_mtimespec.tv_nsec {
+                if let old = entries[dir], old.row.size == Int64(st.st_size),
+                   old.row.sec == Int(st.st_mtimespec.tv_sec), old.row.nsec == Int(st.st_mtimespec.tv_nsec) {
                     cached = old
                 }
-                slots.append((path, dir.lastPathComponent, st, cached))
+                slots.append((dir, path, st, cached))
             }
-            // Parse the rest in parallel: a cold load (app launch) parses
+            // Parse the rest in parallel: with no index (first launch) that's
             // every saved session.
             let misses = slots.indices.filter { slots[$0].entry == nil }
             decodes += misses.count
@@ -575,25 +678,92 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
                             let slot = slots[misses[k]]
                             out[k] = (try? Data(contentsOf: URL(fileURLWithPath: slot.path)))
                                 .flatMap { try? decoder.decode(PCodeSessionInfo.self, from: $0) }
-                                .flatMap { $0.id == slot.id ? $0 : nil }
+                                .flatMap { $0.id == slot.dir ? $0 : nil }
                         }
                     }
                 }
                 for (k, index) in misses.enumerated() {
                     let st = slots[index].stat
-                    slots[index].entry = Entry(stamp: st.st_mtimespec, size: st.st_size, info: parsed[k])
+                    let row = Row(
+                        dir: slots[index].dir,
+                        sec: Int(st.st_mtimespec.tv_sec), nsec: Int(st.st_mtimespec.tv_nsec),
+                        size: Int64(st.st_size), summary: parsed[k].map(Summary.init))
+                    slots[index].entry = Entry(row: row, info: parsed[k])
                 }
             }
-            var fresh: [String: Entry] = [:]
-            fresh.reserveCapacity(slots.count)
-            var result: [PCodeSessionInfo] = []
-            for slot in slots {
-                guard let entry = slot.entry else { continue }
-                fresh[slot.path] = entry
-                if let info = entry.info { result.append(info) }
+            let changed = !misses.isEmpty || slots.count != entries.count
+            if changed {
+                var fresh: [String: Entry] = [:]
+                fresh.reserveCapacity(slots.count)
+                for slot in slots {
+                    if let entry = slot.entry { fresh[slot.dir] = entry }
+                }
+                entries = fresh  // Drops deleted sessions.
+                sorted = Self.sortedInfos(entries.values)
+                persisted = false
             }
-            entries = fresh  // Drops deleted sessions.
-            return result
+            if persisting && !persisted {
+                persisted = true
+                write(IndexFile(version: Self.indexVersion, root: rootPath, rows: entries.values.map(\.row)))
+            }
+            return sorted
+        }
+
+        /// Wait for a pending index write (tests).
+        func flush() { writer.sync {} }
+
+        private static func sortedInfos(_ entries: Dictionary<String, Entry>.Values) -> [PCodeSessionInfo] {
+            entries.compactMap(\.info).sorted { $0.updated != $1.updated ? $0.updated > $1.updated : $0.id < $1.id }
+        }
+
+        /// Each real directory in `root` (not a symlink to one) holding a
+        /// regular `session.json`, with that file's stat. Stats relative to the
+        /// open directory: lstat on full paths was several times slower.
+        private static func sessionFiles(_ root: String) -> [(dir: String, stat: Darwin.stat)] {
+            guard let dirp = opendir(root) else { return [] }
+            defer { closedir(dirp) }
+            let fd = dirfd(dirp)
+            var files: [(dir: String, stat: Darwin.stat)] = []
+            while let ent = readdir(dirp) {
+                let type = ent.pointee.d_type
+                let name = withUnsafeBytes(of: ent.pointee.d_name) { raw in
+                    String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+                }
+                if name == "." || name == ".." { continue }
+                var st = Darwin.stat()
+                if type == DT_UNKNOWN {
+                    guard fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { continue }
+                } else if type != DT_DIR {
+                    continue
+                }
+                guard fstatat(fd, name + "/session.json", &st, AT_SYMLINK_NOFOLLOW) == 0,
+                      (st.st_mode & S_IFMT) == S_IFREG
+                else { continue }
+                files.append((name, st))
+            }
+            return files
+        }
+
+        /// The persisted rows for `root`, or nil if the file is missing,
+        /// unreadable, from another version, or for another root.
+        private func readIndex(root: String) -> [Row]? {
+            guard let indexURL,
+                  let data = try? Data(contentsOf: indexURL),
+                  let file = try? JSONDecoder().decode(IndexFile.self, from: data),
+                  file.version == Self.indexVersion, file.root == root
+            else { return nil }
+            return file.rows
+        }
+
+        private func write(_ file: IndexFile) {
+            guard let indexURL else { return }
+            writer.async {
+                guard let data = try? JSONEncoder().encode(file) else { return }
+                try? FileManager.default.createDirectory(
+                    at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                // `.atomic` writes a temporary file and renames it over the old one.
+                try? data.write(to: indexURL, options: .atomic)
+            }
         }
     }
 }
@@ -1284,7 +1454,7 @@ final class PCodeWorkspace: ObservableObject {
         let starred = starredSessionIDs
         DispatchQueue.global(qos: .userInitiated).async {
             let hosted = PCodeSessionInfo.hosted()
-            let all = PCodeSessionInfo.load(limit: .max, hosted: hosted)
+            let all = PCodeSessionInfo.load(hosted: hosted)
             // Sessions deleted outside the app (no directory left at all).
             let gone = unseen.union(starred).filter {
                 !FileManager.default.fileExists(atPath: PCodeSessionInfo.root.appendingPathComponent($0).path)
