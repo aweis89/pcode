@@ -456,7 +456,7 @@ tool call works on gets its own row above the box, with the full width of the
 pane, so the status row stays short. While the call runs, its row spins in a
 muted shade with a round spinner, so it never reads as the status row's dotted
 one, which means the model is working. A glyph stands in for the call's verb:
-`$` runs a command, `⌕` searches, `✎` edits or writes a file, and `⎘` reads
+`$` runs or waits on a command, `⌕` searches, `✎` edits or writes a file, and `⎘` reads
 one (or their Nerd Font equivalents when `glyphs` uses Nerd Fonts). A tool
 without one keeps its verb spelled out. Many fonts lack `⌕` and `⎘`, and the
 terminal borrows them from another font; if they look off in yours,
