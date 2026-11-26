@@ -1440,6 +1440,18 @@ def fork_worktree(saved, workspace: Path) -> Path:
     return created
 
 
+def move_into(workspace: Path) -> None:
+    """Make `workspace` this process's directory, as well as the session's.
+
+    `spawn_host` starts a host in the caller's directory, which can be another
+    session's worktree. Once that session removes it, a host left there fails
+    every `getcwd()`, and with it anything that asks (sub-agents, tool display).
+    """
+    with contextlib.suppress(OSError):
+        os.chdir(workspace)
+        os.environ["PWD"] = str(workspace)  # getcwd is right; an inherited PWD is not
+
+
 async def _serve(args: argparse.Namespace) -> dict | None:
     """Run the host until it stops; `spawn_host` arguments for its successor, if any."""
     from pcode.app import _enter_worktree, _resume_workspace
@@ -1506,6 +1518,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         workspace = workspace.resolve()
     entry.workspace = str(workspace)
     write_entry(entry, touch=saved is None)
+    move_into(workspace)
 
     host = SessionHost(entry)
     host.carried = read_carry(args.carry)
@@ -1563,6 +1576,8 @@ async def _serve(args: argparse.Namespace) -> dict | None:
                 saved.close()  # Startup failed before a runtime took it.
         # A stop that came after `restart` must not tidy away the successor's worktree.
         if not host.keep_worktree and host.successor is None:
+            # Out of the worktree first, so removing it leaves no process inside.
+            move_into(Path.home())
             # A terminal that asked to keep it tidies it itself, and can ask first.
             leave_worktree(
                 controller.workspace,

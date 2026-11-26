@@ -3047,3 +3047,17 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             await stop_host(host)
 
     asyncio.run(run())
+
+
+def test_move_into_follows_the_workspace_and_survives_a_missing_one(monkeypatch, tmp_path):
+    from pcode.host import move_into
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", str(tmp_path))
+    workspace = tmp_path / "tree"
+    workspace.mkdir()
+    move_into(workspace)
+    assert Path.cwd() == workspace.resolve()
+    assert os.environ["PWD"] == str(workspace)
+    move_into(tmp_path / "gone")  # Not there: stays put rather than failing.
+    assert Path.cwd() == workspace.resolve()
