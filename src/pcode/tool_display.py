@@ -466,7 +466,7 @@ def target(name: str, args: dict, source: str = "") -> str:
         if path.is_absolute():
             try:
                 value = str(path.relative_to(Path.cwd()))
-            except ValueError:
+            except ValueError, OSError:  # OSError: this process's directory was deleted
                 pass
         where = plain(value)
         if name in {"search_files", "find_files", "list_files", "grep"} and isinstance(

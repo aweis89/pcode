@@ -4263,6 +4263,26 @@ def forked_note(saved) -> str:
     return note + f" Both sessions work in {saved.info.workspace}."
 
 
+def _resumed_workspace(info, requested: Path | None) -> Path:
+    """Where a resumed session runs: back in its own directory, not the caller's.
+
+    Another worktree of the same repository is fine: the session goes back to
+    its own directory. Another repository is refused. In-process and hosted
+    resumes both come here; a host started in the caller's directory instead
+    can be left in another session's worktree, which that session removes.
+    """
+    from pcode.sessions import SessionError
+
+    if requested and str(requested.resolve()) != info.workspace:
+        from pcode.worktree import repo_scope
+
+        if repo_scope(requested) != session_scope(info):
+            raise SessionError(
+                "Workspace differs from the saved session; refusing cross-repo resume."
+            )
+    return _resume_workspace(info, requested)
+
+
 def _resume_workspace(info, requested: Path | None) -> Path:
     """Where to continue a session whose own workspace may have been deleted.
 
@@ -4418,6 +4438,14 @@ def _run_hosted(args: argparse.Namespace) -> None:
         from pcode.sessions import SessionError, read_info, resolve_session
 
         workspace = (args.workspace or Path.cwd()).resolve()
+        resume, saved_model = None, None
+        if args.resume:
+            # One already running in a host was routed to --attach by the caller,
+            # unless --fork asked for a copy of it.
+            path = resolve_session(args.resume, args.session_dir, workspace)
+            info = read_info(path)
+            workspace = _resumed_workspace(info, args.workspace).resolve()
+            resume, saved_model = path.name, info.model
         if not workspace.is_dir():
             raise SessionError(f"Workspace {workspace} is not an existing directory.")
         set_project_root(workspace)
@@ -4428,13 +4456,7 @@ def _run_hosted(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
         prompt_trust(workspace, ask=ask)
-        model = args.model or load_preferences().get("model")
-        resume = None
-        if args.resume:
-            # One already running in a host was routed to --attach by the caller,
-            # unless --fork asked for a copy of it.
-            path = resolve_session(args.resume, args.session_dir, workspace)
-            resume, model = path.name, read_info(path).model
+        model = saved_model or args.model or load_preferences().get("model")
         if not model:
             raise ValueError("A session host needs a model: pass -m or set a default with /model.")
         identity, process, log = spawn_host(
@@ -4733,16 +4755,7 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                     raise SessionError(
                         "Cannot change models when resuming; start a new session instead."
                     )
-                if args.workspace and str(args.workspace.resolve()) != saved.info.workspace:
-                    # Another worktree of the same repository is fine: the session
-                    # goes back to its own directory. Another repository is not.
-                    from pcode.worktree import repo_scope
-
-                    if repo_scope(args.workspace) != session_scope(saved.info):
-                        raise SessionError(
-                            "Workspace differs from the saved session; refusing cross-repo resume."
-                        )
-                args.workspace = _resume_workspace(saved.info, args.workspace)
+                args.workspace = _resumed_workspace(saved.info, args.workspace)
             except BaseException:
                 saved.abandon()
                 saved = None  # Already closed; the `finally` below must not close it again.
