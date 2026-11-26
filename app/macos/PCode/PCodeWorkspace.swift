@@ -616,8 +616,17 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         /// Whether the index file on disk matches `entries`.
         private var persisted = false
         private let writer = DispatchQueue(label: "com.pcode.session-index", qos: .utility)
+        /// The newest snapshot not yet written (guarded by `pendingLock`): a
+        /// burst of reloads writes once, the latest.
+        private var pendingWrite: IndexFile?
+        private let pendingLock = NSLock()
+        private var decodeCount = 0
         /// `session.json`s parsed since this cache was made (not counting the index).
-        private(set) var decodes = 0
+        var decodes: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return decodeCount
+        }
 
         /// `indexURL` persists the index for loads of `root` (defaults to
         /// `PCodeSessionInfo.root`); nil keeps it in memory only.
@@ -667,7 +676,7 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
             // Parse the rest in parallel: with no index (first launch) that's
             // every saved session.
             let misses = slots.indices.filter { slots[$0].entry == nil }
-            decodes += misses.count
+            decodeCount += misses.count
             if !misses.isEmpty {
                 var parsed = [PCodeSessionInfo?](repeating: nil, count: misses.count)
                 let chunk = 32
@@ -757,8 +766,15 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
 
         private func write(_ file: IndexFile) {
             guard let indexURL else { return }
-            writer.async {
-                guard let data = try? JSONEncoder().encode(file) else { return }
+            pendingLock.lock()
+            pendingWrite = file
+            pendingLock.unlock()
+            writer.async { [self] in
+                pendingLock.lock()
+                let latest = pendingWrite
+                pendingWrite = nil
+                pendingLock.unlock()
+                guard let latest, let data = try? JSONEncoder().encode(latest) else { return }
                 try? FileManager.default.createDirectory(
                     at: indexURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 // `.atomic` writes a temporary file and renames it over the old one.
@@ -1117,7 +1133,7 @@ final class PCodeWorkspace: ObservableObject {
     }
     @Published var selected: UUID?
     /// What the sidebar shows of `allHistory`, newest first: every starred,
-    /// open, and hosted session, plus each project's newest `recentLimit`
+    /// unseen, open, and hosted session, plus each project's newest `recentLimit`
     /// others (`remainingRecentCounts` counts the rest).
     @Published private(set) var history: [PCodeSessionInfo] = []
     /// Per project, how many recent sessions `history` leaves out.
@@ -1158,7 +1174,12 @@ final class PCodeWorkspace: ObservableObject {
     @Published private(set) var unseenIDs: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: PCodeWorkspace.unseenKey) ?? []
     ) {
-        didSet { if unseenIDs != oldValue { UserDefaults.standard.set(Array(unseenIDs), forKey: Self.unseenKey) } }
+        didSet {
+            if unseenIDs != oldValue {
+                UserDefaults.standard.set(Array(unseenIDs), forKey: Self.unseenKey)
+                publishHistory()
+            }
+        }
     }
 
     init(ghostty: Ghostty.App) {
@@ -1526,11 +1547,16 @@ final class PCodeWorkspace: ObservableObject {
 
     /// Re-slice `allHistory` into `history` (in memory, no disk), publishing
     /// only what changed: the usual periodic reload doesn't redraw the sidebar.
+    /// Unseen sessions always show, so their folder's dot has a row to point at.
     private func publishHistory() {
+        // A hosted session with no turn is listed only because it is hosted;
+        // others are open, detached (`detachedHostStatuses`), or plain recents.
+        let hostedOnly = allHistory.lazy.filter { $0.turns == 0 && self.hostedAtLastLoad.contains($0.id) }.map(\.id)
         let keep = starredSessionIDs
+            .union(unseenIDs)
             .union(panes.compactMap(\.sessionID))
             .union(detachedHostStatuses.keys)
-            .union(hostedAtLastLoad)
+            .union(hostedOnly)
         let slice = Self.sliceHistory(
             allHistory, keep: keep, recentLimits: recentLimits, defaultLimit: Self.initialRecentLimit)
         if slice.sessions != history { history = slice.sessions }
@@ -2570,6 +2596,7 @@ final class PCodeWorkspace: ObservableObject {
     /// first report): carry an unseen response over to the new ID.
     private func sessionIDChanged(_ pane: PCodeSessionPane, from old: String?) {
         guard old != pane.sessionID else { return }
+        publishHistory()  // The open set changed without `panes` changing.
         // A response that ended before the new ID arrived belongs to it, not the old one.
         let carried = pane.unseen && (old.map { unseenIDs.contains($0) } ?? true)
         if let old, carried { unseenIDs.remove(old) }
