@@ -569,9 +569,9 @@ pcode config unset code_mode     # Restore the default (on)
 ```
 
 Only read-only lookups are available inside a snippet: `read_file`,
-`list_files`, `grep`, `read_tool_result`, `grep_tool_result`, `web_search`, and
-`get_page`. Edits,
-plan updates, the shell, and delegation stay ordinary tool calls, so diffs,
+`list_files`, `grep`, `web_search`, and `get_page`. Edits, plan updates, the
+shell, delegation, and the readers for stored large output (`read_tool_result`,
+`grep_tool_result`) stay ordinary tool calls, so diffs,
 command previews, and the plan panel still show what happened. A `run_code` call is displayed by the calls the
 snippet makes and its size (`grep · read_file ×2 · 12 lines`); the snippet
 itself is visible in the tool-call inspector.
