@@ -149,4 +149,65 @@ struct PCodeSidebarTests {
         #expect(PCodePathCompleter.split("~nonexistentuserxyz", home: homePath) == nil)
         #expect(PCodePathCompleter.directorySuggestions(for: "~nonexistentuserxyz", home: homePath, fileManager: fm).isEmpty)
     }
+
+    @Test func sessionLoadIncludesZeroTurnLiveHostedSessions() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pcode-sessions-test-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        func writeSession(id: String, turns: Int, updated: String, title: String) throws {
+            let dir = root.appendingPathComponent(id)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let json = """
+            {"id":"\(id)","workspace":"/tmp/proj","updated":"\(updated)","title":"\(title)","turns":\(turns)}
+            """
+            try Data(json.utf8).write(to: dir.appendingPathComponent("session.json"))
+        }
+
+        try writeSession(id: "empty-idle", turns: 0, updated: "2026-11-26T01:00:00+00:00", title: "Empty")
+        try writeSession(id: "live-zero-turns", turns: 0, updated: "2026-11-26T02:00:00+00:00", title: "Running first turn")
+        try writeSession(id: "completed", turns: 2, updated: "2026-11-26T01:30:00+00:00", title: "Completed")
+
+        let loaded = PCodeSessionInfo.load(root: root, limit: 10, hosted: ["live-zero-turns"])
+        #expect(loaded.map(\.id) == ["live-zero-turns", "completed"])
+    }
+
+    @Test func hostedSessionsSurfaceActivityAndUnseenInProjectGroup() throws {
+        let data = Data("""
+        {"id":"s1","workspace":"/tmp/proj","updated":"2026-11-26T02:00:00+00:00","title":"Saved Title","turns":0}
+        """.utf8)
+        let info = try JSONDecoder().decode(PCodeSessionInfo.self, from: data)
+
+        let workingHost = PCodeHostStatus(
+            hostID: "h1", pid: 42, sessionID: "s1", state: "working",
+            title: "Live Title", outcome: "", turns: 0, unseen: false, updated: 100)
+        let working = PCodeHostedSession(info: info, host: workingHost)
+        #expect(working.title == "Live Title")
+        #expect(working.activity == .running)
+
+        let workingGroup = PCodeProjectGroup(path: "/tmp/proj", openPanes: [], hostedSessions: [working], recentSessions: [])
+        #expect(workingGroup.activity == .running)
+        #expect(!workingGroup.hasUnseen([]))
+
+        let failedHost = PCodeHostStatus(
+            hostID: "h1", pid: 42, sessionID: "s1", state: "idle",
+            title: "", outcome: "failed", turns: 1, unseen: true, updated: 101)
+        let failed = PCodeHostedSession(info: info, host: failedHost)
+        #expect(failed.title == "Saved Title")
+        #expect(failed.activity == .failed)
+
+        let failedGroup = PCodeProjectGroup(path: "/tmp/proj", openPanes: [], hostedSessions: [failed], recentSessions: [])
+        #expect(failedGroup.activity == .failed)
+        #expect(failedGroup.hasUnseen([]))
+
+        let idleHost = PCodeHostStatus(
+            hostID: "h1", pid: 42, sessionID: "s1", state: "idle",
+            title: "Idle", outcome: "done", turns: 1, unseen: false, updated: 102)
+        let idleGroup = PCodeProjectGroup(
+            path: "/tmp/proj", openPanes: [],
+            hostedSessions: [PCodeHostedSession(info: info, host: idleHost)],
+            recentSessions: [])
+        #expect(idleGroup.activity == .idle)
+    }
 }

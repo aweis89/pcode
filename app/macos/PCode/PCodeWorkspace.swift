@@ -471,15 +471,20 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         return stateRoot.appendingPathComponent("pcode/sessions")
     }
 
-    /// Saved sessions with at least one turn, newest first.
-    static func load(limit: Int = 200) -> [PCodeSessionInfo] {
+    /// Saved sessions with at least one turn (or held by a live host), newest first.
+    static func load(
+        root: URL = root,
+        limit: Int = 200,
+        hosted: Set<String> = hosted()
+    ) -> [PCodeSessionInfo] {
         let fm = FileManager.default
         guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
         let decoder = JSONDecoder()
         let all = dirs.compactMap { dir -> PCodeSessionInfo? in
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("session.json")),
                   let info = try? decoder.decode(PCodeSessionInfo.self, from: data),
-                  info.id == dir.lastPathComponent, info.turns > 0
+                  info.id == dir.lastPathComponent,
+                  info.turns > 0 || hosted.contains(info.id)
             else { return nil }
             return info
         }
@@ -662,11 +667,42 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     func setShell(_ view: Ghostty.SurfaceView?) { shell = view }
 }
 
-/// One folder group in the sidebar: open panes first, then recent saved sessions.
+/// A detached session currently held by a live `pcode.host` process.
+struct PCodeHostedSession: Identifiable, Equatable {
+    let info: PCodeSessionInfo
+    let host: PCodeHostStatus
+
+    var id: String { info.id }
+
+    var title: String {
+        PCodeWorkspace.displayTitle(paneTitle: host.title, savedLabel: info.label)
+    }
+
+    var activity: PCodeSessionPane.Activity {
+        if host.isWorking { return .running }
+        if host.outcome == "failed" { return .failed }
+        return .idle
+    }
+}
+
+/// One folder group in the sidebar: open panes first, then detached live hosts, then recent saved sessions.
 struct PCodeProjectGroup: Identifiable {
     let path: String
     let openPanes: [PCodeSessionPane]
+    let hostedSessions: [PCodeHostedSession]
     let recentSessions: [PCodeSessionInfo]
+
+    init(
+        path: String,
+        openPanes: [PCodeSessionPane],
+        hostedSessions: [PCodeHostedSession] = [],
+        recentSessions: [PCodeSessionInfo]
+    ) {
+        self.path = path
+        self.openPanes = openPanes
+        self.hostedSessions = hostedSessions
+        self.recentSessions = recentSessions
+    }
 
     var id: String { path }
 
@@ -678,17 +714,21 @@ struct PCodeProjectGroup: Identifiable {
 
     var abbreviatedPath: String { PCodeWorkspace.abbreviatePath(path) }
 
-    /// Aggregate activity across open panes so collapsed folders still surface live state.
+    /// Aggregate activity across open panes and detached live hosts so collapsed folders still surface live state.
     var activity: PCodeSessionPane.Activity? {
-        if openPanes.contains(where: { $0.activity == .running }) { return .running }
-        if openPanes.contains(where: { $0.activity == .failed }) { return .failed }
-        if !openPanes.isEmpty { return .idle }
+        if openPanes.contains(where: { $0.activity == .running })
+            || hostedSessions.contains(where: { $0.activity == .running }) { return .running }
+        if openPanes.contains(where: { $0.activity == .failed })
+            || hostedSessions.contains(where: { $0.activity == .failed }) { return .failed }
+        if !openPanes.isEmpty || !hostedSessions.isEmpty { return .idle }
         return nil
     }
 
-    /// Whether any session in the folder, open or saved, has an unseen response.
+    /// Whether any session in the folder, open, hosted, or saved, has an unseen response.
     func hasUnseen(_ unseenIDs: Set<String>) -> Bool {
-        openPanes.contains(where: \.unseen) || recentSessions.contains { unseenIDs.contains($0.id) }
+        openPanes.contains(where: \.unseen)
+            || hostedSessions.contains { $0.host.unseen || unseenIDs.contains($0.id) }
+            || recentSessions.contains { unseenIDs.contains($0.id) }
     }
 }
 
@@ -714,7 +754,10 @@ final class PCodeWorkspace: ObservableObject {
             historyByID = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         }
     }
+    /// Live background hosts keyed by session ID, so detached running sessions appear live in the sidebar.
+    @Published private(set) var hostStatuses: [String: PCodeHostStatus] = PCodeHostWatcher.shared.statuses
     private var historyByID: [String: PCodeSessionInfo] = [:]
+    private var hostWatcherSubscription: AnyCancellable?
 
     let ghostty: Ghostty.App
     let peek = PCodePeekController()
@@ -799,6 +842,17 @@ final class PCodeWorkspace: ObservableObject {
             if pane.id == self.selected { self.saveSelected() }
             self.reloadHistory()
         })
+        hostWatcherSubscription = PCodeHostWatcher.shared.$statuses
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] statuses in
+                guard let self else { return }
+                self.hostStatuses = statuses
+                let openIDs = Set(self.panes.compactMap(\.sessionID))
+                let hasUnknownHost = statuses.keys.contains { !openIDs.contains($0) && self.historyByID[$0] == nil }
+                if hasUnknownHost {
+                    self.reloadHistory()
+                }
+            }
     }
 
     deinit {
@@ -890,15 +944,21 @@ final class PCodeWorkspace: ObservableObject {
         let generation = historyGeneration
         let unseen = unseenIDs
         DispatchQueue.global(qos: .userInitiated).async {
-            let all = PCodeSessionInfo.load(limit: .max)
+            let hosted = PCodeSessionInfo.hosted()
+            let all = PCodeSessionInfo.load(limit: .max, hosted: hosted)
             // Sessions deleted outside the app (no directory left at all).
             let gone = unseen.filter {
                 !FileManager.default.fileExists(atPath: PCodeSessionInfo.root.appendingPathComponent($0).path)
             }
+            var trimmed = Array(all.prefix(200))
+            let trimmedIDs = Set(trimmed.map(\.id))
+            for info in all.dropFirst(200) where hosted.contains(info.id) && !trimmedIDs.contains(info.id) {
+                trimmed.append(info)
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, generation == self.historyGeneration else { return }
                 if !gone.isEmpty { self.unseenIDs.subtract(gone) }
-                self.history = Array(all.prefix(200))
+                self.history = trimmed
                 done?(all)
             }
         }
@@ -1194,10 +1254,16 @@ final class PCodeWorkspace: ObservableObject {
         for path in pinnedFolders where !hiddenFolders.contains(path) {
             register(path)
         }
+        var hostedByProject: [String: [PCodeHostedSession]] = [:]
         var recentByProject: [String: [PCodeSessionInfo]] = [:]
         for info in history where !openIDs.contains(info.id) {
             let project = info.normalizedProjectPath
-            guard !hiddenFolders.contains(project) || openByProject[project] != nil else { continue }
+            if let host = hostStatuses[info.id] {
+                register(project)
+                hostedByProject[project, default: []].append(PCodeHostedSession(info: info, host: host))
+                continue
+            }
+            guard !hiddenFolders.contains(project) || openByProject[project] != nil || hostedByProject[project] != nil else { continue }
             register(project)
             recentByProject[project, default: []].append(info)
         }
@@ -1205,6 +1271,7 @@ final class PCodeWorkspace: ObservableObject {
             PCodeProjectGroup(
                 path: path,
                 openPanes: openByProject[path] ?? [],
+                hostedSessions: hostedByProject[path] ?? [],
                 recentSessions: recentByProject[path] ?? [])
         }
     }
@@ -1223,7 +1290,7 @@ final class PCodeWorkspace: ObservableObject {
                 path: group.path,
                 name: group.name,
                 abbreviatedPath: group.abbreviatedPath,
-                openCount: group.openPanes.count,
+                openCount: group.openPanes.count + group.hostedSessions.count,
                 recentCount: group.recentSessions.count,
                 isCurrent: isCurrent,
                 isPinned: pinnedSet.contains(group.path),
@@ -2243,6 +2310,21 @@ struct PCodeWorkspaceView: View {
                         .tag(PCodeSidebarItem.pane(pane.id))
                         .contextMenu { openMenu(pane) }
                 }
+                ForEach(group.hostedSessions) { hosted in
+                    PCodeSessionRow(
+                        title: hosted.title,
+                        subtitle: hosted.info.worktreeName ?? PCodeWorkspace.relativeTime(hosted.info.updatedDate),
+                        activity: hosted.activity,
+                        unseen: hosted.host.unseen || workspace.unseenIDs.contains(hosted.id),
+                        onHoverChange: { hovering in
+                            workspace.peek.rowHoverChanged(workspace.peekTarget(for: hosted.info), hovering: hovering)
+                        }
+                    ) {
+                        recentMenu(hosted.info)
+                    }
+                    .tag(PCodeSidebarItem.saved(hosted.id))
+                    .contextMenu { recentMenu(hosted.info) }
+                }
                 let expanded = workspace.expandedRecentFolders.contains(group.path)
                 let visibleRecent = expanded
                     ? group.recentSessions
@@ -2274,7 +2356,7 @@ struct PCodeWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                if group.openPanes.isEmpty && group.recentSessions.isEmpty {
+                if group.openPanes.isEmpty && group.hostedSessions.isEmpty && group.recentSessions.isEmpty {
                     Button {
                         workspace.newSession(directory: group.path)
                     } label: {
@@ -2340,7 +2422,7 @@ struct PCodeWorkspaceView: View {
         Divider()
         Button("Reveal in Finder") { PCodeWorkspace.reveal(group.path) }
         Button("Copy Path") { PCodeWorkspace.copy(group.path) }
-        if group.openPanes.isEmpty {
+        if group.openPanes.isEmpty && group.hostedSessions.isEmpty {
             Divider()
             Button("Remove from Sidebar") { workspace.removeFolder(group.path) }
         }
