@@ -73,38 +73,42 @@ struct PCodeStartupOverlay: View {
 
     /// Drawn like `PCodeDockCard` (same margins, corners and shadow), so the swap is a cross-fade.
     private func compactCard(height: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            HStack(spacing: 12) {
-                PCodeGyroSpinner(
-                    primary: primaryColor,
-                    secondary: secondaryColor,
-                    isLight: colorScheme == .light
-                )
-                .frame(width: 26, height: 26)
-                if let caption {
-                    Text(caption)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                        .foregroundStyle(ghostty.config.foregroundColor.opacity(0.48))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+        GeometryReader { geometry in
+            let horizontal = PCodeDock.horizontalLayout(in: geometry.size.width)
+            ZStack(alignment: .bottomTrailing) {
+                Color.clear
+                HStack(spacing: 12) {
+                    PCodeGyroSpinner(
+                        primary: primaryColor,
+                        secondary: secondaryColor,
+                        isLight: colorScheme == .light
+                    )
+                    .frame(width: 26, height: 26)
+                    if let caption {
+                        Text(caption)
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .foregroundStyle(ghostty.config.foregroundColor.opacity(0.48))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
+                .opacity(appeared ? 1 : 0)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(ghostty.config.backgroundColor)
+                        .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: -2)
+                )
+                .padding(.horizontal, PCodeDock.bottomMargin)
+                .padding(.top, PCodeDock.topMargin)
+                .padding(.bottom, PCodeDock.bottomMargin)
+                .frame(width: horizontal.outerWidth)
+                .padding(.trailing, horizontal.trailingInset)
             }
-            .padding(.horizontal, 14)
-            .frame(maxWidth: PCodeDock.maxCardWidth)
-            .frame(height: height)
-            .opacity(appeared ? 1 : 0)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(ghostty.config.backgroundColor)
-                    .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: -2)
-            )
-            .padding(.horizontal, PCodeDock.bottomMargin)
-            .padding(.top, PCodeDock.topMargin)
-            .padding(.bottom, PCodeDock.bottomMargin)
         }
-        .frame(maxWidth: .infinity)
     }
 
     private var fullCover: some View {

@@ -90,6 +90,8 @@ final class PCodeDock: NSObject, ObservableObject {
     /// Horizontal placement of `PCodeDockCard`'s outer container (including `bottomMargin`
     /// on each side) inside a pane of `paneWidth`.
     struct HorizontalLayout: Equatable {
+        /// Width of the pane (or `/btw` drawer) slot the dock's click backstop spans.
+        let slotWidth: CGFloat
         /// Leading edge of the card's outer container in pane coordinates.
         let outerMinX: CGFloat
         /// Width of the card's outer container (visible card width + `2 * bottomMargin`).
@@ -127,6 +129,7 @@ final class PCodeDock: NSObject, ObservableObject {
         let outerMinX = slotMinX + floor((slotWidth - outerWidth) * 0.5)
         let trailingInset = max(0, paneWidth - outerMinX - outerWidth)
         return HorizontalLayout(
+            slotWidth: slotWidth,
             outerMinX: outerMinX,
             outerWidth: outerWidth,
             trailingInset: trailingInset
@@ -293,9 +296,9 @@ struct PCodeDockedSurface: View {
                         fallbackCell: paneCell,
                         inDrawer: drawerOpen,
                         paneHeight: geometry.size.height,
+                        horizontal: cardHorizontal,
                         isSplit: isSplit)
-                        .frame(width: cardHorizontal.outerWidth)
-                        .padding(.trailing, cardHorizontal.trailingInset)
+                        .frame(width: cardHorizontal.slotWidth)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
                     sessionID = surfaceView.pcodeSession
@@ -385,6 +388,7 @@ private struct PCodeDockCard: View {
     var fallbackCell: CGFloat
     var inDrawer: Bool
     var paneHeight: CGFloat
+    var horizontal: PCodeDock.HorizontalLayout
     var isSplit: Bool
 
     private static let cornerRadius: CGFloat = 12
@@ -392,11 +396,12 @@ private struct PCodeDockCard: View {
     var body: some View {
         let cell = docked.cellSize.height > 0 ? docked.cellSize.height : fallbackCell
         let surfaceRows = docked.surfaceSize.map { Int($0.rows) }
-        ZStack(alignment: .bottom) {
-            // The card's whole footprint, margins included, takes the clicks
-            // the card itself doesn't: the pane rows under it are hidden, and
-            // a click there would start a selection in them. Leave the leading
-            // 4pt clear when inside the drawer so the drawer's 8pt drag handle
+        ZStack(alignment: .bottomTrailing) {
+            // The dock's whole bottom band across the slot (pane or /btw drawer),
+            // gutters included, takes the clicks the card itself doesn't: the
+            // transcript rows under it are faded or covered by the drawer, and a
+            // drag there would start a selection in them. Leave the leading 4pt
+            // clear at the drawer's left edge so the drawer's 8pt drag handle
             // works alongside the card.
             Color.clear
                 .frame(height: PCodeDock.footprint(rows: dock.rows, cell: cell, surfaceRows: surfaceRows))
@@ -405,6 +410,8 @@ private struct PCodeDockCard: View {
                 .padding(.leading, inDrawer ? 4 : 0)
                 .allowsHitTesting(dock.ready)
             card(cell: cell, surfaceRows: surfaceRows)
+                .frame(width: horizontal.outerWidth)
+                .padding(.trailing, horizontal.trailingInset)
                 // Not removed: the view tree stays put so the terminal keeps its grid and focus.
                 .opacity(dock.ready || !dock.bootCovered ? 1 : 0)
                 .allowsHitTesting(dock.ready || !dock.bootCovered)
