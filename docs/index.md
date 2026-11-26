@@ -248,8 +248,7 @@ The agent underneath is a [Pydantic AI](https://ai.pydantic.dev/)
 [Harness](https://pydantic.dev/docs/ai/harness/) coder: the same filesystem,
 shell, sub-agent, planning, compaction, MCP and browser capabilities you'd use
 in your own agent. pcode adds the terminal and the parts a library leaves to
-you: hybrid [`code_mode`](tools.md#code-mode) to batch read-only lookups in one
-turn, MCP servers with OAuth sign-in and deferred tool search, saved sessions
+you: MCP servers with OAuth sign-in and deferred tool search, saved sessions
 you can search, fork and ask about, background jobs, a worktree per session,
 observable sub-agents, and subscription sign-in. Any model Pydantic AI supports
 works with `--model`, and an extension is a Pydantic AI capability, so there's

@@ -126,7 +126,6 @@ def test_defaults_and_path_do_not_create_files():
         "btw_auto_open": "on",
         "popup_view": "auto",
         "job_wake": "on",
-        "code_mode": "off",
         "web_search": "auto",
         "web_fetch": "auto",
         "tool_output_mode": "spill",

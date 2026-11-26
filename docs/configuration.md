@@ -206,7 +206,7 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | `show_thinking` | `scrollback` | `off`, `activity-panel`, `scrollback` (where the model's readable reasoning shows; `/show-thinking`. `status-line` is still read as `activity-panel`) |
 | `thinking_max_lines` | `10` | Max rows of thinking in the activity panel in `activity-panel` mode, or a share of the screen (`0.2`). A row count is also capped at a quarter of the pane, so a short pane gets fewer. Applies on next launch |
 | `show_edits` | `on` | `on`, `off` (show a diff of each file edit; Ctrl+Z or `/show-edits`) |
-| `live_edits` | `off` | `on`, `off` (preview an edit or `run_code` snippet at the bottom while the model writes it) |
+| `live_edits` | `off` | `on`, `off` (preview an edit or workflow script at the bottom while the model writes it) |
 | `diff_renderer` | `delta` | `delta`, `rich` (draw diffs in scrollback and `/diffs` with [delta](https://dandavison.github.io/delta/) when it's installed, falling back to Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
 | `delta_args` | empty | delta's arguments, quoted as in a shell, such as `--line-numbers`; the only delta configuration pcode reads (git config is ignored), and they override pcode's own choices |
 | `diff_dedent` | `on` | `on`, `off` (strip the indentation every line of a diff hunk shares, so an edit deep in a nested block starts at the left edge; with delta or Rich; see [diffs with delta](transcript.md#diffs-with-delta)) |
@@ -250,7 +250,6 @@ Every key works with `pcode config set KEY VALUE` and `/config set KEY VALUE`.
 | --- | --- | --- |
 | `web_search` | `auto` | `auto`, `local`, `off` (provider-native web search when available, pcode's own, or none; see [web search](tools.md#web-search)) |
 | `web_fetch` | `auto` | `auto`, `native`, `local` (provider-native page fetching where it returns the page text, so not on `claude:`; any provider-native fetch, including Claude Code's summaries; or always pcode's own `get_page`, which returns the page text verbatim) |
-| `code_mode` | `on` | `on`, `off` (batch read-only tools through a sandboxed `run_code`) |
 | `job_wake` | `on` | `on`, `off` (start a turn when a job the model backgrounded finishes while idle; see [shell jobs](tools.md#shell-jobs)) |
 | `tool_retries` | `3` | Whole number, corrections the model gets per turn when a tool call has invalid arguments |
 | `strict_tools` | `on` | `on`, `off` (constrain `edit_file` arguments with Anthropic strict tool use) |
