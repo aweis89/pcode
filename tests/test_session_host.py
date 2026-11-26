@@ -3472,3 +3472,54 @@ def test_move_into_follows_the_workspace_and_survives_a_missing_one(monkeypatch,
     assert os.environ["PWD"] == str(workspace)
     move_into(tmp_path / "gone")  # Not there: stays put rather than failing.
     assert Path.cwd() == workspace.resolve()
+
+
+def test_connect_or_respawn_host_spawns_fresh_host_when_resumed_host_vanished(
+    monkeypatch, tmp_path
+):
+    """If `--continue` routed to a host that vanished before attach, spawn a fresh one."""
+    import tempfile
+    from types import SimpleNamespace
+
+    from pcode.app import PreviewApp
+    from pcode.remote import HostError, HostLaunch
+
+    spawned: list[dict] = []
+    fresh_controller = SimpleNamespace(id="newhost1")
+
+    with tempfile.TemporaryDirectory(prefix="pc-", dir="/tmp") as raw_dir:
+        host_dir = Path(raw_dir)
+
+        def fake_spawn_host(**kwargs):
+            spawned.append(kwargs)
+            return "newhost1", SimpleNamespace(poll=lambda: None), host_dir / "newhost1.log"
+
+        async def fake_wait_for_host(identity, view, activity, process=None, log=None, **kwargs):
+            if identity == "deadhost":
+                raise HostError("Session host deadhost is no longer running.")
+            assert identity == "newhost1"
+            return fresh_controller, {"id": "newhost1"}
+
+        monkeypatch.setattr("pcode.remote.spawn_host", fake_spawn_host)
+        monkeypatch.setattr("pcode.remote.wait_for_host", fake_wait_for_host)
+        monkeypatch.setattr("pcode.host_protocol.list_hosts", lambda directory=None: [])
+        monkeypatch.setenv("PCODE_HOST_ID", "deadbeef")
+
+        app = SimpleNamespace(
+            model="function:script",
+            workspace=tmp_path,
+            session_dir=tmp_path / "sessions",
+            activity=SimpleNamespace(),
+        )
+        launch = HostLaunch("deadhost", process=None, directory=host_dir, resume="sess-123")
+        controller, welcome = asyncio.run(PreviewApp._connect_or_respawn_host(app, launch))
+        assert controller is fresh_controller
+        assert welcome == {"id": "newhost1"}
+        assert len(spawned) == 1
+        assert spawned[0]["resume"] == "sess-123"
+        assert spawned[0]["identity"] == "deadbeef"
+
+        # Explicit --attach (no resume) does not silently spawn a new host.
+        attach_only = HostLaunch("deadhost", process=None, directory=host_dir, resume=None)
+        with pytest.raises(HostError, match="no longer running"):
+            asyncio.run(PreviewApp._connect_or_respawn_host(app, attach_only))

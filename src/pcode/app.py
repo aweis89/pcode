@@ -2414,6 +2414,33 @@ class PreviewApp:
             await stop_entry(entry)
         self.transcript.flash(f"Stopped session {entry.id} ({entry.label()[:60]}).")
 
+    async def _connect_or_respawn_host(self, launch):
+        """Connect to `launch`, spawning a fresh host if a resumed host just vanished."""
+        from pcode.host_protocol import list_hosts
+        from pcode.remote import HostError, HostLaunch, app_host_id, spawn_host
+
+        try:
+            return await launch.connect(self, self.activity)
+        except HostError:
+            # `--continue` routed to an existing host that stopped before we could
+            # attach (idle-stopped, or killed when an older app quit): start a new one.
+            if launch.process is not None or not launch.resume:
+                raise
+            gone = all(other.id != launch.id for other in list_hosts(launch.directory))
+            if not gone:
+                raise
+            identity, process, log = await asyncio.to_thread(
+                spawn_host,
+                identity=app_host_id(launch.directory),
+                model=self.model,
+                workspace=self.workspace,
+                resume=launch.resume,
+                session_dir=self.session_dir,
+                directory=launch.directory,
+            )
+            fresh = HostLaunch(identity, process, log, directory=launch.directory)
+            return await fresh.connect(self, self.activity)
+
     async def attach_host(self, entry) -> None:
         from pcode.host_protocol import list_hosts
         from pcode.remote import HostError, HostLaunch
@@ -3351,7 +3378,7 @@ class PreviewApp:
             nonlocal early
             launch, self._host_launch = self._host_launch, None
             try:
-                controller, welcome = await launch.connect(self, self.activity)
+                controller, welcome = await self._connect_or_respawn_host(launch)
             except Exception as error:
                 self._startup_error = error
                 self._startup_pending = False
@@ -3366,7 +3393,7 @@ class PreviewApp:
                 early = None
                 session.app.invalidate()
                 return
-            note = f"Attached to session host {launch.id}"
+            note = f"Attached to session host {controller.id}"
             await self.adopt_controller(controller, welcome, note, preserve_welcome=fresh_launch)
             waiting, early = early or [], None
             for kind, text, detail in waiting:
@@ -4518,7 +4545,9 @@ def _run_hosted(args: argparse.Namespace) -> None:
 
     if args.attach is not None:
         entry = _pick_host(args.attach, args.workspace or Path.cwd())
-        launch, model, workspace = HostLaunch.running(entry), entry.model, Path(entry.workspace)
+        fallback_resume = entry.session_id if args.resume and entry.session_id else None
+        launch = HostLaunch.running(entry, resume=fallback_resume)
+        model, workspace = entry.model, Path(entry.workspace)
     else:
         from pcode.preferences import rejected_project_keys, set_project_root
         from pcode.project_trust import prompt_trust

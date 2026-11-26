@@ -2380,4 +2380,102 @@ struct PCodeTranscriptTests {
         #expect(doc.rawItems.count == 3)
         #expect(doc.items.map(\.kind) == [.toolGroup, .prose])
     }
+
+    @Test func hostRecoveryActionCapsRetriesAndGuardsConflicts() {
+        // Trust prompt / held error: keep waiting automatically, but manual Reopen still relaunches.
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: false, needsInput: true, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+        ) == .keepWaiting)
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: true, needsInput: true, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+        ) == .relaunched(attempt: 1, maxAttempts: 2))
+
+        // Live host still booting within grace: keep waiting; past grace: relaunch.
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: true, paneAge: 12, openElsewhere: false
+        ) == .keepWaiting)
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: true, paneAge: 35, openElsewhere: false
+        ) == .relaunched(attempt: 1, maxAttempts: 2))
+
+        // Open in another terminal without a host: never fork it.
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: true
+        ) == .failed("This session is open in another terminal."))
+
+        // Capped retries, then exhausted (nil -> caller attaches host log tail); manual resets.
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+        ) == .relaunched(attempt: 1, maxAttempts: 2))
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 1, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+        ) == .relaunched(attempt: 2, maxAttempts: 2))
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 2, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+        ) == nil)
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 2, isManual: true, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+        ) == .relaunched(attempt: 1, maxAttempts: 2))
+    }
+
+    @Test func hostLogTailSkipsServingBannerAndReturnsErrorTail() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pcode-log-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let benign = dir.appendingPathComponent("aaaa1111.log")
+        try "serving /tmp/aaaa1111.sock\n".write(to: benign, atomically: true, encoding: .utf8)
+        #expect(PCodeSessionInfo.hostLogTail(hostID: "aaaa1111", in: dir) == nil)
+
+        let crash = dir.appendingPathComponent("bbbb2222.log")
+        try "serving /tmp/bbbb2222.sock\nTraceback:\nValueError: missing key\n".write(
+            to: crash, atomically: true, encoding: .utf8)
+        #expect(PCodeSessionInfo.hostLogTail(hostID: "bbbb2222", in: dir) == "Traceback:\nValueError: missing key")
+        #expect(PCodeSessionInfo.hostLogTail(hostID: "missing0", in: dir) == nil)
+    }
+
+    @Test @MainActor func liveTranscriptControllerAutoRelaunchesThenShowsFailureAndManualReopen() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        var currentTime = Date(timeIntervalSinceReferenceDate: 1000)
+        var outcomes: [PCodeLiveTranscriptController.RelaunchOutcome] = [
+            .relaunched(attempt: 1, maxAttempts: 2),
+            .failed("ValueError: bad config"),
+            .relaunched(attempt: 1, maxAttempts: 2),
+        ]
+        var calls: [Bool] = []
+        let controller = PCodeLiveTranscriptController(
+            retryInterval: 0.01,
+            hostStartTimeout: 5,
+            hostStoppedTimeout: 3,
+            now: { currentTime },
+            resolveSocketPath: { _, _ in nil })
+        controller.onRequestRelaunch = { isManual in
+            calls.append(isManual)
+            return outcomes.removeFirst()
+        }
+
+        controller.attach(sessionID: "sess-retry-test", documentView: doc)
+        #expect(controller.connectionState == .starting)
+
+        // Advance past hostStartTimeout -> triggers automatic relaunch.
+        currentTime = currentTime.addingTimeInterval(6)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        #expect(calls == [false])
+        #expect(controller.connectionState == .relaunching(attempt: 1, maxAttempts: 2))
+        #expect(!controller.connectionState.showsAction)
+
+        // Advance past hostStartTimeout again -> retries exhausted, shows fallback card with Reopen.
+        currentTime = currentTime.addingTimeInterval(6)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        #expect(calls == [false, false])
+        #expect(controller.connectionState == .failedToStart("ValueError: bad config"))
+        #expect(controller.connectionState.showsAction)
+
+        // Manual Reopen button triggers manual relaunch.
+        controller.reopenHost()
+        #expect(calls == [false, false, true])
+        #expect(controller.connectionState == .relaunching(attempt: 1, maxAttempts: 2))
+        controller.detach()
+    }
 }

@@ -18,10 +18,31 @@ final class PCodeLiveTranscriptController: ObservableObject {
         case starting
         /// Connected to the session host's `observe_transcript` stream.
         case connected
+        /// Automatically relaunching a session host that didn't start or stopped unexpectedly.
+        case relaunching(attempt: Int, maxAttempts: Int)
         /// The session host stopped or disconnected; polling to reconnect (e.g. across `/restart`).
         case hostStopped(String)
+        /// The session host failed to start even after automatic retries; user can click Reopen.
+        case failedToStart(String)
         /// The session host reported a handshake or protocol error.
         case error(String)
+
+        var showsAction: Bool {
+            switch self {
+            case .failedToStart, .error: return true
+            case .starting, .connected, .relaunching, .hostStopped: return false
+            }
+        }
+    }
+
+    /// Result of asking the workspace to relaunch a pane's missing or dead host.
+    enum RelaunchOutcome: Equatable {
+        /// A fresh pane/host was launched; the current controller will be replaced or reconnect.
+        case relaunched(attempt: Int, maxAttempts: Int)
+        /// The host is still legitimately booting or waiting for user input; keep polling.
+        case keepWaiting
+        /// Automatic retries are exhausted or relaunch is unsafe (e.g. open in another terminal).
+        case failed(String)
     }
 
     @Published var paceMode: PCodeStreamingPaceMode = PCodeStreamingPaceMode.loadDefaultFromPreferences()
@@ -30,9 +51,20 @@ final class PCodeLiveTranscriptController: ObservableObject {
     /// Host connection lifecycle state for native startup, error and host-stopped cards.
     @Published private(set) var connectionState: ConnectionState = .starting
 
+    /// Asked when the host does not appear in time (or when the user clicks Reopen).
+    var onRequestRelaunch: ((_ isManual: Bool) -> RelaunchOutcome)?
+    /// Called once connected so the workspace can reset retry counters for this pane.
+    var onConnected: (() -> Void)?
+    /// Non-zero when this pane was just created by an automatic host relaunch.
+    var initialRelaunchAttempt: Int = 0
+    var maxRelaunchAttempts: Int = 2
+
     private let socketClient = PCodeHostSocketClient()
     private let resolveSocketPath: (String?, String?) -> String?
     private let retryInterval: TimeInterval
+    private let hostStartTimeout: TimeInterval
+    private let hostStoppedTimeout: TimeInterval
+    private let now: () -> Date
     private var reducer: PCodeTranscriptEventReducer?
     private weak var documentView: PCodeTranscriptDocumentView?
     private var attachedSessionID: String?
@@ -47,14 +79,22 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private var isConnectingSocket = false
     private var attachGeneration: UInt64 = 0
     private var hostRetryTimer: Timer?
+    private var waitStartedAt: Date?
+    private var waitingAfterStop = false
 
     init(
         retryInterval: TimeInterval = 0.5,
+        hostStartTimeout: TimeInterval = 10.0,
+        hostStoppedTimeout: TimeInterval = 6.0,
+        now: @escaping () -> Date = Date.init,
         resolveSocketPath: @escaping (String?, String?) -> String? = { sessionID, hostID in
             PCodeSessionInfo.hostSocketPath(forSessionID: sessionID, hostID: hostID)
         }
     ) {
         self.retryInterval = retryInterval
+        self.hostStartTimeout = hostStartTimeout
+        self.hostStoppedTimeout = hostStoppedTimeout
+        self.now = now
         self.resolveSocketPath = resolveSocketPath
     }
 
@@ -91,7 +131,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
         self.attachedHostID = normalizedHost
         documentView.paceMode = paceMode
         resetSessionState(sessionID: normalizedSession ?? "")
-        connectionState = .starting
+        connectionState = initialRelaunchAttempt > 0
+            ? .relaunching(attempt: initialRelaunchAttempt, maxAttempts: maxRelaunchAttempts)
+            : .starting
 
         let newReducer = PCodeTranscriptEventReducer(documentView: documentView)
         self.reducer = newReducer
@@ -109,7 +151,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         if let sockPath = resolveSocketPath(normalizedSession, normalizedHost) {
             connectToHost(socketPath: sockPath, generation: gen, documentView: documentView, reducer: newReducer)
         } else {
-            startHostReconnectTimer(generation: gen, documentView: documentView, reducer: newReducer)
+            startHostReconnectTimer(generation: gen, documentView: documentView, reducer: newReducer, afterStop: false)
         }
     }
 
@@ -117,6 +159,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
         attachGeneration &+= 1
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
+        waitStartedAt = nil
+        waitingAfterStop = false
         socketClient.close()
         connectedSocketPath = nil
         isConnectingSocket = false
@@ -127,6 +171,11 @@ final class PCodeLiveTranscriptController: ObservableObject {
         attachedSessionID = nil
         attachedHostID = nil
         resetSessionState(sessionID: "")
+    }
+
+    /// Manually reopen/relaunch the session host from the error card's Reopen button.
+    func reopenHost() {
+        applyRelaunchOutcome(triggerRelaunch(isManual: true), isManual: true)
     }
 
     /// Forget what a host reported, keeping only the attached session id.
@@ -159,6 +208,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
     ) {
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
+        waitStartedAt = nil
+        waitingAfterStop = false
         connectedSocketPath = socketPath
         isConnectingSocket = true
         socketClient.connect(
@@ -166,7 +217,11 @@ final class PCodeLiveTranscriptController: ObservableObject {
             onReady: { [weak self, weak documentView] welcome in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
                 self.isConnectingSocket = false
+                self.waitStartedAt = nil
+                self.waitingAfterStop = false
+                self.initialRelaunchAttempt = 0
                 self.connectionState = .connected
+                self.onConnected?()
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
                 self.hostHistoryDrawn = true
@@ -212,7 +267,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.resetSessionState(sessionID: self.attachedSessionID ?? "")
                 let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.connectionState = .error(text.isEmpty ? "Could not connect to the session host." : text)
-                self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer)
+                self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer, afterStop: true)
             },
             onClosed: { [weak self, weak documentView] in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
@@ -220,7 +275,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.connectedSocketPath = nil
                 self.resetSessionState(sessionID: self.attachedSessionID ?? "")
                 self.connectionState = .hostStopped("The session host stopped.")
-                self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer)
+                self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer, afterStop: true)
             })
     }
 
@@ -261,9 +316,16 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private func startHostReconnectTimer(
         generation: UInt64,
         documentView: PCodeTranscriptDocumentView,
-        reducer: PCodeTranscriptEventReducer
+        reducer: PCodeTranscriptEventReducer,
+        afterStop: Bool
     ) {
         hostRetryTimer?.invalidate()
+        waitingAfterStop = afterStop
+        if case .failedToStart = connectionState {
+            waitStartedAt = nil
+        } else {
+            waitStartedAt = now()
+        }
         let timer = Timer(timeInterval: retryInterval, repeats: true) { [weak self, weak documentView] t in
             guard let self, let documentView, self.attachGeneration == generation else {
                 t.invalidate()
@@ -272,11 +334,45 @@ final class PCodeLiveTranscriptController: ObservableObject {
             if let sockPath = self.resolveSocketPath(self.attachedSessionID, self.attachedHostID) {
                 t.invalidate()
                 self.hostRetryTimer = nil
+                self.waitStartedAt = nil
                 self.connectToHost(socketPath: sockPath, generation: generation, documentView: documentView, reducer: reducer)
+                return
+            }
+            if let startedAt = self.waitStartedAt {
+                let timeout = self.waitingAfterStop ? self.hostStoppedTimeout : self.hostStartTimeout
+                if self.now().timeIntervalSince(startedAt) >= timeout {
+                    let outcome = self.triggerRelaunch(isManual: false)
+                    self.applyRelaunchOutcome(outcome, isManual: false)
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         hostRetryTimer = timer
+    }
+
+    private func triggerRelaunch(isManual: Bool) -> RelaunchOutcome {
+        if let onRequestRelaunch {
+            return onRequestRelaunch(isManual)
+        }
+        return .failed("The session host didn't start in time.")
+    }
+
+    private func applyRelaunchOutcome(_ outcome: RelaunchOutcome, isManual: Bool) {
+        switch outcome {
+        case .relaunched(let attempt, let maxAttempts):
+            waitingAfterStop = false
+            waitStartedAt = now()
+            connectionState = .relaunching(attempt: attempt, maxAttempts: maxAttempts)
+        case .keepWaiting:
+            waitStartedAt = now()
+            if isManual {
+                waitingAfterStop = false
+                connectionState = .starting
+            }
+        case .failed(let detail):
+            waitStartedAt = nil
+            connectionState = .failedToStart(detail)
+        }
     }
 
     private static func isSafeOwnedDirectory(_ path: String) -> Bool {
@@ -453,6 +549,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         // So a live peek of this pane scrolls this transcript, not another pane's.
         composerSurface?.pcodeTranscriptScrollView = scrollView
         wireFocusHandlers(on: scrollView)
+        wireWorkspaceRecovery()
         context.coordinator.lastTheme = theme
         context.coordinator.lastTypographySnapshot = typography.snapshot
         context.coordinator.lastTypographyObjectID = ObjectIdentifier(typography)
@@ -475,6 +572,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
 
         nsView.bottomContentInset = bottomContentInset
         wireFocusHandlers(on: nsView)
+        wireWorkspaceRecovery()
 
         if coord.lastTypographyObjectID != typoID {
             coord.lastTypographyObjectID = typoID
@@ -495,6 +593,22 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
                 guard let controller, let doc else { return }
                 controller.attach(sessionID: sid, hostID: hid, documentView: doc)
             }
+        }
+    }
+
+    private func wireWorkspaceRecovery() {
+        weak var composer = composerSurface
+        controller.initialRelaunchAttempt = composer?.pcodeHostRelaunchAttempt ?? 0
+        controller.maxRelaunchAttempts = PCodeWorkspace.maxHostRelaunchAttempts
+        controller.onRequestRelaunch = { isManual in
+            guard let composer, let workspace = PCodeWorkspaceController.existing?.workspace else {
+                return .failed("The session host didn't start in time.")
+            }
+            return workspace.handleHostUnavailable(for: composer, isManual: isManual)
+        }
+        controller.onConnected = {
+            guard let composer else { return }
+            PCodeWorkspaceController.existing?.workspace.noteHostConnected(for: composer)
         }
     }
 
@@ -577,10 +691,12 @@ struct PCodeMainWindowTranscriptView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if controller.connectionState != .connected && !(booting && controller.connectionState == .starting) {
-                PCodeHostConnectionCard(state: controller.connectionState)
+                PCodeHostConnectionCard(
+                    state: controller.connectionState,
+                    onReopen: { controller.reopenHost() })
                     .padding(.horizontal, 18)
                     .padding(.bottom, max(12, bottomContentInset + 10))
-                    .allowsHitTesting(false)
+                    .allowsHitTesting(controller.connectionState.showsAction)
                     .transition(.opacity)
             }
         }
@@ -591,10 +707,11 @@ struct PCodeMainWindowTranscriptView: View {
 }
 
 /// Native status card shown in the transcript pane while a session host is starting,
-/// has stopped and is waiting to reconnect (e.g. across `/restart`), or reported an error.
+/// relaunching, has stopped and is waiting to reconnect (e.g. across `/restart`), or failed.
 struct PCodeHostConnectionCard: View {
     @EnvironmentObject var ghostty: Ghostty.App
     let state: PCodeLiveTranscriptController.ConnectionState
+    var onReopen: (() -> Void)? = nil
 
     var body: some View {
         switch state {
@@ -605,23 +722,46 @@ struct PCodeHostConnectionCard: View {
                 title: "Starting session host…",
                 detail: nil,
                 isError: false,
-                showsSpinner: true)
+                showsSpinner: true,
+                showsReopen: false)
+        case .relaunching(let attempt, _):
+            card(
+                title: "Restarting session host…",
+                detail: attempt > 1 ? "Attempt \(attempt)" : nil,
+                isError: false,
+                showsSpinner: true,
+                showsReopen: false)
         case .hostStopped(let message):
             card(
                 title: message,
                 detail: "Waiting to reconnect…",
                 isError: false,
-                showsSpinner: true)
+                showsSpinner: true,
+                showsReopen: false)
+        case .failedToStart(let message):
+            card(
+                title: "Session host didn't start",
+                detail: message,
+                isError: true,
+                showsSpinner: false,
+                showsReopen: true)
         case .error(let message):
             card(
                 title: "Session host error",
                 detail: message,
                 isError: true,
-                showsSpinner: false)
+                showsSpinner: false,
+                showsReopen: true)
         }
     }
 
-    private func card(title: String, detail: String?, isError: Bool, showsSpinner: Bool) -> some View {
+    private func card(
+        title: String,
+        detail: String?,
+        isError: Bool,
+        showsSpinner: Bool,
+        showsReopen: Bool
+    ) -> some View {
         HStack(spacing: 10) {
             if showsSpinner {
                 ProgressView()
@@ -640,8 +780,13 @@ struct PCodeHostConnectionCard: View {
                     Text(detail)
                         .font(.system(size: 11))
                         .foregroundStyle(ghostty.config.foregroundColor.opacity(0.58))
-                        .lineLimit(2)
+                        .lineLimit(4)
                 }
+            }
+            if showsReopen, let onReopen {
+                Button("Reopen", action: onReopen)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
         }
         .padding(.horizontal, 14)

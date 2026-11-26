@@ -472,6 +472,59 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         return nil
     }
 
+    /// Last meaningful lines of a host's log file (`hosts/<hostID>.log`), for the
+    /// startup failure card when a host crashes before opening its socket.
+    static func hostLogTail(
+        hostID: String?,
+        in directory: URL = hostRoot,
+        maxLines: Int = 4,
+        maxChars: Int = 240
+    ) -> String? {
+        guard let hostID, PCode.valid(hostID, length: 1...64) else { return nil }
+        let path = directory.appendingPathComponent("\(hostID).log").path
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { Darwin.close(fd) }
+
+        var st = stat()
+        guard Darwin.fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == Darwin.getuid(),
+              st.st_size > 0
+        else { return nil }
+
+        let window = min(Int(st.st_size), 8192)
+        if Int(st.st_size) > window {
+            _ = Darwin.lseek(fd, off_t(Int(st.st_size) - window), SEEK_SET)
+        }
+        var data = Data(count: window)
+        var total = 0
+        data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            while total < window {
+                let n = Darwin.read(fd, base.advanced(by: total), window - total)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    break
+                }
+                if n == 0 { break }
+                total += n
+            }
+        }
+        data.count = total
+        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            return nil
+        }
+        let lines = text
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !($0.hasPrefix("serving ") && $0.hasSuffix(".sock")) }
+        guard !lines.isEmpty else { return nil }
+        let joined = lines.suffix(maxLines).joined(separator: "\n")
+        guard joined.count > maxChars else { return joined }
+        return "…" + String(joined.suffix(maxChars - 1))
+    }
+
     /// Of `ids`, sessions a Restart Pcode moved, those ready to reopen: held
     /// by a host, or unlocked on two checks half a second apart (not in the
     /// gap between the old pcode letting go and its host taking over).
@@ -806,6 +859,8 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// The id the app asked pcode to start this pane's host with (`PCODE_HOST_ID`),
     /// so closing the pane stops that host even before it has reported itself.
     var launchHostID: String?
+    /// Automatic host relaunch attempts already made for this pane without a successful connect.
+    var hostRelaunchAttempts = 0
     /// True once pcode has painted its ready UI (dock ready, or fallback timeout).
     @Published private(set) var isReady = false
     @Published private(set) var shell: Ghostty.SurfaceView?
@@ -2639,6 +2694,107 @@ final class PCodeWorkspace: ObservableObject {
         schedulePresize()
         // After SwiftUI has put the pane's views in the window.
         DispatchQueue.main.async { Ghostty.moveFocus(to: pane.keyboardSurface) }
+    }
+
+    /// Maximum automatic host relaunches before showing the fallback error card with Reopen.
+    static let maxHostRelaunchAttempts = 2
+    /// How long a pane with a live host entry is allowed to boot before being treated as stuck.
+    private static let bootingHostGrace: TimeInterval = 30
+
+    /// Reset automatic relaunch state once a pane's transcript connects to its host.
+    func noteHostConnected(for surface: Ghostty.SurfaceView) {
+        surface.pcodeHostRelaunchAttempt = 0
+        if let pane = panes.first(where: { $0.surface === surface }) {
+            pane.hostRelaunchAttempts = 0
+        }
+    }
+
+    /// Decide whether a pane whose host never appeared (or stopped) should relaunch in place,
+    /// keep waiting, or show the fallback failure card. Pure decision helper for unit tests.
+    static func hostRecoveryAction(
+        attempts: Int,
+        maxAttempts: Int = maxHostRelaunchAttempts,
+        isManual: Bool,
+        needsInput: Bool,
+        hostEntryAlive: Bool,
+        paneAge: TimeInterval,
+        openElsewhere: Bool
+    ) -> PCodeLiveTranscriptController.RelaunchOutcome? {
+        if !isManual {
+            if needsInput { return .keepWaiting }
+            if hostEntryAlive && paneAge < bootingHostGrace { return .keepWaiting }
+        }
+        if openElsewhere {
+            return .failed("This session is open in another terminal.")
+        }
+        let effectiveAttempts = isManual ? 0 : attempts
+        if effectiveAttempts >= maxAttempts {
+            return nil // Caller attaches log tail and returns `.failed(...)`.
+        }
+        return .relaunched(attempt: effectiveAttempts + 1, maxAttempts: maxAttempts)
+    }
+
+    /// Relaunch a session pane's host in place when its host failed to start or died unexpectedly.
+    func handleHostUnavailable(
+        for surface: Ghostty.SurfaceView,
+        isManual: Bool
+    ) -> PCodeLiveTranscriptController.RelaunchOutcome {
+        guard let index = panes.firstIndex(where: { $0.surface === surface }) else {
+            return .keepWaiting
+        }
+        let pane = panes[index]
+        let entries = PCodeSessionInfo.liveHostEntries()
+        let hostEntryAlive = entries.contains { entry in
+            if let sid = pane.sessionID, !sid.isEmpty, entry.sessionID == sid { return true }
+            if let hid = pane.hostID ?? pane.launchHostID, !hid.isEmpty, entry.id == hid { return true }
+            return false
+        }
+        let openElsewhere: Bool = {
+            guard let sid = pane.sessionID, !sid.isEmpty else { return false }
+            let isHosted = entries.contains { $0.sessionID == sid }
+            return !isHosted && PCodeSessionInfo.isOpen(sid)
+        }()
+        let decision = Self.hostRecoveryAction(
+            attempts: pane.hostRelaunchAttempts,
+            maxAttempts: Self.maxHostRelaunchAttempts,
+            isManual: isManual,
+            needsInput: surface.existingPCodeDock?.needsInput == true,
+            hostEntryAlive: hostEntryAlive,
+            paneAge: Date().timeIntervalSince(pane.createdAt),
+            openElsewhere: openElsewhere)
+        guard let decision else {
+            let tail = PCodeSessionInfo.hostLogTail(hostID: pane.launchHostID)
+                ?? PCodeSessionInfo.hostLogTail(hostID: pane.hostID ?? pane.lastHostID)
+            return .failed(tail ?? "The session host didn't start in time.")
+        }
+        guard case .relaunched(let attempt, let maxAttempts) = decision else {
+            return decision
+        }
+        let args = pane.sessionID.map { ["--host", "-c", $0] } ?? ["--host"]
+        guard let fresh = makePane(
+            args: args,
+            directory: pane.directory,
+            projectPath: pane.projectPath,
+            sessionID: pane.sessionID
+        ) else {
+            return .failed("Could not start a new session pane.")
+        }
+        fresh.openedLabel = pane.openedLabel
+        fresh.unseen = pane.unseen
+        fresh.hostRelaunchAttempts = attempt
+        fresh.surface.pcodeHostRelaunchAttempt = attempt
+        if let shell = pane.shell {
+            fresh.setShell(shell)
+            fresh.shellVisible = pane.shellVisible
+            pane.setShell(nil)
+        }
+        adopt(fresh)
+        let wasSelected = (selected == pane.id)
+        panes[index] = fresh
+        PCode.retire(pane.surface)
+        schedulePresize()
+        if wasSelected { select(fresh) }
+        return .relaunched(attempt: attempt, maxAttempts: maxAttempts)
     }
 
     /// Ask to close `pane`: pcode's terminal reports back through the close

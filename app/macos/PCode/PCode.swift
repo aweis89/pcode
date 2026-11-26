@@ -155,6 +155,7 @@ private var pcodeOwnerKey: UInt8 = 0
 private var pcodeSessionKey: UInt8 = 0
 private var pcodeHostKey: UInt8 = 0
 private var pcodeSessionPaneKey: UInt8 = 0
+private var pcodeHostRelaunchAttemptKey: UInt8 = 0
 private var pcodeTranscriptKey: UInt8 = 0
 
 /// Holds an associated object without keeping it alive.
@@ -292,6 +293,12 @@ extension Ghostty.SurfaceView {
     var pcodeIsSessionPane: Bool {
         get { (objc_getAssociatedObject(self, &pcodeSessionPaneKey) as? Bool) ?? false }
         set { objc_setAssociatedObject(self, &pcodeSessionPaneKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
+    /// How many times the workspace has automatically relaunched this pane's host.
+    var pcodeHostRelaunchAttempt: Int {
+        get { (objc_getAssociatedObject(self, &pcodeHostRelaunchAttemptKey) as? Int) ?? 0 }
+        set { objc_setAssociatedObject(self, &pcodeHostRelaunchAttemptKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
     }
 
     /// The popup this surface is the overlay terminal of, while it is still there.
