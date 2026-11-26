@@ -34,7 +34,10 @@ enum PCodeBtwThread {
                 blocks: answer.isEmpty ? [] : [.markdown(id: 0, text: answer)],
                 status: .complete,
                 side: true)
-            var rows = PCodeTranscriptItem.flatten(turns: [turn]).map { item -> PCodeTranscriptItem in
+            var rows = PCodeTranscriptItem.flatten(
+                turns: [turn],
+                includeAnswerActions: !aside.isRunning
+            ).map { item -> PCodeTranscriptItem in
                 let id = item.id.hasPrefix(turnPrefix) ? prefix + item.id.dropFirst(turnPrefix.count) : prefix + item.id
                 var payload = item.payload
                 if case .prompt(_, let text, let isSide) = payload {
@@ -155,6 +158,8 @@ enum PCodeTranscriptItemSync {
                       "\(call.startedAt?.timeIntervalSinceReferenceDate ?? -1)",
                       // A running card shows its line count and newest line, so new output redraws it.
                       call.isRunning ? call.output : ""]
+        } else if case .answerActions(let copyMarkdown) = item.payload {
+            parts.append(copyMarkdown)
         }
         return parts.joined(separator: "\u{1F}")
     }

@@ -754,10 +754,10 @@ struct PCodeTranscriptTests {
         replayer.runAllSynchronously()
 
         // Default grouped mode folds each turn's 10 consecutive tools into 1 toolGroup row:
-        // (1 prompt + 1 toolGroup + 2 prose + 1 codeBlock + 1 table) * 4 = 24 displayed items (60 raw).
-        #expect(doc.rawItems.count == 60)
-        #expect(doc.items.count == 24)
-        #expect(doc.layoutEngine.entries.count == 24)
+        // (1 prompt + 1 toolGroup + 2 prose + 1 codeBlock + 1 table + 1 answerActions) * 4 = 28 displayed items (64 raw).
+        #expect(doc.rawItems.count == 64)
+        #expect(doc.items.count == 28)
+        #expect(doc.layoutEngine.entries.count == 28)
         #expect(doc.layoutEngine.totalHeight > 800)
 
         // Verify yOffsets are strictly increasing in grouped mode
@@ -765,10 +765,10 @@ struct PCodeTranscriptTests {
             #expect(doc.layoutEngine.entries[i].yOffset > doc.layoutEngine.entries[i - 1].yOffset)
         }
 
-        // Switching to flat layout restores all 60 items cleanly.
+        // Switching to flat layout restores all 64 items cleanly.
         doc.groupTools = false
-        #expect(doc.items.count == 60)
-        #expect(doc.layoutEngine.entries.count == 60)
+        #expect(doc.items.count == 64)
+        #expect(doc.layoutEngine.entries.count == 64)
         for i in 1..<doc.layoutEngine.entries.count {
             #expect(doc.layoutEngine.entries[i].yOffset > doc.layoutEngine.entries[i - 1].yOffset)
         }
@@ -1663,7 +1663,7 @@ struct PCodeTranscriptTests {
         #expect(all.contains("let x = 42"))
     }
 
-    @Test @MainActor func everyProseBlockOfAnAnswerOffersItsMarkdown() {
+    @Test @MainActor func finishedAnswerShowsBottomLeftCopyIconAndNoProseOverlay() throws {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
         scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
@@ -1687,20 +1687,42 @@ struct PCodeTranscriptTests {
         }
         #expect(proseCount == 2)
 
-        // Hovering any of them shows its button, which copies the whole answer.
-        let rows = doc.subviews.compactMap { $0 as? PCodeProseRowView }
-        #expect(rows.count == 2)
-        for row in rows {
-            let button = row.subviews.compactMap { $0 as? NSButton }.first
-            #expect(button?.isHidden == true)
-            row.setHovered(true)
-            #expect(button?.isHidden == false)
-            pasteboard.clearContents()
-            button?.performClick(nil)
-            #expect(pasteboard.string(forType: .string) == markdown)
+        // Prose rows never overlay a floating button on top of text.
+        let proseRows = doc.subviews.compactMap { $0 as? PCodeProseRowView }
+        #expect(proseRows.count == 2)
+        for row in proseRows {
+            #expect(row.subviews.compactMap { $0 as? NSButton }.isEmpty)
         }
 
-        // Saved turns flattened for Peek carry it the same way.
+        // One quiet bottom-left copy icon row sits below the finished answer.
+        let actionRows = doc.subviews.compactMap { $0 as? PCodeAnswerActionsRowView }
+        #expect(actionRows.count == 1)
+        let actionRow = try #require(actionRows.first)
+        #expect(!actionRow.copyButton.isHidden)
+        #expect(actionRow.copyButton.frame.minX <= 8)
+        #expect(actionRow.copyButton.alphaValue < 0.9)
+        // Row-wide hover does not light up the icon; hovering the button itself does.
+        actionRow.setHovered(true)
+        #expect(actionRow.copyButton.alphaValue < 0.9)
+        actionRow.setButtonHovered(true)
+        #expect(actionRow.copyButton.alphaValue == 1.0)
+        pasteboard.clearContents()
+        actionRow.copyButton.performClick(nil)
+        #expect(pasteboard.string(forType: .string) == markdown)
+
+        // Repeated configure calls during the "Copied" flash do not drift button width.
+        let flashedWidth = actionRow.copyButton.frame.width
+        _ = actionRow.configure(copyMarkdown: markdown, width: 640, theme: theme)
+        _ = actionRow.configure(copyMarkdown: markdown, width: 640, theme: theme)
+        #expect(actionRow.copyButton.frame.width == flashedWidth)
+
+        // VoiceOver press on the footer row also copies the answer Markdown.
+        pasteboard.clearContents()
+        let actionID = try #require(doc.items.first { $0.kind == .answerActions }?.id)
+        doc.toggleExpansionForAccessibility(id: actionID)
+        #expect(pasteboard.string(forType: .string) == markdown)
+
+        // Saved turns flattened for Peek emit the same footer row and prose payloads.
         let flattened = PCodeTranscriptItem.flatten(turns: [
             PCodePeekTurn(id: 0, prompt: "Explain", blocks: [.markdown(id: 0, text: markdown)], status: .complete, side: false),
         ])
@@ -1709,6 +1731,11 @@ struct PCodeTranscriptTests {
             return copyMarkdown
         }
         #expect(payloads == [markdown, markdown])
+        let footerPayloads = flattened.compactMap { item -> String? in
+            guard case .answerActions(let copyMarkdown) = item.payload else { return nil }
+            return copyMarkdown
+        }
+        #expect(footerPayloads == [markdown])
     }
 
     @Test @MainActor func contextMenuOffersCopySelectAllAndTheAnswer() throws {
@@ -1999,7 +2026,7 @@ struct PCodeTranscriptTests {
         reducer.apply(.toolSummary(callID: "solo", parentCallID: "", name: "read_file", detail: "README.md", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
         reducer.apply(.message(markdown: "Done."), reveal: false)
 
-        #expect(doc.items.map(\.kind) == [.prompt, .tool, .prose])
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .prose, .answerActions])
     }
 
     @Test @MainActor func toolGrouperFoldsCompletedEditsAndReportsFailures() {
@@ -2172,20 +2199,20 @@ struct PCodeTranscriptTests {
                 #expect(payload.windowEntries.count == min(n, PCodeToolGrouper.nestedWindowRows))
                 #expect(payload.windowEntries.last?.id == "call-c\(n)")
                 shownRows = payload.windowEntries.count
-                // prompt + delegate + window + prose, whatever state the calls are in.
-                #expect(doc.items.count == 4)
+                // prompt + delegate + window + prose + answerActions, whatever state the calls are in.
+                #expect(doc.items.count == 5)
             }
         }
 
         // Expanding is the user's call, and lists every call below the summary.
         let windowID = doc.items[2].id
         doc.toggleExpansionForAccessibility(id: windowID)
-        #expect(doc.items.count == 4 + 7)
+        #expect(doc.items.count == 5 + 7)
         #expect(doc.items[3].id == "call-c1")
         #expect(doc.items[3].depth == 2)
         #expect(window()?.windowEntries.isEmpty == true)
         doc.toggleExpansionForAccessibility(id: windowID)
-        #expect(doc.items.count == 4)
+        #expect(doc.items.count == 5)
     }
 
     @Test @MainActor func expandedWindowSummaryTracksNonGroupableChildren() {

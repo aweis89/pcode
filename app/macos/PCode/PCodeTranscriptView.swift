@@ -61,6 +61,7 @@ struct PCodeTranscriptItem: Identifiable {
         case thinking
         case note
         case status
+        case answerActions
     }
 
     enum Payload {
@@ -74,6 +75,7 @@ struct PCodeTranscriptItem: Identifiable {
         case thinking(PCodeThinkingPayload)
         case note(text: String, tone: PCodeNoteTone)
         case status(PCodePeekTurn.Status)
+        case answerActions(copyMarkdown: String)
     }
 
     let id: String
@@ -96,6 +98,7 @@ struct PCodeTranscriptItem: Identifiable {
         case .thinking: return .thinking
         case .note: return .note
         case .status: return .status
+        case .answerActions: return .answerActions
         }
     }
 
@@ -131,6 +134,8 @@ struct PCodeTranscriptItem: Identifiable {
             return text
         case .status(let status):
             return PCodeStatusRowView.displayLabel(for: status)
+        case .answerActions:
+            return ""
         }
     }
 
@@ -212,6 +217,8 @@ struct PCodeTranscriptItem: Identifiable {
         case .status:
             let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
             self.payload = .status(status)
+        case .answerActions:
+            self.payload = .answerActions(copyMarkdown: plainText)
         }
         self.depth = 0
     }
@@ -222,7 +229,7 @@ struct PCodeTranscriptItem: Identifiable {
 
     /// Flatten `PCodePeekTurn`s into virtualized transcript items, parsing Markdown messages
     /// into prose runs, syntax-highlighted code blocks, and GFM tables.
-    static func flatten(turns: [PCodePeekTurn]) -> [PCodeTranscriptItem] {
+    static func flatten(turns: [PCodePeekTurn], includeAnswerActions: Bool = true) -> [PCodeTranscriptItem] {
         var result: [PCodeTranscriptItem] = []
         result.reserveCapacity(turns.count * 4)
         for turn in turns {
@@ -274,6 +281,17 @@ struct PCodeTranscriptItem: Identifiable {
                                 payload: .table(table),
                                 spacingAfter: 10))
                         }
+                    }
+
+                    if includeAnswerActions, !parsed.isEmpty, !text.isEmpty, turn.status != .running {
+                        if let last = result.last {
+                            let tightGap: CGFloat = (last.kind == .prose) ? 2 : 4
+                            result[result.count - 1] = last.withSpacingAfter(tightGap)
+                        }
+                        result.append(PCodeTranscriptItem(
+                            id: "turn-\(turn.id)-md-\(blockID)-actions",
+                            payload: .answerActions(copyMarkdown: text),
+                            spacingAfter: 10))
                     }
 
                 case .steering(let blockID, let text):
@@ -618,6 +636,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         if linkURL(at: point) != nil {
             NSCursor.pointingHand.set()
+        } else if let idx = layoutEngine.itemIndex(atY: point.y),
+                  items.indices.contains(idx),
+                  items[idx].kind == .answerActions
+        {
+            NSCursor.arrow.set()
         } else {
             NSCursor.iBeam.set()
         }
@@ -1462,10 +1485,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             commitSettledBlocks(remaining, reveal: reveal)
         }
         guard let finalStream = activeStream else { return }
-        // Every prose block of the finished message offers the whole answer's Markdown,
-        // so its Copy button shows wherever in the answer the pointer is.
+        // Every prose block of the finished message carries the whole answer's Markdown
+        // for right-click "Copy Answer as Markdown", and a dedicated footer row underneath
+        // the last block hosts the unobtrusive copy icon.
         let fullMarkdown = finalStream.settler.fullMarkdown
-        if !fullMarkdown.isEmpty {
+        if !fullMarkdown.isEmpty, finalStream.emittedBlockCount > 0 {
             for blockIndex in 0..<finalStream.emittedBlockCount {
                 let itemID = Self.streamingItemID(messageID: finalStream.id, blockIndex: blockIndex)
                 if let rawIdx = rawItemIndexByID[itemID],
@@ -1488,9 +1512,46 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     revision: items[idx].revision &+ 1,
                     depth: items[idx].depth)
             }
+
+            let lastItemID = Self.streamingItemID(messageID: finalStream.id, blockIndex: finalStream.emittedBlockCount - 1)
+            if let rawIdx = rawItemIndexByID[lastItemID] {
+                let tightGap: CGFloat = (rawItems[rawIdx].kind == .prose) ? 2 : 4
+                rawItems[rawIdx] = rawItems[rawIdx].withSpacingAfter(tightGap)
+            }
+            if let idx = itemIndexByID[lastItemID] {
+                let tightGap: CGFloat = (items[idx].kind == .prose) ? 2 : 4
+                items[idx] = items[idx].withSpacingAfter(tightGap)
+                layoutEngine.updateSpacingAfter(at: idx, spacingAfter: tightGap)
+            }
+
+            notifySearchContentWillChange()
+            let actionsItem = PCodeTranscriptItem(
+                id: "\(finalStream.id)-actions",
+                payload: .answerActions(copyMarkdown: fullMarkdown),
+                spacingAfter: 10)
+            let rawIdx = rawItems.count
+            rawItems.append(actionsItem)
+            rawItemIndexByID[actionsItem.id] = rawIdx
+            let estHeight = estimatedHeight(for: actionsItem)
+            let idx = items.count
+            items.append(actionsItem)
+            itemIndexByID[actionsItem.id] = idx
+            layoutEngine.append(
+                id: actionsItem.id,
+                height: estHeight,
+                spacingAfter: actionsItem.spacingAfter,
+                measured: false)
+            if reveal {
+                enqueueRevealIfNeeded(for: actionsItem, estimatedHeight: estHeight)
+            }
+            invalidateSearchIndex()
+            if stickyBottom.mode == .userScrolledUp {
+                setHasUnreadStreamingContent(true)
+            }
         }
         activeStream = nil
         mountViews(in: visibleRect)
+        markUnreadIfOverflowedWhilePaused()
     }
 
     private static func streamingItemID(messageID: String, blockIndex: Int) -> String {
@@ -2222,16 +2283,20 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 selectedRange: localSel,
                 contentInsetX: contentInsetX)
 
-        case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, let copyMarkdown)):
-            view.pasteboard = pasteboard
+        case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, _)):
             let attr = cachedProseAttributedString(for: item.id, markdown: markdown, referenceDefinitions: refDefs)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
             return view.configure(
                 attributedText: attr,
+                width: width,
+                selectedRange: localSel)
+
+        case (let view as PCodeAnswerActionsRowView, .answerActions(let copyMarkdown)):
+            view.pasteboard = pasteboard
+            return view.configure(
                 copyMarkdown: copyMarkdown,
                 width: width,
-                theme: theme,
-                selectedRange: localSel)
+                theme: theme)
 
         case (let view as PCodeCodeBlockView, .codeBlock(let lang, let code, let fullCopy, let showHeader, _)):
             let localSel = selection?.localRange(forItem: index, utf16Length: (code as NSString).length)
@@ -2493,6 +2558,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .thinking: return PCodeThinkingCardView()
         case .note: return PCodeNoteRowView()
         case .status: return PCodeStatusRowView()
+        case .answerActions: return PCodeAnswerActionsRowView()
         }
     }
 
@@ -3013,6 +3079,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             toggleToolGroupExpansion(id: id)
         case .diff:
             toggleDiffExpansion(id: id)
+        case .answerActions(let copyMarkdown):
+            guard !copyMarkdown.isEmpty else { return }
+            pasteboard.clearContents()
+            pasteboard.setString(copyMarkdown, forType: .string)
+            if let actionRow = mountedViews[id] as? PCodeAnswerActionsRowView {
+                actionRow.copyButton.flashCopied()
+            }
         default:
             break
         }
@@ -3108,18 +3181,24 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    /// The Markdown source of the answer whose prose is at `docPoint`, if any.
+    /// The Markdown source of the answer whose prose or footer is at `docPoint`, if any.
     func answerMarkdown(at docPoint: CGPoint) -> String? {
         guard let idx = layoutEngine.itemIndex(atY: docPoint.y),
               items.indices.contains(idx),
-              case .prose(_, _, let copyMarkdown) = items[idx].payload,
-              let copyMarkdown, !copyMarkdown.isEmpty,
               // `itemIndex(atY:)` clamps to the nearest row; the point must be on it.
               layoutEngine.entries.indices.contains(idx),
               docPoint.y >= layoutEngine.entries[idx].yOffset,
               docPoint.y <= layoutEngine.entries[idx].yOffset + layoutEngine.entries[idx].height
         else { return nil }
-        return copyMarkdown
+        switch items[idx].payload {
+        case .prose(_, _, let copyMarkdown):
+            guard let copyMarkdown, !copyMarkdown.isEmpty else { return nil }
+            return copyMarkdown
+        case .answerActions(let copyMarkdown):
+            return copyMarkdown.isEmpty ? nil : copyMarkdown
+        default:
+            return nil
+        }
     }
 
     @objc func copyAnswerMarkdown(_ sender: Any?) {
@@ -3162,6 +3241,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return text
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
+        case .answerActions:
+            return ""
         }
     }
 
@@ -3247,6 +3328,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let lines = max(1, min(40, max(newlineLines, wrappedLines)))
             return 2 + CGFloat(lines) * typography.lineHeight(scale: PCodeNoteRowView.fontScale)
         case .status: return 24
+        case .answerActions: return PCodeAnswerActionsRowView.rowHeight
         case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))
             return (label.isEmpty ? 20 : 28) + CGFloat(lines) * typography.lineHeight()

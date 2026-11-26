@@ -385,6 +385,8 @@ extension PCodeTranscriptDocumentView {
             }
         case .status(let status):
             return (.staticText, "Status", PCodeStatusRowView.displayLabel(for: status), false)
+        case .answerActions:
+            return (.button, "Button", "Copy answer as Markdown", true)
         }
     }
 }
