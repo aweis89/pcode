@@ -124,7 +124,6 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         switch cmd {
         case "peek": try Self.peekSession(args, finish)
         case "sidebar": try Self.sidebarCommand(args, finish)
-        case "transcript": try Self.transcriptCommand(args, finish)
         default: return false
         }
         return true
@@ -207,24 +206,6 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
             "effective_width": Double(workspace.effectiveSidebarWidth(in: totalWidth)),
             "auto_hide": workspace.sidebarAutoHide,
             "revealed": workspace.sidebarRevealed,
-        ])
-    }
-
-    private static func transcriptCommand(_ args: [String: Any], _ finish: @escaping ([String: Any]) -> Void) throws {
-        guard let controller = DebugCommands.terminalWindows().compactMap({ $0.windowController as? PCodeWorkspaceController }).first else {
-            throw DebugCommands.Failure("no workspace window")
-        }
-        let workspace = controller.workspace
-        if let visible = args["visible"] as? Bool {
-            if visible != workspace.liveTranscriptVisible {
-                workspace.toggleLiveTranscript()
-            }
-        } else if (args["toggle"] as? Bool) == true || args.isEmpty {
-            workspace.toggleLiveTranscript()
-        }
-        finish([
-            "visible": workspace.liveTranscriptVisible,
-            "session_id": workspace.selectedPane?.sessionID ?? "",
         ])
     }
 }

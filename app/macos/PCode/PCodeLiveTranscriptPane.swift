@@ -17,22 +17,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
         case connectedHost(hostID: String)
         case tailingJournal
         case error(String)
-
-        var badgeText: String {
-            switch self {
-            case .idle, .waiting: return "Waiting…"
-            case .connectedHost: return "Live · Host"
-            case .tailingJournal: return "Live · Journal"
-            case .error: return "Disconnected"
-            }
-        }
-
-        var isLive: Bool {
-            switch self {
-            case .connectedHost, .tailingJournal: return true
-            default: return false
-            }
-        }
     }
 
     private static let maxTailLineBytes = 16 * 1024 * 1024
@@ -99,11 +83,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
         if publishState {
             setConnectionState(.idle)
         }
-    }
-
-    func applyPaceMode(_ mode: PCodeStreamingPaceMode) {
-        paceMode = mode
-        documentView?.paceMode = mode
     }
 
     private func setConnectionState(_ newState: ConnectionState) {
@@ -429,36 +408,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
     }
 }
 
-/// Global UI surface checker mirroring Python's `pcode.ui_surface`.
-///
-/// Use `PCodeUISurface.current` / `PCodeUISurface.isSwift` to gate UI behavior
-/// that belongs exclusively to the native Swift transcript vs. terminal scrollback.
-enum PCodeUISurface: Equatable {
-    case swift
-    case terminal
-
-    static var current: PCodeUISurface {
-        PCodeNativeTranscriptMode.shared.enabled ? .swift : .terminal
-    }
-
-    static var isSwift: Bool { current == .swift }
-    static var isTerminal: Bool { current == .terminal }
-}
-
-/// Shared toggle controlling whether the main session window renders the native
-/// AppKit transcript (default `true`, unless `PCODE_NATIVE_TRANSCRIPT=0`) or falls
-/// back to the raw Ghostty terminal scrollback.
-final class PCodeNativeTranscriptMode: ObservableObject {
-    static let shared = PCodeNativeTranscriptMode()
-    @Published var enabled: Bool = {
-        guard let raw = ProcessInfo.processInfo.environment["PCODE_NATIVE_TRANSCRIPT"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        else { return true }
-        return !["0", "false", "off", "no"].contains(raw)
-    }()
-}
-
 /// SwiftUI `NSViewRepresentable` hosting `PCodeTranscriptScrollView` connected to
 /// `PCodeLiveTranscriptController`.
 struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
@@ -588,88 +537,5 @@ struct PCodeMainWindowTranscriptView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ghostty.config.backgroundColor)
             .environment(\.colorScheme, colorScheme)
-    }
-}
-
-/// Non-destructive live AppKit transcript split pane shown alongside the Ghostty terminal.
-struct PCodeLiveTranscriptPaneView: View {
-    @EnvironmentObject var ghostty: Ghostty.App
-    @ObservedObject var pane: PCodeSessionPane
-    @ObservedObject private var typography = PCodeTypography.shared
-    @StateObject private var controller = PCodeLiveTranscriptController()
-    let onClose: () -> Void
-
-    private var transcriptTheme: PCodeTranscriptTheme {
-        PCodeTranscriptTheme.make(
-            background: NSColor(ghostty.config.backgroundColor),
-            foreground: NSColor(ghostty.config.foregroundColor))
-    }
-
-    private var colorScheme: ColorScheme {
-        NSColor(ghostty.config.backgroundColor).isLightColor ? .light : .dark
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            PCodeLiveTranscriptRepresentable(
-                sessionID: pane.sessionID,
-                theme: transcriptTheme,
-                typography: typography,
-                controller: controller)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(ghostty.config.backgroundColor)
-        .environment(\.colorScheme, colorScheme)
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(controller.connectionState.isLive ? Color.green : Color.secondary.opacity(0.5))
-                .frame(width: 7, height: 7)
-
-            Text("Transcript")
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-
-            Text(controller.connectionState.badgeText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 4)
-
-            // Pace mode cycle button: Typed / Rows / Off
-            Button {
-                let all = PCodeStreamingPaceMode.allCases
-                if let idx = all.firstIndex(of: controller.paceMode) {
-                    controller.applyPaceMode(all[(idx + 1) % all.count])
-                }
-            } label: {
-                Text(controller.paceMode.rawValue.capitalized)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.primary.opacity(0.85))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("Cycle reveal mode: Typed (ink-sweep) / Rows (curtain) / Off")
-
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Close Live Transcript pane (⌥⌘T)")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
     }
 }
