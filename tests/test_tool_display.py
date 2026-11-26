@@ -874,3 +874,12 @@ def test_a_stored_result_grep_names_its_pattern_and_matches():
         '"FAIL" in shell output → 20 of 42 matches',
         False,
     )
+
+
+def test_targets_survive_a_deleted_working_directory(monkeypatch):
+    # A host whose directory was removed under it still shows its tool calls.
+    def gone():
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr("pcode.tool_display.Path.cwd", staticmethod(gone))
+    assert target("read_file", {"path": "/some/where/file.py"}) == "/some/where/file.py"

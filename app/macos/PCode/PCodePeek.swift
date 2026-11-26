@@ -22,7 +22,7 @@ struct PCodePeekTarget: Equatable {
 }
 
 /// One tool call (running or settled) summarized in a session transcript.
-struct PCodePeekToolCall: Identifiable {
+struct PCodePeekToolCall: Identifiable, Equatable {
     let id: Int
     let name: String
     let detail: String
@@ -659,6 +659,7 @@ struct PCodePeekOverlay: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var peek: PCodePeekController
     @ObservedObject private var typography = PCodeTypography.shared
+    @ObservedObject private var transcriptPrefs = PCodeTranscriptPreferences.shared
     let resolveLivePane: (UUID) -> PCodeSessionPane?
     let onOpen: (PCodePeekTarget) -> Void
 
@@ -981,6 +982,27 @@ struct PCodePeekOverlay: View {
 
     private var typographyControls: some View {
         HStack(spacing: 8) {
+            // Tool grouping toggle: Grouped (default) vs Flat
+            Button {
+                transcriptPrefs.groupTools.toggle()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: transcriptPrefs.groupTools ? "rectangle.stack.fill" : "list.bullet")
+                        .font(.system(size: 9.5, weight: .medium))
+                    Text(transcriptPrefs.groupTools ? "Grouped" : "Flat")
+                        .font(.caption2.weight(.medium))
+                }
+                .foregroundStyle(transcriptPrefs.groupTools ? Color.accentColor : Color.primary.opacity(0.8))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(transcriptPrefs.groupTools ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help(transcriptPrefs.groupTools
+                ? "Group consecutive tool calls into a single summary line (click for flat list)"
+                : "Show each tool call on its own line (click to group)")
+
             // Style preset toggle: Sans + Mono vs Mono
             HStack(spacing: 2) {
                 ForEach(PCodeTypography.Style.allCases) { option in
