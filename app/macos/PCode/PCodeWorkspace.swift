@@ -2922,27 +2922,43 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
     }
 }
 
-/// Native SwiftUI pulsing dot for active/running sessions in folder headers.
-private struct PCodePulsingDot: View {
-    @State private var pulsing = false
+/// A turn running: the same green dot as a settled, unseen response, with a
+/// thin arc orbiting it, so running and done differ by motion, not by shape
+/// or size. Fills its frame; the dot is half of it (6pt in a 12pt slot).
+private struct PCodeRunningDot: View {
+    private static let period = 1.1
+    private static let lineWidth: CGFloat = 1.2
 
     var body: some View {
-        if #available(macOS 14.0, *) {
-            Image(systemName: "circle.fill")
-                .font(.system(size: 6))
-                .foregroundStyle(Color.accentColor)
-                .symbolEffect(.pulse, isActive: true)
-                .help("Active session")
-        } else {
-            Circle()
-                .fill(Color.accentColor)
-                .frame(width: 6, height: 6)
-                .scaleEffect(pulsing ? 1.15 : 0.85)
-                .opacity(pulsing ? 1.0 : 0.45)
-                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulsing)
-                .onAppear { pulsing = true }
-                .help("Active session")
+        GeometryReader { geometry in
+            let side = min(geometry.size.width, geometry.size.height)
+            ZStack {
+                // 30 fps is plenty for a 12pt arc, and keeps the sidebar from
+                // redrawing at the terminal's 120.
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    let turns = t.truncatingRemainder(dividingBy: Self.period) / Self.period
+                    Circle()
+                        .trim(from: 0, to: 0.32)
+                        .stroke(
+                            AngularGradient(
+                                gradient: Gradient(stops: [
+                                    .init(color: Color.green.opacity(0), location: 0),
+                                    .init(color: Color.green, location: 0.32),
+                                ]),
+                                center: .center
+                            ),
+                            style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round)
+                        )
+                        .padding(Self.lineWidth / 2)
+                        .rotationEffect(.radians(turns * 2 * .pi))
+                }
+                Circle().fill(Color.green).frame(width: side * 0.5, height: side * 0.5)
+            }
+            .frame(width: side, height: side)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .help("Running")
     }
 }
 
@@ -3152,7 +3168,7 @@ private struct PCodeFolderHeader: View {
             if group.hasRunning || hasUnseen || group.hasFailed {
                 HStack(spacing: 4) {
                     if group.hasRunning {
-                        PCodePulsingDot()
+                        PCodeRunningDot().frame(width: 12, height: 12)
                     }
                     if hasUnseen {
                         Circle()
@@ -3820,9 +3836,8 @@ private struct PCodeProjectLauncher: View {
     }
 }
 
-/// Open and idle: a dot. A turn running: pcode's `dual` spinner (two
-/// counter-rotating crescents, `kitty_spinner._render_dual`). Failed: red.
-/// A response not yet looked at: green, open or not.
+/// Open and idle: a grey dot. A turn running: a green dot with an orbiting
+/// arc. Failed: red. A response not yet looked at: solid green, open or not.
 private struct PCodeActivityIndicator: View {
     var activity: PCodeSessionPane.Activity?
     var unseen = false
@@ -3830,19 +3845,7 @@ private struct PCodeActivityIndicator: View {
     var body: some View {
         switch activity {
         case .running?:
-            // 30 fps is plenty for 12 points, and keeps the sidebar from
-            // redrawing at the terminal's 120.
-            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                Canvas { gc, size in
-                    let side = min(size.width, size.height)
-                    let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                    Self.arc(gc, center: center, radius: side * 0.40, width: side * 0.13,
-                             head: t * 3.6, sweep: 2.65, color: .accentColor)
-                    Self.arc(gc, center: center, radius: side * 0.22, width: side * 0.12,
-                             head: -t * 5.4, sweep: 2.45, color: .accentColor.opacity(0.75))
-                }
-            }
+            PCodeRunningDot()
         case .failed?:
             Circle().fill(Color.red).frame(width: 6, height: 6)
         case _ where unseen:
@@ -3852,22 +3855,6 @@ private struct PCodeActivityIndicator: View {
             Circle().fill(Color.secondary.opacity(0.7)).frame(width: 6, height: 6)
         case nil:
             Color.clear
-        }
-    }
-
-    /// A crescent whose tail fades behind its head, as in pcode's spinner.
-    private static func arc(
-        _ gc: GraphicsContext, center: CGPoint, radius: CGFloat, width: CGFloat,
-        head: Double, sweep: Double, color: Color
-    ) {
-        let steps = 12
-        for step in 0..<steps {
-            let from = head - sweep * Double(step + 1) / Double(steps)
-            let to = head - sweep * Double(step) / Double(steps)
-            var path = Path()
-            path.addArc(center: center, radius: radius, startAngle: .radians(from), endAngle: .radians(to), clockwise: false)
-            let fade = 1.0 - 0.85 * Double(step) / Double(steps)
-            gc.stroke(path, with: .color(color.opacity(fade)), style: StrokeStyle(lineWidth: width, lineCap: step == 0 ? .round : .butt))
         }
     }
 }
