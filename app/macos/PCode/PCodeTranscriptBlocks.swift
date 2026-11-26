@@ -297,10 +297,6 @@ enum PCodeToolStackPosition: Equatable {
             return [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         }
     }
-
-    var showsTopHairline: Bool {
-        self == .middle || self == .bottom
-    }
 }
 
 // MARK: - Prompt Row
@@ -1241,7 +1237,6 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     private let toggleButton = NSButton()
     private let bottomCollapseButton = NSButton()
     private let bottomDivider = CALayer()
-    private let topStackHairline = CALayer()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsRunning = false
@@ -1294,8 +1289,6 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
         layer?.addSublayer(bottomDivider)
         bottomDivider.isHidden = true
-        layer?.addSublayer(topStackHairline)
-        topStackHairline.isHidden = true
 
         bottomCollapseButton.isBordered = false
         bottomCollapseButton.bezelStyle = .inline
@@ -1324,7 +1317,6 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         lastHovered = false
         lastStackPosition = .standalone
-        topStackHairline.isHidden = true
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
@@ -1632,13 +1624,6 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             CATransaction.commit()
         }
 
-        let showTopHairline = !(call.isRunning || isExpanded) && stackPosition.showsTopHairline
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        topStackHairline.isHidden = !showTopHairline
-        topStackHairline.frame = showTopHairline ? CGRect(x: 10, y: 0, width: max(0, width - 20), height: 1) : .zero
-        CATransaction.commit()
-
         applyLayerColors(animated: false)
         return totalHeight
     }
@@ -1683,7 +1668,6 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             layer?.borderWidth = borderWidth
             layer?.borderColor = borderColor?.cgColor
             bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
-            topStackHairline.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.07).cgColor
             CATransaction.commit()
         }
     }
@@ -1722,7 +1706,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .toolGroup
     let textView = PCodeTextKit2BlockView()
     private let pulseLayer = CALayer()
-    private let topStackHairline = CALayer()
     private let iconView = NSImageView()
     private let elapsedLabel = NSTextField(labelWithString: "")
     private let chevronContainer = NSView()
@@ -1750,8 +1733,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
 
         pulseLayer.opacity = 0
         layer?.addSublayer(pulseLayer)
-        topStackHairline.isHidden = true
-        layer?.addSublayer(topStackHairline)
 
         iconView.imageScaling = .scaleProportionallyDown
         addSubview(iconView)
@@ -1797,7 +1778,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     func resetForTranscriptReuse() {
         lastHovered = false
         lastStackPosition = .standalone
-        topStackHairline.isHidden = true
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
@@ -2086,13 +2066,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         tapButton.frame = CGRect(x: 0, y: 0, width: width, height: totalHeight)
         tapButton.toolTip = payload.isExpanded ? "Collapse tool group" : "Expand \(payload.totalCount) tool calls"
 
-        let showTopHairline = !(payload.isExpanded || payload.failedCount > 0) && stackPosition.showsTopHairline
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        topStackHairline.isHidden = !showTopHairline
-        topStackHairline.frame = showTopHairline ? CGRect(x: 10, y: 0, width: max(0, width - 20), height: 1) : .zero
-        CATransaction.commit()
-
         applyLayerColors(animated: false)
         if shouldPulse {
             playAbsorbPulse()
@@ -2186,7 +2159,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
             pulseLayer.backgroundColor = theme.accent.withAlphaComponent(theme.isDark ? 0.18 : 0.13).cgColor
             pulseLayer.cornerRadius = 6
             pulseLayer.maskedCorners = effectiveStack.maskedCorners
-            topStackHairline.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.07).cgColor
             CATransaction.commit()
         }
     }
