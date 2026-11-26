@@ -910,7 +910,11 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         // drop the boot overlay so the terminal output is always visible.
         let safety = DispatchWorkItem { [weak self] in self?.markReady(via: "safety timeout") }
         readySafetyWork = safety
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: safety)
+        // A resumed pane shows its transcript meanwhile, and pcode reports a trust
+        // prompt or held startup error itself (`startup-input`), so it waits longer
+        // before giving up on a slow start and showing the bare terminal.
+        let patience: TimeInterval = surface.pcodeDock.bootCovered ? 15 : 4.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + patience, execute: safety)
     }
 
     deinit {
@@ -4414,6 +4418,24 @@ private struct PCodeActivityIndicator: View {
     }
 }
 
+/// The pane's boot cover. A resumed session's is sized like the dock card, from
+/// the same cell height and rows the transcript reserves room for, so the two
+/// always agree and the card's arrival moves nothing.
+private struct PCodePaneStartupOverlay: View {
+    @ObservedObject var pane: PCodeSessionPane
+    @ObservedObject var surface: Ghostty.SurfaceView
+    @ObservedObject var dock: PCodeDock
+
+    var body: some View {
+        let cell = surface.cellSize.height > 0 ? surface.cellSize.height : 18
+        PCodeStartupOverlay(
+            isReady: pane.isReady,
+            label: (pane.projectPath as NSString).lastPathComponent,
+            resuming: pane.resuming,
+            compactCardHeight: pane.resuming ? PCodeDock.cardHeight(rows: dock.rows, cell: cell) : nil)
+    }
+}
+
 /// A session: pcode's terminal with everything pcode lays over it, and the bottom shell.
 struct PCodeSessionPaneView: View {
     @ObservedObject var pane: PCodeSessionPane
@@ -4432,16 +4454,7 @@ struct PCodeSessionPaneView: View {
                 ZStack {
                     Ghostty.InspectableSurface(surfaceView: pane.surface, isSplit: false)
                     PCodeSurfaceOverlay(surfaceView: pane.surface)
-                    PCodeStartupOverlay(
-                        isReady: pane.isReady,
-                        label: (pane.projectPath as NSString).lastPathComponent,
-                        resuming: pane.resuming,
-                        compactCardHeight: pane.resuming
-                            ? PCodeDock.cardHeight(
-                                rows: pane.surface.pcodeDock.rows,
-                                cell: pane.surface.cellSize.height > 0 ? pane.surface.cellSize.height : 18)
-                            : nil
-                    )
+                    PCodePaneStartupOverlay(pane: pane, surface: pane.surface, dock: pane.surface.pcodeDock)
                 }
                 if pane.shellVisible, let shell = pane.shell {
                     handle(maxShell: maxShell)
