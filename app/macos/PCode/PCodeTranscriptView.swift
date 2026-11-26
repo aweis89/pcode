@@ -1715,7 +1715,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return !items.isEmpty
         }
         if item.action == #selector(copyAnswerMarkdown(_:)) {
-            return true
+            return (item as? NSMenuItem)?.representedObject is String
         }
         if item.action == #selector(performFindPanelAction(_:)),
            let finder = textFinder,
@@ -1883,7 +1883,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         guard let idx = layoutEngine.itemIndex(atY: docPoint.y),
               items.indices.contains(idx),
               case .prose(_, _, let copyMarkdown) = items[idx].payload,
-              let copyMarkdown, !copyMarkdown.isEmpty
+              let copyMarkdown, !copyMarkdown.isEmpty,
+              // `itemIndex(atY:)` clamps to the nearest row; the point must be on it.
+              layoutEngine.entries.indices.contains(idx),
+              docPoint.y >= layoutEngine.entries[idx].yOffset,
+              docPoint.y <= layoutEngine.entries[idx].yOffset + layoutEngine.entries[idx].height
         else { return nil }
         return copyMarkdown
     }

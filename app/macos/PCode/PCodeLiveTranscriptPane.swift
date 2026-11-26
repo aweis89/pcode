@@ -5,24 +5,14 @@ import Foundation
 import GhosttyKit
 import SwiftUI
 
-/// Drives a live `PCodeTranscriptDocumentView` alongside the Ghostty terminal for the
-/// currently selected workspace session.
+/// Drives the live `PCodeTranscriptDocumentView` that renders a workspace session.
 ///
 /// Connects via `PCodeHostSocketClient` (`observe_transcript` v1) whenever a running
 /// session host owns the session, and falls back to live-tailing
 /// `~/.local/state/pcode/sessions/<id>/transcript.jsonl` for local non-hosted sessions.
 final class PCodeLiveTranscriptController: ObservableObject {
-    enum ConnectionState: Equatable {
-        case idle
-        case waiting
-        case connectedHost(hostID: String)
-        case tailingJournal
-        case error(String)
-    }
-
     private static let maxTailLineBytes = 16 * 1024 * 1024
 
-    @Published private(set) var connectionState: ConnectionState = .idle
     @Published var paceMode: PCodeStreamingPaceMode = PCodeStreamingPaceMode.loadDefaultFromPreferences()
 
     private let socketClient = PCodeHostSocketClient()
@@ -41,7 +31,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private var hostRetryTimer: Timer?
 
     deinit {
-        detach(publishState: false)
+        detach()
     }
 
     func attach(sessionID: String?, documentView: PCodeTranscriptDocumentView) {
@@ -49,7 +39,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         if attachedSessionID == normalized && self.documentView === documentView {
             return
         }
-        detach(publishState: false)
+        detach()
         attachGeneration &+= 1
         let gen = attachGeneration
         self.documentView = documentView
@@ -61,7 +51,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
         guard let sid = normalized, PCode.valid(sid, length: 1...64) else {
             documentView.setItems([], pinToBottom: true)
-            setConnectionState(.waiting)
             return
         }
 
@@ -72,7 +61,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         }
     }
 
-    func detach(publishState: Bool = true) {
+    func detach() {
         attachGeneration &+= 1
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
@@ -81,14 +70,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
         reducer = nil
         documentView = nil
         attachedSessionID = nil
-        if publishState {
-            setConnectionState(.idle)
-        }
-    }
-
-    private func setConnectionState(_ newState: ConnectionState) {
-        guard connectionState != newState else { return }
-        connectionState = newState
     }
 
     // MARK: - Hosted Session (Unix Socket Observer)
@@ -100,7 +81,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
         documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
-        setConnectionState(.waiting)
         socketClient.connect(
             socketPath: socketPath,
             onReady: { [weak self, weak documentView] welcome in
@@ -117,27 +97,18 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     reducer.apply(event, reveal: false, isLive: true)
                 }
                 documentView.scrollToBottomAndPin()
-                self.setConnectionState(.connectedHost(hostID: welcome.hostID))
             },
             onEvent: { [weak self] event in
                 guard let self, self.attachGeneration == generation else { return }
                 reducer.apply(event, reveal: true)
             },
-            onError: { [weak self, weak documentView] message in
-                guard let self, self.attachGeneration == generation else { return }
-                if let documentView {
-                    self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
-                } else {
-                    self.setConnectionState(.error(message))
-                }
+            onError: { [weak self, weak documentView] _ in
+                guard let self, let documentView, self.attachGeneration == generation else { return }
+                self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
             },
             onClosed: { [weak self, weak documentView] in
-                guard let self, self.attachGeneration == generation else { return }
-                if let documentView {
-                    self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
-                } else {
-                    self.setConnectionState(.waiting)
-                }
+                guard let self, let documentView, self.attachGeneration == generation else { return }
+                self.startJournalTail(sessionID: sessionID, generation: generation, documentView: documentView, reducer: reducer)
             })
     }
 
@@ -153,7 +124,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
         let dir = PCodeSessionInfo.root.appendingPathComponent(sessionID)
         let path = dir.appendingPathComponent("transcript.jsonl").path
         guard Self.isSafeOwnedDirectory(dir.path) else {
-            setConnectionState(.error("Invalid session directory."))
             return
         }
 
@@ -164,7 +134,6 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
         documentView.setItems([], pinToBottom: true)
         reducer.reset()
-        setConnectionState(.tailingJournal)
 
         // Load settled history off the main thread (skipping historical TextDelta/ThinkingDelta
         // so large sessions never stall the UI), then arm kqueue and drain any tail delta.
@@ -474,7 +443,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
             guard let composer else { return }
             Ghostty.moveFocus(to: composer)
         }
-        scrollView.composerHasSelection = { [weak composer] in
+        scrollView.composerHasSelection = {
             composer?.surface.map(ghostty_surface_has_selection) ?? false
         }
         scrollView.canHandleFindShortcut = { [weak scrollView, weak composer] in

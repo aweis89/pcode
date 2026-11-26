@@ -1342,6 +1342,8 @@ struct PCodeTranscriptTests {
         let proseRect = try #require(doc.characterRects(forItemAt: 1, localRange: NSRange(location: 0, length: 4)).first)
         let prosePoint = CGPoint(x: proseRect.midX, y: proseRect.midY)
         #expect(doc.answerMarkdown(at: prosePoint) == markdown)
+        // Blank space under the last row belongs to no answer.
+        #expect(doc.answerMarkdown(at: CGPoint(x: prosePoint.x, y: doc.frame.height + 200)) == nil)
 
         let windowPoint = doc.convert(prosePoint, to: nil)
         let event = try #require(NSEvent.mouseEvent(
