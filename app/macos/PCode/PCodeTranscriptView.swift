@@ -378,6 +378,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var appearanceGeneration: UInt64 = 0
     private var lastContentWidth: CGFloat = 0
     private var lastClipOriginY: CGFloat = 0
+    /// Blank space kept below the content so a pinned view never scrolls back up.
+    ///
+    /// When content at the bottom shrinks (a finished tool folding into its group, a new row
+    /// measuring shorter than its estimate), moving the origin up to the new bottom would drag
+    /// the whole scrollback downward on screen, against the direction it streams. Instead the
+    /// document keeps its height and later growth fills the gap before scrolling resumes.
+    private var bottomSlack: CGFloat = 0
+    /// Content height (without slack) at the last `applyDocumentHeight`, to tell shrink from growth.
+    private var lastAppliedContentHeight: CGFloat = 0
     private var lastMountedRange: Range<Int> = 0..<0
     private var isApplyingDocumentHeight = false
     private var hoveredItemID: String?
@@ -592,6 +601,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         absorbPulseByGroupID.removeAll(keepingCapacity: false)
         clearActiveFoldGhostLayers()
         rawItems = newItems
+        bottomSlack = 0
         rebuildRawItemIndexMap()
         let projection = PCodeToolGrouper.project(
             rawItems: rawItems,
@@ -1444,6 +1454,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         resetSmoothGlide()
         stickyBottom.pinToBottom()
         setHasUnreadStreamingContent(false)
+        bottomSlack = 0
         applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
         mountViews(in: visibleRect)
         if !revealQueue.isEmpty {
@@ -1506,6 +1517,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         super.setFrameSize(newSize)
         if widthChanged {
             lastContentWidth = newSize.width
+            // Rewrapping is a resize, not streaming: let the view settle at the true bottom.
+            bottomSlack = 0
+            lastAppliedContentHeight = 0
             layoutEngine.invalidateAllMeasurements()
             remountVisibleViews()
         }
@@ -1697,7 +1711,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
 
         let unobstructedH = unobstructedViewportHeight(in: enclosingScrollView)
-        let targetHeight = max(layoutEngine.totalHeight, unobstructedH)
+        let targetHeight = max(layoutEngine.totalHeight + bottomSlack, unobstructedH)
         if abs(bounds.height - targetHeight) > 0.5 || abs(accumulatedScrollDelta) > 0.5 {
             applyDocumentHeight(
                 layoutEngine.totalHeight,
@@ -2001,7 +2015,18 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let clipView = scrollView.contentView
         let oldHeight = frame.size.height
         let unobstructedH = unobstructedViewportHeight(in: scrollView)
-        let targetHeight = max(newHeight, unobstructedH)
+        if pinIfNeeded {
+            // Slack that keeps the current origin exactly at the bottom. A shrink resets the
+            // slack to that; growth and viewport changes may only lower it, so the gap fills
+            // before the view scrolls on, and a taller viewport still reveals scrollback.
+            let heightHoldingOrigin = clipView.bounds.origin.y + clipView.bounds.height - scrollView.contentInsets.bottom
+            let holdingSlack = max(0, heightHoldingOrigin - newHeight)
+            bottomSlack = newHeight < lastAppliedContentHeight - 0.5
+                ? holdingSlack
+                : min(bottomSlack, holdingSlack)
+        }
+        lastAppliedContentHeight = newHeight
+        let targetHeight = max(newHeight + bottomSlack, unobstructedH)
         let rawOriginY: CGFloat
         if pinIfNeeded {
             let targetBottomY = PCodeStickyBottomState.bottomOriginY(
