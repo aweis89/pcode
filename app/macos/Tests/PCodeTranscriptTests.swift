@@ -2384,37 +2384,44 @@ struct PCodeTranscriptTests {
     @Test func hostRecoveryActionCapsRetriesAndGuardsConflicts() {
         // Trust prompt / held error: keep waiting automatically, but manual Reopen still relaunches.
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 0, isManual: false, needsInput: true, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+            attempts: 0, isManual: false, needsInput: true, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: false
         ) == .keepWaiting)
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 0, isManual: true, needsInput: true, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+            attempts: 0, isManual: true, needsInput: true, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: false
         ) == .relaunched(attempt: 1, maxAttempts: 2))
 
         // Live host still booting within grace: keep waiting; past grace: relaunch.
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: true, paneAge: 12, openElsewhere: false
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: true, unavailableDuration: 12, openElsewhere: false
         ) == .keepWaiting)
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: true, paneAge: 35, openElsewhere: false
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: true, unavailableDuration: 35, openElsewhere: false
         ) == .relaunched(attempt: 1, maxAttempts: 2))
 
-        // Open in another terminal without a host: never fork it.
+        // Open in another terminal without a host: first automatic sighting waits (transient lock),
+        // second consecutive sighting (or manual Reopen) fails without forking.
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: true
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: true, sawOpenElsewhere: false
+        ) == .keepWaiting)
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: true, sawOpenElsewhere: true
+        ) == .failed("This session is open in another terminal."))
+        #expect(PCodeWorkspace.hostRecoveryAction(
+            attempts: 0, isManual: true, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: true, sawOpenElsewhere: false
         ) == .failed("This session is open in another terminal."))
 
         // Capped retries, then exhausted (nil -> caller attaches host log tail); manual resets.
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+            attempts: 0, isManual: false, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: false
         ) == .relaunched(attempt: 1, maxAttempts: 2))
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 1, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+            attempts: 1, isManual: false, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: false
         ) == .relaunched(attempt: 2, maxAttempts: 2))
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 2, isManual: false, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+            attempts: 2, isManual: false, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: false
         ) == nil)
         #expect(PCodeWorkspace.hostRecoveryAction(
-            attempts: 2, isManual: true, needsInput: false, hostEntryAlive: false, paneAge: 15, openElsewhere: false
+            attempts: 2, isManual: true, needsInput: false, hostEntryAlive: false, unavailableDuration: 15, openElsewhere: false
         ) == .relaunched(attempt: 1, maxAttempts: 2))
     }
 
@@ -2432,6 +2439,13 @@ struct PCodeTranscriptTests {
             to: crash, atomically: true, encoding: .utf8)
         #expect(PCodeSessionInfo.hostLogTail(hostID: "bbbb2222", in: dir) == "Traceback:\nValueError: missing key")
         #expect(PCodeSessionInfo.hostLogTail(hostID: "missing0", in: dir) == nil)
+
+        // Large log (> 8 KB) with multi-byte UTF-8 still decodes cleanly without mojibake.
+        let large = dir.appendingPathComponent("cccc3333.log")
+        let filler = String(repeating: "éééééééééé\n", count: 900)
+        try (filler + "Fatal: café broke\n").write(to: large, atomically: true, encoding: .utf8)
+        let largeTail = PCodeSessionInfo.hostLogTail(hostID: "cccc3333", in: dir, maxLines: 1)
+        #expect(largeTail == "Fatal: café broke")
     }
 
     @Test @MainActor func liveTranscriptControllerAutoRelaunchesThenShowsFailureAndManualReopen() {
@@ -2450,7 +2464,7 @@ struct PCodeTranscriptTests {
             hostStoppedTimeout: 3,
             now: { currentTime },
             resolveSocketPath: { _, _ in nil })
-        controller.onRequestRelaunch = { isManual in
+        controller.onRequestRelaunch = { isManual, _ in
             calls.append(isManual)
             return outcomes.removeFirst()
         }
@@ -2477,5 +2491,24 @@ struct PCodeTranscriptTests {
         #expect(calls == [false, false, true])
         #expect(controller.connectionState == .relaunching(attempt: 1, maxAttempts: 2))
         controller.detach()
+
+        // Brand-new 0-turn pane (sessionID == nil, hostID == nil) still times out and triggers relaunch.
+        var freshCalls = 0
+        let freshController = PCodeLiveTranscriptController(
+            retryInterval: 0.01,
+            hostStartTimeout: 5,
+            hostStoppedTimeout: 3,
+            now: { currentTime },
+            resolveSocketPath: { _, _ in nil })
+        freshController.onRequestRelaunch = { _, _ in
+            freshCalls += 1
+            return .failed("Host exited")
+        }
+        freshController.attach(sessionID: nil, hostID: nil, documentView: doc)
+        currentTime = currentTime.addingTimeInterval(6)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        #expect(freshCalls == 1)
+        #expect(freshController.connectionState == .failedToStart("Host exited"))
+        freshController.detach()
     }
 }

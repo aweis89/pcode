@@ -494,7 +494,8 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         else { return nil }
 
         let window = min(Int(st.st_size), 8192)
-        if Int(st.st_size) > window {
+        let sought = Int(st.st_size) > window
+        if sought {
             _ = Darwin.lseek(fd, off_t(Int(st.st_size) - window), SEEK_SET)
         }
         var data = Data(count: window)
@@ -512,9 +513,14 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
             }
         }
         data.count = total
-        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
-            return nil
+        // Seeking into the middle of a large log can split a line or multi-byte UTF-8 sequence.
+        let slice: Data.SubSequence
+        if sought, let nl = data.firstIndex(of: 0x0A) {
+            slice = data[data.index(after: nl)...]
+        } else {
+            slice = data[...]
         }
+        let text = String(decoding: slice, as: UTF8.self)
         let lines = text
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -861,6 +867,9 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     var launchHostID: String?
     /// Automatic host relaunch attempts already made for this pane without a successful connect.
     var hostRelaunchAttempts = 0
+    /// Whether the previous automatic recovery check saw `.lock` held without a host entry
+    /// (requiring two consecutive sightings avoids misclassifying a host's own startup/shutdown).
+    var sawOpenElsewhere = false
     /// True once pcode has painted its ready UI (dock ready, or fallback timeout).
     @Published private(set) var isReady = false
     @Published private(set) var shell: Ghostty.SurfaceView?
@@ -2706,6 +2715,7 @@ final class PCodeWorkspace: ObservableObject {
         surface.pcodeHostRelaunchAttempt = 0
         if let pane = panes.first(where: { $0.surface === surface }) {
             pane.hostRelaunchAttempts = 0
+            pane.sawOpenElsewhere = false
         }
     }
 
@@ -2717,14 +2727,18 @@ final class PCodeWorkspace: ObservableObject {
         isManual: Bool,
         needsInput: Bool,
         hostEntryAlive: Bool,
-        paneAge: TimeInterval,
-        openElsewhere: Bool
+        unavailableDuration: TimeInterval,
+        openElsewhere: Bool,
+        sawOpenElsewhere: Bool = false
     ) -> PCodeLiveTranscriptController.RelaunchOutcome? {
         if !isManual {
             if needsInput { return .keepWaiting }
-            if hostEntryAlive && paneAge < bootingHostGrace { return .keepWaiting }
+            if hostEntryAlive && unavailableDuration < bootingHostGrace { return .keepWaiting }
         }
         if openElsewhere {
+            if !isManual && !sawOpenElsewhere {
+                return .keepWaiting
+            }
             return .failed("This session is open in another terminal.")
         }
         let effectiveAttempts = isManual ? 0 : attempts
@@ -2737,20 +2751,24 @@ final class PCodeWorkspace: ObservableObject {
     /// Relaunch a session pane's host in place when its host failed to start or died unexpectedly.
     func handleHostUnavailable(
         for surface: Ghostty.SurfaceView,
-        isManual: Bool
+        isManual: Bool,
+        unavailableDuration: TimeInterval = 0
     ) -> PCodeLiveTranscriptController.RelaunchOutcome {
-        guard let index = panes.firstIndex(where: { $0.surface === surface }) else {
+        guard !restarting,
+              let index = panes.firstIndex(where: { $0.surface === surface })
+        else {
             return .keepWaiting
         }
         let pane = panes[index]
+        let sessionID = pane.sessionID.flatMap { $0.isEmpty ? nil : $0 }
         let entries = PCodeSessionInfo.liveHostEntries()
         let hostEntryAlive = entries.contains { entry in
-            if let sid = pane.sessionID, !sid.isEmpty, entry.sessionID == sid { return true }
+            if let sid = sessionID, entry.sessionID == sid { return true }
             if let hid = pane.hostID ?? pane.launchHostID, !hid.isEmpty, entry.id == hid { return true }
             return false
         }
         let openElsewhere: Bool = {
-            guard let sid = pane.sessionID, !sid.isEmpty else { return false }
+            guard let sid = sessionID else { return false }
             let isHosted = entries.contains { $0.sessionID == sid }
             return !isHosted && PCodeSessionInfo.isOpen(sid)
         }()
@@ -2760,8 +2778,10 @@ final class PCodeWorkspace: ObservableObject {
             isManual: isManual,
             needsInput: surface.existingPCodeDock?.needsInput == true,
             hostEntryAlive: hostEntryAlive,
-            paneAge: Date().timeIntervalSince(pane.createdAt),
-            openElsewhere: openElsewhere)
+            unavailableDuration: unavailableDuration,
+            openElsewhere: openElsewhere,
+            sawOpenElsewhere: pane.sawOpenElsewhere)
+        pane.sawOpenElsewhere = openElsewhere
         guard let decision else {
             let tail = PCodeSessionInfo.hostLogTail(hostID: pane.launchHostID)
                 ?? PCodeSessionInfo.hostLogTail(hostID: pane.hostID ?? pane.lastHostID)
@@ -2770,12 +2790,23 @@ final class PCodeWorkspace: ObservableObject {
         guard case .relaunched(let attempt, let maxAttempts) = decision else {
             return decision
         }
-        let args = pane.sessionID.map { ["--host", "-c", $0] } ?? ["--host"]
+        // Stop any stuck or broken host for this pane before spawning its replacement,
+        // so the new pane doesn't reattach to the same host or leak an orphan.
+        let oldHostID = pane.hostID ?? pane.lastHostID ?? pane.hostStatus?.hostID ?? pane.launchHostID
+        if Self.stopHost(hostID: oldHostID, sessionID: sessionID).isEmpty,
+           let launchHostID = pane.launchHostID {
+            for delay in [2.0, 6.0] {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+                    _ = Self.stopHost(hostID: launchHostID, sessionID: nil)
+                }
+            }
+        }
+        let args = sessionID.map { ["--host", "-c", $0] } ?? ["--host"]
         guard let fresh = makePane(
             args: args,
             directory: pane.directory,
             projectPath: pane.projectPath,
-            sessionID: pane.sessionID
+            sessionID: sessionID
         ) else {
             return .failed("Could not start a new session pane.")
         }
@@ -2789,11 +2820,16 @@ final class PCodeWorkspace: ObservableObject {
             pane.setShell(nil)
         }
         adopt(fresh)
+        peek.clearHover(paneID: pane.id)
         let wasSelected = (selected == pane.id)
         panes[index] = fresh
         PCode.retire(pane.surface)
         schedulePresize()
-        if wasSelected { select(fresh) }
+        if wasSelected {
+            select(fresh)
+        } else {
+            syncOcclusion()
+        }
         return .relaunched(attempt: attempt, maxAttempts: maxAttempts)
     }
 

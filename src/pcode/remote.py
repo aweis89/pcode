@@ -550,6 +550,8 @@ class HostLaunch:
     # Set when `--continue` routed to an existing host: if it vanishes before
     # we attach (idle-stop, or an older app quitting), we can spawn a fresh one.
     resume: str | None = None
+    # Existing host's PID when attaching, so respawn waits for it to release `.lock`.
+    pid: int | None = None
 
     async def connect(self, view, activity) -> tuple[RemoteController, dict]:
         return await wait_for_host(
@@ -558,7 +560,12 @@ class HostLaunch:
 
     @classmethod
     def running(cls, entry: HostEntry, *, resume: str | None = None) -> "HostLaunch":
-        return cls(entry.id, log=Path(entry.log) if entry.log else None, resume=resume)
+        return cls(
+            entry.id,
+            log=Path(entry.log) if entry.log else None,
+            resume=resume,
+            pid=entry.pid or None,
+        )
 
 
 # The id Pcode.app picks for the host a pane starts (`app_host_id`).

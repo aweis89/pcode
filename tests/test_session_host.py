@@ -3490,6 +3490,11 @@ def test_connect_or_respawn_host_spawns_fresh_host_when_resumed_host_vanished(
     with tempfile.TemporaryDirectory(prefix="pc-", dir="/tmp") as raw_dir:
         host_dir = Path(raw_dir)
 
+        spawned: list[dict] = []
+        waited_pids: list[int] = []
+        fresh_controller = SimpleNamespace(id="newhost1")
+        successor_controller = SimpleNamespace(id="succ2222")
+
         def fake_spawn_host(**kwargs):
             spawned.append(kwargs)
             return "newhost1", SimpleNamespace(poll=lambda: None), host_dir / "newhost1.log"
@@ -3497,11 +3502,18 @@ def test_connect_or_respawn_host_spawns_fresh_host_when_resumed_host_vanished(
         async def fake_wait_for_host(identity, view, activity, process=None, log=None, **kwargs):
             if identity == "deadhost":
                 raise HostError("Session host deadhost is no longer running.")
+            if identity == "succ2222":
+                return successor_controller, {"id": "succ2222"}
             assert identity == "newhost1"
             return fresh_controller, {"id": "newhost1"}
 
+        async def fake_wait_for_exit(pid, timeout=30.0):
+            waited_pids.append(pid)
+            return True
+
         monkeypatch.setattr("pcode.remote.spawn_host", fake_spawn_host)
         monkeypatch.setattr("pcode.remote.wait_for_host", fake_wait_for_host)
+        monkeypatch.setattr("pcode.remote.wait_for_exit", fake_wait_for_exit)
         monkeypatch.setattr("pcode.host_protocol.list_hosts", lambda directory=None: [])
         monkeypatch.setenv("PCODE_HOST_ID", "deadbeef")
 
@@ -3511,13 +3523,32 @@ def test_connect_or_respawn_host_spawns_fresh_host_when_resumed_host_vanished(
             session_dir=tmp_path / "sessions",
             activity=SimpleNamespace(),
         )
-        launch = HostLaunch("deadhost", process=None, directory=host_dir, resume="sess-123")
+        launch = HostLaunch(
+            "deadhost", process=None, directory=host_dir, resume="sess-123", pid=4242
+        )
         controller, welcome = asyncio.run(PreviewApp._connect_or_respawn_host(app, launch))
         assert controller is fresh_controller
         assert welcome == {"id": "newhost1"}
+        assert waited_pids == [4242]
         assert len(spawned) == 1
         assert spawned[0]["resume"] == "sess-123"
         assert spawned[0]["identity"] == "deadbeef"
+
+        # If a live successor host already owns the session (e.g. /restart), attach to it instead.
+        successor_entry = HostEntry(
+            id="succ2222",
+            pid=9999,
+            model="function:script",
+            workspace=str(tmp_path),
+            session_id="sess-123",
+        )
+        monkeypatch.setattr(
+            "pcode.host_protocol.list_hosts", lambda directory=None: [successor_entry]
+        )
+        controller2, welcome2 = asyncio.run(PreviewApp._connect_or_respawn_host(app, launch))
+        assert controller2 is successor_controller
+        assert welcome2 == {"id": "succ2222"}
+        assert len(spawned) == 1
 
         # Explicit --attach (no resume) does not silently spawn a new host.
         attach_only = HostLaunch("deadhost", process=None, directory=host_dir, resume=None)

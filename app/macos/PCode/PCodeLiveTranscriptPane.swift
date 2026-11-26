@@ -52,7 +52,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .starting
 
     /// Asked when the host does not appear in time (or when the user clicks Reopen).
-    var onRequestRelaunch: ((_ isManual: Bool) -> RelaunchOutcome)?
+    /// Receives `(isManual, unavailableDuration)` where `unavailableDuration` is how long
+    /// the host has been missing/unreachable in this wait cycle.
+    var onRequestRelaunch: ((_ isManual: Bool, _ unavailableDuration: TimeInterval) -> RelaunchOutcome)?
     /// Called once connected so the workspace can reset retry counters for this pane.
     var onConnected: (() -> Void)?
     /// Non-zero when this pane was just created by an automatic host relaunch.
@@ -79,6 +81,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private var isConnectingSocket = false
     private var attachGeneration: UInt64 = 0
     private var hostRetryTimer: Timer?
+    /// When the current host-unavailable wait began (preserved across failed connect retries).
+    private var unavailableSince: Date?
+    /// When the current timeout window started (reset on `.keepWaiting` / `.relaunched`).
     private var waitStartedAt: Date?
     private var waitingAfterStop = false
 
@@ -140,6 +145,11 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
         guard normalizedSession != nil || normalizedHost != nil else {
             documentView.setItems([], pinToBottom: true)
+            // A brand-new 0-turn pane has no session/host id until pcode boots; still
+            // watch for startup timeout so it can auto-relaunch if its host never appears.
+            if onRequestRelaunch != nil {
+                startHostReconnectTimer(generation: gen, documentView: documentView, reducer: newReducer, afterStop: false)
+            }
             return
         }
 
@@ -159,6 +169,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         attachGeneration &+= 1
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
+        unavailableSince = nil
         waitStartedAt = nil
         waitingAfterStop = false
         socketClient.close()
@@ -175,7 +186,15 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
     /// Manually reopen/relaunch the session host from the error card's Reopen button.
     func reopenHost() {
-        applyRelaunchOutcome(triggerRelaunch(isManual: true), isManual: true)
+        let outcome = triggerRelaunch(isManual: true)
+        applyRelaunchOutcome(outcome, isManual: true)
+        if hostRetryTimer == nil, !isConnectingSocket, let documentView, let reducer {
+            startHostReconnectTimer(
+                generation: attachGeneration,
+                documentView: documentView,
+                reducer: reducer,
+                afterStop: waitingAfterStop)
+        }
     }
 
     /// Forget what a host reported, keeping only the attached session id.
@@ -208,8 +227,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
     ) {
         hostRetryTimer?.invalidate()
         hostRetryTimer = nil
-        waitStartedAt = nil
-        waitingAfterStop = false
+        // Keep `unavailableSince` and `waitStartedAt` intact until `onReady` so
+        // repeated connect/handshake errors still reach the relaunch timeout.
         connectedSocketPath = socketPath
         isConnectingSocket = true
         socketClient.connect(
@@ -217,6 +236,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
             onReady: { [weak self, weak documentView] welcome in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
                 self.isConnectingSocket = false
+                self.unavailableSince = nil
                 self.waitStartedAt = nil
                 self.waitingAfterStop = false
                 self.initialRelaunchAttempt = 0
@@ -324,18 +344,13 @@ final class PCodeLiveTranscriptController: ObservableObject {
         if case .failedToStart = connectionState {
             waitStartedAt = nil
         } else {
-            waitStartedAt = now()
+            let current = now()
+            if unavailableSince == nil { unavailableSince = current }
+            if waitStartedAt == nil { waitStartedAt = current }
         }
         let timer = Timer(timeInterval: retryInterval, repeats: true) { [weak self, weak documentView] t in
             guard let self, let documentView, self.attachGeneration == generation else {
                 t.invalidate()
-                return
-            }
-            if let sockPath = self.resolveSocketPath(self.attachedSessionID, self.attachedHostID) {
-                t.invalidate()
-                self.hostRetryTimer = nil
-                self.waitStartedAt = nil
-                self.connectToHost(socketPath: sockPath, generation: generation, documentView: documentView, reducer: reducer)
                 return
             }
             if let startedAt = self.waitStartedAt {
@@ -343,7 +358,14 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 if self.now().timeIntervalSince(startedAt) >= timeout {
                     let outcome = self.triggerRelaunch(isManual: false)
                     self.applyRelaunchOutcome(outcome, isManual: false)
+                    if case .failed = outcome { return }
+                    if case .relaunched = outcome { return }
                 }
+            }
+            if let sockPath = self.resolveSocketPath(self.attachedSessionID, self.attachedHostID) {
+                t.invalidate()
+                self.hostRetryTimer = nil
+                self.connectToHost(socketPath: sockPath, generation: generation, documentView: documentView, reducer: reducer)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -352,7 +374,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
     private func triggerRelaunch(isManual: Bool) -> RelaunchOutcome {
         if let onRequestRelaunch {
-            return onRequestRelaunch(isManual)
+            let duration = unavailableSince.map { max(0, now().timeIntervalSince($0)) } ?? 0
+            return onRequestRelaunch(isManual, duration)
         }
         return .failed("The session host didn't start in time.")
     }
@@ -361,7 +384,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
         switch outcome {
         case .relaunched(let attempt, let maxAttempts):
             waitingAfterStop = false
-            waitStartedAt = now()
+            let current = now()
+            unavailableSince = current
+            waitStartedAt = current
             connectionState = .relaunching(attempt: attempt, maxAttempts: maxAttempts)
         case .keepWaiting:
             waitStartedAt = now()
@@ -600,11 +625,14 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         weak var composer = composerSurface
         controller.initialRelaunchAttempt = composer?.pcodeHostRelaunchAttempt ?? 0
         controller.maxRelaunchAttempts = PCodeWorkspace.maxHostRelaunchAttempts
-        controller.onRequestRelaunch = { isManual in
+        controller.onRequestRelaunch = { isManual, unavailableDuration in
             guard let composer, let workspace = PCodeWorkspaceController.existing?.workspace else {
                 return .failed("The session host didn't start in time.")
             }
-            return workspace.handleHostUnavailable(for: composer, isManual: isManual)
+            return workspace.handleHostUnavailable(
+                for: composer,
+                isManual: isManual,
+                unavailableDuration: unavailableDuration)
         }
         controller.onConnected = {
             guard let composer else { return }

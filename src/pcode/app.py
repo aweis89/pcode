@@ -2417,7 +2417,7 @@ class PreviewApp:
     async def _connect_or_respawn_host(self, launch):
         """Connect to `launch`, spawning a fresh host if a resumed host just vanished."""
         from pcode.host_protocol import list_hosts
-        from pcode.remote import HostError, HostLaunch, app_host_id, spawn_host
+        from pcode.remote import HostError, HostLaunch, app_host_id, spawn_host, wait_for_exit
 
         try:
             return await launch.connect(self, self.activity)
@@ -2426,14 +2426,28 @@ class PreviewApp:
             # attach (idle-stopped, or killed when an older app quit): start a new one.
             if launch.process is not None or not launch.resume:
                 raise
-            gone = all(other.id != launch.id for other in list_hosts(launch.directory))
-            if not gone:
-                raise
+            # Wait for the dying host process to exit and release `.lock` so we
+            # don't fork the session while it is still finishing shutdown.
+            if launch.pid is not None:
+                await wait_for_exit(launch.pid, timeout=15.0)
+            hosts = list_hosts(launch.directory)
+            # Another live host (e.g. a `/restart` successor) may already own it.
+            existing = next((other for other in hosts if other.session_id == launch.resume), None)
+            if existing is not None:
+                if existing.id == launch.id:
+                    raise
+                return await HostLaunch.running(existing).connect(self, self.activity)
+            workspace = self.workspace
+            if not workspace.is_dir():
+                from pcode.sessions import read_info, resolve_session
+
+                path = resolve_session(launch.resume, self.session_dir, Path.cwd())
+                workspace = _resumed_workspace(read_info(path), None).resolve()
             identity, process, log = await asyncio.to_thread(
                 spawn_host,
                 identity=app_host_id(launch.directory),
                 model=self.model,
-                workspace=self.workspace,
+                workspace=workspace,
                 resume=launch.resume,
                 session_dir=self.session_dir,
                 directory=launch.directory,
@@ -4543,8 +4557,17 @@ def _run_hosted(args: argparse.Namespace) -> None:
     """
     from pcode.remote import HostLaunch, app_host_id, spawn_host
 
+    entry = None
     if args.attach is not None:
-        entry = _pick_host(args.attach, args.workspace or Path.cwd())
+        try:
+            entry = _pick_host(args.attach, args.workspace or Path.cwd())
+        except LookupError:
+            # `--continue` routed to a host that vanished before we picked it:
+            # fall through to spawning a fresh host for `args.resume`.
+            if not args.resume:
+                raise
+            args.attach = None
+    if entry is not None:
         fallback_resume = entry.session_id if args.resume and entry.session_id else None
         launch = HostLaunch.running(entry, resume=fallback_resume)
         model, workspace = entry.model, Path(entry.workspace)
