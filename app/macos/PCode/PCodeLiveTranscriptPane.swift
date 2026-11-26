@@ -718,6 +718,26 @@ struct PCodeMainWindowTranscriptView: View {
                 composerSurface: composerSurface)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if bottomContentInset > 0 {
+                // Soft vertical fade confined to the composer inset band (0..<bottomContentInset)
+                // so scrolling lines melt behind the floating dock without veiling the
+                // Jump-to-bottom button or overlapping `PCodeBottomDissolveView`.
+                let fadeHeight = min(16, bottomContentInset)
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [
+                            ghostty.config.backgroundColor.opacity(0),
+                            ghostty.config.backgroundColor.opacity(0.94),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom)
+                        .frame(height: fadeHeight)
+                    ghostty.config.backgroundColor.opacity(0.94)
+                        .frame(height: max(0, bottomContentInset - fadeHeight))
+                }
+                .allowsHitTesting(false)
+            }
+
             if controller.connectionState != .connected && !(booting && controller.connectionState == .starting) {
                 PCodeHostConnectionCard(
                     state: controller.connectionState,

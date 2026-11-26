@@ -275,26 +275,59 @@ final class PCodeBlockActionButton: NSButton {
     }
 }
 
+/// Position of a settled, collapsed tool row inside a run of consecutive settled tool rows.
+/// Consecutive settled rows share one continuous outer silhouette instead of stacking
+/// separate rounded pills.
+enum PCodeToolStackPosition: Equatable {
+    case standalone
+    case top
+    case middle
+    case bottom
+
+    /// Corners to round on a flipped (`isFlipped == true`) NSView's backing CALayer.
+    var maskedCorners: CACornerMask {
+        switch self {
+        case .standalone:
+            return [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        case .top:
+            return [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        case .middle:
+            return []
+        case .bottom:
+            return [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        }
+    }
+}
+
 // MARK: - Prompt Row
 
 final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .prompt
     let textView = PCodeTextKit2BlockView()
+    private let surfaceLayer = CALayer()
+    private let topDivider = CALayer()
+    private let bottomDivider = CALayer()
     private let accentBar = NSView()
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsSide = false
-    private var lastStyle: PCodePromptStyle = .classic
+    private var lastStyle: PCodePromptStyle = .rightPill
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    var hasVisibleSurface: Bool { !surfaceLayer.isHidden && surfaceLayer.backgroundColor != nil }
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        layer?.addSublayer(surfaceLayer)
+        layer?.addSublayer(topDivider)
+        layer?.addSublayer(bottomDivider)
+
         accentBar.wantsLayer = true
         accentBar.layer?.cornerRadius = 1.5
         addSubview(accentBar)
+
         addSubview(textView)
     }
 
@@ -318,33 +351,94 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         style: PCodePromptStyle,
         width: CGFloat,
         theme: PCodeTranscriptTheme,
-        selectedRange: NSRange?
+        selectedRange: NSRange?,
+        contentInsetX: CGFloat = 0
     ) -> CGFloat {
         lastTheme = theme
         lastIsSide = isSidePrompt
         lastStyle = style
-        let insets: NSEdgeInsets
-        switch style {
-        case .classic: insets = NSEdgeInsets(top: 10, left: 22, bottom: 10, right: 12)
-        case .tinted: insets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        case .bar: insets = NSEdgeInsets(top: 2, left: 16, bottom: 2, right: 12)
-        }
-        let textWidth = max(1, width - insets.left - insets.right)
-        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
-        textView.selectedRange = selectedRange
-        textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
 
-        let totalHeight = textHeight + insets.top + insets.bottom
+        let totalHeight: CGFloat
+        var surfaceRect: CGRect = .zero
+        var topRuleRect: CGRect = .zero
+        var bottomRuleRect: CGRect = .zero
+
         switch style {
-        case .classic:
-            accentBar.frame = CGRect(x: 11, y: 10, width: 3, height: max(12, totalHeight - 20))
-        case .tinted:
+        case .rightPill:
+            let padX: CGFloat = min(15, floor(width * 0.25))
+            let padY: CGFloat = 10
+            let maxPillWidth = min(width, max(200, floor(width * 0.72)))
+            let maxTextWidth = max(1, maxPillWidth - padX * 2)
+            let naturalWidth = ceil(attributedText.boundingRect(
+                with: CGSize(width: maxTextWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]).width) + 4
+            let textWidth = max(1, min(maxTextWidth, naturalWidth))
+            let pillWidth = min(width, textWidth + padX * 2)
+            let pillX = max(0, width - pillWidth)
+            let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+            textView.selectedRange = selectedRange
+            textView.frame = CGRect(x: pillX + padX, y: padY, width: textWidth, height: textHeight)
+            accentBar.isHidden = true
             accentBar.frame = .zero
+            totalHeight = textHeight + padY * 2
+            surfaceRect = CGRect(x: pillX, y: 0, width: pillWidth, height: totalHeight)
+
+        case .leftWash:
+            let padX: CGFloat = min(15, floor(width * 0.25))
+            let padY: CGFloat = 10
+            let maxTextWidth = max(1, width - padX * 2)
+            let naturalWidth = ceil(attributedText.boundingRect(
+                with: CGSize(width: maxTextWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]).width) + 4
+            let textWidth = max(1, min(maxTextWidth, naturalWidth))
+            let pillWidth = min(width, textWidth + padX * 2)
+            let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+            textView.selectedRange = selectedRange
+            textView.frame = CGRect(x: padX, y: padY, width: textWidth, height: textHeight)
+            accentBar.isHidden = true
+            accentBar.frame = .zero
+            totalHeight = textHeight + padY * 2
+            surfaceRect = CGRect(x: 0, y: 0, width: pillWidth, height: totalHeight)
+
+        case .band:
+            let topPad: CGFloat = 11
+            let bottomPad: CGFloat = 11
+            let columnX = max(0, contentInsetX)
+            let columnWidth = max(1, width - columnX * 2)
+            let textWidth = max(1, columnWidth)
+            let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+            textView.selectedRange = selectedRange
+            textView.frame = CGRect(x: columnX, y: topPad, width: textWidth, height: textHeight)
+            accentBar.isHidden = true
+            accentBar.frame = .zero
+            totalHeight = textHeight + topPad + bottomPad
+            surfaceRect = CGRect(x: 0, y: 0, width: width, height: totalHeight)
+            topRuleRect = CGRect(x: 0, y: 0, width: width, height: 1)
+            bottomRuleRect = CGRect(x: 0, y: max(0, totalHeight - 1), width: width, height: 1)
+
         case .bar:
-            // Spans the text exactly, like the terminal rail on every wrapped line.
-            accentBar.frame = CGRect(x: 4, y: insets.top, width: 3, height: textHeight)
+            let topPad: CGFloat = 3
+            let bottomPad: CGFloat = 3
+            let textX: CGFloat = min(15, floor(width * 0.25))
+            let textWidth = max(1, width - textX - 4)
+            let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+            textView.selectedRange = selectedRange
+            textView.frame = CGRect(x: textX, y: topPad, width: textWidth, height: textHeight)
+            accentBar.isHidden = false
+            accentBar.frame = CGRect(x: 2, y: topPad + 1, width: 3, height: max(14, textHeight - 2))
+            totalHeight = textHeight + topPad + bottomPad
         }
-        accentBar.isHidden = style == .tinted
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        surfaceLayer.frame = surfaceRect
+        surfaceLayer.isHidden = surfaceRect.isEmpty
+        topDivider.frame = topRuleRect
+        topDivider.isHidden = topRuleRect.isEmpty
+        bottomDivider.frame = bottomRuleRect
+        bottomDivider.isHidden = bottomRuleRect.isEmpty
+        CATransaction.commit()
+
         applyLayerColors()
         return totalHeight
     }
@@ -354,21 +448,50 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let accent = lastIsSide ? NSColor.systemOrange : theme.accent
             accentBar.layer?.backgroundColor = accent.cgColor
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            let hairline = theme.foreground.withAlphaComponent(theme.isDark ? 0.09 : 0.08).cgColor
+            topDivider.backgroundColor = hairline
+            bottomDivider.backgroundColor = hairline
+
+            layer?.backgroundColor = nil
+            layer?.cornerRadius = 0
+            layer?.borderWidth = 0
+            layer?.borderColor = nil
+
             switch lastStyle {
-            case .classic:
-                layer?.backgroundColor = theme.promptBackground.cgColor
-                layer?.cornerRadius = 8
-                layer?.borderWidth = 0
-            case .tinted:
-                layer?.backgroundColor = accent.withAlphaComponent(theme.isDark ? 0.10 : 0.08).cgColor
-                layer?.cornerRadius = 8
-                layer?.borderWidth = 1
-                layer?.borderColor = accent.withAlphaComponent(theme.isDark ? 0.24 : 0.20).cgColor
+            case .rightPill:
+                let fill: NSColor = lastIsSide
+                    ? NSColor.systemOrange.withAlphaComponent(theme.isDark ? 0.14 : 0.09)
+                    : theme.foreground.withAlphaComponent(theme.isDark ? 0.085 : 0.058)
+                surfaceLayer.backgroundColor = fill.cgColor
+                surfaceLayer.cornerRadius = 14
+                surfaceLayer.borderWidth = 0
+                surfaceLayer.borderColor = nil
+            case .leftWash:
+                let fill: NSColor = lastIsSide
+                    ? NSColor.systemOrange.withAlphaComponent(theme.isDark ? 0.14 : 0.09)
+                    : theme.foreground.withAlphaComponent(theme.isDark ? 0.075 : 0.052)
+                surfaceLayer.backgroundColor = fill.cgColor
+                surfaceLayer.cornerRadius = 11
+                surfaceLayer.borderWidth = 0
+                surfaceLayer.borderColor = nil
+            case .band:
+                let fill: NSColor = lastIsSide
+                    ? NSColor.systemOrange.withAlphaComponent(theme.isDark ? 0.11 : 0.075)
+                    : theme.foreground.withAlphaComponent(theme.isDark ? 0.045 : 0.036)
+                surfaceLayer.backgroundColor = fill.cgColor
+                surfaceLayer.cornerRadius = 0
+                surfaceLayer.borderWidth = 0
+                surfaceLayer.borderColor = nil
             case .bar:
-                layer?.backgroundColor = nil
-                layer?.cornerRadius = 0
-                layer?.borderWidth = 0
+                surfaceLayer.backgroundColor = nil
+                surfaceLayer.cornerRadius = 0
+                surfaceLayer.borderWidth = 0
+                surfaceLayer.borderColor = nil
             }
+            CATransaction.commit()
         }
     }
 }
@@ -1116,6 +1239,10 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsRunning = false
+    private var lastIsFailed = false
+    private var lastIsExpanded = false
+    private var lastHovered = false
+    private var lastStackPosition: PCodeToolStackPosition = .standalone
     private var currentCall: PCodePeekToolCall?
     private var textToCopy = ""
 
@@ -1181,8 +1308,16 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
+    func setHovered(_ hovered: Bool) {
+        guard lastHovered != hovered else { return }
+        lastHovered = hovered
+        applyLayerColors(animated: true)
+    }
+
     func resetForTranscriptReuse() {
-        setHovered(false)
+        lastHovered = false
+        lastIsFailed = false
+        lastStackPosition = .standalone
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
@@ -1197,6 +1332,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         onToggle = nil
         currentCall = nil
         lastIsRunning = false
+        lastIsExpanded = false
         textToCopy = ""
         bottomCollapseButton.isHidden = true
         bottomDivider.isHidden = true
@@ -1204,7 +1340,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        applyLayerColors()
+        applyLayerColors(animated: false)
     }
 
     /// Update the live elapsed clock in-place while a command is running (no document relayout).
@@ -1394,11 +1530,15 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         width: CGFloat,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?,
+        stackPosition: PCodeToolStackPosition = .standalone,
         onToggle: @escaping () -> Void
     ) -> CGFloat {
         self.onToggle = onToggle
         self.lastTheme = theme
         self.lastIsRunning = call.isRunning
+        self.lastIsFailed = call.failed
+        self.lastIsExpanded = isExpanded
+        self.lastStackPosition = stackPosition
         self.currentCall = call
         self.textToCopy = !call.output.isEmpty ? call.output : call.summaryText
 
@@ -1512,23 +1652,55 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             CATransaction.commit()
         }
 
-        applyLayerColors()
+        applyLayerColors(animated: false)
         return totalHeight
     }
 
-    private func applyLayerColors() {
+    private func applyLayerColors(animated: Bool = false) {
         guard let theme = lastTheme else { return }
+        let bgColor: NSColor?
+        let borderWidth: CGFloat
+        let borderColor: NSColor?
+        if lastIsRunning {
+            bgColor = theme.toolBackground
+            borderWidth = 1
+            borderColor = theme.accent.withAlphaComponent(theme.isDark ? 0.36 : 0.28)
+        } else if lastIsFailed {
+            bgColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.08 : 0.055)
+            borderWidth = 1
+            borderColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.30 : 0.24)
+        } else if lastIsExpanded {
+            bgColor = theme.toolBackground
+            borderWidth = 1
+            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.09 : 0.08)
+        } else if lastHovered {
+            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.088 : 0.068)
+            borderWidth = 0
+            borderColor = nil
+        } else {
+            // Settled, collapsed tool rows use a soft borderless fill at rest so they
+            // separate cleanly from prose without adding heavy boxed borders.
+            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.052 : 0.038)
+            borderWidth = 0
+            borderColor = nil
+        }
+
+        let effectiveStack: PCodeToolStackPosition = (lastIsRunning || lastIsFailed || lastIsExpanded) ? .standalone : lastStackPosition
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = theme.toolBackground.cgColor
-            layer?.cornerRadius = 5
-            if lastIsRunning {
-                layer?.borderWidth = 1
-                layer?.borderColor = theme.accent.withAlphaComponent(theme.isDark ? 0.38 : 0.30).cgColor
+            CATransaction.begin()
+            if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                CATransaction.setAnimationDuration(0.12)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
             } else {
-                layer?.borderWidth = 0
-                layer?.borderColor = nil
+                CATransaction.setDisableActions(true)
             }
+            layer?.backgroundColor = bgColor?.cgColor
+            layer?.cornerRadius = 6
+            layer?.maskedCorners = effectiveStack.maskedCorners
+            layer?.borderWidth = borderWidth
+            layer?.borderColor = borderColor?.cgColor
             bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
+            CATransaction.commit()
         }
     }
 
@@ -1573,9 +1745,11 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     private let tapButton = PCodeContextMenuForwardingButton()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
+    private var lastIsRunning = false
     private var lastIsExpanded = false
     private var lastHasFailures = false
     private var lastHovered = false
+    private var lastStackPosition: PCodeToolStackPosition = .standalone
     private var lastAbsorbPulse: UInt64 = 0
     private var hasConfigured = false
 
@@ -1636,6 +1810,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
 
     func resetForTranscriptReuse() {
         lastHovered = false
+        lastStackPosition = .standalone
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
@@ -1647,6 +1822,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         elapsedLabel.isHidden = true
         elapsedLabel.stringValue = ""
         onToggle = nil
+        lastIsRunning = false
         lastIsExpanded = false
         lastHasFailures = false
         lastAbsorbPulse = 0
@@ -1679,11 +1855,11 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         style.maximumLineHeight = lineHeight
         style.lineBreakMode = .byTruncatingTail
 
-        let headFont = typography.codeNSFont(scale: 0.84, weight: typography.weight.nsEmphasisWeight)
-        let bodyFont = typography.codeNSFont(scale: 0.82)
+        let headFont = typography.codeNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight)
+        let bodyFont = typography.codeNSFont(scale: 0.80)
         let sepAttrs: [NSAttributedString.Key: Any] = [
             .font: bodyFont,
-            .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.45),
+            .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.42),
             .paragraphStyle: style,
         ]
 
@@ -1693,7 +1869,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
                 string: head,
                 attributes: [
                     .font: headFont,
-                    .foregroundColor: theme.foreground.withAlphaComponent(0.84),
+                    .foregroundColor: theme.foreground.withAlphaComponent(0.74),
                     .paragraphStyle: style,
                 ]))
         } else {
@@ -1834,6 +2010,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         lineHeight: CGFloat,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?,
+        stackPosition: PCodeToolStackPosition = .standalone,
         onToggle: @escaping () -> Void
     ) -> CGFloat {
         let wasConfigured = hasConfigured
@@ -1843,8 +2020,10 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
 
         self.onToggle = onToggle
         self.lastTheme = theme
+        self.lastIsRunning = payload.runningCount > 0
         self.lastIsExpanded = payload.isExpanded
         self.lastHasFailures = payload.failedCount > 0
+        self.lastStackPosition = stackPosition
         self.lastAbsorbPulse = payload.absorbPulse
         self.hasConfigured = true
 
@@ -1975,24 +2154,35 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
 
     private func applyLayerColors(animated: Bool) {
         guard let theme = lastTheme else { return }
-        let bgColor: NSColor
-        if lastHovered {
-            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.085 : 0.065)
-        } else if lastIsExpanded {
-            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.065 : 0.05)
-        } else {
-            bgColor = theme.toolBackground
-        }
-
-        let borderColor: NSColor
+        let bgColor: NSColor?
+        let borderWidth: CGFloat
+        let borderColor: NSColor?
         if lastHasFailures {
-            borderColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.32 : 0.26)
-        } else if lastIsExpanded || lastHovered {
-            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.14 : 0.14)
+            bgColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.08 : 0.055)
+            borderWidth = 1
+            borderColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.30 : 0.24)
+        } else if lastIsRunning {
+            bgColor = theme.toolBackground
+            borderWidth = 1
+            borderColor = theme.accent.withAlphaComponent(theme.isDark ? 0.36 : 0.28)
+        } else if lastIsExpanded {
+            bgColor = theme.foreground.withAlphaComponent(
+                lastHovered ? (theme.isDark ? 0.085 : 0.062) : (theme.isDark ? 0.055 : 0.042))
+            borderWidth = 1
+            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.09)
+        } else if lastHovered {
+            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.088 : 0.068)
+            borderWidth = 0
+            borderColor = nil
         } else {
-            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.07 : 0.08)
+            // Collapsed, settled tool groups use a soft borderless fill at rest so they
+            // separate cleanly from prose without heavy boxed borders.
+            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.052 : 0.038)
+            borderWidth = 0
+            borderColor = nil
         }
 
+        let effectiveStack: PCodeToolStackPosition = (lastIsRunning || lastIsExpanded || lastHasFailures) ? .standalone : lastStackPosition
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin()
             if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -2001,12 +2191,14 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
             } else {
                 CATransaction.setDisableActions(true)
             }
-            layer?.backgroundColor = bgColor.cgColor
+            layer?.backgroundColor = bgColor?.cgColor
             layer?.cornerRadius = 6
-            layer?.borderWidth = 1
-            layer?.borderColor = borderColor.cgColor
+            layer?.maskedCorners = effectiveStack.maskedCorners
+            layer?.borderWidth = borderWidth
+            layer?.borderColor = borderColor?.cgColor
             pulseLayer.backgroundColor = theme.accent.withAlphaComponent(theme.isDark ? 0.18 : 0.13).cgColor
             pulseLayer.cornerRadius = 6
+            pulseLayer.maskedCorners = effectiveStack.maskedCorners
             CATransaction.commit()
         }
     }

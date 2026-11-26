@@ -1697,37 +1697,74 @@ struct PCodeTranscriptTests {
         #expect(reloaded.groupTools == false)
     }
 
-    @Test func promptStyleDefaultsToClassicAndPersists() {
+    @Test func promptStyleDefaultsToRightPillAndPersists() {
         let suiteName = "com.pcode.test.prefs.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .classic)
-        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .bar
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .bar)
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .rightPill)
+        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .leftWash
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .leftWash)
         defaults.set("bogus", forKey: "PCodeTranscriptPromptStyle")
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .classic)
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .rightPill)
     }
 
     @Test @MainActor func promptStylesFrameTheRowDifferently() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let text = NSAttributedString(string: "Hello")
-        func height(_ style: PCodePromptStyle) -> (CGFloat, PCodePromptRowView) {
+        func configure(_ style: PCodePromptStyle) -> (CGFloat, PCodePromptRowView) {
             let row = PCodePromptRowView()
             let h = row.configure(
                 attributedText: text, isSidePrompt: false, style: style,
                 width: 400, theme: theme, selectedRange: nil)
             return (h, row)
         }
-        let (classic, classicRow) = height(.classic)
-        let (tinted, tintedRow) = height(.tinted)
-        let (bar, barRow) = height(.bar)
-        // Tighter padding per style: classic 10pt, tinted 8pt, bar 2pt.
-        #expect(classic - tinted == 4)
-        #expect(tinted - bar == 12)
-        #expect(classicRow.layer?.borderWidth == 0)
-        #expect(tintedRow.layer?.borderWidth == 1)
-        #expect(barRow.layer?.backgroundColor == nil)
+        let (rightH, rightRow) = configure(.rightPill)
+        let (leftH, leftRow) = configure(.leftWash)
+        let (bandH, bandRow) = configure(.band)
+        let (barH, barRow) = configure(.bar)
+        // Right pill aligns text to the right edge; left wash stays on the left rail.
+        #expect(rightRow.textView.frame.minX > leftRow.textView.frame.minX)
+        #expect(rightH == leftH)
+        #expect(bandH > rightH)
+        #expect(rightH > barH)
+        #expect(rightRow.hasVisibleSurface)
+        #expect(leftRow.hasVisibleSurface)
+        #expect(bandRow.hasVisibleSurface)
+        #expect(!barRow.hasVisibleSurface)
+    }
+
+    @Test @MainActor func columnMetricsCentersWideWindowsAndClampsNarrowOnes() {
+        let wide = PCodeTranscriptDocumentView.columnMetrics(forAvailableWidth: 1200)
+        #expect(wide.contentWidth == PCodeTranscriptDocumentView.maxContentWidth)
+        #expect(wide.originX == 200)
+
+        let narrow = PCodeTranscriptDocumentView.columnMetrics(forAvailableWidth: 500)
+        #expect(narrow.originX == PCodeTranscriptDocumentView.horizontalPadding)
+        #expect(narrow.contentWidth == 500 - PCodeTranscriptDocumentView.horizontalPadding * 2)
+    }
+
+    @Test @MainActor func stackedSettledToolsCollapseGapsAndRestoreOnExpand() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        doc.groupTools = false
+
+        let t1 = PCodePeekToolCall(id: "t1", name: "read_file", detail: "a.swift", command: "", output: "line1\nline2", isRunning: false, failed: false)
+        let t2 = PCodePeekToolCall(id: "t2", name: "read_file", detail: "b.swift", command: "", output: "line1\nline2", isRunning: false, failed: false)
+        let t3 = PCodePeekToolCall(id: "t3", name: "read_file", detail: "c.swift", command: "", output: "line1\nline2", isRunning: false, failed: false)
+        doc.setItems([
+            PCodeTranscriptItem(id: "t1", payload: .tool(t1, isExpanded: false), spacingAfter: 4),
+            PCodeTranscriptItem(id: "t2", payload: .tool(t2, isExpanded: false), spacingAfter: 4),
+            PCodeTranscriptItem(id: "t3", payload: .tool(t3, isExpanded: false), spacingAfter: 4),
+        ], pinToBottom: true)
+
+        // Consecutive settled tools collapse gaps to 0; last item keeps its trailing spacing.
+        #expect(doc.items[0].spacingAfter == 0)
+        #expect(doc.items[1].spacingAfter == 0)
+        #expect(doc.items[2].spacingAfter == 4)
     }
 
     @Test @MainActor func toolGrouperFoldsSettledToolsAboveActiveRunningTools() {
