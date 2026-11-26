@@ -640,7 +640,10 @@ THOUGHT_ICON = "❝"
 # says `$ make test` rather than `Run shell · make test`. A tool not listed
 # keeps its verb spelled out. Each is one cell wide, ambiguous-width or not.
 # ASCII, in every font, so `tool_glyphs off` keeps it.
-PLAIN_TOOL_GLYPHS = dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "$")
+# A wait on a job is a shell command still running, so it shares `$`: the row
+# then reads like the foreground run it stands in for (`$ j3 · make e2e`).
+SHELL_LABELS = ("Run shell", "Wait for shell", "Run code", "Start command", "Check command")
+PLAIN_TOOL_GLYPHS = dict.fromkeys(SHELL_LABELS, "$")
 TOOL_GLYPHS = {
     **PLAIN_TOOL_GLYPHS,
     **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "⌕"),
@@ -648,7 +651,7 @@ TOOL_GLYPHS = {
     **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "⎘"),
 }
 _TOOL_ICON_SLOTS = {
-    **dict.fromkeys(("Run shell", "Run code", "Start command", "Check command"), "shell"),
+    **dict.fromkeys(SHELL_LABELS, "shell"),
     **dict.fromkeys(("Search code", "Find files", "List directory", "Find tools"), "search"),
     **dict.fromkeys(("Edit file", "Write file"), "edit"),
     **dict.fromkeys(("Read file", "Read results", "Read job output", "File info"), "read"),
