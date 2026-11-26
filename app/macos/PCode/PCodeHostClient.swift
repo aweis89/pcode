@@ -493,6 +493,8 @@ final class PCodeTranscriptEventReducer {
                 reveal: reveal)
 
         case .toolStarted(let callID, let parentCallID, let name, let detail, let command, _):
+            // A retried request can skip the `Thinking` marker; never leave a block pulsing.
+            if parentCallID.isEmpty { settleActiveThinking(in: doc, reveal: reveal) }
             finishActiveStreamIfNeeded(in: doc, reveal: reveal)
             let existing = toolCallsByID[callID]
             if existing == nil {

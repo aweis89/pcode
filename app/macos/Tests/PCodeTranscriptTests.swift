@@ -908,6 +908,7 @@ struct PCodeTranscriptTests {
         scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
+        doc.thinkingDisplay = .collapse
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         reducer.apply(.turnStarted(prompt: "Refactor parser", isSide: false, runID: "r1"), reveal: false)

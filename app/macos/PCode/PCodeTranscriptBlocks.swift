@@ -2320,7 +2320,7 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .thinking
     let textView = PCodeTextKit2BlockView()
     /// Clips the streaming tail to its last lines (bottom-aligned) and fades its top edge.
-    private let bodyClip = NSView()
+    private let bodyClip = FlippedClipView()
     private let fadeMask = CAGradientLayer()
     private let rule = NSView()
     private let headerButton = NSButton()
@@ -2560,6 +2560,11 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
 
     @objc private func togglePressed() {
         onToggle?()
+    }
+
+    /// `PCodeTextKit2BlockView` lays out top-down and needs a flipped parent.
+    private final class FlippedClipView: NSView {
+        override var isFlipped: Bool { true }
     }
 }
 

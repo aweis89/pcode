@@ -2437,7 +2437,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
            let textView = rowView.primaryTextView,
            let textRange = textView.textRange(fromUTF16: localRange)
         {
-            let rowClip = rowView.frame
+            // Also clip to the text's own container (a scrolled code block, or a thinking
+            // row's streaming tail) so hidden lines never paint over neighbouring chrome.
+            let container = textView.superview ?? rowView
+            let rowClip = rowView.frame.intersection(self.convert(container.bounds, from: container))
             var out: [CGRect] = []
             textView.textLayoutManager.enumerateTextSegments(
                 in: textRange,
