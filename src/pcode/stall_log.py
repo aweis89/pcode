@@ -156,6 +156,8 @@ class StallWatch:
             finally:
                 self._due = time.monotonic()
 
+        # Assumes the loop keeps this selector: one swapped in later (an input
+        # hook's) would leave `_due` frozen and every poll a false stall.
         selector.select = _watched_select
         try:
             await asyncio.get_running_loop().create_future()

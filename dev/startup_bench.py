@@ -13,9 +13,9 @@ It reports the time to the APC `pcode;ready` marker (the app shows the pane) and
 to the first `pcode;session;<id>` marker.
 
 Isolated from your real state: `XDG_STATE_HOME`, `XDG_CONFIG_HOME`,
-`PCODE_CONFIG_DIR` and `PCODE_HOST_DIR` point into a throwaway directory, no
-model is configured (the host runs the offline preview, so nothing calls an
-API), and every host it starts is killed at the end.
+`PCODE_CONFIG_DIR` and `PCODE_HOST_DIR` point into a throwaway directory, hosts
+run Pydantic AI's offline `test` model (nothing calls an API), and every host it
+starts is killed at the end.
 """
 
 from __future__ import annotations
