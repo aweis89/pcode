@@ -395,6 +395,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// the whole scrollback downward on screen, against the direction it streams. Instead the
     /// document keeps its height and later growth fills the gap before scrolling resumes.
     private var bottomSlack: CGFloat = 0
+    /// Set while `reloadHistory` replays a conversation into `rawItems`.
+    private var isReloadingHistory = false
+    /// Set while `settlingAtTrueBottom` runs: shrinks then leave no slack.
+    private var isSettlingBottom = false
     /// Content height (without slack) at the last `applyDocumentHeight`, to tell shrink from growth.
     private var lastAppliedContentHeight: CGFloat = 0
     private var lastMountedRange: Range<Int> = 0..<0
@@ -665,6 +669,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
         }
         syncLiveRunningTimer()
+    }
+
+    /// Replace the transcript with a whole conversation that `replay` builds through the usual
+    /// upserts, then land on its bottom. While it runs, rows change only in `rawItems`;
+    /// projection, layout and mounting happen once at the end, where per-event they made a
+    /// long session's replay quadratic (each tool call re-projected every row before it).
+    func reloadHistory(_ replay: () -> Void) {
+        setItems([], pinToBottom: true)
+        isReloadingHistory = true
+        replay()
+        isReloadingHistory = false
+        setItems(rawItems, pinToBottom: true)
+        scrollToBottomAndPin()
     }
 
     // MARK: - ID-Addressed Upsert & Streaming Pipeline
@@ -965,6 +982,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         animateShift: Bool = false,
         animateExpandedGroupID: String? = nil
     ) {
+        // `reloadHistory` projects once, when it finishes.
+        guard !isReloadingHistory else { return }
         // First projection to discover target group ID for any absorb pulse.
         var projection = projectRawItems()
 
@@ -1531,12 +1550,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         resetSmoothGlide()
         stickyBottom.pinToBottom()
         setHasUnreadStreamingContent(false)
-        resetBottomSlack()
-        applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
-        mountViews(in: visibleRect)
+        settlingAtTrueBottom {
+            applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+            mountViews(in: visibleRect)
+        }
         if !revealQueue.isEmpty {
             ensureDisplayLinkRunning()
         }
+    }
+
+    /// Run `body` (which measures and mounts rows) so a pinned view ends on the content's true
+    /// bottom: rows that come out shorter than their estimates leave no blank slack below.
+    private func settlingAtTrueBottom(_ body: () -> Void) {
+        resetBottomSlack()
+        let wasSettling = isSettlingBottom
+        isSettlingBottom = true
+        defer { isSettlingBottom = wasSettling }
+        body()
     }
 
     /// Re-pin to bottom without smooth glide when the bottom dock inset changes.
@@ -1595,9 +1625,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if widthChanged {
             lastContentWidth = newSize.width
             // Rewrapping is a resize, not streaming: let the view settle at the true bottom.
-            resetBottomSlack()
-            layoutEngine.invalidateAllMeasurements()
-            remountVisibleViews()
+            settlingAtTrueBottom {
+                layoutEngine.invalidateAllMeasurements()
+                remountVisibleViews()
+            }
         }
     }
 
@@ -1692,6 +1723,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     }
 
     private func mountViews(in rect: NSRect, pass: Int = 0) {
+        // `reloadHistory` rebuilds the display from `rawItems` once, when it finishes.
+        guard !isReloadingHistory else { return }
         guard !items.isEmpty else {
             let unobstructedH = unobstructedViewportHeight(in: enclosingScrollView)
             let targetHeight = max(layoutEngine.totalHeight, unobstructedH)
@@ -1723,6 +1756,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         let viewportTop = enclosingScrollView?.contentView.bounds.origin.y ?? 0
         var accumulatedScrollDelta: CGFloat = 0
+        // While pinned, how far rows wholly above the viewport moved what is on screen
+        // (estimates corrected as rows scroll into the overscan band, mostly).
+        var pinnedShiftAbove: CGFloat = 0
 
         for idx in range {
             let item = items[idx]
@@ -1760,12 +1796,17 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 let measured = applyRowView(rowView, item: item, index: idx, width: effectiveWidth)
                 appliedStates[item.id] = targetState
 
+                let pinned = stickyBottom.shouldProgrammaticallyPin
+                let before = layoutEngine.entries[idx]
                 let delta = layoutEngine.updateHeight(
                     at: idx,
                     measuredHeight: measured,
                     viewportTop: viewportTop + accumulatedScrollDelta,
-                    isPinnedToBottom: stickyBottom.shouldProgrammaticallyPin)
+                    isPinnedToBottom: pinned)
                 accumulatedScrollDelta += delta.scrollOriginDelta
+                if pinned, before.yOffset + before.height <= viewportTop + pinnedShiftAbove + 0.5 {
+                    pinnedShiftAbove += delta.newTotalHeight - delta.oldTotalHeight
+                }
 
                 // Update reveal queue's exact measured extent (horizontal line span for ink-sweep,
                 // or pixel-rounded height for curtain).
@@ -1818,7 +1859,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             applyDocumentHeight(
                 layoutEngine.totalHeight,
                 scrollOriginDelta: accumulatedScrollDelta,
-                pinIfNeeded: stickyBottom.shouldProgrammaticallyPin)
+                pinIfNeeded: stickyBottom.shouldProgrammaticallyPin,
+                pinnedShiftAbove: pinnedShiftAbove)
             if pass < 4, layoutEngine.visibleRange(in: visibleRect) != range {
                 mountViews(in: visibleRect, pass: pass + 1)
             }
@@ -2105,11 +2147,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// growing updates frame then origin; shrinking updates origin then frame to avoid clip clamping.
     /// When `allowSmoothGlide` is true and pinned to bottom on-screen, absorbs downward growth into
     /// `smoothGlide` so `CADisplayLink` glides `clipView.bounds.origin.y` smoothly at 120Hz.
+    /// `pinnedShiftAbove` is how much of the height change came from rows wholly above the
+    /// viewport: it moves what is on screen, so the slack follows it instead of absorbing it
+    /// (which left a blank gap under the last row, or nudged the rows on screen).
     private func applyDocumentHeight(
         _ newHeight: CGFloat,
         scrollOriginDelta: CGFloat,
         pinIfNeeded: Bool,
-        allowSmoothGlide: Bool = true
+        allowSmoothGlide: Bool = true,
+        pinnedShiftAbove: CGFloat = 0
     ) {
         guard let scrollView = enclosingScrollView else {
             frame.size.height = newHeight
@@ -2122,9 +2168,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             // Slack that keeps the current origin exactly at the bottom. A shrink resets the
             // slack to that; growth and viewport changes may only lower it, so the gap fills
             // before the view scrolls on, and a taller viewport still reveals scrollback.
-            let heightHoldingOrigin = clipView.bounds.origin.y + clipView.bounds.height - scrollView.contentInsets.bottom
+            // Settling on a reload's or resize's true bottom keeps no slack from rows measured
+            // on the way: they shrink from estimates, not from content going away.
+            let heightHoldingOrigin = clipView.bounds.origin.y + pinnedShiftAbove
+                + clipView.bounds.height - scrollView.contentInsets.bottom
             let holdingSlack = max(0, heightHoldingOrigin - newHeight)
-            bottomSlack = newHeight < lastAppliedContentHeight - 0.5
+            bottomSlack = newHeight < lastAppliedContentHeight - 0.5 && !isSettlingBottom
                 ? holdingSlack
                 : min(bottomSlack, holdingSlack)
         }

@@ -23,6 +23,7 @@ import contextlib
 import itertools
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -49,7 +50,7 @@ from pcode.host_protocol import (
     write_entry,
 )
 from pcode.jobs import registry as job_registry
-from pcode.rpc import Peer
+from pcode.rpc import Peer, broadcast
 from pcode.runtime import CommandOutput, EditPreview, PreviewRuntime, TextDelta, ThinkingDelta
 from pcode.ui import NOTICE_SECONDS, Activity
 
@@ -91,6 +92,75 @@ TRANSCRIPT_OBSERVER_CALLS = frozenset(
 # View calls that change what the conversation is, so a terminal attaching
 # later reads it from the journal instead of from the buffer.
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
+# Of those, the ones that redraw the conversation from the journal. A transcript
+# observer has no journal reader of its own, so it gets the records instead, as
+# a `history` call (`SessionHost.emit`).
+REPLAYS = {"replay_conversation", "show_branch"}
+
+# Journal records a transcript observer never draws: streaming deltas (the
+# settled Message and Thinking follow them), status ticks, plan snapshots, and
+# model traffic. A long session's journal is mostly these, and its whole history
+# goes to an observer in one message.
+OBSERVER_SKIPPED_KINDS = frozenset(
+    {
+        "TextDelta",
+        "ThinkingDelta",
+        "RunStatus",
+        "PlanUpdated",
+        "PlanPreview",
+        "ChildText",
+        "ChildPlan",
+        "WorkerStatus",
+        "CacheBust",
+        "compaction_checkpoint",
+        "request",
+        "response",
+    }
+)
+# Fields an observer never reads; a tool's arguments can be most of a journal.
+OBSERVER_DROPPED_FIELDS = {"ToolStarted": ("arguments",)}
+# Where a journal line names its kind: right after its version and time.
+_JOURNAL_KIND = re.compile(rb'"kind": "([^"]+)"')
+
+
+def observer_history(journal, limit: int | None = None) -> list[dict]:
+    """The selected branch of `journal` up to byte `limit`, as a transcript observer draws it.
+
+    Filters branches as `SessionJournal.active_records` does, so `/tree` changes it.
+    """
+    from pcode.sessions import side_record
+
+    try:
+        with (journal.directory / "transcript.jsonl").open("rb") as fh:
+            raw = fh.read() if limit is None else fh.read(max(0, limit))
+    except OSError:
+        return []
+    tree = journal.tree
+    selected = set(tree.path(tree.active)) if tree.nodes else None
+    recording = None
+    records: list[dict] = []
+    for line in raw.splitlines():
+        if not line:
+            continue
+        # Skip the bulk without parsing it; anything unexpected is parsed and checked.
+        sniffed = _JOURNAL_KIND.search(line, 0, 200)
+        if sniffed is not None and sniffed[1].decode(errors="replace") in OBSERVER_SKIPPED_KINDS:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or obj.get("kind") in OBSERVER_SKIPPED_KINDS:
+            continue
+        if obj.get("kind") == "turn_started" and not side_record(obj):
+            recording = obj.get("run_id")
+        if selected is not None and (obj.get("run_id") or recording) not in selected:
+            continue
+        for name in OBSERVER_DROPPED_FIELDS.get(obj.get("kind"), ()):
+            obj.pop(name, None)
+        records.append(obj)
+    return records
+
 
 # What a terminal may call besides the controller's intents.
 HOST_CALLS = frozenset(
@@ -575,6 +645,8 @@ class SessionHost:
         # receive settled history + catch-up calls + live data-only view calls
         # without affecting `attached`, `unseen`, `_latest`, or the idle clock.
         self.transcript_observers: set[Peer] = set()
+        # Journal size behind the history observers got while the host booted.
+        self.boot_history_end: int | None = None
         # Side questions changed since observers last heard, sent together
         # shortly after, so a streaming answer is not rendered per token.
         self._observed: dict[str, object] = {}
@@ -749,31 +821,32 @@ class SessionHost:
             peer.close()
 
     def _read_settled_history(self) -> list[dict]:
-        """Read settled transcript journal records up to `self.settled_end` as JSON dicts."""
+        """The settled journal (up to `settled_end`) as a transcript observer draws it."""
         session = getattr(self.controller.runtime, "session", None)
-        if session is None:
+        if session is not None:
+            return observer_history(session, self.settled_end)
+        # Still booting: the conversation being resumed is on disk already. Without
+        # this, an observer that connects first is told the session is empty.
+        saved = getattr(self.controller, "_saved_session", None)
+        if saved is None:
             return []
-        path = session.directory / "transcript.jsonl"
-        if not path.is_file():
-            return []
-        limit = self.settled_end
-        records: list[dict] = []
-        skip_kinds = {"TextDelta", "ThinkingDelta"}
-        try:
-            with path.open("rb") as fh:
-                raw = fh.read() if limit is None else fh.read(max(0, limit))
-        except OSError:
-            return []
-        for line in raw.splitlines():
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict) and obj.get("kind") not in skip_kinds:
-                records.append(obj)
-        return records
+        with contextlib.suppress(OSError):
+            self.boot_history_end = saved.journal_size()
+        return observer_history(saved)
+
+    def _replay_to_observers(self, method: str) -> None:
+        """Send transcript observers the conversation a replay just redrew, as `history`."""
+        session = getattr(self.controller.runtime, "session", None)
+        boot_end, self.boot_history_end = self.boot_history_end, None
+        if session is None or not self.transcript_observers:
+            return  # Nothing saved to read: keep what they show.
+        if method == "replay_conversation" and boot_end is not None:
+            with contextlib.suppress(OSError):
+                if session.journal_size() == boot_end:
+                    # Boot loaded what observers were shown while it ran; don't
+                    # make them rebuild a long transcript a second time.
+                    return
+        broadcast(list(self.transcript_observers), "history", self._read_settled_history())
 
     async def _observe_transcript(
         self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -1032,7 +1105,10 @@ class SessionHost:
             self.own_jobs()
         for client in list(self.clients.values()):
             client.peer.notify(method, *args, **kwargs)
-        if method in TRANSCRIPT_OBSERVER_CALLS:
+        if method in REPLAYS:
+            # After `reset_buffer`, so this is everything shown until now.
+            self._replay_to_observers(method)
+        elif method in TRANSCRIPT_OBSERVER_CALLS:
             for peer in list(self.transcript_observers):
                 peer.notify(method, *args, **kwargs)
         if method in RESETS:

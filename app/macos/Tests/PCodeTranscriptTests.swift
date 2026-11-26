@@ -2154,6 +2154,114 @@ struct PCodeTranscriptTests {
         #expect(doc.items[doc.items.count - 1].depth == 1)
     }
 
+    /// A long conversation's settled history, with grouped tools, nesting, thinking and prose.
+    private static func sampleHistory(turns: Int) -> [PCodeHostEvent] {
+        var events: [PCodeHostEvent] = []
+        for turn in 0..<turns {
+            events.append(.turnStarted(prompt: "Turn \(turn)", isSide: false, runID: "r\(turn)"))
+            events.append(.thinking(text: "Considering turn \(turn)", elapsedSeconds: 1))
+            for call in 0..<4 {
+                let id = "t\(turn)-\(call)"
+                events.append(.toolStarted(callID: id, parentCallID: "", name: "read_file", detail: "f\(call).py", command: "", purpose: ""))
+                events.append(.toolSummary(callID: id, parentCallID: "", name: "read_file", detail: "f\(call).py", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false))
+            }
+            events.append(.message(markdown: "Answer \(turn).\n\nA second paragraph that wraps " + String(repeating: "word ", count: 40)))
+            events.append(.turnEnded(status: turn % 7 == 3 ? .cancelled : .complete))
+        }
+        // A tool the history leaves running settles as it loads.
+        events.append(.toolStarted(callID: "dangling", parentCallID: "", name: "shell", detail: "sleep", command: "sleep", purpose: ""))
+        return events
+    }
+
+    @Test @MainActor func batchedHistoryLoadMatchesEventByEventReplay() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        func makeDoc() -> PCodeTranscriptDocumentView {
+            let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+            doc.groupTools = true
+            doc.showThinking = true
+            return doc
+        }
+        let events = Self.sampleHistory(turns: 12)
+
+        let stepped = makeDoc()
+        let steppedReducer = PCodeTranscriptEventReducer(documentView: stepped)
+        for event in events {
+            steppedReducer.apply(event, reveal: false, isLive: false)
+        }
+        // What loading also does at the end: settle the dangling tool.
+        steppedReducer.apply(.turnStarted(prompt: "next", isSide: false, runID: ""), reveal: false, isLive: false)
+
+        let batched = makeDoc()
+        let batchedReducer = PCodeTranscriptEventReducer(documentView: batched)
+        // Whatever was shown before is replaced.
+        batched.setItems([PCodeTranscriptItem(id: "stale", payload: .status(.failed), spacingAfter: 0)], pinToBottom: false)
+        batchedReducer.loadHistory(events)
+        batchedReducer.apply(.turnStarted(prompt: "next", isSide: false, runID: ""), reveal: false, isLive: false)
+
+        #expect(batched.items.map(\.id) == stepped.items.map(\.id))
+        #expect(batched.items.map(\.kind) == stepped.items.map(\.kind))
+        #expect(batched.rawItems.map(\.id) == stepped.rawItems.map(\.id))
+        #expect(batched.layoutEngine.entries.count == batched.items.count)
+        #expect(!batched.items.contains { $0.id == "stale" })
+        #expect(batched.stickyBottom.mode == .pinnedToBottom)
+    }
+
+    @Test @MainActor func hostHistoryNotifyDecodesJournalRecords() {
+        let event = PCodeHostEventDecoder.decodeRPCCall(
+            method: "history",
+            args: [[["kind": "turn_started", "prompt": "Hi"], ["kind": "RunStatus"], ["kind": "Message", "markdown": "Yo"]]],
+            kwargs: [:])
+        #expect(event == .history([.turnStarted(prompt: "Hi", isSide: false, runID: ""), .message(markdown: "Yo")]))
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "history", args: [], kwargs: [:]) == nil)
+
+        let line = Data(#"{"version": 1, "time": "2026-01-01T00:00:00+00:00", "kind": "RunStatus", "text": "x"}"#.utf8)
+        #expect(PCodeLiveTranscriptController.sniffJournalKind(line) == "RunStatus")
+        #expect(PCodeLiveTranscriptController.sniffJournalKind(Data("{}".utf8)) == nil)
+        // At the call site a line is a slice of the whole journal, indexed from its offset.
+        let journal = Data("{\"kind\": \"Message\"}\n".utf8) + line
+        #expect(PCodeLiveTranscriptController.sniffJournalKind(journal[20...]) == "RunStatus")
+    }
+
+    @Test @MainActor func loadedHistoryLandsOnTheTrueBottomWithNoBlankSlack() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        doc.groupTools = true
+        doc.showThinking = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        func expectAtTrueBottom(_ when: Comment) {
+            let clip = scrollView.contentView
+            let viewport = clip.bounds.height - scrollView.contentInsets.top - scrollView.contentInsets.bottom
+            // No slack: the document is exactly the content (or the viewport, when shorter)...
+            #expect(abs(doc.frame.height - max(doc.layoutEngine.totalHeight, viewport)) <= 0.5, when)
+            // ...and the clip shows its end.
+            let bottomY = PCodeStickyBottomState.bottomOriginY(
+                documentHeight: doc.frame.height,
+                clipHeight: clip.bounds.height,
+                topInset: scrollView.contentInsets.top,
+                bottomInset: scrollView.contentInsets.bottom)
+            #expect(abs(clip.bounds.origin.y - bottomY) <= 0.5, when)
+        }
+
+        reducer.loadHistory(Self.sampleHistory(turns: 40))
+        #expect(doc.layoutEngine.totalHeight > 2000)
+        expectAtTrueBottom("after loading")
+
+        // AppKit's overscan then measures rows above the viewport; their corrections must
+        // move the origin with them instead of opening a gap under the last row.
+        let visible = doc.visibleRect
+        doc.prepareContent(in: visible.insetBy(dx: 0, dy: -visible.height * 2))
+        expectAtTrueBottom("after measuring rows above")
+
+        // Rewrapping at a new width settles on the new bottom too.
+        scrollView.frame.size.width = 520
+        scrollView.layoutSubtreeIfNeeded()
+        expectAtTrueBottom("after a resize")
+    }
+
     @Test @MainActor func btwItemSyncDiffsAgainstRawItemsWhenGrouped() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)

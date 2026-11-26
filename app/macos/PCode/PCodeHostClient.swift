@@ -109,6 +109,9 @@ enum PCodeHostEvent: Equatable {
     case note(String)
     case error(String)
     case conversationReset
+    /// The whole settled conversation, replacing what is shown (`history`: the host loaded a
+    /// resumed session, switched to another, or moved to another branch).
+    case history([PCodeHostEvent])
     /// A `state` notify: the session fields that changed since the last one.
     case sessionState(PCodeHostSessionDelta)
     /// The conversation's identity or settings changed (`session_changed`); carries the host's current session id.
@@ -252,6 +255,9 @@ enum PCodeHostEventDecoder {
             return nil
         case "conversation_reset":
             return .conversationReset
+        case "history":
+            guard let records = args.first as? [[String: Any]] else { return nil }
+            return .history(records.compactMap(decodeJournalRecord))
         case "state":
             guard let changes = args.first as? [String: Any] else { return nil }
             let delta = PCodeHostSessionDelta(
@@ -391,10 +397,17 @@ final class PCodeTranscriptEventReducer {
         pendingChildrenByParent.removeAll()
     }
 
-    /// Settle any dangling running tools or edit previews left over after replaying settled history.
-    func settleHistory() {
+    /// Replace the transcript with settled history and land on its bottom, settling any tools
+    /// or edit previews it leaves running. Built in one batch (`reloadHistory`).
+    func loadHistory(_ events: [PCodeHostEvent]) {
         guard let doc = documentView else { return }
-        settleRunningItems(failed: false, in: doc)
+        reset()
+        doc.reloadHistory {
+            for event in events {
+                apply(event, reveal: false, isLive: false)
+            }
+            settleRunningItems(failed: false, in: doc)
+        }
     }
 
     func apply(_ event: PCodeHostEvent, reveal: Bool, isLive: Bool? = nil) {
@@ -404,6 +417,9 @@ final class PCodeTranscriptEventReducer {
         case .conversationReset:
             reset()
             doc.setItems([], pinToBottom: true)
+
+        case .history(let events):
+            loadHistory(events)
 
         case .turnStarted(let prompt, let isSide, _):
             settleRunningItems(failed: false, in: doc)
