@@ -187,6 +187,7 @@ HOST_CALLS = frozenset(
         "restart",
         "asides_read",
         "continue_interrupted",
+        "manage_worker",
     }
 )
 

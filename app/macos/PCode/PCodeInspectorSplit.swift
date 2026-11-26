@@ -73,7 +73,7 @@ enum PCodeHostControlRPC {
                         let msg = (dict["message"] as? String) ?? (ok ? "Done." : "Request failed.")
                         completion(ok ? .success(msg) : .failure(ControlError(message: msg)))
                     } else {
-                        completion(.success("Sent."))
+                        completion(.failure(ControlError(message: "Unexpected reply from session host.")))
                     }
                 case .failure(let error):
                     completion(.failure(error))
@@ -198,7 +198,7 @@ enum PCodeHostControlRPC {
         else {
             return .failure(ControlError(message: "No reply from session host."))
         }
-        if let err = replyObj["error"] {
+        if let err = replyObj["error"], !(err is NSNull) {
             if let errDict = err as? [String: Any], let msg = errDict["message"] as? String {
                 return .failure(ControlError(message: msg))
             }

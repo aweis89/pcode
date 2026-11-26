@@ -13,7 +13,7 @@ enum PCodeInspectorTab: String, CaseIterable, Identifiable, Equatable, Hashable,
     var title: String {
         switch self {
         case .changes: return "Changes"
-        case .agents: return "Agents"
+        case .agents: return "Sub-agents"
         case .commands: return "Commands"
         }
     }
@@ -315,6 +315,7 @@ struct PCodeInspectorAgentItem: Identifiable, Equatable, Sendable {
     }
 
     let id: String
+    let parentAgentID: String?
     let workerID: String?
     let role: String
     let detail: String
@@ -328,6 +329,7 @@ struct PCodeInspectorAgentItem: Identifiable, Equatable, Sendable {
 
     init(
         id: String,
+        parentAgentID: String? = nil,
         workerID: String? = nil,
         role: String,
         detail: String = "",
@@ -340,6 +342,7 @@ struct PCodeInspectorAgentItem: Identifiable, Equatable, Sendable {
         error: String? = nil
     ) {
         self.id = id
+        self.parentAgentID = parentAgentID
         self.workerID = workerID
         self.role = role
         self.detail = detail

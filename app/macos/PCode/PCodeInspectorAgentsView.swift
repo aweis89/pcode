@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -23,6 +24,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
 
     private struct AgentRecord {
         let id: String
+        var parentAgentID: String?
         var workerID: String?
         var role: String
         var detail: String
@@ -39,6 +41,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
         func makeItem() -> PCodeInspectorAgentItem {
             PCodeInspectorAgentItem(
                 id: id,
+                parentAgentID: parentAgentID,
                 workerID: workerID,
                 role: role,
                 detail: detail,
@@ -69,6 +72,32 @@ final class PCodeInspectorAgentsStore: ObservableObject {
         recordsByID[id]?.makeItem()
     }
 
+    /// Top-level agents (those with no parent agent, or whose parent isn't tracked in this store).
+    var rootAgents: [PCodeInspectorAgentItem] {
+        agents.filter { item in
+            guard let parentID = item.parentAgentID, !parentID.isEmpty else { return true }
+            return recordsByID[parentID] == nil
+        }
+    }
+
+    /// Direct child sub-agents spawned by `parentID`, in chronological order.
+    func childAgents(of parentID: String) -> [PCodeInspectorAgentItem] {
+        agents.filter { $0.parentAgentID == parentID }
+    }
+
+    /// Ancestor agent IDs from immediate parent upward (cycle-safe), for auto-expanding nested focus targets.
+    func ancestorIDs(of agentID: String) -> [String] {
+        var result: [String] = []
+        var visited: Set<String> = [agentID]
+        var current = recordsByID[agentID]?.parentAgentID
+        while let parentID = current, !parentID.isEmpty, !visited.contains(parentID), recordsByID[parentID] != nil {
+            result.append(parentID)
+            visited.insert(parentID)
+            current = recordsByID[parentID]?.parentAgentID
+        }
+        return result
+    }
+
     func reset() {
         resetInternal()
         agents = []
@@ -90,34 +119,56 @@ final class PCodeInspectorAgentsStore: ObservableObject {
         now: Date = Date()
     ) {
         guard var record = recordsByID[callID] else { return }
-        if let workerID, !workerID.isEmpty {
+        var changed = false
+        if let workerID, !workerID.isEmpty, record.workerID != workerID {
             record.workerID = workerID
+            changed = true
         }
-        if let status {
+        if let status, record.status != status {
             record.status = status
+            changed = true
             if status != .running && status != .waiting {
-                record.pendingQuestion = nil
+                if record.pendingQuestion != nil {
+                    record.pendingQuestion = nil
+                }
+                let childFailed = (status == .failed || status == .cancelled)
+                for idx in record.nestedCalls.indices where record.nestedCalls[idx].call.isRunning {
+                    record.nestedCalls[idx].call = Self.settling(record.nestedCalls[idx].call, failed: childFailed)
+                }
             }
         }
         if clearPendingQuestion {
-            record.pendingQuestion = nil
+            if record.pendingQuestion != nil {
+                record.pendingQuestion = nil
+                changed = true
+            }
             if record.status == .waiting {
                 record.status = .running
+                changed = true
             }
         } else if let pendingQuestion {
             let trimmed = pendingQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                record.pendingQuestion = nil
+                if record.pendingQuestion != nil {
+                    record.pendingQuestion = nil
+                    changed = true
+                }
                 if record.status == .waiting {
                     record.status = .running
+                    changed = true
                 }
             } else {
-                record.pendingQuestion = trimmed
+                if record.pendingQuestion != trimmed {
+                    record.pendingQuestion = trimmed
+                    changed = true
+                }
                 if record.status == .running {
                     record.status = .waiting
+                    changed = true
                 }
             }
         }
+        guard changed else { return }
         sequence += 1
         record.lastActivityAt = now
         record.sequence = sequence
@@ -139,9 +190,11 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             guard !callID.isEmpty else { return }
             var changed = false
 
-            if Self.isDelegateTool(name) {
+            let isDelegate = Self.isDelegateTool(name)
+            if isDelegate {
                 upsertAgentStarted(
                     callID: callID,
+                    parentCallID: parentCallID,
                     detail: detail,
                     purpose: purpose,
                     now: now,
@@ -150,7 +203,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 changed = true
             }
 
-            if !parentCallID.isEmpty {
+            if !parentCallID.isEmpty && !isDelegate {
                 let child = makeStartedChildCall(
                     callID: callID,
                     name: name,
@@ -184,7 +237,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             var changed = false
             let isTrackedAgent = !callID.isEmpty && recordsByID[callID] != nil
 
-            if Self.isDelegateTool(name) || isTrackedAgent {
+            let isDelegateOrTracked = Self.isDelegateTool(name) || isTrackedAgent
+            if isDelegateOrTracked {
                 let resolvedID: String
                 if !callID.isEmpty {
                     resolvedID = callID
@@ -194,6 +248,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 }
                 upsertAgentSummary(
                     callID: resolvedID,
+                    parentCallID: parentCallID,
                     detail: detail,
                     failed: failed,
                     elapsedSeconds: elapsedSeconds,
@@ -209,7 +264,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 ? parentCallID
                 : (callID.isEmpty ? "" : (childParentByCallID[callID] ?? ""))
 
-            if !resolvedParent.isEmpty {
+            if !resolvedParent.isEmpty && !isDelegateOrTracked {
                 let childKey: String
                 if !callID.isEmpty {
                     childKey = callID
@@ -271,7 +326,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 workerID: workerID.isEmpty ? nil : workerID,
                 status: mappedStatus,
                 pendingQuestion: question,
-                clearPendingQuestion: answered == true,
+                clearPendingQuestion: answered != nil,
                 now: now
             )
 
@@ -312,6 +367,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
 
     private func upsertAgentStarted(
         callID: String,
+        parentCallID: String,
         detail: String,
         purpose: String,
         now: Date,
@@ -320,6 +376,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
         sequence += 1
         let trimmedPurpose = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedParent = parentCallID.trimmingCharacters(in: .whitespacesAndNewlines)
         let existing = recordsByID[callID]
 
         let resolvedRole: String
@@ -344,8 +401,11 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             ?? Self.extractWorkerID(from: trimmedDetail)
             ?? Self.extractWorkerID(from: trimmedPurpose)
 
+        let resolvedParentID: String? = !trimmedParent.isEmpty ? trimmedParent : existing?.parentAgentID
+
         var record = existing ?? AgentRecord(
             id: callID,
+            parentAgentID: resolvedParentID,
             workerID: workerID,
             role: resolvedRole,
             detail: resolvedDetail,
@@ -359,6 +419,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             lastActivityAt: now,
             sequence: sequence
         )
+
+        record.parentAgentID = resolvedParentID ?? record.parentAgentID
 
         record.workerID = workerID ?? record.workerID
         record.role = resolvedRole
@@ -383,6 +445,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
 
     private func upsertAgentSummary(
         callID: String,
+        parentCallID: String,
         detail: String,
         failed: Bool,
         elapsedSeconds: Double?,
@@ -394,6 +457,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
         sequence += 1
         let trimmedDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedError = error.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedParent = parentCallID.trimmingCharacters(in: .whitespacesAndNewlines)
         let existing = recordsByID[callID]
 
         let resolvedRole: String
@@ -456,10 +520,18 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             nestedCalls[idx].call = Self.settling(nestedCalls[idx].call, failed: failed)
         }
 
-        let status: PCodeInspectorAgentItem.Status = failed ? .failed : .completed
+        let status: PCodeInspectorAgentItem.Status = {
+            if failed && existing?.status == .cancelled {
+                return .cancelled
+            }
+            return failed ? .failed : .completed
+        }()
+
+        let resolvedParentID: String? = !trimmedParent.isEmpty ? trimmedParent : existing?.parentAgentID
 
         recordsByID[callID] = AgentRecord(
             id: callID,
+            parentAgentID: resolvedParentID,
             workerID: workerID,
             role: resolvedRole,
             detail: resolvedDetail,
@@ -701,16 +773,18 @@ final class PCodeInspectorAgentsStore: ObservableObject {
     }
 
     private func rebuildAgents() {
+        // Chronological oldest → newest with active agents at the bottom,
+        // matching the main transcript and Changes tab.
         let sorted = recordsByID.values.sorted { lhs, rhs in
             let lhsActive = lhs.status == .running || lhs.status == .waiting
             let rhsActive = rhs.status == .running || rhs.status == .waiting
             if lhsActive != rhsActive {
-                return lhsActive && !rhsActive
+                return !lhsActive && rhsActive
             }
             if lhs.lastActivityAt != rhs.lastActivityAt {
-                return lhs.lastActivityAt > rhs.lastActivityAt
+                return lhs.lastActivityAt < rhs.lastActivityAt
             }
-            return lhs.sequence > rhs.sequence
+            return lhs.sequence < rhs.sequence
         }
         agents = sorted.map { $0.makeItem() }
     }
@@ -765,7 +839,7 @@ struct PCodeInspectorAgentsView: View {
     @State private var resolvedSpilledReports: [String: String] = [:]
     @State private var failedSpillHandles: Set<String> = []
     @State private var reportLineLimits: [String: Int] = [:]
-    @State private var workerFeedbackByAgentID: [String: (text: String, isError: Bool)] = [:]
+    @State private var workerFeedbackByAgentID: [String: (token: UUID, text: String, isError: Bool)] = [:]
     @State private var inFlightWorkerAgentIDs: Set<String> = []
 
     init(
@@ -844,7 +918,7 @@ struct PCodeInspectorAgentsView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
 
-            Text(store.agents.isEmpty ? "Agents" : "Agents · \(store.agents.count)")
+            Text(store.agents.isEmpty ? "Sub-agents" : "Sub-agents · \(store.agents.count)")
                 .font(.system(size: 11.5, weight: .semibold))
 
             if store.activeCount > 0 {
@@ -891,6 +965,8 @@ struct PCodeInspectorAgentsView: View {
 
     // MARK: - Content
 
+    private static let bottomAnchorID = "agents-bottom-anchor"
+
     @ViewBuilder
     private var contentArea: some View {
         if store.agents.isEmpty {
@@ -899,18 +975,34 @@ struct PCodeInspectorAgentsView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(store.agents) { agent in
-                            agentCard(agent)
+                        ForEach(store.rootAgents) { agent in
+                            agentCard(agent, depth: 0)
                                 .id(agent.id)
                         }
+                        Color.clear
+                            .frame(height: 1)
+                            .id(Self.bottomAnchorID)
                     }
                     .padding(10)
                 }
                 .onAppear {
-                    scrollToAgent(state.focusedAgentID, with: proxy, animated: false)
+                    if let targetID = state.focusedAgentID {
+                        scrollToAgent(targetID, with: proxy, animated: false)
+                    } else {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                        }
+                    }
                 }
                 .onChange(of: state.focusedAgentID) { targetID in
                     scrollToAgent(targetID, with: proxy, animated: true)
+                }
+                .onChange(of: store.agents.count) { _ in
+                    if state.focusedAgentID == nil {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+                        }
+                    }
                 }
             }
         }
@@ -936,62 +1028,90 @@ struct PCodeInspectorAgentsView: View {
 
     // MARK: - Agent Card
 
-    private func agentCard(_ agent: PCodeInspectorAgentItem) -> some View {
+    private func agentCard(_ agent: PCodeInspectorAgentItem, depth: Int = 0) -> AnyView {
         let isExpanded = expandedAgentIDs.contains(agent.id)
         let isSelected = selectedAgentID == agent.id
+        let childAgents = depth < 4 ? store.childAgents(of: agent.id) : []
 
-        return VStack(alignment: .leading, spacing: 0) {
-            agentHeaderRow(agent, isExpanded: isExpanded)
+        return AnyView(
+            VStack(alignment: .leading, spacing: 0) {
+                agentHeaderRow(agent, isExpanded: isExpanded, childAgentCount: childAgents.count)
 
-            if isExpanded {
-                Divider()
-                    .opacity(0.6)
+                if isExpanded {
+                    Divider()
+                        .opacity(0.6)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    if let question = agent.pendingQuestion, !question.isEmpty {
-                        pendingQuestionBanner(agent: agent, question: question)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let question = agent.pendingQuestion, !question.isEmpty {
+                            pendingQuestionBanner(agent: agent, question: question)
+                        }
+
+                        if agent.isActive {
+                            activeActionBar(for: agent)
+                        }
+
+                        if let error = agent.error, !error.isEmpty {
+                            errorBanner(error)
+                        }
+
+                        if !agent.nestedCalls.isEmpty {
+                            nestedCallsSection(agentID: agent.id, calls: agent.nestedCalls)
+                        }
+
+                        if !childAgents.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(childAgents.count == 1 ? "Sub-agent" : "Sub-agents (\(childAgents.count))")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(childAgents) { child in
+                                        agentCard(child, depth: depth + 1)
+                                            .id(child.id)
+                                    }
+                                }
+                                .padding(.leading, 8)
+                                .overlay(alignment: .leading) {
+                                    RoundedRectangle(cornerRadius: 1)
+                                        .fill(Color.primary.opacity(isDark ? 0.16 : 0.12))
+                                        .frame(width: 2)
+                                }
+                            }
+                        }
+
+                        if !agent.reportMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            reportSection(agent: agent)
+                        } else if agent.isActive && agent.nestedCalls.isEmpty && childAgents.isEmpty {
+                            Text("Waiting for agent activity…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .padding(.vertical, 2)
+                        }
                     }
-
-                    if agent.isActive {
-                        activeActionBar(for: agent)
-                    }
-
-                    if let error = agent.error, !error.isEmpty {
-                        errorBanner(error)
-                    }
-
-                    if !agent.nestedCalls.isEmpty {
-                        nestedCallsSection(agentID: agent.id, calls: agent.nestedCalls)
-                    }
-
-                    if !agent.reportMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        reportSection(agent: agent)
-                    } else if agent.isActive && agent.nestedCalls.isEmpty {
-                        Text("Waiting for agent activity…")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                            .padding(.vertical, 2)
-                    }
+                    .padding(10)
                 }
-                .padding(10)
             }
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(isDark ? 0.05 : 0.035))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(
-                    isSelected
-                        ? Color.accentColor.opacity(isDark ? 0.55 : 0.45)
-                        : Color.primary.opacity(isDark ? 0.12 : 0.09),
-                    lineWidth: isSelected ? 1.25 : 1
-                )
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(isDark ? (depth == 0 ? 0.05 : 0.035) : (depth == 0 ? 0.035 : 0.025)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? Color.accentColor.opacity(isDark ? 0.55 : 0.45)
+                            : Color.primary.opacity(isDark ? 0.12 : 0.09),
+                        lineWidth: isSelected ? 1.25 : 1
+                    )
+            )
         )
     }
 
-    private func agentHeaderRow(_ agent: PCodeInspectorAgentItem, isExpanded: Bool) -> some View {
+    private func agentHeaderRow(
+        _ agent: PCodeInspectorAgentItem,
+        isExpanded: Bool,
+        childAgentCount: Int = 0
+    ) -> some View {
         Button {
             withAnimation(.easeInOut(duration: 0.16)) {
                 selectedAgentID = agent.id
@@ -1040,6 +1160,12 @@ struct PCodeInspectorAgentsView: View {
 
                     HStack(spacing: 8) {
                         statusBadgeText(for: agent.status)
+
+                        if childAgentCount > 0 {
+                            Label("\(childAgentCount)", systemImage: "person.2")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
 
                         if !agent.nestedCalls.isEmpty {
                             Label("\(agent.nestedCalls.count)", systemImage: "wrench.and.screwdriver")
@@ -1140,7 +1266,10 @@ struct PCodeInspectorAgentsView: View {
     // MARK: - Pending Question & Active Controls
 
     private func pendingQuestionBanner(agent: PCodeInspectorAgentItem, question: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let workerID = agent.workerID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let canSteerDirectly = !workerID.isEmpty && !workerID.contains(".") && actions.manageWorker != nil
+
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
                 Image(systemName: "questionmark.bubble.fill")
                     .font(.system(size: 11))
@@ -1149,14 +1278,16 @@ struct PCodeInspectorAgentsView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
                 Spacer(minLength: 4)
-                Button("Answer") {
-                    let draft = draftMessages[agent.id] ?? ""
-                    actions.prefillWorkerAction(Self.answerActionPrompt(for: agent, body: draft))
-                    draftMessages[agent.id] = ""
+                if !canSteerDirectly {
+                    Button("Answer") {
+                        let draft = draftMessages[agent.id] ?? ""
+                        actions.prefillWorkerAction(Self.answerActionPrompt(for: agent, body: draft))
+                        draftMessages[agent.id] = ""
+                    }
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
                 }
-                .font(.system(size: 10.5, weight: .semibold))
-                .buttonStyle(.borderedProminent)
-                .controlSize(.mini)
             }
 
             Text(question)
@@ -1178,7 +1309,8 @@ struct PCodeInspectorAgentsView: View {
     private func activeActionBar(for agent: PCodeInspectorAgentItem) -> some View {
         let isWaiting = agent.status == .waiting || (agent.pendingQuestion?.isEmpty == false)
         let workerID = agent.workerID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let canSteerDirectly = !workerID.isEmpty && actions.manageWorker != nil
+        // Nested workers (`w1.1`) live in child hubs and are not directly addressable on the top-level hub.
+        let canSteerDirectly = !workerID.isEmpty && !workerID.contains(".") && actions.manageWorker != nil
         let isBusy = inFlightWorkerAgentIDs.contains(agent.id)
         let draftBinding = Binding<String>(
             get: { draftMessages[agent.id] ?? "" },
@@ -1194,7 +1326,9 @@ struct PCodeInspectorAgentsView: View {
                 )
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11.5))
+                .disabled(isBusy)
                 .onSubmit {
+                    guard !isBusy else { return }
                     if canSteerDirectly {
                         sendDirectWorkerAction(
                             for: agent,
@@ -1282,6 +1416,7 @@ struct PCodeInspectorAgentsView: View {
         workerID: String,
         action: String
     ) {
+        guard !inFlightWorkerAgentIDs.contains(agent.id) else { return }
         guard let manageWorker = actions.manageWorker else {
             submitWorkerPromptViaParent(for: agent, isAnswer: action == "answer")
             return
@@ -1292,21 +1427,25 @@ struct PCodeInspectorAgentsView: View {
         }
         inFlightWorkerAgentIDs.insert(agent.id)
         workerFeedbackByAgentID.removeValue(forKey: agent.id)
+        let feedbackToken = UUID()
         manageWorker(action, workerID, body) { result in
             inFlightWorkerAgentIDs.remove(agent.id)
             switch result {
             case .success(let message):
                 if action != "stop" {
-                    draftMessages[agent.id] = ""
+                    let currentDraft = (draftMessages[agent.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if currentDraft == body {
+                        draftMessages[agent.id] = ""
+                    }
                 }
-                workerFeedbackByAgentID[agent.id] = (text: message, isError: false)
+                workerFeedbackByAgentID[agent.id] = (token: feedbackToken, text: message, isError: false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                    if workerFeedbackByAgentID[agent.id]?.text == message {
+                    if workerFeedbackByAgentID[agent.id]?.token == feedbackToken {
                         workerFeedbackByAgentID.removeValue(forKey: agent.id)
                     }
                 }
             case .failure(let error):
-                workerFeedbackByAgentID[agent.id] = (text: error.localizedDescription, isError: true)
+                workerFeedbackByAgentID[agent.id] = (token: feedbackToken, text: error.localizedDescription, isError: true)
             }
         }
     }
@@ -1693,6 +1832,9 @@ struct PCodeInspectorAgentsView: View {
         else { return }
         selectedAgentID = targetID
         expandedAgentIDs.insert(targetID)
+        for ancestor in store.ancestorIDs(of: targetID) {
+            expandedAgentIDs.insert(ancestor)
+        }
     }
 
     private func reconcileSelection(for ids: [String]) {
@@ -1701,6 +1843,11 @@ struct PCodeInspectorAgentsView: View {
         draftMessages = draftMessages.filter { validIDs.contains($0.key) }
         reportLineLimits = reportLineLimits.filter { validIDs.contains($0.key) }
         workerFeedbackByAgentID = workerFeedbackByAgentID.filter { validIDs.contains($0.key) }
+        let activeSpillHandles = Set(
+            store.agents.compactMap { PCodeAgentReportResolver.parseSpill($0.reportMarkdown)?.handle }
+        )
+        resolvedSpilledReports = resolvedSpilledReports.filter { activeSpillHandles.contains($0.key) }
+        failedSpillHandles = failedSpillHandles.intersection(activeSpillHandles)
         if let copied = copiedReportID, !validIDs.contains(copied) {
             copiedReportID = nil
         }
@@ -1713,10 +1860,16 @@ struct PCodeInspectorAgentsView: View {
             if selectedAgentID != focused {
                 selectedAgentID = focused
                 expandedAgentIDs.insert(focused)
+                for ancestor in store.ancestorIDs(of: focused) {
+                    expandedAgentIDs.insert(ancestor)
+                }
             }
-        } else if selectedAgentID == nil, let first = ids.first {
-            selectedAgentID = first
-            expandedAgentIDs.insert(first)
+        } else if selectedAgentID == nil, let latest = ids.last {
+            selectedAgentID = latest
+            expandedAgentIDs.insert(latest)
+            for ancestor in store.ancestorIDs(of: latest) {
+                expandedAgentIDs.insert(ancestor)
+            }
         }
     }
 
@@ -1960,12 +2113,30 @@ enum PCodeAgentReportResolver {
         let trimmedLeading = raw.drop(while: { $0 == "\n" || $0 == "\r" })
         let text = String(trimmedLeading)
         guard text.hasPrefix("[worker ") else { return raw }
-        let pattern = #"^\[worker\s+w\d+(?:\.\d+)?\]\r?\n?"#
+        let pattern = #"^\[worker\s+w\d+(?:\.\d+)*\]\r?\n?"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return raw }
         let ns = text as NSString
         let range = NSRange(location: 0, length: ns.length)
         guard let match = regex.firstMatch(in: text, options: [], range: range) else { return raw }
         return ns.substring(from: match.range.upperBound)
+    }
+
+    static let maxSpillBytes = 4 * 1024 * 1024
+
+    private static let safeSegmentRegex = try? NSRegularExpression(pattern: #"^[A-Za-z0-9._-]+$"#)
+
+    private static func isSafeSegment(_ segment: Substring) -> Bool {
+        guard !segment.isEmpty, segment != ".", segment != ".." else { return false }
+        guard let regex = safeSegmentRegex else { return false }
+        let str = String(segment)
+        let ns = str as NSString
+        return regex.firstMatch(in: str, options: [], range: NSRange(location: 0, length: ns.length)) != nil
+    }
+
+    private static func isOwnedNonSymlinkDirectory(_ path: String) -> Bool {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return false }
+        return (st.st_mode & S_IFMT) == S_IFDIR && st.st_uid == getuid()
     }
 
     static func loadSpilledReport(
@@ -1979,29 +2150,62 @@ enum PCodeAgentReportResolver {
         else { return nil }
 
         let components = cleanedHandle.split(separator: "/", omittingEmptySubsequences: false)
-        guard !components.isEmpty,
-              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
-        else { return nil }
+        guard !components.isEmpty, components.allSatisfy(isSafeSegment) else { return nil }
 
-        let baseResolved = baseDirectory.standardizedFileURL.resolvingSymlinksInPath()
-        let basePrefix = baseResolved.path.hasSuffix("/") ? baseResolved.path : baseResolved.path + "/"
+        let basePath = baseDirectory.standardizedFileURL.path
+        guard isOwnedNonSymlinkDirectory(basePath) else { return nil }
 
-        var candidate = baseResolved
-        for comp in components {
-            candidate.appendPathComponent(String(comp), isDirectory: false)
+        // Verify every intermediate directory segment is a non-symlink directory owned by us.
+        var current = URL(fileURLWithPath: basePath, isDirectory: true)
+        if components.count > 1 {
+            for dirSegment in components.dropLast() {
+                current.appendPathComponent(String(dirSegment), isDirectory: true)
+                guard isOwnedNonSymlinkDirectory(current.path) else { return nil }
+            }
         }
 
-        let candidates = [
-            candidate,
-            URL(fileURLWithPath: candidate.path + ".content", isDirectory: false),
+        let leaf = String(components.last!)
+        let candidatePaths = [
+            current.appendingPathComponent(leaf, isDirectory: false).path,
+            current.appendingPathComponent(leaf + ".content", isDirectory: false).path,
         ]
 
-        for url in candidates {
-            let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
-            guard resolved.path.hasPrefix(basePrefix) else { continue }
-            guard let data = try? Data(contentsOf: resolved),
-                  let text = String(data: data, encoding: .utf8)
+        for filePath in candidatePaths {
+            let fd = Darwin.open(filePath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            defer { Darwin.close(fd) }
+
+            var st = stat()
+            guard fstat(fd, &st) == 0,
+                  (st.st_mode & S_IFMT) == S_IFREG,
+                  st.st_uid == getuid()
             else { continue }
+
+            let fileSize = Int(st.st_size)
+            guard fileSize >= 0, fileSize <= maxSpillBytes else { continue }
+
+            var data = Data()
+            data.reserveCapacity(min(fileSize, maxSpillBytes))
+            var buffer = [UInt8](repeating: 0, count: 16_384)
+            var readFailed = false
+            while data.count <= maxSpillBytes {
+                let n = Darwin.read(fd, &buffer, buffer.count)
+                if n > 0 {
+                    if data.count + n > maxSpillBytes {
+                        readFailed = true
+                        break
+                    }
+                    data.append(contentsOf: buffer.prefix(n))
+                } else if n == 0 {
+                    break
+                } else if errno == EINTR {
+                    continue
+                } else {
+                    readFailed = true
+                    break
+                }
+            }
+            guard !readFailed, let text = String(data: data, encoding: .utf8) else { continue }
             return stripWorkerHeader(text)
         }
         return nil

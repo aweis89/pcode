@@ -51,10 +51,10 @@ struct PCodeInspectorTabsTests {
         )
 
         #expect(store.activeCount == 2)
-        // Most recent active agent appears first
-        #expect(store.agents.map(\.id) == ["agent-2", "agent-1"])
+        // Oldest → newest chronological order (latest active agent at bottom)
+        #expect(store.agents.map(\.id) == ["agent-1", "agent-2"])
 
-        // Finish agent-2 with a Markdown report; active agent-1 must stay ahead of completed agent-2
+        // Finish agent-2 with a Markdown report; active agent-1 stays at the bottom after completed agent-2
         store.apply(
             .toolSummary(
                 callID: "agent-2",
@@ -72,13 +72,13 @@ struct PCodeInspectorTabsTests {
         )
 
         #expect(store.activeCount == 1)
-        #expect(store.agents.map(\.id) == ["agent-1", "agent-2"])
+        #expect(store.agents.map(\.id) == ["agent-2", "agent-1"])
         let completed = store.agent(for: "agent-2")
         #expect(completed?.status == .completed)
         #expect(completed?.elapsedSeconds == 4.5)
         #expect(completed?.reportMarkdown == "## Findings\n- Fixed race in `AuthTests`")
 
-        // Fail agent-1; both settled, most recently updated (agent-1 at t4) appears first
+        // Fail agent-1; both settled, most recently updated (agent-1 at t4) appears at bottom
         store.apply(
             .toolSummary(
                 callID: "agent-1",
@@ -96,7 +96,7 @@ struct PCodeInspectorTabsTests {
         )
 
         #expect(store.activeCount == 0)
-        #expect(store.agents.map(\.id) == ["agent-1", "agent-2"])
+        #expect(store.agents.map(\.id) == ["agent-2", "agent-1"])
         let failed = store.agent(for: "agent-1")
         #expect(failed?.status == .failed)
         #expect(failed?.error == "Timed out waiting for sub-agent")
@@ -395,6 +395,33 @@ struct PCodeInspectorTabsTests {
         agent = store.agent(for: "call-w")
         #expect(agent?.status == .running)
         #expect(agent?.pendingQuestion == nil)
+
+        // Timed-out / cancelled question (`answered: false`) also clears `.waiting`
+        store.apply(
+            .workerStatus(
+                callID: "call-w",
+                workerID: "w7",
+                question: "Timed out question?",
+                answered: nil,
+                status: "waiting"
+            ),
+            now: t0.addingTimeInterval(5)
+        )
+        #expect(store.agent(for: "call-w")?.status == .waiting)
+
+        store.apply(
+            .workerStatus(
+                callID: "call-w",
+                workerID: "w7",
+                question: nil,
+                answered: false,
+                status: nil
+            ),
+            now: t0.addingTimeInterval(6)
+        )
+        agent = store.agent(for: "call-w")
+        #expect(agent?.status == .running)
+        #expect(agent?.pendingQuestion == nil)
     }
 
     @Test
@@ -425,8 +452,14 @@ struct PCodeInspectorTabsTests {
         #expect(loaded == fullLines)
         #expect(!loaded.contains("[worker w9]"))
 
-        // Reject path traversal
+        // Reject path traversal and symlinks
         #expect(PCodeAgentReportResolver.loadSpilledReport(handle: "../etc/passwd", baseDirectory: tempRoot) == nil)
+        let symlinkPath = runDir.appendingPathComponent("link.0", isDirectory: false)
+        try FileManager.default.createSymbolicLink(at: symlinkPath, withDestinationURL: spillFile)
+        #expect(PCodeAgentReportResolver.loadSpilledReport(handle: "run-123/link.0", baseDirectory: tempRoot) == nil)
+
+        // 3-level nested worker header stripping
+        #expect(PCodeAgentReportResolver.stripWorkerHeader("[worker w1.2.3]\nHello") == "Hello")
 
         // Progressive line slicing
         let firstSlice = PCodeAgentReportResolver.sliceLines(loaded, lineLimit: 40)
@@ -438,6 +471,53 @@ struct PCodeInspectorTabsTests {
         let fullSlice = PCodeAgentReportResolver.sliceLines(loaded, lineLimit: 0)
         #expect(!fullSlice.isTruncated)
         #expect(fullSlice.shownLines == 80)
+    }
+
+    @Test @MainActor
+    func nestedSubAgentsFormHierarchyWithoutDuplicatingParentToolCalls() {
+        let store = PCodeInspectorAgentsStore()
+        let t0 = Date(timeIntervalSince1970: 2_000)
+
+        store.apply(
+            .toolStarted(
+                callID: "root-1",
+                parentCallID: "",
+                name: "delegate_task",
+                detail: "w1 · Coordinator",
+                command: "",
+                purpose: "Coordinate refactor"
+            ),
+            now: t0
+        )
+        store.apply(
+            .toolStarted(
+                callID: "child-1",
+                parentCallID: "root-1",
+                name: "delegate_task",
+                detail: "w1.1 · Leaf worker",
+                command: "",
+                purpose: "Run leaf check"
+            ),
+            now: t0.addingTimeInterval(1)
+        )
+        store.apply(
+            .toolStarted(
+                callID: "leaf-tool",
+                parentCallID: "child-1",
+                name: "read_file",
+                detail: "README.md",
+                command: "",
+                purpose: ""
+            ),
+            now: t0.addingTimeInterval(2)
+        )
+
+        #expect(store.rootAgents.map(\.id) == ["root-1"])
+        #expect(store.childAgents(of: "root-1").map(\.id) == ["child-1"])
+        #expect(store.ancestorIDs(of: "child-1") == ["root-1"])
+        // Nested sub-agent is rendered as a child agent card, not duplicated as a plain tool row.
+        #expect(store.agent(for: "root-1")?.nestedCalls.isEmpty == true)
+        #expect(store.agent(for: "child-1")?.nestedCalls.count == 1)
     }
 
     // MARK: - PCodeInspectorCommandsStore

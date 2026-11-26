@@ -3568,7 +3568,10 @@ def test_controller_manage_worker_direct_actions():
     from types import SimpleNamespace
 
     from pcode.controller import SessionController
+    from pcode.host import HOST_CALLS
     from pcode.worker_channel import Question, WorkerHandle, WorkerHub
+
+    assert "manage_worker" in HOST_CALLS
 
     hub = WorkerHub()
     cancelled: list[str] = []
@@ -3597,6 +3600,11 @@ def test_controller_manage_worker_direct_actions():
     assert res["ok"] is True
     assert question.answer == "yes, proceed"
     assert question.answered.is_set()
+
+    # Second answer while question is already answered is rejected
+    dup = SessionController.manage_worker(ctrl, "answer", handle.id, "changed my mind")
+    assert dup["ok"] is False
+    assert question.answer == "yes, proceed"
 
     # Stop a background worker directly
     res = SessionController.manage_worker(ctrl, "stop", handle.id)

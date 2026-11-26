@@ -2406,7 +2406,7 @@ class SessionController:
 
         if act == "answer":
             question = handle.question
-            if question is None:
+            if question is None or question.answered.is_set():
                 return {
                     "ok": False,
                     "message": f"Worker {handle.id} has no open question.",
