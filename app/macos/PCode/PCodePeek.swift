@@ -80,6 +80,12 @@ struct PCodePeekToolCall: Identifiable, Equatable {
     }
 
     var summaryText: String {
+        // A wait's detail is only the job id (`j3`, `j3 · exit 2`). The command it
+        // watches comes from the `shell` call that started the job; without it the
+        // row says a job is being waited on but never what that job runs.
+        if isJobWait, !command.isEmpty {
+            return detail.isEmpty ? command : "\(detail) · \(command)"
+        }
         if !detail.isEmpty { return detail }
         if !command.isEmpty { return command }
         return ""
@@ -91,7 +97,16 @@ struct PCodePeekToolCall: Identifiable, Equatable {
 
     /// The row's title. Tool names stay as-is except delegation, whose internal
     /// name says nothing to a reader about the sub-agent run it contains.
-    var displayName: String { isDelegate ? "Sub-agent" : name }
+    var displayName: String {
+        if isDelegate { return "Sub-agent" }
+        // Pairs with the `shell` row it continues: the call watches a shell
+        // command and streams its output, it does not run anything new.
+        if isJobWait { return "Wait for shell" }
+        return name
+    }
+
+    /// A `wait_for_job` call: it streams a running job's output like a `shell` row.
+    var isJobWait: Bool { name.lowercased() == "wait_for_job" }
 
     var isShellLike: Bool {
         if !command.isEmpty { return true }
