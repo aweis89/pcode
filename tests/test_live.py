@@ -389,6 +389,8 @@ def test_thinking_is_streamed_as_events_separate_from_answer():
                 == "Visible reasoning continued"
             )
             assert Thinking("Visible reasoning continued") in events
+            (thought,) = [e for e in events if isinstance(e, Thinking)]
+            assert thought.elapsed_seconds is not None and thought.elapsed_seconds >= 0
             assert RunStatus("Thinking…") in events
             assert "OPAQUE_SIGNATURE" not in repr(events)
             assert Message("Public **answer**") in events

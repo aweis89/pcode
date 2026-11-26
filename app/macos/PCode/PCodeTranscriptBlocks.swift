@@ -2298,14 +2298,38 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
     }
 }
 
-// MARK: - Thinking Card Row (Collapsed-by-Default Reasoning Preview)
+// MARK: - Thinking Row (Dimmed Inline Reasoning)
 
+/// Thinking renders as quiet prose in the answer's column, not a card: a pulsing
+/// "Thinking" header over a three-line rolling tail while streaming, a one-line
+/// "Thought for Ns" once settled, and dimmed Markdown behind a hairline rule when expanded.
 final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
+    static let headerHeight: CGFloat = 22
+    static let bodyScale: CGFloat = 0.92
+    private static let tailLineCount: CGFloat = 3
+    /// Matches `PCodeProseRowView`'s left inset so thinking lines up with the answer.
+    private static let leadingInset: CGFloat = 4
+    /// Body text indent past the hairline rule.
+    private static let bodyIndent: CGFloat = 12
+    private static let pulseKey = "thinkingPulse"
+
+    static func tailHeight(typography: PCodeTypographySnapshot) -> CGFloat {
+        tailLineCount * typography.lineHeight(scale: bodyScale)
+    }
+
     let itemKind: PCodeTranscriptItem.Kind = .thinking
     let textView = PCodeTextKit2BlockView()
-    private let toggleButton = NSButton()
+    /// Clips the streaming tail to its last lines (bottom-aligned) and fades its top edge.
+    private let bodyClip = NSView()
+    private let fadeMask = CAGradientLayer()
+    private let rule = NSView()
+    private let headerButton = NSButton()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
+    private var headerTitle = ""
+    private var headerFont: NSFont = .systemFont(ofSize: 12)
+    private var isExpanded = false
+    private var isHovered = false
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -2314,12 +2338,24 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        addSubview(textView)
-        toggleButton.isBordered = false
-        toggleButton.title = ""
-        toggleButton.target = self
-        toggleButton.action = #selector(togglePressed)
-        addSubview(toggleButton)
+        bodyClip.wantsLayer = true
+        bodyClip.layer?.masksToBounds = true
+        bodyClip.addSubview(textView)
+        addSubview(bodyClip)
+        rule.wantsLayer = true
+        rule.layer?.cornerRadius = 1
+        addSubview(rule)
+        headerButton.isBordered = false
+        headerButton.imagePosition = .imageTrailing
+        headerButton.imageHugsTitle = true
+        headerButton.wantsLayer = true
+        (headerButton.cell as? NSButtonCell)?.highlightsBy = []
+        headerButton.target = self
+        headerButton.action = #selector(togglePressed)
+        addSubview(headerButton)
+        fadeMask.colors = [NSColor.clear.cgColor, NSColor.black.cgColor]
+        fadeMask.startPoint = CGPoint(x: 0.5, y: 0)
+        fadeMask.endPoint = CGPoint(x: 0.5, y: 1)
     }
 
     @available(*, unavailable)
@@ -2331,84 +2367,194 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
+    func setHovered(_ hovered: Bool) {
+        guard hovered != isHovered else { return }
+        isHovered = hovered
+        updateHeader()
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyLayerColors()
     }
 
+    /// "Thinking" while streaming, then "Thought for 12s" (or "Thought" when no duration was recorded).
+    static func headerTitle(for thinking: PCodeThinkingPayload) -> String {
+        if thinking.isStreaming { return "Thinking" }
+        guard let seconds = thinking.elapsedSeconds else { return "Thought" }
+        let whole = max(1, Int(seconds.rounded()))
+        if whole < 60 { return "Thought for \(whole)s" }
+        let minutes = whole / 60
+        let rest = whole % 60
+        return rest == 0 ? "Thought for \(minutes)m" : "Thought for \(minutes)m \(rest)s"
+    }
+
+    /// The selectable body: full dimmed Markdown when expanded, the latest text while
+    /// streaming collapsed, and nothing for a settled collapsed row (its header is chrome).
     static func attributedText(
-        for text: String,
+        for thinking: PCodeThinkingPayload,
         isExpanded: Bool,
         typography: PCodeTypographySnapshot,
         theme: PCodeTranscriptTheme
     ) -> NSAttributedString {
-        let lh = typography.lineHeight(scale: 0.86)
+        let trimmed = thinking.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return NSAttributedString() }
+        if isExpanded && !thinking.isStreaming {
+            return PCodeTranscriptMarkdown.attributedString(
+                forProse: trimmed,
+                typography: typography,
+                theme: dimmed(theme),
+                scale: bodyScale)
+        }
+        guard thinking.isStreaming else { return NSAttributedString() }
+        // Plain text while streaming keeps per-delta work cheap (Markdown renders once
+        // settled); a collapsed row only ever shows its last lines, so trim to a tail.
+        let tailLimit = 600
+        var tail = trimmed
+        if !isExpanded && trimmed.count > tailLimit {
+            tail = String(trimmed.suffix(tailLimit))
+            if let space = tail.firstIndex(of: " ") {
+                tail = "…" + String(tail[tail.index(after: space)...])
+            }
+        }
         let style = NSMutableParagraphStyle()
+        let lh = typography.lineHeight(scale: bodyScale)
         style.minimumLineHeight = lh
         style.maximumLineHeight = lh
-
-        let out = NSMutableAttributedString()
-        out.append(NSAttributedString(
-            string: "Thinking",
+        return NSAttributedString(
+            string: tail.replacingOccurrences(of: "\n\n", with: "\n"),
             attributes: [
-                .font: typography.proseNSFont(scale: 0.82, weight: typography.weight.nsEmphasisWeight, italic: true),
-                .foregroundColor: theme.secondaryForeground,
+                .font: typography.proseNSFont(scale: bodyScale),
+                .foregroundColor: dimmed(theme).foreground,
                 .paragraphStyle: style,
-            ]))
+            ])
+    }
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            let body: String
-            if isExpanded {
-                body = "\n" + trimmed
-            } else {
-                let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: true)
-                let preview = lines.suffix(2).joined(separator: " ")
-                body = "  " + (preview.count > 140 ? String(preview.prefix(140)) + "…" : preview)
-            }
-            out.append(NSAttributedString(
-                string: body,
-                attributes: [
-                    .font: typography.proseNSFont(scale: 0.86, italic: true),
-                    .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.78),
-                    .paragraphStyle: style,
-                ]))
-        }
-        return out
+    /// The transcript theme with prose pushed back to the secondary colour.
+    private static func dimmed(_ theme: PCodeTranscriptTheme) -> PCodeTranscriptTheme {
+        PCodeTranscriptTheme(
+            isDark: theme.isDark,
+            background: theme.background,
+            foreground: theme.secondaryForeground,
+            secondaryForeground: theme.secondaryForeground.withAlphaComponent(0.55),
+            accent: theme.accent,
+            promptBackground: theme.promptBackground,
+            codeBackground: theme.codeBackground,
+            inlineCodeFill: theme.inlineCodeFill,
+            toolBackground: theme.toolBackground)
     }
 
     func configure(
+        thinking: PCodeThinkingPayload,
         isExpanded: Bool,
         attributedText: NSAttributedString,
         width: CGFloat,
+        typography: PCodeTypographySnapshot,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?,
         onToggle: @escaping () -> Void
     ) -> CGFloat {
         self.onToggle = onToggle
         self.lastTheme = theme
-        let padX: CGFloat = 12
-        let padY: CGFloat = 6
-        let textWidth = max(1, width - padX - 28)
+        self.isExpanded = isExpanded
+        headerTitle = Self.headerTitle(for: thinking)
+        headerFont = typography.proseNSFont(scale: 0.86, weight: typography.weight.nsEmphasisWeight)
+        updateHeader()
+        setPulsing(thinking.isStreaming)
+
+        let header = Self.headerHeight
+        guard attributedText.length > 0 else {
+            bodyClip.isHidden = true
+            rule.isHidden = true
+            textView.selectedRange = nil
+            applyLayerColors()
+            return header
+        }
+
+        let inset = Self.leadingInset
+        let textWidth = max(1, width - inset - Self.bodyIndent - inset)
         let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
         textView.selectedRange = selectedRange
-        textView.frame = CGRect(x: padX, y: padY, width: textWidth, height: textHeight)
+        // Collapsed rows only ever stream: show the newest lines, bottom-aligned.
+        let clipHeight = isExpanded ? textHeight : min(textHeight, Self.tailHeight(typography: typography))
+        bodyClip.isHidden = false
+        rule.isHidden = false
+        bodyClip.frame = CGRect(x: inset + Self.bodyIndent, y: header, width: textWidth, height: clipHeight)
+        textView.frame = CGRect(x: 0, y: clipHeight - textHeight, width: textWidth, height: textHeight)
+        rule.frame = CGRect(x: inset + 1, y: header + 2, width: 2, height: max(0, clipHeight - 4))
 
-        let chevron = isExpanded ? "chevron.down" : "chevron.right"
-        toggleButton.image = NSImage(systemSymbolName: chevron, accessibilityDescription: isExpanded ? "Collapse" : "Expand")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
-        toggleButton.contentTintColor = theme.secondaryForeground
-        toggleButton.frame = CGRect(x: width - 22, y: 5, width: 18, height: 20)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if textHeight > clipHeight + 0.5 {
+            let fade = min(0.45, typography.lineHeight(scale: Self.bodyScale) / max(1, clipHeight))
+            fadeMask.frame = bodyClip.bounds
+            fadeMask.locations = [0, NSNumber(value: Double(fade))]
+            bodyClip.layer?.mask = fadeMask
+        } else {
+            bodyClip.layer?.mask = nil
+        }
+        CATransaction.commit()
 
         applyLayerColors()
-        return max(28, textHeight + padY * 2)
+        return header + clipHeight + 4
+    }
+
+    func resetForTranscriptReuse() {
+        setHovered(false)
+        setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        textView.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
+        setPulsing(false)
+    }
+
+    private func updateHeader() {
+        guard let theme = lastTheme else { return }
+        let color = isHovered ? theme.foreground.withAlphaComponent(0.85) : theme.secondaryForeground
+        headerButton.attributedTitle = NSAttributedString(
+            string: headerTitle,
+            attributes: [.font: headerFont, .foregroundColor: color])
+        // The chevron is an affordance, not decoration: show it on hover or while open.
+        if isHovered || isExpanded {
+            let symbol = isExpanded ? "chevron.down" : "chevron.right"
+            headerButton.image = NSImage(
+                systemSymbolName: symbol,
+                accessibilityDescription: isExpanded ? "Collapse" : "Expand")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold))
+        } else {
+            headerButton.image = nil
+        }
+        headerButton.contentTintColor = color
+        headerButton.sizeToFit()
+        let size = headerButton.frame.size
+        headerButton.frame = CGRect(
+            x: Self.leadingInset,
+            y: (Self.headerHeight - size.height) / 2,
+            width: size.width,
+            height: size.height)
+    }
+
+    private func setPulsing(_ pulsing: Bool) {
+        guard let layer = headerButton.layer else { return }
+        let animating = layer.animation(forKey: Self.pulseKey) != nil
+        if pulsing && !animating && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.35
+            pulse.duration = 0.9
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(pulse, forKey: Self.pulseKey)
+        } else if !pulsing && animating {
+            layer.removeAnimation(forKey: Self.pulseKey)
+        }
     }
 
     private func applyLayerColors() {
         guard let theme = lastTheme else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = theme.toolBackground.cgColor
-            layer?.cornerRadius = 6
+            rule.layer?.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.16 : 0.14).cgColor
         }
     }
 

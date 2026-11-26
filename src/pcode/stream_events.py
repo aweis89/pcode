@@ -121,6 +121,8 @@ class EventTranslator:
         self.emitted_text = False
         # Running tools by call id: (name, args, monotonic start).
         self.tools: dict[str, tuple[str, dict, float]] = {}
+        # Open thinking parts by response part index: monotonic start.
+        self.thinking_started: dict[int, float] = {}
         # Native calls already emitted from `PartStartEvent`, by call id:
         # (name, args, raw_args, started_at). `PartEndEvent` updates them only
         # when new arguments arrived and skips calls already settled.
@@ -371,6 +373,7 @@ class EventTranslator:
         if isinstance(event.part, TextPart):
             yield TextDelta(event.part.content)
         elif isinstance(event.part, ThinkingPart):
+            self.thinking_started[event.index] = monotonic()
             if event.part.content:
                 yield ThinkingDelta(event.part.content)
             yield RunStatus("Thinking…")
@@ -443,8 +446,11 @@ class EventTranslator:
         if isinstance(event.part, TextPart) and event.part.content:
             self.emitted_text = True
             yield Message(event.part.content)
-        elif isinstance(event.part, ThinkingPart) and event.part.content:
-            yield Thinking(event.part.content)
+        elif isinstance(event.part, ThinkingPart):
+            started = self.thinking_started.pop(event.index, None)
+            if event.part.content:
+                elapsed = None if started is None else max(0.0, monotonic() - started)
+                yield Thinking(event.part.content, elapsed_seconds=elapsed)
         elif isinstance(event.part, NativeToolCallPart):
             yield from self.on_native_tool_call(event.part, from_end=True)
 

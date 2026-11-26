@@ -77,7 +77,7 @@ enum PCodeHostEvent: Equatable {
     case textDelta(String)
     case message(markdown: String)
     case thinkingDelta(String)
-    case thinking(text: String)
+    case thinking(text: String, elapsedSeconds: Double?)
     case toolStarted(
         callID: String,
         parentCallID: String,
@@ -282,7 +282,7 @@ enum PCodeHostEventDecoder {
             return .thinkingDelta(text)
         case "Thinking":
             guard let text = fields["text"] as? String else { return nil }
-            return .thinking(text: text)
+            return .thinking(text: text, elapsedSeconds: (fields["elapsed_seconds"] as? NSNumber)?.doubleValue)
         case "ToolStarted":
             let callID = (fields["call_id"] as? String) ?? ""
             guard !callID.isEmpty else { return nil }
@@ -377,6 +377,8 @@ final class PCodeTranscriptEventReducer {
     private var turnAlreadyTerminated = false
     private var activeThinkingID: String?
     private var activeThinkingText: String = ""
+    /// Wall-clock start of the live thinking block (nil while replaying history).
+    private var activeThinkingStartedAt: Date?
     private var activePlanItemID: String?
     private var activeShellModeCallID: String?
     private var lastAuthoritativePlan: [PCodePlanItem] = []
@@ -399,6 +401,7 @@ final class PCodeTranscriptEventReducer {
         turnAlreadyTerminated = false
         activeThinkingID = nil
         activeThinkingText = ""
+        activeThinkingStartedAt = nil
         activePlanItemID = nil
         activeShellModeCallID = nil
         lastAuthoritativePlan.removeAll()
@@ -424,8 +427,7 @@ final class PCodeTranscriptEventReducer {
 
         case .turnStarted(let prompt, let isSide, _):
             settleRunningItems(failed: false, in: doc)
-            activeThinkingID = nil
-            activeThinkingText = ""
+            settleActiveThinking(in: doc, reveal: reveal)
             activePlanItemID = nil
             activeShellModeCallID = nil
             lastAuthoritativePlan.removeAll()
@@ -434,10 +436,7 @@ final class PCodeTranscriptEventReducer {
             doc.beginStreamingTurn(prompt: prompt, isSide: isSide, forcePin: false, reveal: reveal)
 
         case .textDelta(let delta):
-            if activeThinkingID != nil {
-                activeThinkingID = nil
-                activeThinkingText = ""
-            }
+            settleActiveThinking(in: doc, reveal: reveal)
             if !streamedTextInCurrentMessage {
                 messageCounter += 1
                 doc.beginStreamingMessage(id: "host-msg-\(messageCounter)")
@@ -446,8 +445,7 @@ final class PCodeTranscriptEventReducer {
             doc.appendStreamingDelta(delta, reveal: reveal)
 
         case .message(let markdown):
-            activeThinkingID = nil
-            activeThinkingText = ""
+            settleActiveThinking(in: doc, reveal: reveal)
             if streamedTextInCurrentMessage {
                 // Deltas already carried this assistant message; settle the tail without duplicating.
                 streamedTextInCurrentMessage = false
@@ -465,16 +463,17 @@ final class PCodeTranscriptEventReducer {
                 thinkingCounter += 1
                 activeThinkingID = "host-thinking-\(thinkingCounter)"
                 activeThinkingText = ""
+                activeThinkingStartedAt = liveClock ? Date() : nil
             }
             let id = activeThinkingID!
             activeThinkingText.append(delta)
-            let item = PCodeTranscriptItem(
+            upsertThinking(
                 id: id,
-                payload: .thinking(text: activeThinkingText, isExpanded: doc.isItemExpanded(id: id)),
-                spacingAfter: 6)
-            doc.upsertItem(item, reveal: reveal)
+                PCodeThinkingPayload(text: activeThinkingText, isStreaming: true),
+                in: doc,
+                reveal: reveal)
 
-        case .thinking(let text):
+        case .thinking(let text, let elapsedSeconds):
             let id: String
             if let existing = activeThinkingID {
                 id = existing
@@ -482,14 +481,16 @@ final class PCodeTranscriptEventReducer {
                 thinkingCounter += 1
                 id = "host-thinking-\(thinkingCounter)"
             }
+            let measured = elapsedSeconds ?? activeThinkingStartedAt.map { Date().timeIntervalSince($0) }
             activeThinkingID = nil
             activeThinkingText = ""
+            activeThinkingStartedAt = nil
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            let item = PCodeTranscriptItem(
+            upsertThinking(
                 id: id,
-                payload: .thinking(text: text, isExpanded: doc.isItemExpanded(id: id)),
-                spacingAfter: 6)
-            doc.upsertItem(item, reveal: reveal)
+                PCodeThinkingPayload(text: text, isStreaming: false, elapsedSeconds: measured),
+                in: doc,
+                reveal: reveal)
 
         case .toolStarted(let callID, let parentCallID, let name, let detail, let command, _):
             finishActiveStreamIfNeeded(in: doc, reveal: reveal)
@@ -690,8 +691,7 @@ final class PCodeTranscriptEventReducer {
             applyPlanItems(effective, reveal: reveal, in: doc)
 
         case .turnEnded(let status):
-            activeThinkingID = nil
-            activeThinkingText = ""
+            settleActiveThinking(in: doc, reveal: reveal)
             activeShellModeCallID = nil
             streamedTextInCurrentMessage = false
             // Flush any unresolved orphan children BEFORE settling running items so flushed
@@ -841,6 +841,36 @@ final class PCodeTranscriptEventReducer {
                 depth: diff.depth)
             doc.upsertItem(item, reveal: false)
         }
+    }
+
+    private func upsertThinking(
+        id: String,
+        _ thinking: PCodeThinkingPayload,
+        in doc: PCodeTranscriptDocumentView,
+        reveal: Bool
+    ) {
+        let item = PCodeTranscriptItem(
+            id: id,
+            payload: .thinking(thinking, isExpanded: doc.thinkingExpansionState(id: id)),
+            spacingAfter: 6)
+        doc.upsertItem(item, reveal: reveal)
+    }
+
+    /// Settle a streamed thinking block that ended without its `Thinking` marker
+    /// (answer text started, or the turn ended or was cancelled mid-thought).
+    private func settleActiveThinking(in doc: PCodeTranscriptDocumentView, reveal: Bool) {
+        guard let id = activeThinkingID else { return }
+        let text = activeThinkingText
+        let elapsed = activeThinkingStartedAt.map { Date().timeIntervalSince($0) }
+        activeThinkingID = nil
+        activeThinkingText = ""
+        activeThinkingStartedAt = nil
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        upsertThinking(
+            id: id,
+            PCodeThinkingPayload(text: text, isStreaming: false, elapsedSeconds: elapsed),
+            in: doc,
+            reveal: reveal)
     }
 
     private func finishActiveStreamIfNeeded(in doc: PCodeTranscriptDocumentView, reveal: Bool) {

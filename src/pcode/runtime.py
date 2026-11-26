@@ -1,6 +1,6 @@
 """Application events and the offline fixture runtime; no terminal imports."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -117,6 +117,8 @@ class Thinking:
     """Completion marker for one readable thinking block (never a signature)."""
 
     text: str
+    # Seconds from the part's first event to its end; `None` when not streamed.
+    elapsed_seconds: float | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

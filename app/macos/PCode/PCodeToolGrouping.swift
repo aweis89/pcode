@@ -1,12 +1,33 @@
 import Combine
 import Foundation
 
+/// How the transcript shows model thinking blocks.
+enum PCodeThinkingDisplay: String, CaseIterable, Identifiable {
+    /// Every block expanded.
+    case show
+    /// A live tail while streaming, then a one-line "Thought for Ns" summary (default).
+    case collapse
+    /// No rows at all.
+    case hide
+
+    var id: String { rawValue }
+
+    var menuTitle: String {
+        switch self {
+        case .show: return "Show Expanded"
+        case .collapse: return "Collapse"
+        case .hide: return "Hide"
+        }
+    }
+}
+
 /// App-owned transcript presentation preferences (persisted in `UserDefaults`).
 final class PCodeTranscriptPreferences: ObservableObject {
     static let shared = PCodeTranscriptPreferences()
 
     private enum Keys {
         static let groupTools = "PCodeTranscriptGroupTools"
+        static let thinkingDisplay = "PCodeTranscriptThinkingDisplay"
     }
 
     private let defaults: UserDefaults
@@ -20,8 +41,17 @@ final class PCodeTranscriptPreferences: ObservableObject {
         }
     }
 
+    @Published var thinkingDisplay: PCodeThinkingDisplay {
+        didSet {
+            guard thinkingDisplay != oldValue else { return }
+            defaults.set(thinkingDisplay.rawValue, forKey: Keys.thinkingDisplay)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.thinkingDisplay = defaults.string(forKey: Keys.thinkingDisplay)
+            .flatMap(PCodeThinkingDisplay.init(rawValue:)) ?? .collapse
         if defaults.object(forKey: Keys.groupTools) == nil {
             self.groupTools = true
         } else {
@@ -260,9 +290,11 @@ enum PCodeToolGrouper {
     static func project(
         rawItems: [PCodeTranscriptItem],
         groupTools: Bool,
+        hideThinking: Bool = false,
         expandedGroupIDs: Set<String>,
         absorbPulses: [String: UInt64]
     ) -> Projection {
+        let rawItems = hideThinking ? rawItems.filter { $0.kind != .thinking } : rawItems
         guard groupTools else {
             return Projection(items: rawItems, groupIDByRawItemID: [:])
         }

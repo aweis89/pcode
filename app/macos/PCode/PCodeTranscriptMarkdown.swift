@@ -105,11 +105,12 @@ enum PCodeTranscriptMarkdown {
         forProse markdown: String,
         referenceDefinitions: String = "",
         typography: PCodeTypographySnapshot,
-        theme: PCodeTranscriptTheme
+        theme: PCodeTranscriptTheme,
+        scale: CGFloat = 1.0
     ) -> NSAttributedString {
         let parseInput = referenceDefinitions.isEmpty ? markdown : (markdown + "\n\n" + referenceDefinitions)
         let document = Document(parsing: parseInput, options: [])
-        var renderer = ProseAttributedRenderer(typography: typography, theme: theme)
+        var renderer = ProseAttributedRenderer(typography: typography, theme: theme, baseScale: scale)
         renderer.visit(document)
         let result = renderer.result
         while result.length > 0 && (result.string as NSString).character(at: result.length - 1) == 0x0A {

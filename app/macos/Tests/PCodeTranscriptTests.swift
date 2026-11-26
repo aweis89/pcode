@@ -834,6 +834,74 @@ struct PCodeTranscriptTests {
         #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "ChildText", fields: ["call_id": "c1", "text": "hi"]) == nil)
     }
 
+    @Test func thinkingHeaderTitleFormatsDuration() {
+        func title(_ streaming: Bool, _ seconds: Double?) -> String {
+            PCodeThinkingCardView.headerTitle(for: PCodeThinkingPayload(text: "x", isStreaming: streaming, elapsedSeconds: seconds))
+        }
+        #expect(title(true, nil) == "Thinking")
+        #expect(title(false, nil) == "Thought")
+        #expect(title(false, 0.2) == "Thought for 1s")
+        #expect(title(false, 12.4) == "Thought for 12s")
+        #expect(title(false, 120) == "Thought for 2m")
+        #expect(title(false, 125) == "Thought for 2m 5s")
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(
+            kind: "Thinking", fields: ["text": "t", "elapsed_seconds": 4.5]) == .thinking(text: "t", elapsedSeconds: 4.5))
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(
+            kind: "Thinking", fields: ["text": "t"]) == .thinking(text: "t", elapsedSeconds: nil))
+    }
+
+    @Test @MainActor func thinkingDisplayModesSettleExpandAndHide() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        doc.thinkingDisplay = .collapse
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        func thinking() -> (PCodeThinkingPayload, Bool)? {
+            for item in doc.items {
+                if case .thinking(let payload, let isExpanded) = item.payload { return (payload, isExpanded) }
+            }
+            return nil
+        }
+
+        reducer.apply(.turnStarted(prompt: "Go", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.thinkingDelta("Weighing options"), reveal: false)
+        #expect(thinking()?.0.isStreaming == true)
+        #expect(thinking()?.1 == false)
+        // Answer text without a `Thinking` marker still settles the block.
+        reducer.apply(.textDelta("Done."), reveal: false)
+        #expect(thinking()?.0.isStreaming == false)
+        #expect(thinking()?.0.text == "Weighing options")
+        // A settled collapsed row has no selectable body; its header is chrome.
+        if let idx = doc.items.firstIndex(where: { $0.kind == .thinking }) {
+            #expect(doc.plainTextForCopy(at: idx).isEmpty)
+        }
+
+        doc.thinkingDisplay = .show
+        #expect(thinking()?.1 == true)
+        if let idx = doc.items.firstIndex(where: { $0.kind == .thinking }) {
+            #expect(doc.plainTextForCopy(at: idx).contains("Weighing options"))
+        }
+
+        doc.thinkingDisplay = .hide
+        #expect(thinking() == nil)
+        // New thinking while hidden stays out of the display list...
+        reducer.apply(.message(markdown: "Done."), reveal: false)
+        reducer.apply(.thinkingDelta("More"), reveal: false)
+        reducer.apply(.thinking(text: "More thoughts", elapsedSeconds: 2), reveal: false)
+        #expect(thinking() == nil)
+        #expect(doc.items.contains { $0.kind == .prose })
+        // ...and comes back when shown again.
+        doc.thinkingDisplay = .collapse
+        #expect(doc.items.filter { $0.kind == .thinking }.count == 2)
+        #expect(doc.items.allSatisfy { item in
+            if case .thinking(_, let isExpanded) = item.payload { return !isExpanded }
+            return true
+        })
+    }
+
     @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsThinkingAndPlan() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
@@ -844,7 +912,7 @@ struct PCodeTranscriptTests {
 
         reducer.apply(.turnStarted(prompt: "Refactor parser", isSide: false, runID: "r1"), reveal: false)
         reducer.apply(.thinkingDelta("Checking files…"), reveal: false)
-        reducer.apply(.thinking(text: "Checked files and found 2 bugs."), reveal: false)
+        reducer.apply(.thinking(text: "Checked files and found 2 bugs.", elapsedSeconds: 3.2), reveal: false)
         // Thinking upserts in place (still 1 thinking item)
         #expect(doc.items.filter { $0.kind == .thinking }.count == 1)
 
@@ -1360,13 +1428,17 @@ struct PCodeTranscriptTests {
             with: .rightMouseDown, location: windowPoint, modifierFlags: [], timestamp: 0,
             windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
         let menu = try #require(doc.menu(for: event))
-        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls"])
+        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls", "Thinking"])
 
         // Copy is offered only with a selection; the other two always.
         #expect(!doc.validateUserInterfaceItem(menu.items[0]))
         #expect(doc.validateUserInterfaceItem(menu.items[1]))
         doc.selectAll(nil)
         #expect(doc.validateUserInterfaceItem(menu.items[0]))
+
+        let thinkingOptions = try #require(menu.items.last?.submenu).items
+        #expect(thinkingOptions.map(\.title) == ["Show Expanded", "Collapse", "Hide"])
+        #expect(thinkingOptions.allSatisfy { doc.validateUserInterfaceItem($0) })
 
         doc.copyAnswerMarkdown(menu.items[1])
         #expect(pasteboard.string(forType: .string) == markdown)
