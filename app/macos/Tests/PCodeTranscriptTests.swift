@@ -1318,6 +1318,54 @@ struct PCodeTranscriptTests {
         }
     }
 
+    @Test func steeringJournalRecordDecodesAsUserPrompt() {
+        let event = PCodeHostEventDecoder.decodeJournalRecord([
+            "kind": "steering", "run_id": "r1", "prompt": "also check the docs",
+        ])
+        #expect(event == .user(text: "also check the docs"))
+        #expect(PCodeHostEventDecoder.decodeJournalRecord(["kind": "steering", "prompt": ""]) == nil)
+    }
+
+    @Test @MainActor func steeringMidTurnShowsPromptRowAndTurnContinues() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Fix it", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.message(markdown: "Looking."), reveal: false)
+        reducer.apply(.toolStarted(callID: "c1", parentCallID: "", name: "shell", detail: "make", command: "make", purpose: ""), reveal: false)
+        reducer.apply(.user(text: "also check the docs"), reveal: false)
+        reducer.apply(.message(markdown: "Will do."), reveal: false)
+
+        func promptIndex(_ text: String) -> Int? {
+            doc.items.firstIndex {
+                if case .prompt(_, let prompt, _) = $0.payload { return prompt == text }
+                return false
+            }
+        }
+        func proseIndex(_ text: String) -> Int? {
+            doc.items.firstIndex {
+                if case .prose(let markdown, _, _) = $0.payload { return markdown.contains(text) }
+                return false
+            }
+        }
+        guard let steer = promptIndex("also check the docs"), let reply = proseIndex("Will do.") else {
+            Issue.record("Expected the steering prompt row and the reply after it")
+            return
+        }
+        #expect(promptIndex("Fix it")! < steer)
+        #expect(steer < reply)
+        // A steering message is not a new turn: the running tool keeps running.
+        if let idx = doc.indexOfItem(id: "call-c1"), case .tool(let call, _) = doc.items[idx].payload {
+            #expect(call.isRunning)
+        } else {
+            Issue.record("Expected tool item c1")
+        }
+    }
+
     @Test @MainActor func turnEndedAndShellModeSettleRunningTools() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
