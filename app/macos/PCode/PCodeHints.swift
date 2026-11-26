@@ -5,8 +5,9 @@ import SwiftUI
 /// pcode decides every panel's hints (`pcode.popup_hints`) and sends them
 /// with each keycap already drawn as macOS writes it (`⌃Y`, `⌘R`, `↩`,
 /// `esc`); we only lay them out. They come in a pick list's payload
-/// (`hints`), or as `pcode;hints;<base64 JSON>` from a popup's or the /btw
-/// drawer's own terminal (popup protocol 4). `keep` marks the hints that stay
+/// (`hints`), or as `pcode;hints;<base64 JSON>` from a popup's own terminal
+/// (popup protocol 4); the /btw drawer builds its own (`PCodeBtwHints`), from
+/// the same rules (`POPUPS["btw_drawer"]`). `keep` marks the hints that stay
 /// when the panel is too narrow for all of them: the rest go from the end.
 struct PCodeHint: Decodable, Equatable, Hashable {
     static let maxCount = 12

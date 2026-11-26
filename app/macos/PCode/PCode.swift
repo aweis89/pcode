@@ -1,14 +1,14 @@
 import AppKit
 import GhosttyKit
 
-/// What the pcode drawer and popup share: checks on what pcode sends, the
-/// overlay terminals they run, and how those terminals' APCs are routed.
+/// What pcode's drawer, popup and dock share: checks on what pcode sends,
+/// the overlay terminals the popup and dock run, and how APCs are routed.
 ///
 /// pcode talks to us with APCs (`ESC _ pcode;<payload> ESC \`), which reach us
 /// as `GHOSTTY_ACTION_PCODE_EVENT`. A terminal of the window speaks to its own
-/// drawer and popup (`PCodeDrawer`, `PCodePopup`); an overlay terminal one of
-/// those runs speaks only to the drawer or popup it is in. Neither can use the
-/// other's verbs.
+/// drawer and popup (`PCodeDrawer`, `PCodePopup`); an overlay terminal the
+/// popup or dock runs speaks only to its owner. Neither can use the other's
+/// verbs. The drawer is native and runs no terminal.
 enum PCode {
     /// True if `value` is plain: ASCII letters, digits, `-` and `_`, or
     /// lowercase hex digits only if `hex`, with a length in `length`.
@@ -53,9 +53,8 @@ enum PCode {
     /// dash before argv[0], and a venv's Python finds its venv from argv[0], so
     /// `env` starts it with a plain one. `-I` keeps the directory, user site
     /// and PYTHON* variables out of its imports. `args` must be plain already.
-    /// `env` entries are plain `NAME=value` words, set for the program alone.
-    static func pythonCommand(_ python: String, module: String, args: [String], env: [String] = []) -> String {
-        (["/usr/bin/env"] + env + [shellQuoted(python), "-I", "-m", module] + args).joined(separator: " ")
+    static func pythonCommand(_ python: String, module: String, args: [String]) -> String {
+        (["/usr/bin/env", shellQuoted(python), "-I", "-m", module] + args).joined(separator: " ")
     }
 
     static func shellQuoted(_ text: String) -> String {
@@ -139,7 +138,7 @@ enum PCode {
     }
 }
 
-/// A drawer or popup that runs overlay terminals over a terminal of the window.
+/// A popup or dock that runs overlay terminals over a terminal of the window.
 protocol PCodeOverlayOwner: AnyObject {
     /// The terminal of the window the overlay is laid over.
     var surfaceView: Ghostty.SurfaceView? { get }
@@ -268,10 +267,10 @@ extension Ghostty.SurfaceView {
         return CGRect(x: x - cell.width / 2, y: y - cell.height, width: cell.width, height: cell.height)
     }
 
-    /// True if this surface is a pcode drawer's or popup's overlay terminal, even a dropped one.
+    /// True if this surface is a pcode popup's or dock's overlay terminal, even a dropped one.
     var isPCodeOverlay: Bool { pcodeOwnerBox != nil }
 
-    /// The drawer or popup this surface is the overlay terminal of, while it is still there.
+    /// The popup or dock this surface is the overlay terminal of, while it is still there.
     var pcodeOwner: PCodeOverlayOwner? { pcodeOwnerBox?.owner }
 
     /// The surface this one stands for in its window: for a pcode overlay, the
