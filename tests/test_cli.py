@@ -1,5 +1,6 @@
 import io
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -148,6 +149,54 @@ def test_fork_skips_the_running_host_and_forks_in_a_new_one(monkeypatch, tmp_pat
         main()
     assert spawn.call_args.kwargs["resume"] == saved.info.id
     assert spawn.call_args.kwargs["fork"] is True
+
+
+def test_hosted_resume_runs_in_the_sessions_own_workspace(monkeypatch, tmp_path):
+    # A host resumed from another directory (say a sibling worktree, which its
+    # own session may remove) still runs in the session's directory.
+    root = tmp_path / "sessions"
+    home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
+    home.mkdir()
+    elsewhere.mkdir()
+    saved = SavedSession.create("test:local", home, root)
+    saved.close()
+    monkeypatch.chdir(elsewhere)
+    argv = ["pcode", "-c", saved.info.id, "--host", "--session-dir", str(root)]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with (
+        patch("pcode.app._running_host", return_value=None),
+        patch("pcode.project_trust.prompt_trust"),
+        patch("pcode.remote.spawn_host", return_value=("h1", None, tmp_path / "log")) as spawn,
+        patch("pcode.app._tidy_stopped_host"),
+        patch("pcode.app.PreviewApp") as app,
+    ):
+        main()
+    assert spawn.call_args.kwargs["workspace"] == home.resolve()
+    assert spawn.call_args.kwargs["model"] == "test:local"
+    assert app.call_args.kwargs["workspace"] == home.resolve()
+
+
+def test_hosted_resume_refuses_another_repository(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "sessions"
+    home, other = tmp_path / "home", tmp_path / "other"
+    home.mkdir()
+    other.mkdir()
+    saved = SavedSession.create("test:local", home, root)
+    saved.close()
+    argv = ["pcode", "-c", saved.info.id, "--host", "--session-dir", str(root), "-C", str(other)]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    with (
+        patch("pcode.app._running_host", return_value=None),
+        patch("pcode.worktree.repo_scope", side_effect=lambda path: Path(path).resolve()),
+        patch("pcode.remote.spawn_host", side_effect=AssertionError("spawned")),
+        pytest.raises(SystemExit),
+    ):
+        main()
+    assert "refusing cross-repo resume" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("extra", [[], ["--attach"]])
