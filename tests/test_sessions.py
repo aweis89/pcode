@@ -743,7 +743,8 @@ def test_a_legacy_row_that_lost_a_message_fails_alone(tmp_path):
 def test_compacting_stores_whole_history_rows_once_and_keeps_them_readable(tmp_path):
     from pydantic_ai.messages import ModelMessagesTypeAdapter
 
-    from pcode.sessions import PrivateStepStore, compact_snapshots
+    from pcode.sessions import compact_snapshots
+    from pcode.step_store import PrivateStepStore
 
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", tmp_path, root)

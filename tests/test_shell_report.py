@@ -15,8 +15,9 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot
 
-from pcode.sessions import PrivateStepStore, SessionInfo
+from pcode.sessions import SessionInfo
 from pcode.shell import REDUCED_SHELL_OUTPUT
+from pcode.step_store import PrivateStepStore
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "shell_report.py"
 _spec = importlib.util.spec_from_file_location("shell_report", SCRIPT)
