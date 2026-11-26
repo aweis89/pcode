@@ -536,6 +536,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 }
             }
         }
+        // A seconds counter: let the system batch the wakeups.
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         liveRunningTimer = timer
     }

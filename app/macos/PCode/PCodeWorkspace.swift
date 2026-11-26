@@ -924,6 +924,8 @@ final class PCodeWorkspace: ObservableObject {
     let peek = PCodePeekController()
     /// Whether the workspace window is on screen; set by its controller.
     var windowVisible: () -> Bool = { false }
+    /// The same, for SwiftUI views (`pcodeWindowOnScreen`); kept current by `syncOcclusion`.
+    let windowVisibility = PCodeWindowVisibility()
     /// The workspace window, for confirmation sheets; set by its controller.
     weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
@@ -1022,6 +1024,8 @@ final class PCodeWorkspace: ObservableObject {
             // Scheduled on the main run loop.
             MainActor.assumeIsolated { self?.reconcilePanes() }
         }
+        // A backstop, not a deadline: let the system batch its wakeups.
+        reconcileTimer?.tolerance = 1
     }
 
     private var reconcileTimer: Timer?
@@ -1047,7 +1051,9 @@ final class PCodeWorkspace: ObservableObject {
             now.timeIntervalSince(pane.createdAt) > Self.reconcileGrace && Self.processGone(pane.surface)
         }
         dead.forEach(close)
-        if now.timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
+        // Nobody sees the sidebar while the window is hidden; `syncOcclusion`
+        // reloads when it shows again.
+        if windowVisibility.onScreen, now.timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
             reloadHistory()
         }
     }
@@ -2101,6 +2107,14 @@ final class PCodeWorkspace: ObservableObject {
     /// compete with the one being watched.
     func syncOcclusion() {
         let windowVisible = windowVisible()
+        if windowVisibility.onScreen != windowVisible {
+            windowVisibility.onScreen = windowVisible
+            // The periodic history reload skips a hidden window: catch up now.
+            if windowVisible, hasRestored, !restoring,
+               Date().timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
+                reloadHistory()
+            }
+        }
         let peekedPaneID = peek.target?.paneID
         for pane in panes {
             let visible = windowVisible && (pane.id == selected || pane.id == peekedPaneID)
@@ -3061,12 +3075,42 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
     }
 }
 
+/// Whether the workspace window is on screen (not hidden, minimized or fully
+/// covered), for views that animate to stop while nobody can see them.
+private struct PCodeWindowOnScreenKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var pcodeWindowOnScreen: Bool {
+        get { self[PCodeWindowOnScreenKey.self] }
+        set { self[PCodeWindowOnScreenKey.self] = newValue }
+    }
+}
+
+/// The window's on-screen state, kept apart from `PCodeWorkspace` so a change
+/// redraws only what reads `pcodeWindowOnScreen`.
+final class PCodeWindowVisibility: ObservableObject {
+    @Published var onScreen = true
+}
+
+/// Hands `PCodeWindowVisibility` down as `pcodeWindowOnScreen`.
+struct PCodeWindowVisibilityReader<Content: View>: View {
+    @ObservedObject var visibility: PCodeWindowVisibility
+    let content: Content
+
+    var body: some View {
+        content.environment(\.pcodeWindowOnScreen, visibility.onScreen)
+    }
+}
+
 /// A turn running: the same green dot as a settled, unseen response, with a
 /// thin arc orbiting it, so running and done differ by motion, not by shape
 /// or size. Fills its frame; the dot is half of it (6pt in a 12pt slot).
 private struct PCodeRunningDot: View {
     private static let period = 1.1
     private static let lineWidth: CGFloat = 1.2
+    @Environment(\.pcodeWindowOnScreen) private var onScreen
 
     var body: some View {
         GeometryReader { geometry in
@@ -3074,7 +3118,8 @@ private struct PCodeRunningDot: View {
             ZStack {
                 // 30 fps is plenty for a 12pt arc, and keeps the sidebar from
                 // redrawing at the terminal's 120.
-                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                // Paused while the window is hidden or covered: nobody sees it.
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !onScreen)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     let turns = t.truncatingRemainder(dividingBy: Self.period) / Self.period
                     Circle()
@@ -4249,9 +4294,11 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         // Keep mouseMoved events flowing even when no terminal SurfaceView is open so auto-hide reveal still works.
         window.acceptsMouseMovedEvents = true
         let hosting = NSHostingController(
-            rootView: PCodeWorkspaceView(workspace: workspace)
-                .frame(minWidth: 700, minHeight: 400)
-                .environmentObject(ghostty))
+            rootView: PCodeWindowVisibilityReader(
+                visibility: workspace.windowVisibility,
+                content: PCodeWorkspaceView(workspace: workspace)
+                    .frame(minWidth: 700, minHeight: 400)
+                    .environmentObject(ghostty)))
         // The window keeps its own size; by default the controller shrinks it
         // to SwiftUI's ideal size, which for a split view is tiny.
         hosting.sizingOptions = [.minSize]

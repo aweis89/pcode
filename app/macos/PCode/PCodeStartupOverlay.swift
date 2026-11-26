@@ -107,6 +107,7 @@ private struct PCodeGyroSpinner: View {
     let primary: Color
     let secondary: Color
     let isLight: Bool
+    @Environment(\.pcodeWindowOnScreen) private var onScreen
 
     private static let period: Double = 2.8
     private static let ringRadius: Double = 0.78
@@ -172,7 +173,8 @@ private struct PCodeGyroSpinner: View {
         let c1 = RGB(primary, isLight: isLight)
         let c2 = RGB(secondary, isLight: isLight)
 
-        TimelineView(.animation) { context in
+        // Paused while the window is hidden or covered: nobody sees it.
+        TimelineView(.animation(minimumInterval: nil, paused: !onScreen)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let ang = (t.truncatingRemainder(dividingBy: Self.period) / Self.period) * (2.0 * .pi)
 
