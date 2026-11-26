@@ -2,7 +2,6 @@
 
 import argparse
 import asyncio
-import importlib.metadata
 import logging
 import os
 import re
@@ -3962,9 +3961,7 @@ def main() -> None:
     # The workspace's `.pcode/preferences.json` overlays user defaults, so it has
     # to be known before the first load_preferences() (the --theme default).
     _select_project_root(sys.argv[1:])
-    parser.add_argument(
-        "--version", action="version", version=f"pcode {importlib.metadata.version('pcode')}"
-    )
+    parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(
         "--theme",
         choices=THEMES,
@@ -4196,6 +4193,21 @@ def main() -> None:
             if not isinstance(args.profile, Path):
                 prune_captures()
         _run_cli(args, parser)
+
+
+class _VersionAction(argparse.Action):
+    """`--version`, looked up only when asked: reading package metadata costs
+    every start ~10 ms (`importlib.metadata` and the scan for `pcode`)."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.setdefault("help", "show program's version number and exit")
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from importlib.metadata import version
+
+        print(f"pcode {version('pcode')}")
+        parser.exit()
 
 
 def _select_project_root(argv: list[str]) -> None:
