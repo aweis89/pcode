@@ -509,13 +509,18 @@ final class PCodeTranscriptEventReducer {
         case .history(let events):
             loadHistory(events)
 
-        case .turnStarted(let prompt, let isSide, _):
+        case .turnStarted(let prompt, let isSide, let runID):
             settleRunningItems(failed: false, in: doc)
             settleActiveThinking(in: doc, reveal: reveal)
             activeShellModeCallID = nil
             streamedTextInCurrentMessage = false
             turnAlreadyTerminated = false
-            doc.beginStreamingTurn(prompt: prompt, isSide: isSide, forcePin: false, reveal: reveal)
+            doc.beginStreamingTurn(
+                prompt: prompt,
+                isSide: isSide,
+                turnID: runID.isEmpty ? nil : runID,
+                forcePin: false,
+                reveal: reveal)
 
         case .textDelta(let delta):
             settleActiveThinking(in: doc, reveal: reveal)

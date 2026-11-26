@@ -85,6 +85,8 @@ struct PCodeTranscriptItem: Identifiable {
     let revision: UInt64
     /// Flattened nesting depth (e.g. `1` for sub-agent tool/edit calls under `parent_call_id`).
     let depth: Int
+    /// Optional conversation turn ID (`run_id`) anchoring prompt rows to `PCodeConversationTree`.
+    let turnID: String?
 
     var kind: Kind {
         switch payload {
@@ -139,12 +141,20 @@ struct PCodeTranscriptItem: Identifiable {
         }
     }
 
-    init(id: String, payload: Payload, spacingAfter: CGFloat = 8, revision: UInt64 = 0, depth: Int = 0) {
+    init(
+        id: String,
+        payload: Payload,
+        spacingAfter: CGFloat = 8,
+        revision: UInt64 = 0,
+        depth: Int = 0,
+        turnID: String? = nil
+    ) {
         self.id = id
         self.payload = payload
         self.spacingAfter = spacingAfter
         self.revision = revision
         self.depth = max(0, depth)
+        self.turnID = turnID
     }
 
     /// Convenience initializer used by unit tests and simple synthetic items.
@@ -221,10 +231,17 @@ struct PCodeTranscriptItem: Identifiable {
             self.payload = .answerActions(copyMarkdown: plainText)
         }
         self.depth = 0
+        self.turnID = nil
     }
 
     func withSpacingAfter(_ spacing: CGFloat) -> PCodeTranscriptItem {
-        PCodeTranscriptItem(id: id, payload: payload, spacingAfter: spacing, revision: revision, depth: depth)
+        PCodeTranscriptItem(
+            id: id,
+            payload: payload,
+            spacingAfter: spacing,
+            revision: revision,
+            depth: depth,
+            turnID: turnID)
     }
 
     /// Flatten `PCodePeekTurn`s into virtualized transcript items, parsing Markdown messages
@@ -494,6 +511,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Invoked whenever the smooth-scroll conveyor glide starts or settles (drives bottom-edge dissolve).
     var onSmoothGlideActiveChanged: ((Bool) -> Void)?
     private var lastNotifiedGlideActive: Bool = false
+    /// Invoked whenever the turn visible near the top of the viewport changes (drives Tree scroll-spy).
+    var onVisibleTurnChanged: ((String?) -> Void)?
+    private var lastNotifiedVisibleTurnID: String?
+    /// Compact index of prompt items carrying a `turnID`, rebuilt with `itemIndexByID` for O(turns) scroll-spy.
+    private var taggedTurnIndices: [(index: Int, turnID: String)] = []
     /// Number of items currently queued in the visual reveal queue.
     var pendingRevealCount: Int { revealQueue.entries.count }
     /// True while either the reveal queue or the 120Hz smooth-scroll conveyor has active work.
@@ -586,6 +608,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             runningToolIDs.remove(item.id)
         }
         syncLiveRunningTimer()
+        lastNotifiedVisibleTurnID = nil
+        updateVisibleTurnIfNeeded()
     }
 
     private func syncLiveRunningTimer() {
@@ -748,6 +772,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
         }
         syncLiveRunningTimer()
+        lastNotifiedVisibleTurnID = nil
+        updateVisibleTurnIfNeeded()
     }
 
     /// Replace the transcript with a whole conversation that `replay` builds through the usual
@@ -774,8 +800,55 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     private func rebuildItemIndexMap() {
         itemIndexByID.removeAll(keepingCapacity: true)
+        taggedTurnIndices.removeAll(keepingCapacity: true)
         for (idx, item) in items.enumerated() {
             itemIndexByID[item.id] = idx
+            if let tid = item.turnID, !tid.isEmpty {
+                taggedTurnIndices.append((idx, tid))
+            }
+        }
+    }
+
+    /// Backfill `turnID` on untagged `.prompt` items (from live RPC `turn_started` calls)
+    /// using the authoritative root-to-active prompt turn IDs from `transcript.jsonl`.
+    func reconcilePromptTurnIDs(_ activePromptTurnIDs: [String]) {
+        guard !activePromptTurnIDs.isEmpty else { return }
+        var promptOrder = 0
+        var changed = false
+        for i in rawItems.indices {
+            guard rawItems[i].kind == .prompt else { continue }
+            defer { promptOrder += 1 }
+            if rawItems[i].turnID == nil, promptOrder < activePromptTurnIDs.count {
+                let it = rawItems[i]
+                rawItems[i] = PCodeTranscriptItem(
+                    id: it.id,
+                    payload: it.payload,
+                    spacingAfter: it.spacingAfter,
+                    revision: it.revision,
+                    depth: it.depth,
+                    turnID: activePromptTurnIDs[promptOrder])
+                changed = true
+            }
+        }
+        var displayPromptOrder = 0
+        for i in items.indices {
+            guard items[i].kind == .prompt else { continue }
+            defer { displayPromptOrder += 1 }
+            if items[i].turnID == nil, displayPromptOrder < activePromptTurnIDs.count {
+                let it = items[i]
+                items[i] = PCodeTranscriptItem(
+                    id: it.id,
+                    payload: it.payload,
+                    spacingAfter: it.spacingAfter,
+                    revision: it.revision,
+                    depth: it.depth,
+                    turnID: activePromptTurnIDs[displayPromptOrder])
+                changed = true
+            }
+        }
+        if changed {
+            rebuildItemIndexMap()
+            updateVisibleTurnIfNeeded()
         }
     }
 
@@ -1191,7 +1264,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                         payload: newItem.payload,
                         spacingAfter: newItem.spacingAfter,
                         revision: nextRevision,
-                        depth: newItem.depth)
+                        depth: newItem.depth,
+                        turnID: newItem.turnID)
                     layoutEngine.updateSpacingAfter(at: idx, spacingAfter: newItem.spacingAfter)
                 } else {
                     items[idx] = newItem
@@ -1430,17 +1504,26 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         runningToolIDs.remove(id)
         mountViews(in: visibleRect)
         syncLiveRunningTimer()
+        lastNotifiedVisibleTurnID = nil
+        updateVisibleTurnIfNeeded()
     }
 
     /// Start a new turn by appending the user prompt. Pass `forcePin: true` for user-submitted
     /// prompts so the view re-pins to bottom, or `false` when replaying/streaming background turns.
-    func beginStreamingTurn(prompt: String, isSide: Bool = false, forcePin: Bool = true, reveal: Bool = true) {
+    func beginStreamingTurn(
+        prompt: String,
+        isSide: Bool = false,
+        turnID: String? = nil,
+        forcePin: Bool = true,
+        reveal: Bool = true
+    ) {
         finishStreamingMessage(reveal: reveal)
         streamingTurnCounter += 1
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-prompt",
             payload: .prompt(label: isSide ? "/btw" : "", text: prompt, isSide: isSide),
-            spacingAfter: 12)
+            spacingAfter: 12,
+            turnID: turnID)
         if forcePin || (isPaneActive && stickyBottom.mode == .resumingDwell) {
             cancelResumingDwellTimer()
             stickyBottom.pinToBottom(isPaneActive: isPaneActive)
@@ -1689,6 +1772,87 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if !revealQueue.isEmpty {
             ensureDisplayLinkRunning()
         }
+        updateVisibleTurnIfNeeded()
+    }
+
+    /// Scroll the transcript to the prompt row anchored to `turnID`, unpinning sticky-bottom.
+    /// Returns `true` if a matching turn row was found and scrolled to.
+    @discardableResult
+    func scrollToTurn(_ turnID: String) -> Bool {
+        guard !turnID.isEmpty,
+              let scrollView = enclosingScrollView,
+              let match = taggedTurnIndices.first(where: { $0.turnID == turnID }),
+              layoutEngine.entries.indices.contains(match.index)
+        else { return false }
+
+        cancelResumingDwellTimer()
+        resetSmoothGlide()
+        unpinFromBottom()
+
+        let idx = match.index
+        let scrollToY: (CGFloat) -> Void = { targetY in
+            let clipHeight = scrollView.contentView.bounds.height
+            let maxOriginY = PCodeStickyBottomState.bottomOriginY(
+                documentHeight: max(self.frame.size.height, self.layoutEngine.totalHeight),
+                clipHeight: clipHeight,
+                topInset: scrollView.contentInsets.top,
+                bottomInset: scrollView.contentInsets.bottom)
+            let minOriginY = -scrollView.contentInsets.top
+            let clampedY = min(max(minOriginY, targetY), maxOriginY)
+            self.isApplyingDocumentHeight = true
+            scrollView.contentView.scroll(to: CGPoint(x: scrollView.contentView.bounds.origin.x, y: clampedY))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            self.lastClipOriginY = scrollView.contentView.bounds.origin.y
+            self.isApplyingDocumentHeight = false
+        }
+
+        let initialY = layoutEngine.entries[idx].yOffset
+        scrollToY(initialY - scrollView.contentInsets.top - 12)
+        mountViews(in: visibleRect)
+
+        // Refine after mounting replaces estimated heights with measured heights.
+        if layoutEngine.entries.indices.contains(idx) {
+            let measuredY = layoutEngine.entries[idx].yOffset
+            if abs(measuredY - initialY) > 1 {
+                scrollToY(measuredY - scrollView.contentInsets.top - 12)
+                mountViews(in: visibleRect)
+            }
+        }
+
+        refreshJumpToBottomVisibility()
+        if lastNotifiedVisibleTurnID != turnID {
+            lastNotifiedVisibleTurnID = turnID
+            onVisibleTurnChanged?(turnID)
+        }
+        return true
+    }
+
+    /// Compute which tagged turn currently owns the visible viewport.
+    func currentVisibleTurnID() -> String? {
+        guard let scrollView = enclosingScrollView, !taggedTurnIndices.isEmpty else { return nil }
+        // When pinned/scrolled to the bottom, always highlight the final turn (even if short).
+        if distanceFromBottom(in: scrollView) <= stickyBottom.bottomThreshold {
+            return taggedTurnIndices.last?.turnID
+        }
+        let topInset = scrollView.contentInsets.top
+        let probeY = scrollView.contentView.bounds.origin.y + topInset + 40
+        var candidate: String?
+        for entry in taggedTurnIndices {
+            guard layoutEngine.entries.indices.contains(entry.index) else { continue }
+            if layoutEngine.entries[entry.index].yOffset <= probeY {
+                candidate = entry.turnID
+            } else {
+                break
+            }
+        }
+        return candidate ?? taggedTurnIndices.first?.turnID
+    }
+
+    func updateVisibleTurnIfNeeded() {
+        let current = currentVisibleTurnID()
+        guard current != lastNotifiedVisibleTurnID else { return }
+        lastNotifiedVisibleTurnID = current
+        onVisibleTurnChanged?(current)
     }
 
     /// Update whether this pane is currently focused and visible to the user.
@@ -2011,6 +2175,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             trimBottomSlackAfterUserScroll(in: scrollView)
         }
         mountViews(in: visibleRect)
+        updateVisibleTurnIfNeeded()
         if !revealQueue.isEmpty, window != nil {
             ensureDisplayLinkRunning()
         }
@@ -3028,6 +3193,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 mountViews(in: visibleRect)
             }
         }
+        updateVisibleTurnIfNeeded()
     }
 
     /// Return highlight rects in document coordinates for `localRange` within item `index`,

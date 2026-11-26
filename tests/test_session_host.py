@@ -3615,3 +3615,52 @@ def test_controller_manage_worker_direct_actions():
     # Unknown worker returns ok=False
     bad = SessionController.manage_worker(ctrl, "message", "w999", "hi")
     assert bad["ok"] is False
+
+
+def test_host_client_navigate_tree_rpc():
+    from types import SimpleNamespace
+
+    from pcode.host import HOST_CALLS, _Client
+
+    assert "navigate_tree" in HOST_CALLS
+
+    calls: list[tuple[str | None, bool]] = []
+    pushed: list[bool] = []
+
+    async def fake_navigate(identity: str | None, edit: bool = False) -> str:
+        calls.append((identity, edit))
+        if identity == "busy-turn":
+            raise ValueError("/tree is unavailable while working or messages are queued.")
+        return "edited prompt" if edit else ""
+
+    host = SimpleNamespace(
+        controller=SimpleNamespace(
+            navigate_tree=fake_navigate,
+            runtime=SimpleNamespace(navigate=lambda *a, **kw: None),
+        ),
+        push_state=lambda: pushed.append(True),
+    )
+    client = _Client.__new__(_Client)
+    client.host = host
+
+    async def run():
+        res = await client.navigate_tree("t2", False)
+        assert res == {"ok": True, "draft": ""}
+        assert calls[-1] == ("t2", False)
+        assert len(pushed) == 1
+
+        res_edit = await client.navigate_tree("t1", True)
+        assert res_edit == {"ok": True, "draft": "edited prompt"}
+        assert calls[-1] == ("t1", True)
+        assert len(pushed) == 2
+
+        res_err = await client.navigate_tree("busy-turn", False)
+        assert res_err["ok"] is False
+        assert "unavailable" in str(res_err["message"])
+        assert len(pushed) == 2
+
+        host.controller.runtime = None
+        res_boot = await client.navigate_tree("t1", False)
+        assert res_boot == {"ok": False, "message": "Session is still starting."}
+
+    asyncio.run(run())

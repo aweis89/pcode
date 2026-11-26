@@ -82,6 +82,51 @@ enum PCodeHostControlRPC {
         }
     }
 
+    static func navigateTree(
+        nodeID: String?,
+        edit: Bool,
+        sessionID: String?,
+        hostID: String?,
+        completion: @escaping @MainActor (Result<String, Error>) -> Void
+    ) {
+        queue.async {
+            guard let socketPath = PCodeSessionInfo.hostSocketPath(
+                forSessionID: sessionID,
+                hostID: hostID
+            ), !socketPath.isEmpty else {
+                Task { @MainActor in
+                    completion(.failure(ControlError(message: "Session host is not running.")))
+                }
+                return
+            }
+            let outcome = sendRequestWithReply(
+                socketPath: socketPath,
+                method: "navigate_tree",
+                args: [nodeID as Any, edit],
+                timeoutSeconds: 5.0,
+                maxReplyBytes: 1_048_576
+            )
+            Task { @MainActor in
+                switch outcome {
+                case .success(let value):
+                    if let dict = value as? [String: Any] {
+                        let ok = (dict["ok"] as? Bool) ?? false
+                        if ok {
+                            completion(.success((dict["draft"] as? String) ?? ""))
+                        } else {
+                            let msg = (dict["message"] as? String) ?? "Could not switch branch."
+                            completion(.failure(ControlError(message: msg)))
+                        }
+                    } else {
+                        completion(.failure(ControlError(message: "Unexpected reply from session host.")))
+                    }
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
     @discardableResult
     static func sendRequest(
         socketPath: String,
@@ -107,7 +152,8 @@ enum PCodeHostControlRPC {
         method: String,
         args: [Any],
         kwargs: [String: Any] = [:],
-        timeoutSeconds: Double = 2.0
+        timeoutSeconds: Double = 2.0,
+        maxReplyBytes: Int = 65_536
     ) -> Result<Any?, Error> {
         let clampedTimeout = max(0.2, timeoutSeconds)
         let deadline = CFAbsoluteTimeGetCurrent() + clampedTimeout
@@ -191,7 +237,12 @@ enum PCodeHostControlRPC {
         }
 
         // Wait for reply and verify the host accepted the intent.
-        guard let replyLine = readLine(fd: fd, buffer: &readBuffer, deadline: deadline),
+        guard let replyLine = readLine(
+                fd: fd,
+                buffer: &readBuffer,
+                deadline: deadline,
+                maxBytes: maxReplyBytes
+              ),
               let replyObj = try? JSONSerialization.jsonObject(with: replyLine) as? [String: Any],
               replyObj["type"] as? String == "reply",
               (replyObj["id"] as? Int) == 1
@@ -272,6 +323,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
     @ObservedObject var changesStore: PCodeSessionChangesStore
     @ObservedObject var agentsStore: PCodeInspectorAgentsStore
     @ObservedObject var commandsStore: PCodeInspectorCommandsStore
+    @ObservedObject var treeStore: PCodeConversationTreeStore
     @ObservedObject private var typography = PCodeTypography.shared
     let mainContent: () -> MainContent
 
@@ -287,6 +339,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         self.changesStore = pane.changesStore
         self.agentsStore = pane.agentsStore
         self.commandsStore = pane.commandsStore
+        self.treeStore = pane.treeStore
         self.mainContent = mainContent
     }
 
@@ -336,6 +389,24 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                     action: action,
                     workerID: workerID,
                     text: text,
+                    sessionID: sessionID,
+                    hostID: hostID,
+                    completion: completion
+                )
+            },
+            scrollToTurn: { turnID in
+                if state.isExpanded {
+                    state.isExpanded = false
+                }
+                if isOverlay {
+                    state.close()
+                }
+                pane.onScrollToTurn?(turnID)
+            },
+            navigateTree: { nodeID, edit, completion in
+                PCodeHostControlRPC.navigateTree(
+                    nodeID: nodeID,
+                    edit: edit,
                     sessionID: sessionID,
                     hostID: hostID,
                     completion: completion
@@ -518,6 +589,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 tabButton(.changes, badge: changesBadgeCount, pulsing: changesHasStreaming)
                 tabButton(.agents, badge: agentsBadgeCount, pulsing: agentsStore.activeCount > 0)
                 tabButton(.commands, badge: commandsBadgeCount, pulsing: commandsStore.runningCount > 0)
+                tabButton(.tree, badge: treeBadgeCount, pulsing: false)
             }
             .padding(2)
             .background(
@@ -574,14 +646,20 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         commandsStore.runningCount > 0 ? commandsStore.runningCount : commandsStore.commands.count
     }
 
+    private var treeBadgeCount: Int {
+        treeStore.tree.turnCount
+    }
+
     private func tabButton(_ tab: PCodeInspectorTab, badge: Int, pulsing: Bool) -> some View {
         let selected = inspectorState.activeTab == tab
         return Button {
             inspectorState.activeTab = tab
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Text(tab.title)
-                    .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                    .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 if pulsing {
                     Circle()
                         .fill(Color.accentColor)
@@ -589,10 +667,12 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 }
                 if badge > 0 {
                     Text("\(badge)")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                         .foregroundStyle(selected ? .primary : .secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
+                        .padding(.vertical, 0.5)
                         .background(
                             Capsule()
                                 .fill(Color.primary.opacity(selected ? 0.14 : 0.08))
@@ -600,8 +680,8 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 }
             }
             .foregroundStyle(selected ? .primary : .secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3.5)
             .background(
                 RoundedRectangle(cornerRadius: 4.5, style: .continuous)
                     .fill(selected ? Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.10) : .clear)
@@ -666,6 +746,12 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 actions: resolvedActions,
                 codeFont: typography.snapshot.codeNSFont(scale: typography.snapshot.codeBlockScale),
                 foregroundColor: NSColor(ghostty.config.foregroundColor)
+            )
+        case .tree:
+            PCodeInspectorTreeView(
+                state: inspectorState,
+                store: treeStore,
+                actions: resolvedActions
             )
         }
     }

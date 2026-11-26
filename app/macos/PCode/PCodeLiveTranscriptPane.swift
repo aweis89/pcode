@@ -279,6 +279,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 if state != self.sessionState {
                     self.sessionState = state
                 }
+                self.onHostEvent?(.sessionState(PCodeHostSessionDelta(busy: state.busy)))
                 // Compatibility with already-running hosts that strip `ToolStarted.arguments`
                 // from `observer_history`: hydrate the Inspector from the local journal when
                 // edit tool calls arrived without arguments and without `EditCompleted`.
@@ -309,6 +310,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.isConnectingSocket = false
                 self.connectedSocketPath = nil
                 self.resetSessionState(sessionID: self.attachedSessionID ?? "")
+                self.onHostEvent?(.sessionState(PCodeHostSessionDelta(busy: false)))
                 let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.connectionState = .error(text.isEmpty ? "Could not connect to the session host." : text)
                 self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer, afterStop: true)
@@ -318,6 +320,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.isConnectingSocket = false
                 self.connectedSocketPath = nil
                 self.resetSessionState(sessionID: self.attachedSessionID ?? "")
+                self.onHostEvent?(.sessionState(PCodeHostSessionDelta(busy: false)))
                 self.connectionState = .hostStopped("The session host stopped.")
                 self.startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer, afterStop: true)
             })
@@ -610,7 +613,11 @@ struct PCodeJournalBranches {
             parents[id] = record["parent_id"] as? String
             active = id
         case "tree_selected":
-            if let id = record["node_id"] as? String { active = id }
+            if let id = record["node_id"] as? String, !id.isEmpty {
+                active = id
+            } else if record["node_id"] == nil || record["node_id"] is NSNull {
+                active = nil
+            }
         default:
             break
         }
@@ -775,6 +782,29 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
                     pane.inspectorState.openCommand(callID: matched.id)
                 } else {
                     pane.inspectorState.openCommand(callID: callID)
+                }
+            }
+        }
+        scrollView.transcriptDocumentView.onVisibleTurnChanged = { turnID in
+            guard let composer,
+                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+            else { return }
+            MainActor.assumeIsolated {
+                pane.treeStore.visibleTurnID = turnID
+            }
+        }
+        if let composer,
+           let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer) {
+            weak var docView = scrollView.transcriptDocumentView
+            pane.onScrollToTurn = { turnID in
+                _ = docView?.scrollToTurn(turnID)
+            }
+            MainActor.assumeIsolated {
+                pane.treeStore.onActivePromptTurnIDsChanged = { ids in
+                    docView?.reconcilePromptTurnIDs(ids)
+                }
+                if let sid = sessionID, !sid.isEmpty {
+                    pane.treeStore.setSessionID(sid)
                 }
             }
         }

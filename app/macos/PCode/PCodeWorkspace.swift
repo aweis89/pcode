@@ -926,12 +926,16 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     let changesStore: PCodeSessionChangesStore
     let agentsStore: PCodeInspectorAgentsStore
     let commandsStore: PCodeInspectorCommandsStore
+    let treeStore: PCodeConversationTreeStore
+    /// Wired by `PCodeLiveTranscriptPane` so the Tree tab can scroll the active transcript to a turn.
+    var onScrollToTurn: ((String) -> Void)?
 
     @MainActor
     func applyInspectorEvent(_ event: PCodeHostEvent) {
         changesStore.apply(event)
         agentsStore.apply(event)
         commandsStore.apply(event)
+        treeStore.apply(event)
     }
 
     init(surface: Ghostty.SurfaceView, directory: String, projectPath: String? = nil, sessionID: String?) {
@@ -946,13 +950,15 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
                 PCodeInspectorState(),
                 PCodeSessionChangesStore(sessionDirectory: directory),
                 PCodeInspectorAgentsStore(),
-                PCodeInspectorCommandsStore()
+                PCodeInspectorCommandsStore(),
+                PCodeConversationTreeStore(sessionID: sessionID)
             )
         }
         self.inspectorState = inspectorBundle.0
         self.changesStore = inspectorBundle.1
         self.agentsStore = inspectorBundle.2
         self.commandsStore = inspectorBundle.3
+        self.treeStore = inspectorBundle.4
         titleSubscription = surface.$title.removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] title in
@@ -3310,6 +3316,8 @@ struct PCodeWorkspaceView: View {
                     .keyboardShortcut("2", modifiers: [.command, .option])
                 Button("") { workspace.selectInspectorTab(.commands) }
                     .keyboardShortcut("3", modifiers: [.command, .option])
+                Button("") { workspace.selectInspectorTab(.tree) }
+                    .keyboardShortcut("4", modifiers: [.command, .option])
                 Button("") { workspace.toggleInspectorExpanded() }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
             }
