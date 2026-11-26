@@ -1857,7 +1857,14 @@ async def suspended_editor(app: Application, *, atomic: bool = False):
     """
     # Offline harnesses pass a bare stand-in for the app; nothing to suspend.
     # SPIKE: a docked editor is on its own terminal; scrollback never covers it.
-    if not isinstance(app, Application) or not app._is_running or dock.active():
+    # Editor-only, scrollback goes nowhere, but a popup or program taking the
+    # terminal takes the editor's: that handoff is a real one.
+    docked = dock.active()
+    if (
+        not isinstance(app, Application)
+        or not app._is_running
+        or (docked is not None and (atomic or not docked.owns_tty))
+    ):
         yield Handoff(None)
         return
     # Chain to any handoff already in progress, as in_terminal does.
@@ -2427,6 +2434,9 @@ class TerminalOutput:
         # terminal how many a replay adds (`smooth_scroll.replay_end`).
         self._same_content = False
         self._marks_written = 0
+        # Editor-only (`dock.EditorOnly`): nobody sees this transcript, so
+        # queued writes, replays included, are dropped unrendered.
+        self.discard = False
 
     def regenerate(self, replay, *, same_content: bool = False) -> None:
         """Clear the screen and write `replay()` on the next flush.
@@ -2691,6 +2701,14 @@ class TerminalOutput:
 
     async def flush(self, *, drain: bool = False) -> None:
         """Write queued output; ``drain`` writes it all, as before a popup or exit."""
+        if self.discard:
+            # A replay's function only renders: the live state it resets is current.
+            self.pending.clear()
+            self.transient_pending = []
+            self._regenerate = None
+            self._written(len(self.rows))
+            self.changed.clear()
+            return
         async with self.lock:
             paced = self.paced and not drain
             due = typed = 0
@@ -5522,6 +5540,13 @@ class Transcript:
             output.park = output.marks and self.reader_park == "on"
             if self.replays_on_resize:
                 output.resize_replay = self.replay
+            if docked is not None and docked.owns_tty:
+                # Editor-only: the transcript is shown elsewhere; nothing to pace or glide.
+                output.discard = True
+                output.paced = output.gliding = output.docked_glide = output.typed = False
+                output.marks = output.park = False
+                output.resize_replay = None
+                docked.glide = None
 
     @recorded
     def print(self, *objects, end="\n", tool_line: bool = False) -> None:

@@ -28,6 +28,15 @@ region and leaves the gap.
 
 Not wired up beyond what the spike needs: no probe (a terminal without docks
 costs a `CONNECT_TIMEOUT` wait at startup), no tmux, no tests.
+
+Editor-only (`PCODE_EDITOR_ONLY=1`, which only Pcode.app sets) is the same
+editor with no pane behind it: a host client whose own terminal shows just
+the editor, tasks and status bar full screen, while the app shows the
+transcript natively from the host. `EditorOnly` stands in for the dock, so
+every docked branch applies, but on pcode's own stdin/stdout, with no
+handoff, key forwarding, scroll region, cursor reports or glide. The
+transcript still runs, since the live panel is built from the same events,
+but its writes go nowhere (`NullSink`, `TerminalOutput.discard`).
 """
 
 import asyncio
@@ -68,9 +77,19 @@ SYNC_END = "\x1b[?2026l"
 
 _active: "Dock | None" = None
 
+EDITOR_ONLY_ENV = "PCODE_EDITOR_ONLY"
+
 
 def requested() -> bool:
     return os.environ.get("PCODE_DOCK") == "1" and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def editor_only_requested() -> bool:
+    """Whether to run only the editor on this terminal (`EditorOnly`).
+
+    Callers also check that the session runs in a host (`PreviewApp`).
+    """
+    return os.environ.get(EDITOR_ONLY_ENV) == "1" and sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def active() -> "Dock | None":
@@ -124,6 +143,10 @@ CPR_TIMEOUT = 1.0
 
 
 class Dock:
+    # Whether the editor's terminal is pcode's own (`EditorOnly`), not a dock
+    # handed over beside it.
+    owns_tty = False
+
     def __init__(self, fd: int, connection: socket.socket) -> None:
         self.fd = fd
         self.connection = connection
@@ -568,4 +591,104 @@ async def open_dock(timeout: float = CONNECT_TIMEOUT) -> Dock | None:
     for extra in fds[1:]:
         os.close(extra)
     _active = Dock(fd, connection)
+    return _active
+
+
+class NullSink:
+    """The transcript's file in editor-only mode: writes vanish.
+
+    It still passes for the editor's terminal (a tty, its descriptor for the
+    size), so everything that asks whether the transcript has a terminal
+    (popups, the drawer, colors) answers as it does docked.
+    """
+
+    encoding = "utf-8"
+    errors = "replace"
+
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def fileno(self) -> int:
+        return self.fd
+
+    def isatty(self) -> bool:
+        return True
+
+
+class EditorOnly(Dock):
+    """The editor on pcode's own terminal, with no pane behind it to keep.
+
+    Everything a `Dock` does to pcode's pane (the reserve, the scroll
+    region, cursor reports, the glide, key forwarding) is a no-op, and the
+    layout gets the terminal's own size. What the editor's terminal needs
+    still goes to it: `pcode;ready` before the first frame, the tint and
+    `pcode;dock-rows;<n>` after each render (`report_rows`), and popups,
+    completions and toasts through the application's output as ever.
+    Input is the application's default, stdin, so the startup probe's late
+    replies and appearance reports are filtered as in a plain terminal.
+    """
+
+    owns_tty = True
+
+    def __init__(self, fd: int) -> None:
+        # Not `Dock.__init__`: there is no bridge connection nor a second tty.
+        self.fd = fd
+        self.connection = None
+        self.input = None
+        self.writer = popup_surface._OverlayWriter(fd)
+        self.output = Vt100_Output.from_pty(self.writer, term=os.environ.get("TERM"))
+        self.app: Application | None = None
+        self._rows = 0
+        self.tint: str | None = None
+        self._sent_tint: str | None = None
+        self.pane_row: int | None = None
+        self.reserve = 0
+        self.glide: Callable[[int], tuple[str, str]] | None = None
+
+    def attach(self, app: Application, on_theme=None) -> None:
+        self.app = app
+
+    def raw_pane_rows(self) -> int:
+        try:
+            return os.get_terminal_size(self.fd).lines
+        except OSError:
+            return 0
+
+    def _set_region(self) -> None:
+        pass
+
+    def _move_card_edge(self) -> None:
+        pass
+
+    def ask_cursor(self) -> None:
+        pass
+
+    def homed(self) -> str:
+        return ""
+
+    def wrote(self, rows: int) -> None:
+        pass
+
+    def layout_size(self, size: Size) -> Size:
+        return size
+
+    def close(self) -> None:
+        global _active
+        _active = None
+        if self._sent_tint is not None:
+            # OSC 111: the terminal's own background again, for the shell after.
+            with suppress(OSError):
+                os.write(self.fd, b"\x1b]111\x1b\\")
+
+
+def open_editor_only() -> EditorOnly:
+    """Run the editor alone on pcode's own terminal (`EditorOnly`)."""
+    global _active
+    _active = EditorOnly(sys.stdout.fileno())
     return _active
