@@ -3064,6 +3064,16 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             assert msg["args"][0]["$event"]["kind"] == "TextDelta"
             assert msg["args"][0]["$event"]["fields"]["text"] == "hello live"
 
+            # A merged side thread replays as `user` then `show_events`; the
+            # observer gets the answer as a `turn_event` beside the prompt.
+            host.controller.view.user("side question")
+            host.controller.view.show_events((Message("side answer"),))
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert (msg["method"], msg["args"]) == ("user", ["side question"])
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert msg["method"] == "turn_event"
+            assert msg["args"][0]["$event"]["fields"]["markdown"] == "side answer"
+
             # Observer is read-only: RPC requests are refused with PermissionError.
             req = {"type": "request", "id": 1, "method": "submit", "args": ["hi", "queue"]}
             writer.write(dumps(req))

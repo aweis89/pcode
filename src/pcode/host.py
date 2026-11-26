@@ -416,6 +416,15 @@ class HostView:
             for event in events:
                 peer.notify("turn_event", event)
 
+    def show_events(self, events) -> None:
+        # Pcode.app's transcript takes events one at a time (merged side threads
+        # replay as `user` then this, and need their answers beside the prompt).
+        events = tuple(events)
+        self._host.emit("show_events", (events,), {})
+        for peer in list(self._host.transcript_observers):
+            for event in events:
+                peer.notify("turn_event", event)
+
     def redraw(self) -> None:
         pass  # Terminals repaint on what they receive.
 
