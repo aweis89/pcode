@@ -521,26 +521,49 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         func infos(_ dirs: [URL]) -> [PCodeSessionInfo] {
             lock.lock()
             defer { lock.unlock() }
-            let decoder = JSONDecoder()
-            var fresh: [String: Entry] = [:]
-            fresh.reserveCapacity(dirs.count)
-            var result: [PCodeSessionInfo] = []
+            // Stat every file; keep cached entries whose stamp still matches.
+            var slots: [(path: String, id: String, stat: Darwin.stat, entry: Entry?)] = []
+            slots.reserveCapacity(dirs.count)
             for dir in dirs {
                 let path = dir.appendingPathComponent("session.json").path
                 var st = Darwin.stat()
                 guard Darwin.lstat(path, &st) == 0 else { continue }
-                let entry: Entry
+                var cached: Entry?
                 if let old = entries[path], old.size == st.st_size,
                    old.stamp.tv_sec == st.st_mtimespec.tv_sec, old.stamp.tv_nsec == st.st_mtimespec.tv_nsec {
-                    entry = old
-                } else {
-                    decodes += 1
-                    let info = (try? Data(contentsOf: URL(fileURLWithPath: path)))
-                        .flatMap { try? decoder.decode(PCodeSessionInfo.self, from: $0) }
-                        .flatMap { $0.id == dir.lastPathComponent ? $0 : nil }
-                    entry = Entry(stamp: st.st_mtimespec, size: st.st_size, info: info)
+                    cached = old
                 }
-                fresh[path] = entry
+                slots.append((path, dir.lastPathComponent, st, cached))
+            }
+            // Parse the rest in parallel: a cold load (app launch) parses
+            // every saved session.
+            let misses = slots.indices.filter { slots[$0].entry == nil }
+            decodes += misses.count
+            if !misses.isEmpty {
+                var parsed = [PCodeSessionInfo?](repeating: nil, count: misses.count)
+                let chunk = 32
+                parsed.withUnsafeMutableBufferPointer { out in
+                    DispatchQueue.concurrentPerform(iterations: (misses.count + chunk - 1) / chunk) { c in
+                        let decoder = JSONDecoder()
+                        for k in (c * chunk)..<min(misses.count, (c + 1) * chunk) {
+                            let slot = slots[misses[k]]
+                            out[k] = (try? Data(contentsOf: URL(fileURLWithPath: slot.path)))
+                                .flatMap { try? decoder.decode(PCodeSessionInfo.self, from: $0) }
+                                .flatMap { $0.id == slot.id ? $0 : nil }
+                        }
+                    }
+                }
+                for (k, index) in misses.enumerated() {
+                    let st = slots[index].stat
+                    slots[index].entry = Entry(stamp: st.st_mtimespec, size: st.st_size, info: parsed[k])
+                }
+            }
+            var fresh: [String: Entry] = [:]
+            fresh.reserveCapacity(slots.count)
+            var result: [PCodeSessionInfo] = []
+            for slot in slots {
+                guard let entry = slot.entry else { continue }
+                fresh[slot.path] = entry
                 if let info = entry.info { result.append(info) }
             }
             entries = fresh  // Drops deleted sessions.
