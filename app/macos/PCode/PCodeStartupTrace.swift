@@ -36,20 +36,26 @@ enum PCodeStartupTrace {
     private static var panesCreated = 0
     private static var panesReady = 0
 
-    /// A session pane's terminal was made (main thread).
+    /// A session pane's terminal was made.
     static func paneCreated(_ detail: @autoclosure () -> String) {
         guard enabled else { return }
+        lock.lock()
         panesCreated += 1
-        mark("pane \(panesCreated) created (\(detail()))")
+        let created = panesCreated
+        lock.unlock()
+        mark("pane \(created) created (\(detail()))")
     }
 
-    /// A session pane dropped its boot overlay (main thread).
+    /// A session pane dropped its boot overlay.
     static func paneReady(via reason: String) {
         guard enabled else { return }
+        lock.lock()
         panesReady += 1
-        mark("pane ready \(panesReady)/\(panesCreated) via \(reason)")
-        if panesReady == 1 { mark("first pane ready") }
-        if panesReady == panesCreated { mark("all \(panesCreated) panes ready") }
+        let (ready, created) = (panesReady, panesCreated)
+        lock.unlock()
+        mark("pane ready \(ready)/\(created) via \(reason)")
+        if ready == 1 { mark("first pane ready") }
+        if ready == created { mark("all \(created) panes ready", once: true) }
     }
 
     /// Record `name`; with `once`, only its first occurrence.
