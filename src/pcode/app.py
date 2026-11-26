@@ -31,7 +31,7 @@ from rich.text import Text
 from pcode import glyphs, terminal_color
 from pcode.appearance import AppearanceWatch
 from pcode.cli import ask, restore_stdin
-from pcode.commands import Command, CommandRegistry
+from pcode.commands import Command, CommandRegistry, DeferredDescriptions
 from pcode.completion import SHELLS as COMPLETION_SHELLS
 from pcode.completion import complete_with
 from pcode.config import (
@@ -411,7 +411,7 @@ class PreviewApp:
                 self.config,
                 free_arguments=True,
                 argument_provider=config_arguments,
-                argument_descriptions=config_argument_descriptions(),
+                argument_descriptions=DeferredDescriptions(config_argument_descriptions),
                 group="App",
             ),
             Command(
