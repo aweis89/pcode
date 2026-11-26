@@ -284,6 +284,65 @@ struct PCodeSidebarTests {
         }
     }
 
+    private func makeInfo(_ id: String, workspace: String, updated: String) throws -> PCodeSessionInfo {
+        let json = """
+        {"id":"\(id)","workspace":"\(workspace)","updated":"\(updated)","title":"\(id)","turns":1}
+        """
+        return try JSONDecoder().decode(PCodeSessionInfo.self, from: Data(json.utf8))
+    }
+
+    @Test func quietProjectKeepsItsFolderAndExactCounts() throws {
+        let busy = PCodeWorkspace.normalizePath("/tmp/busy-proj")
+        let quiet = PCodeWorkspace.normalizePath("/tmp/quiet-proj")
+        // 300 newer sessions in one project, then three old ones in another.
+        var all = try (0..<300).map { i in
+            try makeInfo("busy-\(1000 - i)", workspace: busy, updated: "2026-11-26T\(String(format: "%02d", 23 - i / 60)):\(String(format: "%02d", 59 - i % 60)):00+00:00")
+        }
+        all += try (1...3).map { try makeInfo("quiet-\($0)", workspace: quiet, updated: "2026-01-0\($0)T00:00:00+00:00") }
+        all.sort { $0.updated > $1.updated }
+
+        let slice = PCodeWorkspace.sliceHistory(all, keep: [], recentLimits: [:], defaultLimit: 5)
+        #expect(slice.sessions.count == 8)
+        #expect(slice.remaining == [busy: 295])
+        let groups = PCodeWorkspace.buildProjectGroups(
+            panes: [], projectPathForPane: { $0.projectPath }, history: slice.sessions,
+            detachedHostStatuses: [:], pinnedFolders: [], hiddenFolders: [],
+            remainingRecentCounts: slice.remaining)
+        #expect(groups.map(\.path) == [busy, quiet])
+        #expect(groups[0].recentSessions.count == 5)
+        #expect(groups[0].remainingRecentCount == 295)
+        #expect(groups[0].recentCount == 300)
+        #expect(groups[1].recentSessions.map(\.id) == ["quiet-3", "quiet-2", "quiet-1"])
+        #expect(groups[1].recentCount == 3)
+    }
+
+    @Test func showingMoreReslicesFromMemoryWithExactRemaining() throws {
+        let proj = PCodeWorkspace.normalizePath("/tmp/more-proj")
+        let all = try (0..<120).map { i in
+            try makeInfo(String(format: "s%03d", i), workspace: proj, updated: String(format: "2026-11-26T01:%02d:%02d+00:00", 59 - i / 60, 59 - i % 60))
+        }
+        // A starred, an open, and a hosted session never count against the limit.
+        let keep: Set<String> = ["s000", "s050", "s119"]
+        let collapsed = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [:], defaultLimit: 5)
+        #expect(collapsed.sessions.map(\.id) == ["s000", "s001", "s002", "s003", "s004", "s005", "s050", "s119"])
+        #expect(collapsed.remaining == [proj: 112])
+
+        let page = PCodeWorkspace.initialRecentLimit + PCodeWorkspace.recentPageSize
+        let expanded = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [proj: page], defaultLimit: 5)
+        #expect(expanded.sessions.count == page + keep.count)
+        #expect(expanded.remaining == [proj: 117 - page])
+        let groups = PCodeWorkspace.buildProjectGroups(
+            panes: [], projectPathForPane: { $0.projectPath }, history: expanded.sessions,
+            detachedHostStatuses: [:], pinnedFolders: [], hiddenFolders: [], starredSessionIDs: keep,
+            remainingRecentCounts: expanded.remaining)
+        #expect(groups[0].unstarredRecentSessions.count == page)
+        #expect(groups[0].remainingRecentCount == 117 - page)
+
+        let all117 = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [proj: page + 100], defaultLimit: 5)
+        #expect(all117.sessions.count == 120)
+        #expect(all117.remaining.isEmpty)
+    }
+
     @Test func hostedSessionsSurfaceActivityAndUnseenInProjectGroup() throws {
         let data = Data("""
         {"id":"s1","workspace":"/tmp/proj","updated":"2026-11-26T02:00:00+00:00","title":"Saved Title","turns":0}

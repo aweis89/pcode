@@ -1011,6 +1011,8 @@ struct PCodeProjectGroup: Identifiable {
     let openPanes: [PCodeSessionPane]
     let hostedSessions: [PCodeHostedSession]
     let recentSessions: [PCodeSessionInfo]
+    /// Recent saved sessions in the folder beyond `recentSessions` ("Show more…").
+    let remainingRecentCount: Int
     let starredSessionIDs: Set<String>
 
     init(
@@ -1018,14 +1020,19 @@ struct PCodeProjectGroup: Identifiable {
         openPanes: [PCodeSessionPane],
         hostedSessions: [PCodeHostedSession] = [],
         recentSessions: [PCodeSessionInfo],
+        remainingRecentCount: Int = 0,
         starredSessionIDs: Set<String> = []
     ) {
         self.path = path
         self.openPanes = openPanes
         self.hostedSessions = hostedSessions
         self.recentSessions = recentSessions
+        self.remainingRecentCount = remainingRecentCount
         self.starredSessionIDs = starredSessionIDs
     }
+
+    /// Every recent saved session in the folder, shown or not.
+    var recentCount: Int { recentSessions.count + remainingRecentCount }
 
     var id: String { path }
 
@@ -1103,16 +1110,33 @@ struct PCodeDirectoryCandidate: Identifiable, Hashable {
 
 final class PCodeWorkspace: ObservableObject {
     @Published private(set) var panes: [PCodeSessionPane] = [] {
-        didSet { syncDetachedHostStatuses() }
-    }
-    @Published var selected: UUID?
-    @Published private(set) var history: [PCodeSessionInfo] = [] {
         didSet {
-            historyByID = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            syncDetachedHostStatuses()
+            publishHistory()
         }
     }
+    @Published var selected: UUID?
+    /// What the sidebar shows of `allHistory`, newest first: every starred,
+    /// open, and hosted session, plus each project's newest `recentLimit`
+    /// others (`remainingRecentCounts` counts the rest).
+    @Published private(set) var history: [PCodeSessionInfo] = []
+    /// Per project, how many recent sessions `history` leaves out.
+    @Published private(set) var remainingRecentCounts: [String: Int] = [:]
+    /// Every saved session with a turn (or a live host), newest first. Not
+    /// published: the sidebar redraws from its slice, `history`.
+    private(set) var allHistory: [PCodeSessionInfo] = [] {
+        didSet {
+            historyByID = Dictionary(allHistory.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        }
+    }
+    /// Sessions a live host held at the last history load.
+    private var hostedAtLastLoad: Set<String> = []
     /// Live background hosts not currently open in a pane, published only when the detached subset changes.
-    @Published private(set) var detachedHostStatuses: [String: PCodeHostStatus] = [:]
+    @Published private(set) var detachedHostStatuses: [String: PCodeHostStatus] = [:] {
+        didSet {
+            if Set(detachedHostStatuses.keys) != Set(oldValue.keys) { publishHistory() }
+        }
+    }
     private var allHostStatuses: [String: PCodeHostStatus] = [:]
     private var historyByID: [String: PCodeSessionInfo] = [:]
     private var hostWatcherSubscription: AnyCancellable?
@@ -1459,19 +1483,15 @@ final class PCodeWorkspace: ObservableObject {
             let gone = unseen.union(starred).filter {
                 !FileManager.default.fileExists(atPath: PCodeSessionInfo.root.appendingPathComponent($0).path)
             }
-            var trimmed = Array(all.prefix(200))
-            let trimmedIDs = Set(trimmed.map(\.id))
-            for info in all.dropFirst(200) where (hosted.contains(info.id) || starred.contains(info.id)) && !trimmedIDs.contains(info.id) {
-                trimmed.append(info)
-            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, generation == self.historyGeneration else { return }
+                if all != self.allHistory { self.allHistory = all }
+                self.hostedAtLastLoad = hosted
                 if !gone.isEmpty {
                     self.unseenIDs.subtract(gone)
                     self.starredSessionIDs.subtract(gone)
                 }
-                // Unchanged (the usual periodic reload): don't redraw the sidebar.
-                if trimmed != self.history { self.history = trimmed }
+                self.publishHistory()
                 PCodeStartupTrace.mark("sidebar history set", once: true)
                 let callbacks = self.pendingHistoryCallbacks
                 self.pendingHistoryCallbacks.removeAll()
@@ -1499,6 +1519,55 @@ final class PCodeWorkspace: ObservableObject {
     private var historyGeneration = 0
     private var pendingHistoryCallbacks: [([PCodeSessionInfo]) -> Void] = []
 
+    /// Recent sessions a folder shows before "Show more…".
+    static let initialRecentLimit = 5
+    /// How many more each "Show more…" click reveals.
+    static let recentPageSize = 50
+
+    /// Re-slice `allHistory` into `history` (in memory, no disk), publishing
+    /// only what changed: the usual periodic reload doesn't redraw the sidebar.
+    private func publishHistory() {
+        let keep = starredSessionIDs
+            .union(panes.compactMap(\.sessionID))
+            .union(detachedHostStatuses.keys)
+            .union(hostedAtLastLoad)
+        let slice = Self.sliceHistory(
+            allHistory, keep: keep, recentLimits: recentLimits, defaultLimit: Self.initialRecentLimit)
+        if slice.sessions != history { history = slice.sessions }
+        if slice.remaining != remainingRecentCounts { remainingRecentCounts = slice.remaining }
+    }
+
+    /// Of `all` (newest first), every session in `keep` plus each project's
+    /// newest `recentLimits[project]` (else `defaultLimit`) others, in order,
+    /// and per project the exact count of the others left out.
+    static func sliceHistory(
+        _ all: [PCodeSessionInfo], keep: Set<String>, recentLimits: [String: Int], defaultLimit: Int
+    ) -> (sessions: [PCodeSessionInfo], remaining: [String: Int]) {
+        var sessions: [PCodeSessionInfo] = []
+        var shown: [String: Int] = [:]
+        var remaining: [String: Int] = [:]
+        for info in all {
+            if keep.contains(info.id) {
+                sessions.append(info)
+                continue
+            }
+            let project = info.normalizedProjectPath
+            let count = shown[project, default: 0]
+            if count < recentLimits[project] ?? defaultLimit {
+                shown[project] = count + 1
+                sessions.append(info)
+            } else {
+                remaining[project, default: 0] += 1
+            }
+        }
+        return (sessions, remaining)
+    }
+
+    /// "Show more…": reveal the next page of a folder's recent sessions.
+    func showMoreRecent(_ path: String) {
+        recentLimits[path] = (recentLimits[path] ?? Self.initialRecentLimit) + Self.recentPageSize
+    }
+
     /// Folders explicitly added to the sidebar (may have no sessions yet).
     @Published var pinnedFolders: [String] = (UserDefaults.standard.stringArray(forKey: PCodeWorkspace.pinnedKey) ?? [])
         .map(PCodeWorkspace.normalizePath) {
@@ -1516,8 +1585,13 @@ final class PCodeWorkspace: ObservableObject {
     ) {
         didSet { UserDefaults.standard.set(Array(collapsedFolders), forKey: Self.collapsedKey) }
     }
-    /// Folders where the user clicked "Show more…" for recent sessions.
-    @Published var expandedRecentFolders: Set<String> = []
+    /// Per folder, how many recent sessions to show once the user clicked
+    /// "Show more…" (`initialRecentLimit` otherwise); collapsing resets it.
+    @Published private(set) var recentLimits: [String: Int] = [:] {
+        didSet {
+            if recentLimits != oldValue { publishHistory() }
+        }
+    }
     /// Starred session IDs (always float to the top of their folder).
     @Published private(set) var starredSessionIDs: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: PCodeWorkspace.starredKey) ?? []
@@ -1525,6 +1599,7 @@ final class PCodeWorkspace: ObservableObject {
         didSet {
             if starredSessionIDs != oldValue {
                 UserDefaults.standard.set(Array(starredSessionIDs), forKey: Self.starredKey)
+                publishHistory()
             }
         }
     }
@@ -1836,6 +1911,7 @@ final class PCodeWorkspace: ObservableObject {
         pinnedFolders: [String],
         hiddenFolders: Set<String>,
         starredSessionIDs: Set<String> = [],
+        remainingRecentCounts: [String: Int] = [:],
         lastActiveDateForPane: ((PCodeSessionPane) -> Date)? = nil
     ) -> [PCodeProjectGroup] {
         let openIDs = Set(panes.compactMap(\.sessionID))
@@ -1897,11 +1973,15 @@ final class PCodeWorkspace: ObservableObject {
                 if lhsDate != rhsDate { return lhsDate > rhsDate }
                 return lhs.id < rhs.id
             }
+            // A hidden folder shown only for a starred session lists no others.
+            let showsUnstarred = !hiddenFolders.contains(path)
+                || openByProject[path] != nil || hostedByProject[path] != nil
             return PCodeProjectGroup(
                 path: path,
                 openPanes: sortedOpen,
                 hostedSessions: sortedHosted,
                 recentSessions: sortedRecent,
+                remainingRecentCount: showsUnstarred ? remainingRecentCounts[path] ?? 0 : 0,
                 starredSessionIDs: starredSessionIDs)
         }
     }
@@ -1916,6 +1996,7 @@ final class PCodeWorkspace: ObservableObject {
             pinnedFolders: pinnedFolders,
             hiddenFolders: hiddenFolders,
             starredSessionIDs: starredSessionIDs,
+            remainingRecentCounts: remainingRecentCounts,
             lastActiveDateForPane: { [self] pane in pane.sortDate(saved: info(for: pane)) })
     }
 
@@ -1926,6 +2007,15 @@ final class PCodeWorkspace: ObservableObject {
         let groups = projectGroups
         var seen: Set<String> = []
         var result: [PCodeDirectoryCandidate] = []
+        // Saved sessions per project from the full index (the sidebar shows a slice).
+        let openIDs = Set(panes.compactMap(\.sessionID))
+        var recentCounts: [String: Int] = [:]
+        var recentOrder: [String] = []
+        for info in allHistory where !openIDs.contains(info.id) && detachedHostStatuses[info.id] == nil {
+            let path = info.normalizedProjectPath
+            if recentCounts[path] == nil { recentOrder.append(path) }
+            recentCounts[path, default: 0] += 1
+        }
 
         func append(_ group: PCodeProjectGroup, isCurrent: Bool) {
             guard seen.insert(group.path).inserted else { return }
@@ -1934,7 +2024,7 @@ final class PCodeWorkspace: ObservableObject {
                 name: group.name,
                 abbreviatedPath: group.abbreviatedPath,
                 openCount: group.openPanes.count + group.hostedSessions.count,
-                recentCount: group.recentSessions.count,
+                recentCount: recentCounts[group.path] ?? 0,
                 isCurrent: isCurrent,
                 isPinned: pinnedSet.contains(group.path),
                 isRawPath: false))
@@ -1947,22 +2037,14 @@ final class PCodeWorkspace: ObservableObject {
             append(group, isCurrent: group.path == currentProject)
         }
         // Also offer projects hidden from the sidebar so ⌘⇧N can still find and reopen them.
-        var hiddenCounts: [String: Int] = [:]
-        var hiddenOrder: [String] = []
-        for info in history {
-            let path = info.normalizedProjectPath
-            guard !seen.contains(path) else { continue }
-            if hiddenCounts[path] == nil { hiddenOrder.append(path) }
-            hiddenCounts[path, default: 0] += 1
-        }
-        for path in hiddenOrder where seen.insert(path).inserted {
+        for path in recentOrder where seen.insert(path).inserted {
             let last = (path as NSString).lastPathComponent
             result.append(PCodeDirectoryCandidate(
                 path: path,
                 name: path == Self.normalizePath(NSHomeDirectory()) ? "~" : (last.isEmpty ? path : last),
                 abbreviatedPath: Self.abbreviatePath(path),
                 openCount: 0,
-                recentCount: hiddenCounts[path] ?? 0,
+                recentCount: recentCounts[path] ?? 0,
                 isCurrent: currentProject == path,
                 isPinned: false,
                 isRawPath: false))
@@ -2131,6 +2213,7 @@ final class PCodeWorkspace: ObservableObject {
             collapsedFolders.remove(normalized)
         } else {
             collapsedFolders.insert(normalized)
+            recentLimits[normalized] = nil
         }
     }
 
@@ -2152,6 +2235,7 @@ final class PCodeWorkspace: ObservableObject {
         let normalized = Self.normalizePath(path)
         pinnedFolders.removeAll { $0 == normalized }
         hiddenFolders.insert(normalized)
+        recentLimits[normalized] = nil
     }
 
     /// Present a native macOS folder chooser (`NSOpenPanel`).
@@ -2781,8 +2865,6 @@ struct PCodeWorkspaceView: View {
     @State private var sidebarDragStart: CGFloat?
     @State private var sidebarHandleHovered = false
 
-    private static let initialRecentLimit = 5
-
     // A plain stack, not NavigationSplitView, and no toolbar: on macOS 26+
     // those lay glass (blur sampled every frame) over the terminal, which is
     // a scroll view, and make the window composite translucent layers.
@@ -2982,7 +3064,6 @@ struct PCodeWorkspaceView: View {
                             workspace: workspace,
                             group: group,
                             now: now,
-                            initialRecentLimit: Self.initialRecentLimit,
                             dividerColor: ghostty.config.splitDividerColor,
                             folderMenu: { folderMenu(group) },
                             openMenu: { openMenu($0) },
@@ -3111,7 +3192,6 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
     @ObservedObject var workspace: PCodeWorkspace
     let group: PCodeProjectGroup
     let now: Date
-    let initialRecentLimit: Int
     let dividerColor: Color
     @ViewBuilder var folderMenu: () -> FolderMenu
     @ViewBuilder var openMenu: (PCodeSessionPane) -> OpenMenu
@@ -3159,12 +3239,6 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
 
     @ViewBuilder
     private var rowsContent: some View {
-        let expanded = workspace.expandedRecentFolders.contains(group.path)
-        let unstarredRecent = group.unstarredRecentSessions
-        let visibleUnstarredRecent = expanded
-            ? unstarredRecent
-            : Array(unstarredRecent.prefix(initialRecentLimit))
-
         VStack(alignment: .leading, spacing: 2) {
             // Starred sessions always float to the top of their folder.
             ForEach(group.starredOpenPanes) { pane in
@@ -3184,16 +3258,19 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
             ForEach(group.unstarredHostedSessions) { hosted in
                 hostedSessionRow(hosted)
             }
-            ForEach(visibleUnstarredRecent) { info in
+            // The workspace publishes only the first page or so of each
+            // folder's recent sessions; the rest are counted.
+            ForEach(group.unstarredRecentSessions) { info in
                 recentSessionRow(info)
             }
 
-            if !expanded && unstarredRecent.count > initialRecentLimit {
-                let remaining = unstarredRecent.count - initialRecentLimit
+            if group.remainingRecentCount > 0 {
+                let remaining = group.remainingRecentCount
+                let next = min(remaining, PCodeWorkspace.recentPageSize)
                 Button {
-                    workspace.expandedRecentFolders.insert(group.path)
+                    workspace.showMoreRecent(group.path)
                 } label: {
-                    Text("Show \(remaining) more…")
+                    Text(next == remaining ? "Show \(remaining) more…" : "Show \(next) more of \(remaining)…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 26)
