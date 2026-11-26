@@ -328,6 +328,7 @@ enum PCodeWorkspaceMode {
 struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
     let id: String
     let workspace: String
+    let created: String?
     let updated: String
     let name: String?
     let title: String?
@@ -337,16 +338,18 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
     /// Precomputed at decode time off the main thread.
     let normalizedProjectPath: String
     let worktreeName: String?
+    let createdDate: Date?
     let updatedDate: Date?
 
     private enum CodingKeys: String, CodingKey {
-        case id, workspace, updated, name, title, turns, project
+        case id, workspace, created, updated, name, title, turns, project
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         workspace = try c.decode(String.self, forKey: .workspace)
+        created = try c.decodeIfPresent(String.self, forKey: .created)
         updated = try c.decode(String.self, forKey: .updated)
         name = try c.decodeIfPresent(String.self, forKey: .name)
         title = try c.decodeIfPresent(String.self, forKey: .title)
@@ -358,14 +361,16 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         worktreeName = normalizedWorkspace != normalizedProjectPath
             ? (normalizedWorkspace as NSString).lastPathComponent
             : nil
+        createdDate = created.flatMap(PCodeWorkspace.parseISO8601)
         updatedDate = PCodeWorkspace.parseISO8601(updated)
     }
 
     /// Rebuild a session from its persisted index row, derived fields included
-    /// (parsing `updated` again for every session would cost a cold launch).
+    /// (parsing dates again for every session would cost a cold launch).
     fileprivate init(_ row: LoadCache.Summary) {
         id = row.id
         workspace = row.workspace
+        created = row.created
         updated = row.updated
         name = row.name
         title = row.title
@@ -373,6 +378,7 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         project = row.project
         normalizedProjectPath = row.normalizedProjectPath
         worktreeName = row.worktreeName
+        createdDate = row.createdReference.map(Date.init(timeIntervalSinceReferenceDate:))
         updatedDate = row.updatedReference.map(Date.init(timeIntervalSinceReferenceDate:))
     }
 
@@ -600,7 +606,7 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
     /// `session.json` stays the source of truth; the index is disposable.
     final class LoadCache {
         /// Bump whenever `Summary` or what it derives (paths, dates) changes.
-        static let indexVersion = 1
+        static let indexVersion = 2
 
         /// The app's instance: persisted only for the session root it was made
         /// for, so a test (or caller) loading another root never touches it.
@@ -619,6 +625,7 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
         struct Summary: Codable, Equatable {
             let id: String
             let workspace: String
+            let created: String?
             let updated: String
             let name: String?
             let title: String?
@@ -626,11 +633,13 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
             let project: String?
             let normalizedProjectPath: String
             let worktreeName: String?
+            let createdReference: Double?
             let updatedReference: Double?
 
             init(_ info: PCodeSessionInfo) {
                 id = info.id
                 workspace = info.workspace
+                created = info.created
                 updated = info.updated
                 name = info.name
                 title = info.title
@@ -638,6 +647,7 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
                 project = info.project
                 normalizedProjectPath = info.normalizedProjectPath
                 worktreeName = info.worktreeName
+                createdReference = info.createdDate?.timeIntervalSinceReferenceDate
                 updatedReference = info.updatedDate?.timeIntervalSinceReferenceDate
             }
         }
@@ -905,7 +915,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// A finished turn's response that hasn't been looked at here yet. Kept
     /// by session ID in the workspace, so it survives restarts.
     @Published var unseen = false
-    /// When this pane was opened; used to place brand-new 0-turn panes at the top when sorting.
+    /// When this pane was opened; fallback sort key before a saved session's creation time is loaded.
     let createdAt: Date = Date()
     /// When the most recent turn finished in this pane during this app session.
     @Published private(set) var lastResponseDate: Date?
@@ -1087,9 +1097,13 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         }
     }
 
-    /// Sort key for ordering open panes by last activity (falls back to `createdAt` for brand-new panes).
+    /// Sort key for ordering open panes by session creation time (falls back to `createdAt` for brand-new panes).
+    static func sortDate(saved: PCodeSessionInfo?, createdAt: Date) -> Date {
+        saved?.createdDate ?? createdAt
+    }
+
     func sortDate(saved: PCodeSessionInfo?) -> Date {
-        lastResponseDate(saved: saved) ?? createdAt
+        Self.sortDate(saved: saved, createdAt: createdAt)
     }
 
     func setShell(_ view: Ghostty.SurfaceView?) { shell = view }
@@ -2041,7 +2055,8 @@ final class PCodeWorkspace: ObservableObject {
 
     /// Pure grouping helper for sidebar folders: open panes first, then detached live hosts,
     /// pinned folders, and recent saved sessions (excluding hidden folders unless active or starred).
-    /// Within each folder, starred sessions sort first, and open/hosted sessions sort by last active descending.
+    /// Within each folder, starred sessions sort first, open panes sort by session creation time
+    /// descending, and hosted/recent sessions sort by last active descending.
     static func buildProjectGroups(
         panes: [PCodeSessionPane],
         projectPathForPane: (PCodeSessionPane) -> String,
@@ -2051,7 +2066,7 @@ final class PCodeWorkspace: ObservableObject {
         hiddenFolders: Set<String>,
         starredSessionIDs: Set<String> = [],
         remainingRecentCounts: [String: Int] = [:],
-        lastActiveDateForPane: ((PCodeSessionPane) -> Date)? = nil
+        sortDateForPane: ((PCodeSessionPane) -> Date)? = nil
     ) -> [PCodeProjectGroup] {
         let openIDs = Set(panes.compactMap(\.sessionID))
         var order: [String] = []
@@ -2089,8 +2104,8 @@ final class PCodeWorkspace: ObservableObject {
                 let lhsStarred = lhs.sessionID.map(starredSessionIDs.contains) == true
                 let rhsStarred = rhs.sessionID.map(starredSessionIDs.contains) == true
                 if lhsStarred != rhsStarred { return lhsStarred }
-                let lhsDate = lastActiveDateForPane?(lhs) ?? lhs.createdAt
-                let rhsDate = lastActiveDateForPane?(rhs) ?? rhs.createdAt
+                let lhsDate = sortDateForPane?(lhs) ?? lhs.createdAt
+                let rhsDate = sortDateForPane?(rhs) ?? rhs.createdAt
                 if lhsDate != rhsDate { return lhsDate > rhsDate }
                 return lhs.id.uuidString < rhs.id.uuidString
             }
@@ -2136,7 +2151,7 @@ final class PCodeWorkspace: ObservableObject {
             hiddenFolders: hiddenFolders,
             starredSessionIDs: starredSessionIDs,
             remainingRecentCounts: remainingRecentCounts,
-            lastActiveDateForPane: { [self] pane in pane.sortDate(saved: info(for: pane)) })
+            sortDateForPane: { [self] pane in pane.sortDate(saved: info(for: pane)) })
     }
 
     /// Projects offered by the Command Center: current project first, then all known projects.
@@ -3598,7 +3613,7 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
                 recentSessionRow(info)
             }
 
-            // Unstarred sessions: open (sorted by last active), detached hosts, then recent saved.
+            // Unstarred sessions: open (sorted by creation time), detached hosts, then recent saved.
             ForEach(group.unstarredOpenPanes) { pane in
                 openPaneRow(pane)
             }

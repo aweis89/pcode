@@ -162,12 +162,13 @@ struct PCodeSidebarTests {
 
         func write(
             _ id: String, workspace: String = "/tmp/proj", turns: Int = 1,
-            updated: String = "2026-11-26T01:00:00+00:00", title: String? = nil
+            created: String? = nil, updated: String = "2026-11-26T01:00:00+00:00", title: String? = nil
         ) throws {
             let dir = url.appendingPathComponent(id)
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let createdField = created.map { #""created":"\#($0)","# } ?? ""
             let json = """
-            {"id":"\(id)","workspace":"\(workspace)","updated":"\(updated)","title":"\(title ?? id)","turns":\(turns)}
+            {"id":"\(id)","workspace":"\(workspace)",\(createdField)"updated":"\(updated)","title":"\(title ?? id)","turns":\(turns)}
             """
             try Data(json.utf8).write(to: dir.appendingPathComponent("session.json"))
         }
@@ -227,8 +228,8 @@ struct PCodeSidebarTests {
         defer { root.remove() }
         let index = root.fm.temporaryDirectory.appendingPathComponent("pcode-index-\(UUID().uuidString).json")
         defer { try? root.fm.removeItem(at: index) }
-        try root.write("a", updated: "2026-11-26T01:00:00+00:00", title: "A")
-        try root.write("b", updated: "2026-11-26T02:00:00.5+00:00", title: "B")
+        try root.write("a", created: "2026-11-25T10:00:00+00:00", updated: "2026-11-26T01:00:00+00:00", title: "A")
+        try root.write("b", created: "2026-11-25T12:00:00.25+00:00", updated: "2026-11-26T02:00:00.5+00:00", title: "B")
         try root.write("zero", turns: 0)
         try root.write("bad")
         try Data("not json".utf8).write(to: root.url.appendingPathComponent("bad/session.json"))
@@ -248,6 +249,7 @@ struct PCodeSidebarTests {
         #expect(secondLoad.map(\.label) == ["A again", "B", "zero"])
         // Rows rebuilt from the index match freshly parsed ones, derived fields included.
         #expect(secondLoad.dropFirst() == firstLoad.filter { $0.id != "a" }[...])
+        #expect(secondLoad[1].createdDate == PCodeWorkspace.parseISO8601("2026-11-25T12:00:00.25+00:00"))
         #expect(secondLoad[1].updatedDate == PCodeWorkspace.parseISO8601("2026-11-26T02:00:00.5+00:00"))
 
         // Unchanged since: a third launch parses nothing.
@@ -515,5 +517,26 @@ struct PCodeSidebarTests {
         #expect(groups[0].hasUnseen([]))
         // Hidden folder stays visible because it contains a starred session.
         #expect(groups[1].starredRecentSessions.map(\.id) == ["hidden-starred"])
+    }
+
+    @Test func openPaneSortDateUsesSessionCreationTimeAndIgnoresLaterUpdates() throws {
+        let paneOpenedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        // Brand-new pane with no saved session yet uses the pane's open time.
+        #expect(PCodeSessionPane.sortDate(saved: nil, createdAt: paneOpenedAt) == paneOpenedAt)
+
+        // Saved session with `created` stays anchored to creation time even after newer responses.
+        let created = "2026-11-20T08:00:00+00:00"
+        let infoWithCreated = try JSONDecoder().decode(
+            PCodeSessionInfo.self,
+            from: Data("""
+            {"id":"s1","workspace":"/tmp/proj","created":"\(created)","updated":"2026-11-26T20:00:00+00:00","title":"Old","turns":12}
+            """.utf8)
+        )
+        #expect(PCodeSessionPane.sortDate(saved: infoWithCreated, createdAt: paneOpenedAt) == PCodeWorkspace.parseISO8601(created))
+
+        // Saved session missing `created` falls back to pane open time rather than bouncing on `updated`.
+        let infoWithoutCreated = try makeInfo("s2", workspace: "/tmp/proj", updated: "2026-11-26T21:00:00+00:00")
+        #expect(PCodeSessionPane.sortDate(saved: infoWithoutCreated, createdAt: paneOpenedAt) == paneOpenedAt)
     }
 }
