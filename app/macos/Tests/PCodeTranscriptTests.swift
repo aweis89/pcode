@@ -616,12 +616,22 @@ struct PCodeTranscriptTests {
             speedMultiplier: 4.0)
         replayer.runAllSynchronously()
 
-        // Each turn: 1 prompt + 10 tools + 2 prose (heading + para) + 1 codeBlock + 1 table = 15 items -> 60 total
-        #expect(doc.items.count == 60)
-        #expect(doc.layoutEngine.entries.count == 60)
+        // Default grouped mode folds each turn's 10 consecutive tools into 1 toolGroup row:
+        // (1 prompt + 1 toolGroup + 2 prose + 1 codeBlock + 1 table) * 4 = 24 displayed items (60 raw).
+        #expect(doc.rawItems.count == 60)
+        #expect(doc.items.count == 24)
+        #expect(doc.layoutEngine.entries.count == 24)
         #expect(doc.layoutEngine.totalHeight > 800)
 
-        // Verify yOffsets are strictly increasing
+        // Verify yOffsets are strictly increasing in grouped mode
+        for i in 1..<doc.layoutEngine.entries.count {
+            #expect(doc.layoutEngine.entries[i].yOffset > doc.layoutEngine.entries[i - 1].yOffset)
+        }
+
+        // Switching to flat layout restores all 60 items cleanly.
+        doc.groupTools = false
+        #expect(doc.items.count == 60)
+        #expect(doc.layoutEngine.entries.count == 60)
         for i in 1..<doc.layoutEngine.entries.count {
             #expect(doc.layoutEngine.entries[i].yOffset > doc.layoutEngine.entries[i - 1].yOffset)
         }
@@ -1350,7 +1360,7 @@ struct PCodeTranscriptTests {
             with: .rightMouseDown, location: windowPoint, modifierFlags: [], timestamp: 0,
             windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
         let menu = try #require(doc.menu(for: event))
-        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All"])
+        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls"])
 
         // Copy is offered only with a selection; the other two always.
         #expect(!doc.validateUserInterfaceItem(menu.items[0]))
@@ -1384,5 +1394,171 @@ struct PCodeTranscriptTests {
         // A selection in the composer wins.
         scrollView.composerHasSelection = { true }
         #expect(!scrollView.copiesSelectionForComposer(firstResponder: composer))
+    }
+
+    // MARK: - Tool Grouping (Collapsed Summary Above Active Tools)
+
+    @Test func transcriptPreferencesDefaultsToGroupedAndPersists() {
+        let suiteName = "com.pcode.test.prefs.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let prefs = PCodeTranscriptPreferences(defaults: defaults)
+        #expect(prefs.groupTools == true)
+
+        prefs.groupTools = false
+        let reloaded = PCodeTranscriptPreferences(defaults: defaults)
+        #expect(reloaded.groupTools == false)
+    }
+
+    @Test @MainActor func toolGrouperFoldsSettledToolsAboveActiveRunningTools() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Inspect repo", isSide: false, runID: "r1"), reveal: false)
+        // Two tools start in parallel -> both show as full active running cards.
+        reducer.apply(.toolStarted(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", purpose: ""), reveal: true)
+        reducer.apply(.toolStarted(callID: "t2", parentCallID: "", name: "shell", detail: "pytest", command: "pytest", purpose: ""), reveal: true)
+
+        #expect(doc.items.count == 3) // prompt + t1(running) + t2(running)
+        #expect(doc.items[1].kind == .tool)
+        #expect(doc.items[2].kind == .tool)
+
+        // First tool finishes while second is still running -> t1 folds into group row above active t2.
+        reducer.apply(.toolSummary(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.2, error: "", result: nil, isBackgroundJob: false), reveal: true)
+
+        #expect(doc.items.count == 3) // prompt + toolGroup([t1]) + t2(running)
+        #expect(doc.items[1].kind == .toolGroup)
+        let groupID = doc.items[1].id
+        if case .toolGroup(let payload) = doc.items[1].payload {
+            #expect(payload.totalCount == 1)
+            #expect(payload.plainSummaryText == "1 tool · 1 read")
+            #expect(payload.absorbPulse == 1)
+        } else {
+            Issue.record("Expected toolGroup payload at index 1")
+        }
+        #expect(doc.items[2].id == "call-t2")
+        if case .tool(let activeCall, _) = doc.items[2].payload {
+            #expect(activeCall.isRunning == true)
+        } else {
+            Issue.record("Expected running tool at index 2")
+        }
+
+        // Second tool finishes -> folds into the SAME group row (stable ID, pulse incremented).
+        reducer.apply(.toolSummary(callID: "t2", parentCallID: "", name: "shell", detail: "pytest", command: "pytest", failed: false, elapsedSeconds: 1.4, error: "", result: "ok", isBackgroundJob: false), reveal: true)
+
+        #expect(doc.items.count == 2) // prompt + toolGroup([t1, t2])
+        #expect(doc.items[1].id == groupID)
+        if case .toolGroup(let payload) = doc.items[1].payload {
+            #expect(payload.totalCount == 2)
+            #expect(payload.plainSummaryText == "2 tools · 1 read · 1 shell")
+            #expect(payload.absorbPulse == 2)
+            #expect(payload.formattedTotalElapsed == "1.6s")
+        } else {
+            Issue.record("Expected updated toolGroup at index 1")
+        }
+    }
+
+    @Test @MainActor func toolGrouperKeepsLoneSettledToolUngrouped() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Read one file", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "solo", parentCallID: "", name: "read_file", detail: "README.md", command: "", purpose: ""), reveal: false)
+        reducer.apply(.toolSummary(callID: "solo", parentCallID: "", name: "read_file", detail: "README.md", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.message(markdown: "Done."), reveal: false)
+
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .prose])
+    }
+
+    @Test @MainActor func toolGrouperFoldsCompletedEditsAndReportsFailures() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Fix bug", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.editPreview(callID: "e1", path: "a.swift", text: "+line", kind: "edit"), reveal: false)
+        reducer.apply(.editCompleted(callID: "e1", parentCallID: "", path: "a.swift", operation: "edit", patch: "+line", added: 1, removed: 0, truncated: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "e1", parentCallID: "", name: "edit_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.editCompleted(callID: "e2", parentCallID: "", path: "b.swift", operation: "edit", patch: "+line2", added: 1, removed: 0, truncated: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "e2", parentCallID: "", name: "edit_file", detail: "b.swift", command: "", failed: false, elapsedSeconds: 0.2, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "s1", parentCallID: "", name: "shell", detail: "make test", command: "make test", failed: true, elapsedSeconds: 0.9, error: "exit 1", result: "FAIL", isBackgroundJob: false), reveal: false)
+        // Active edit preview stays below the settled group until it completes.
+        reducer.apply(.editPreview(callID: "e3", path: "c.swift", text: "+wip", kind: "edit"), reveal: false)
+
+        #expect(doc.items.count == 3) // prompt + toolGroup([e1, e2, s1]) + e3(preview)
+        #expect(doc.items[1].kind == .toolGroup)
+        #expect(doc.items[2].kind == .diff)
+        if case .toolGroup(let payload) = doc.items[1].payload {
+            #expect(payload.totalCount == 3)
+            #expect(payload.succeededCount == 2)
+            #expect(payload.failedCount == 1)
+            #expect(payload.plainSummaryText == "2 ok · 1 failed · 2 edits · 1 shell (1 failed)")
+        } else {
+            Issue.record("Expected toolGroup payload")
+        }
+    }
+
+    @Test @MainActor func toolGrouperExcludesDelegatesAndBackgroundJobs() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Delegate work", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolSummary(callID: "d1", parentCallID: "", name: "delegate_task", detail: "audit", command: "", failed: false, elapsedSeconds: 2.0, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "c1", parentCallID: "d1", name: "read_file", detail: "x.py", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "c2", parentCallID: "d1", name: "read_file", detail: "y.py", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "bg1", parentCallID: "", name: "shell", detail: "build", command: "build", failed: false, elapsedSeconds: 5.0, error: "", result: nil, isBackgroundJob: true), reveal: false)
+
+        // prompt + delegate(depth 0) + child toolGroup(depth 1) + background job(depth 0)
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .toolGroup, .tool])
+        #expect(doc.items[1].depth == 0)
+        #expect(doc.items[2].depth == 1)
+        #expect(doc.items[3].depth == 0)
+    }
+
+    @Test @MainActor func toolGroupExpandCollapseAndLivePreferenceToggle() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Run tools", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolSummary(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "t2", parentCallID: "", name: "shell", detail: "ls", command: "ls", failed: false, elapsedSeconds: 0.2, error: "", result: "a.swift", isBackgroundJob: false), reveal: false)
+
+        #expect(doc.items.count == 2) // prompt + toolGroup
+        let groupID = doc.items[1].id
+
+        // Expand group -> children appear indented directly below the group header.
+        doc.toggleExpansionForAccessibility(id: groupID)
+        #expect(doc.items.count == 4) // prompt + toolGroup + t1 + t2
+        #expect(doc.items[2].id == "call-t1")
+        #expect(doc.items[2].depth == 1)
+        #expect(doc.items[3].id == "call-t2")
+        #expect(doc.items[3].depth == 1)
+
+        // Collapse group -> back to single summary row.
+        doc.toggleExpansionForAccessibility(id: groupID)
+        #expect(doc.items.count == 2)
+
+        // Toggle flat layout option -> shows all individual tools without group row.
+        doc.groupTools = false
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .tool])
+        #expect(doc.items[1].depth == 0)
+        #expect(doc.items[2].depth == 0)
+
+        // Toggle back to grouped layout -> folds cleanly again.
+        doc.groupTools = true
+        #expect(doc.items.map(\.kind) == [.prompt, .toolGroup])
     }
 }

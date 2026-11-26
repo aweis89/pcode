@@ -887,10 +887,10 @@ final class PCodeTranscriptEventReducer {
             return
         }
         let parentItemID = "call-\(parentCallID)"
-        if let parentIdx = doc.indexOfItem(id: parentItemID) {
+        if let parentIdx = doc.indexOfRawItem(id: parentItemID) {
             // Insert right after the parent and any already-nested siblings.
             var insertIdx = parentIdx + 1
-            while insertIdx < doc.items.count && doc.items[insertIdx].depth > 0 {
+            while insertIdx < doc.rawItems.count && doc.rawItems[insertIdx].depth > 0 {
                 insertIdx += 1
             }
             doc.upsertItem(item, insertAt: insertIdx, reveal: reveal)

@@ -1470,6 +1470,362 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     }
 }
 
+// MARK: - Tool Group Summary Row (Folded Consecutive Settled Tools & Edits)
+
+final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
+    let itemKind: PCodeTranscriptItem.Kind = .toolGroup
+    let textView = PCodeTextKit2BlockView()
+    private let pulseLayer = CALayer()
+    private let iconView = NSImageView()
+    private let elapsedLabel = NSTextField(labelWithString: "")
+    private let chevronContainer = NSView()
+    private let chevronView = NSImageView()
+    private let tapButton = NSButton()
+    private var onToggle: (() -> Void)?
+    private var lastTheme: PCodeTranscriptTheme?
+    private var lastIsExpanded = false
+    private var lastHasFailures = false
+    private var lastHovered = false
+    private var lastAbsorbPulse: UInt64 = 0
+    private var hasConfigured = false
+
+    var primaryTextView: PCodeTextKit2BlockView? { textView }
+    var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    override var isFlipped: Bool { true }
+
+    static let rowHeight: CGFloat = 28
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+
+        pulseLayer.opacity = 0
+        layer?.addSublayer(pulseLayer)
+
+        iconView.imageScaling = .scaleProportionallyDown
+        addSubview(iconView)
+        addSubview(textView)
+
+        elapsedLabel.isEditable = false
+        elapsedLabel.isSelectable = false
+        elapsedLabel.drawsBackground = false
+        elapsedLabel.isBezeled = false
+        elapsedLabel.alignment = .right
+        elapsedLabel.isHidden = true
+        addSubview(elapsedLabel)
+
+        chevronContainer.wantsLayer = true
+        chevronView.imageScaling = .scaleProportionallyDown
+        chevronView.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Toggle tool group")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        chevronContainer.addSubview(chevronView)
+        addSubview(chevronContainer)
+
+        tapButton.isBordered = false
+        tapButton.title = ""
+        tapButton.target = self
+        tapButton.action = #selector(togglePressed)
+        addSubview(tapButton)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setSelectedRange(_ range: NSRange?) {
+        textView.selectedRange = range
+    }
+
+    func setHovered(_ hovered: Bool) {
+        guard lastHovered != hovered else { return }
+        lastHovered = hovered
+        applyLayerColors(animated: true)
+    }
+
+    func resetForTranscriptReuse() {
+        lastHovered = false
+        setSelectedRange(nil)
+        setCurtainRevealProgress(nil)
+        primaryTextView?.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
+        pulseLayer.removeAllAnimations()
+        pulseLayer.opacity = 0
+        chevronContainer.layer?.removeAllAnimations()
+        chevronContainer.layer?.transform = CATransform3DIdentity
+        elapsedLabel.isHidden = true
+        elapsedLabel.stringValue = ""
+        onToggle = nil
+        lastIsExpanded = false
+        lastHasFailures = false
+        lastAbsorbPulse = 0
+        hasConfigured = false
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors(animated: false)
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pulseLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    /// Single source of truth for rendered tool group summary text (shared by drawing, copy, and Find).
+    static func attributedText(
+        for payload: PCodeToolGroupPayload,
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme
+    ) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let lineHeight = typography.lineHeight(scale: 0.84)
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = lineHeight
+        style.maximumLineHeight = lineHeight
+        style.lineBreakMode = .byTruncatingTail
+
+        let headFont = typography.codeNSFont(scale: 0.84, weight: typography.weight.nsEmphasisWeight)
+        let bodyFont = typography.codeNSFont(scale: 0.82)
+        let sepAttrs: [NSAttributedString.Key: Any] = [
+            .font: bodyFont,
+            .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.45),
+            .paragraphStyle: style,
+        ]
+
+        if payload.failedCount == 0 {
+            let head = payload.totalCount == 1 ? "1 tool" : "\(payload.totalCount) tools"
+            out.append(NSAttributedString(
+                string: head,
+                attributes: [
+                    .font: headFont,
+                    .foregroundColor: theme.foreground.withAlphaComponent(0.84),
+                    .paragraphStyle: style,
+                ]))
+        } else {
+            if payload.succeededCount > 0 {
+                out.append(NSAttributedString(
+                    string: "\(payload.succeededCount) ok",
+                    attributes: [
+                        .font: headFont,
+                        .foregroundColor: theme.foreground.withAlphaComponent(0.84),
+                        .paragraphStyle: style,
+                    ]))
+                out.append(NSAttributedString(string: " · ", attributes: sepAttrs))
+            }
+            out.append(NSAttributedString(
+                string: "\(payload.failedCount) failed",
+                attributes: [
+                    .font: headFont,
+                    .foregroundColor: NSColor.systemRed,
+                    .paragraphStyle: style,
+                ]))
+        }
+
+        let categories = payload.categoryCounts
+        if !categories.isEmpty {
+            out.append(NSAttributedString(string: " · ", attributes: sepAttrs))
+            for (idx, cat) in categories.enumerated() {
+                if idx > 0 {
+                    out.append(NSAttributedString(string: " · ", attributes: sepAttrs))
+                }
+                out.append(NSAttributedString(
+                    string: "\(cat.count) \(cat.label)",
+                    attributes: [
+                        .font: bodyFont,
+                        .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.88),
+                        .paragraphStyle: style,
+                    ]))
+                if cat.failedCount > 0 {
+                    out.append(NSAttributedString(
+                        string: " (\(cat.failedCount) failed)",
+                        attributes: [
+                            .font: bodyFont,
+                            .foregroundColor: NSColor.systemRed.withAlphaComponent(0.9),
+                            .paragraphStyle: style,
+                        ]))
+                }
+            }
+        }
+        return out
+    }
+
+    func configure(
+        payload: PCodeToolGroupPayload,
+        attributedText: NSAttributedString,
+        width: CGFloat,
+        theme: PCodeTranscriptTheme,
+        selectedRange: NSRange?,
+        onToggle: @escaping () -> Void
+    ) -> CGFloat {
+        let wasConfigured = hasConfigured
+        let expansionChanged = wasConfigured && (lastIsExpanded != payload.isExpanded)
+        let shouldPulse = wasConfigured && (payload.absorbPulse > lastAbsorbPulse)
+
+        self.onToggle = onToggle
+        self.lastTheme = theme
+        self.lastIsExpanded = payload.isExpanded
+        self.lastHasFailures = payload.failedCount > 0
+        self.lastAbsorbPulse = payload.absorbPulse
+        self.hasConfigured = true
+
+        let cfg = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .medium)
+        if payload.failedCount > 0 {
+            iconView.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: "Some tools failed")?
+                .withSymbolConfiguration(cfg)
+            iconView.contentTintColor = .systemRed
+        } else {
+            iconView.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Tools completed")?
+                .withSymbolConfiguration(cfg)
+            iconView.contentTintColor = NSColor.systemGreen.withAlphaComponent(theme.isDark ? 0.80 : 0.75)
+        }
+
+        let elapsedText = payload.formattedTotalElapsed
+        let elapsedWidth: CGFloat = elapsedText != nil ? 48 : 0
+        let chevronWidth: CGFloat = 24
+        let rightControlsWidth = chevronWidth + (elapsedWidth > 0 ? elapsedWidth + 4 : 0)
+
+        let leftPad: CGFloat = 26
+        let topPad: CGFloat = 5
+        let bottomPad: CGFloat = 5
+        let textWidth = max(1, width - leftPad - rightControlsWidth)
+        let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
+        textView.selectedRange = selectedRange
+        let totalHeight = max(Self.rowHeight, textHeight + topPad + bottomPad)
+        textView.frame = CGRect(
+            x: leftPad,
+            y: floor((totalHeight - textHeight) * 0.5),
+            width: textWidth,
+            height: textHeight)
+
+        iconView.frame = CGRect(x: 9, y: floor((totalHeight - 12) * 0.5), width: 12, height: 12)
+
+        if let elapsedText {
+            elapsedLabel.stringValue = elapsedText
+            elapsedLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+            elapsedLabel.textColor = theme.secondaryForeground.withAlphaComponent(0.58)
+            elapsedLabel.isHidden = false
+            elapsedLabel.frame = CGRect(
+                x: max(leftPad, width - chevronWidth - elapsedWidth - 4),
+                y: floor((totalHeight - 15) * 0.5),
+                width: elapsedWidth,
+                height: 15)
+        } else {
+            elapsedLabel.isHidden = true
+            elapsedLabel.stringValue = ""
+        }
+
+        chevronView.contentTintColor = theme.secondaryForeground.withAlphaComponent(0.85)
+        let chevSize: CGFloat = 16
+        let chevOrigin = CGPoint(x: width - 22, y: floor((totalHeight - chevSize) * 0.5))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        chevronContainer.frame = CGRect(origin: chevOrigin, size: CGSize(width: chevSize, height: chevSize))
+        chevronView.frame = chevronContainer.bounds
+        CATransaction.commit()
+        updateChevronRotation(isExpanded: payload.isExpanded, animated: expansionChanged)
+
+        tapButton.frame = CGRect(x: 0, y: 0, width: width, height: totalHeight)
+        tapButton.toolTip = payload.isExpanded ? "Collapse tool group" : "Expand \(payload.totalCount) tool calls"
+
+        applyLayerColors(animated: false)
+        if shouldPulse {
+            playAbsorbPulse()
+        }
+        return totalHeight
+    }
+
+    private func updateChevronRotation(isExpanded: Bool, animated: Bool) {
+        guard let chevLayer = chevronContainer.layer else { return }
+        let targetAngle: CGFloat = isExpanded ? (.pi / 2) : 0
+        let targetTransform = CATransform3DMakeRotation(targetAngle, 0, 0, 1)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+
+        // Keep anchorPoint centered while preserving frame origin.
+        let oldFrame = chevLayer.frame
+        if chevLayer.anchorPoint != CGPoint(x: 0.5, y: 0.5) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            chevLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            chevLayer.frame = oldFrame
+            CATransaction.commit()
+        }
+
+        if animated && !reduceMotion && window != nil {
+            let anim = CABasicAnimation(keyPath: "transform.rotation.z")
+            anim.fromValue = isExpanded ? 0 : (CGFloat.pi / 2)
+            anim.toValue = targetAngle
+            anim.duration = 0.18
+            anim.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+            chevLayer.add(anim, forKey: "pcode.group.chevron")
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        chevLayer.transform = targetTransform
+        CATransaction.commit()
+    }
+
+    private func playAbsorbPulse() {
+        guard window != nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let pulse = CAKeyframeAnimation(keyPath: "opacity")
+        pulse.values = [0.0, 1.0, 0.0]
+        pulse.keyTimes = [0.0, 0.18, 1.0]
+        pulse.duration = 0.38
+        pulse.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0),
+        ]
+        pulseLayer.removeAnimation(forKey: "pcode.group.pulse")
+        pulseLayer.add(pulse, forKey: "pcode.group.pulse")
+    }
+
+    private func applyLayerColors(animated: Bool) {
+        guard let theme = lastTheme else { return }
+        let bgColor: NSColor
+        if lastHovered {
+            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.085 : 0.065)
+        } else if lastIsExpanded {
+            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.065 : 0.05)
+        } else {
+            bgColor = theme.toolBackground
+        }
+
+        let borderColor: NSColor
+        if lastHasFailures {
+            borderColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.32 : 0.26)
+        } else if lastIsExpanded || lastHovered {
+            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.14 : 0.14)
+        } else {
+            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.07 : 0.08)
+        }
+
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                CATransaction.setAnimationDuration(0.12)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            } else {
+                CATransaction.setDisableActions(true)
+            }
+            layer?.backgroundColor = bgColor.cgColor
+            layer?.cornerRadius = 6
+            layer?.borderWidth = 1
+            layer?.borderColor = borderColor.cgColor
+            pulseLayer.backgroundColor = theme.accent.withAlphaComponent(theme.isDark ? 0.18 : 0.13).cgColor
+            pulseLayer.cornerRadius = 6
+            CATransaction.commit()
+        }
+    }
+
+    @objc private func togglePressed() {
+        onToggle?()
+    }
+}
+
 // MARK: - Status Badge Row
 
 final class PCodeStatusRowView: NSView, PCodeTranscriptRowHosting {

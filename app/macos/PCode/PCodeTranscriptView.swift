@@ -47,6 +47,7 @@ struct PCodeTranscriptItem: Identifiable {
         case codeBlock
         case table
         case tool
+        case toolGroup
         case diff
         case thinking
         case plan
@@ -59,6 +60,7 @@ struct PCodeTranscriptItem: Identifiable {
         case codeBlock(language: String?, code: String, fullCopyCode: String, showHeader: Bool, groupID: String?)
         case table(PCodeMarkdownTable)
         case tool(PCodePeekToolCall, isExpanded: Bool)
+        case toolGroup(PCodeToolGroupPayload)
         case diff(PCodeDiffPayload, isExpanded: Bool)
         case thinking(text: String, isExpanded: Bool)
         case plan([PCodePlanItem])
@@ -80,6 +82,7 @@ struct PCodeTranscriptItem: Identifiable {
         case .codeBlock: return .codeBlock
         case .table: return .table
         case .tool: return .tool
+        case .toolGroup: return .toolGroup
         case .diff: return .diff
         case .thinking: return .thinking
         case .plan: return .plan
@@ -109,6 +112,8 @@ struct PCodeTranscriptItem: Identifiable {
         case .tool(let call, _):
             let summary = call.summaryText
             return summary.isEmpty ? call.name : "\(call.name) \(summary)"
+        case .toolGroup(let group):
+            return group.plainSummaryText
         case .diff(let diff, let isExpanded):
             return isExpanded ? "\(diff.path)\n\(diff.patch)" : PCodeDiffCardView.summaryLine(for: diff)
         case .thinking(let text, _):
@@ -169,6 +174,17 @@ struct PCodeTranscriptItem: Identifiable {
                 elapsedSeconds: nil,
                 command: "")
             self.payload = .tool(call, isExpanded: false)
+        case .toolGroup:
+            let call = PCodePeekToolCall(
+                id: 0,
+                name: plainText,
+                detail: secondaryText,
+                failed: isFailed,
+                elapsedSeconds: nil,
+                command: "")
+            self.payload = .toolGroup(PCodeToolGroupPayload(
+                entries: [PCodeToolGroupEntry(id: id, content: .tool(call), depth: 0)],
+                isExpanded: false))
         case .diff:
             self.payload = .diff(PCodeDiffPayload(
                 callID: id,
@@ -303,6 +319,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let appearanceGeneration: UInt64
     }
 
+    private(set) var rawItems: [PCodeTranscriptItem] = []
     private(set) var items: [PCodeTranscriptItem] = []
     private(set) var layoutEngine = PCodeTranscriptLayoutEngine()
     private(set) var stickyBottom = PCodeStickyBottomState()
@@ -314,6 +331,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     var onReturnFocusToComposer: (() -> Void)?
     /// In the `/btw` drawer, `q` hands focus back to the composer without forwarding `q` (`btw_tail`).
     var swallowsQToReturnFocus = false
+    /// When `true` (default), consecutive settled tools/edits fold into an expandable summary pill
+    /// above any currently running tools.
+    var groupTools: Bool = PCodeTranscriptPreferences.shared.groupTools {
+        didSet {
+            guard groupTools != oldValue else { return }
+            syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
+        }
+    }
 
     var typography: PCodeTypographySnapshot
     var theme: PCodeTranscriptTheme
@@ -321,7 +346,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     private var mountedViews: [String: any PCodeTranscriptRowHosting] = [:]
     private var appliedStates: [String: AppliedRowState] = [:]
+    private var rawItemIndexByID: [String: Int] = [:]
     private var itemIndexByID: [String: Int] = [:]
+    private var expandedGroupIDs: Set<String> = []
+    private var absorbPulseByGroupID: [String: UInt64] = [:]
+    private var groupIDByRawItemID: [String: String] = [:]
     private var reusePools: [PCodeTranscriptItem.Kind: [any PCodeTranscriptRowHosting]] = [:]
     private var attributedCache: [String: NSAttributedString] = [:]
     private var attributedCacheOrder: [String] = []
@@ -539,7 +568,17 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Settled history gets no reveal animation.
     func setItems(_ newItems: [PCodeTranscriptItem], pinToBottom: Bool) {
         notifySearchContentWillChange()
-        items = newItems
+        expandedGroupIDs.removeAll(keepingCapacity: false)
+        absorbPulseByGroupID.removeAll(keepingCapacity: false)
+        rawItems = newItems
+        rebuildRawItemIndexMap()
+        let projection = PCodeToolGrouper.project(
+            rawItems: rawItems,
+            groupTools: groupTools,
+            expandedGroupIDs: expandedGroupIDs,
+            absorbPulses: absorbPulseByGroupID)
+        items = projection.items
+        groupIDByRawItemID = projection.groupIDByRawItemID
         rebuildItemIndexMap()
         invalidateSearchIndex()
         accessibilityRowProxies.removeAll(keepingCapacity: false)
@@ -555,7 +594,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         lastMountedRange = 0..<0
 
         layoutEngine.backingScale = window?.backingScaleFactor ?? 2
-        let estimates = newItems.map { item in
+        let estimates = items.map { item in
             (id: item.id, estimatedHeight: estimatedHeight(for: item), spacingAfter: item.spacingAfter)
         }
         layoutEngine.reset(items: estimates)
@@ -579,7 +618,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         mountViews(in: visibleRect)
         runningToolIDs.removeAll(keepingCapacity: true)
-        for item in newItems {
+        for item in items {
             if case .tool(let call, _) = item.payload, call.isRunning && call.startedAt != nil {
                 runningToolIDs.insert(item.id)
             }
@@ -589,6 +628,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     // MARK: - ID-Addressed Upsert & Streaming Pipeline
 
+    private func rebuildRawItemIndexMap() {
+        rawItemIndexByID.removeAll(keepingCapacity: true)
+        for (idx, item) in rawItems.enumerated() {
+            rawItemIndexByID[item.id] = idx
+        }
+    }
+
     private func rebuildItemIndexMap() {
         itemIndexByID.removeAll(keepingCapacity: true)
         for (idx, item) in items.enumerated() {
@@ -596,20 +642,63 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    /// Look up an item's current index by its stable `id` (`O(1)`).
+    /// Look up a canonical (ungrouped) item's index by its stable `id` (`O(1)`).
+    func indexOfRawItem(id: String) -> Int? {
+        rawItemIndexByID[id]
+    }
+
+    /// Look up a displayed item's current index by its stable `id` (`O(1)`).
     func indexOfItem(id: String) -> Int? {
         itemIndexByID[id]
     }
 
-    /// Return whether an existing `.tool`, `.diff`, or `.thinking` item is currently expanded by the user.
+    /// Return whether an existing `.tool`, `.diff`, `.thinking`, or `.toolGroup` item is currently expanded by the user.
     func isItemExpanded(id: String) -> Bool {
+        if expandedGroupIDs.contains(id) { return true }
+        if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
+            switch rawItems[rawIdx].payload {
+            case .tool(_, let isExpanded), .diff(_, let isExpanded), .thinking(_, let isExpanded):
+                return isExpanded
+            case .toolGroup(let payload):
+                return payload.isExpanded
+            default:
+                return false
+            }
+        }
         guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return false }
         switch items[idx].payload {
         case .tool(_, let isExpanded), .diff(_, let isExpanded), .thinking(_, let isExpanded):
             return isExpanded
+        case .toolGroup(let payload):
+            return payload.isExpanded
         default:
             return false
         }
+    }
+
+    private struct FoldSnapshot {
+        let rawItemID: String
+        let layer: CALayer
+        let originFrame: CGRect
+    }
+
+    private func captureFoldSnapshot(for itemID: String) -> FoldSnapshot? {
+        guard window != nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let view = mountedViews[itemID],
+              view.bounds.width > 1,
+              view.bounds.height > 1,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+        else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let cgImage = rep.cgImage else { return nil }
+        let ghost = CALayer()
+        ghost.contents = cgImage
+        ghost.contentsScale = window?.backingScaleFactor ?? 2.0
+        ghost.frame = view.frame
+        ghost.cornerRadius = view.layer?.cornerRadius ?? 5
+        ghost.masksToBounds = true
+        return FoldSnapshot(rawItemID: itemID, layer: ghost, originFrame: view.frame)
     }
 
     /// Insert or update a transcript item by its stable `id` (used by both live streaming
@@ -619,6 +708,66 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         _ item: PCodeTranscriptItem,
         insertAt: Int? = nil,
         reveal: Bool = false
+    ) -> Int {
+        let existingRawIdx = rawItemIndexByID[item.id]
+        let existingRaw = existingRawIdx.map { rawItems[$0] }
+        let wasActiveBefore = existingRaw.map { PCodeToolGrouper.isActive($0) } ?? false
+        let isActiveAfter = PCodeToolGrouper.isActive(item)
+        let isGroupableItem = PCodeToolGrouper.isGroupable(item) || (existingRaw.map { PCodeToolGrouper.isGroupable($0) } ?? false)
+
+        // Capture a visual snapshot right before a live active tool/diff folds into its group.
+        let foldSnapshot: FoldSnapshot? = (groupTools && reveal && isGroupableItem && wasActiveBefore && !isActiveAfter)
+            ? captureFoldSnapshot(for: item.id)
+            : nil
+
+        // Update canonical `rawItems`.
+        let finalRawIdx: Int
+        if let rawIdx = existingRawIdx {
+            let prev = rawItems[rawIdx]
+            let bumpedRev = (prev.kind == item.kind) ? max(item.revision, prev.revision &+ 1) : item.revision
+            rawItems[rawIdx] = PCodeTranscriptItem(
+                id: item.id,
+                payload: item.payload,
+                spacingAfter: item.spacingAfter,
+                revision: bumpedRev,
+                depth: item.depth)
+            finalRawIdx = rawIdx
+        } else {
+            let targetIdx = insertAt.map { min(max(0, $0), rawItems.count) } ?? rawItems.count
+            if targetIdx == rawItems.count {
+                rawItems.append(item)
+                rawItemIndexByID[item.id] = targetIdx
+            } else {
+                rawItems.insert(item, at: targetIdx)
+                rebuildRawItemIndexMap()
+            }
+            finalRawIdx = targetIdx
+        }
+
+        // Fast path: ungrouped mode, OR non-groupable item appended at tail / updated in place.
+        if !groupTools || (!isGroupableItem && (existingRawIdx != nil ? itemIndexByID[item.id] != nil : insertAt == nil)) {
+            let updatedItem = rawItems[finalRawIdx]
+            return upsertDisplayItemDirectly(updatedItem, insertAt: groupTools ? nil : insertAt, reveal: reveal)
+        }
+
+        // Grouped path: re-project and apply minimal diff.
+        let revealIDs: Set<String> = (reveal && existingRawIdx == nil) ? [item.id] : []
+        let pulseRawID: String? = (reveal && wasActiveBefore && !isActiveAfter && PCodeToolGrouper.isGroupable(item))
+            ? item.id
+            : nil
+        syncProjectedItems(
+            revealNewIDs: revealIDs,
+            foldSnapshot: foldSnapshot,
+            pulseForRawItemID: pulseRawID,
+            animateShift: reveal && wasActiveBefore && !isActiveAfter)
+        return itemIndexByID[item.id] ?? (groupIDByRawItemID[item.id].flatMap { itemIndexByID[$0] } ?? max(0, items.count - 1))
+    }
+
+    @discardableResult
+    private func upsertDisplayItemDirectly(
+        _ item: PCodeTranscriptItem,
+        insertAt: Int?,
+        reveal: Bool
     ) -> Int {
         notifySearchContentWillChange()
         if let existingIdx = itemIndexByID[item.id] {
@@ -672,8 +821,256 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         return targetIdx
     }
 
+    private static func displayItemsMatch(_ lhs: PCodeTranscriptItem, _ rhs: PCodeTranscriptItem) -> Bool {
+        guard lhs.id == rhs.id,
+              lhs.kind == rhs.kind,
+              lhs.depth == rhs.depth,
+              abs(lhs.spacingAfter - rhs.spacingAfter) < 0.001
+        else { return false }
+        if case .toolGroup(let a) = lhs.payload, case .toolGroup(let b) = rhs.payload {
+            return a == b
+        }
+        return lhs.revision == rhs.revision
+    }
+
+    private func syncProjectedItems(
+        revealNewIDs: Set<String>,
+        foldSnapshot: FoldSnapshot?,
+        pulseForRawItemID: String? = nil,
+        animateShift: Bool = false,
+        animateExpandedGroupID: String? = nil
+    ) {
+        // First projection to discover target group ID for any absorb pulse.
+        var projection = PCodeToolGrouper.project(
+            rawItems: rawItems,
+            groupTools: groupTools,
+            expandedGroupIDs: expandedGroupIDs,
+            absorbPulses: absorbPulseByGroupID)
+
+        if let pulseRawID = pulseForRawItemID,
+           let targetGroupID = projection.groupIDByRawItemID[pulseRawID]
+        {
+            absorbPulseByGroupID[targetGroupID, default: 0] &+= 1
+            projection = PCodeToolGrouper.project(
+                rawItems: rawItems,
+                groupTools: groupTools,
+                expandedGroupIDs: expandedGroupIDs,
+                absorbPulses: absorbPulseByGroupID)
+        }
+
+        let oldItems = items
+        let newItems = projection.items
+        groupIDByRawItemID = projection.groupIDByRawItemID
+
+        let oldCount = oldItems.count
+        let newCount = newItems.count
+        var prefix = 0
+        while prefix < oldCount && prefix < newCount && Self.displayItemsMatch(oldItems[prefix], newItems[prefix]) {
+            prefix += 1
+        }
+        var suffix = 0
+        while suffix < (oldCount - prefix) && suffix < (newCount - prefix)
+            && Self.displayItemsMatch(oldItems[oldCount - 1 - suffix], newItems[newCount - 1 - suffix])
+        {
+            suffix += 1
+        }
+
+        if prefix + suffix == oldCount && oldCount == newCount {
+            return
+        }
+
+        // Capture old frames of mounted views so surviving rows can glide smoothly when heights shift.
+        var previousFrames: [String: CGRect] = [:]
+        let shouldAnimateMotion = window != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if shouldAnimateMotion && (animateShift || animateExpandedGroupID != nil) {
+            previousFrames.reserveCapacity(mountedViews.count)
+            for (id, view) in mountedViews {
+                previousFrames[id] = view.frame
+            }
+        }
+
+        let oldMid = prefix..<(oldCount - suffix)
+        let newMid = prefix..<(newCount - suffix)
+        let newMidIDs = Set(newItems[newMid].map(\.id))
+
+        notifySearchContentWillChange()
+        for idx in oldMid {
+            let oldID = oldItems[idx].id
+            removeAttributedCache(for: oldID)
+            if !newMidIDs.contains(oldID) {
+                revealQueue.remove(itemID: oldID)
+                accessibilityRowProxies.removeValue(forKey: oldID)
+                if let oldView = mountedViews.removeValue(forKey: oldID) {
+                    oldView.resetForTranscriptReuse()
+                    oldView.removeFromSuperview()
+                    reusePools[oldView.itemKind, default: []].append(oldView)
+                }
+                appliedStates.removeValue(forKey: oldID)
+                runningToolIDs.remove(oldID)
+            } else {
+                appliedStates.removeValue(forKey: oldID)
+            }
+        }
+
+        if oldMid.count == newMid.count {
+            for offset in 0..<newMid.count {
+                let idx = prefix + offset
+                let oldItem = items[idx]
+                let newItem = newItems[idx]
+                if oldItem.id == newItem.id && oldItem.kind == newItem.kind {
+                    items[idx] = PCodeTranscriptItem(
+                        id: newItem.id,
+                        payload: newItem.payload,
+                        spacingAfter: newItem.spacingAfter,
+                        revision: max(newItem.revision, oldItem.revision &+ 1),
+                        depth: newItem.depth)
+                    layoutEngine.updateSpacingAfter(at: idx, spacingAfter: newItem.spacingAfter)
+                } else {
+                    items[idx] = newItem
+                    layoutEngine.replaceEntry(at: idx, id: newItem.id, spacingAfter: newItem.spacingAfter)
+                }
+            }
+        } else {
+            for idx in oldMid.reversed() {
+                layoutEngine.remove(at: idx)
+            }
+            items.replaceSubrange(oldMid, with: newItems[newMid])
+            for idx in newMid {
+                let it = items[idx]
+                layoutEngine.insert(
+                    at: idx,
+                    id: it.id,
+                    height: estimatedHeight(for: it),
+                    spacingAfter: it.spacingAfter,
+                    measured: false)
+            }
+        }
+
+        rebuildItemIndexMap()
+        invalidateSearchIndex()
+        clampSelectionToCurrentItems()
+
+        for idx in newMid {
+            let it = items[idx]
+            if case .tool(let call, _) = it.payload, call.isRunning && call.startedAt != nil {
+                runningToolIDs.insert(it.id)
+            } else {
+                runningToolIDs.remove(it.id)
+            }
+            if revealNewIDs.contains(it.id) {
+                enqueueRevealIfNeeded(for: it, estimatedHeight: estimatedHeight(for: it))
+            }
+        }
+        syncLiveRunningTimer()
+        if !revealNewIDs.isEmpty && stickyBottom.mode == .userScrolledUp {
+            setHasUnreadStreamingContent(true)
+        }
+
+        mountViews(in: visibleRect)
+
+        // CoreAnimation polish (GPU-only, never mutates layout).
+        if shouldAnimateMotion {
+            if let snap = foldSnapshot,
+               let targetGroupID = groupIDByRawItemID[snap.rawItemID],
+               let groupView = mountedViews[targetGroupID]
+            {
+                animateFoldSnapshot(snap, into: groupView.frame)
+            }
+            if !previousFrames.isEmpty {
+                animateVerticalShifts(from: previousFrames)
+            }
+            if let expandedID = animateExpandedGroupID,
+               let groupIdx = itemIndexByID[expandedID],
+               case .toolGroup(let payload) = items[groupIdx].payload,
+               payload.isExpanded
+            {
+                animateExpandedGroupChildren(payload.entries)
+            }
+        }
+    }
+
+    private func animateFoldSnapshot(_ snap: FoldSnapshot, into targetFrame: CGRect) {
+        guard let hostLayer = layer else { return }
+        let ghost = snap.layer
+        hostLayer.addSublayer(ghost)
+
+        let duration: CFTimeInterval = 0.22
+        let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+
+        let moveY = CABasicAnimation(keyPath: "position.y")
+        moveY.fromValue = snap.originFrame.midY
+        moveY.toValue = targetFrame.midY
+
+        let scaleY = CABasicAnimation(keyPath: "transform.scale.y")
+        scaleY.fromValue = 1.0
+        scaleY.toValue = 0.62
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.95
+        fade.toValue = 0.0
+
+        let group = CAAnimationGroup()
+        group.animations = [moveY, scaleY, fade]
+        group.duration = duration
+        group.timingFunction = timing
+        group.fillMode = .forwards
+        group.isRemovedOnCompletion = false
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock {
+            ghost.removeFromSuperlayer()
+        }
+        ghost.add(group, forKey: "pcode.tool.fold")
+        CATransaction.commit()
+    }
+
+    private func animateVerticalShifts(from previousFrames: [String: CGRect]) {
+        let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        for (id, view) in mountedViews {
+            guard let oldFrame = previousFrames[id] else { continue }
+            let dy = oldFrame.minY - view.frame.minY
+            guard abs(dy) > 1.0 && abs(dy) < 400, let viewLayer = view.layer else { continue }
+            let anim = CABasicAnimation(keyPath: "transform.translation.y")
+            anim.fromValue = dy
+            anim.toValue = 0
+            anim.duration = 0.20
+            anim.timingFunction = timing
+            viewLayer.add(anim, forKey: "pcode.row.shift")
+        }
+    }
+
+    private func animateExpandedGroupChildren(_ entries: [PCodeToolGroupEntry]) {
+        let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+        for (idx, entry) in entries.prefix(12).enumerated() {
+            guard let view = mountedViews[entry.id], let viewLayer = view.layer else { continue }
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.0
+            fade.toValue = 1.0
+
+            let slide = CABasicAnimation(keyPath: "transform.translation.y")
+            slide.fromValue = -6.0
+            slide.toValue = 0.0
+
+            let group = CAAnimationGroup()
+            group.animations = [fade, slide]
+            group.duration = 0.18
+            group.beginTime = CACurrentMediaTime() + Double(idx) * 0.012
+            group.timingFunction = timing
+            group.fillMode = .backwards
+            viewLayer.add(group, forKey: "pcode.group.childReveal")
+        }
+    }
+
     /// Remove an item by stable `id`, recycling its mounted view and updating layout.
     func removeItem(id: String) {
+        if let rawIdx = rawItemIndexByID[id] {
+            rawItems.remove(at: rawIdx)
+            rebuildRawItemIndexMap()
+        }
+        if groupTools {
+            syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: false)
+            return
+        }
         guard let idx = itemIndexByID[id] else { return }
         notifySearchContentWillChange()
         revealQueue.remove(itemID: id)
@@ -753,6 +1150,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if !fullMarkdown.isEmpty {
             for blockIndex in 0..<finalStream.emittedBlockCount {
                 let itemID = Self.streamingItemID(messageID: finalStream.id, blockIndex: blockIndex)
+                if let rawIdx = rawItemIndexByID[itemID],
+                   case .prose(let md, let refDefs, _) = rawItems[rawIdx].payload
+                {
+                    rawItems[rawIdx] = PCodeTranscriptItem(
+                        id: itemID,
+                        payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: fullMarkdown),
+                        spacingAfter: rawItems[rawIdx].spacingAfter,
+                        revision: rawItems[rawIdx].revision &+ 1,
+                        depth: rawItems[rawIdx].depth)
+                }
                 guard let idx = itemIndexByID[itemID],
                       case .prose(let md, let refDefs, _) = items[idx].payload
                 else { continue }
@@ -817,6 +1224,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         activeStream = stream
         notifySearchContentWillChange()
         for item in appended {
+            let rawIdx = rawItems.count
+            rawItems.append(item)
+            rawItemIndexByID[item.id] = rawIdx
             let estHeight = estimatedHeight(for: item)
             let idx = items.count
             items.append(item)
@@ -872,6 +1282,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 spacingAfter: 14)
             upsertItem(item, reveal: reveal)
         } else if let lastIdx = items.indices.last {
+            if let lastRawIdx = rawItems.indices.last {
+                rawItems[lastRawIdx] = rawItems[lastRawIdx].withSpacingAfter(18)
+            }
             items[lastIdx] = items[lastIdx].withSpacingAfter(18)
             layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 18)
             mountViews(in: visibleRect)
@@ -1211,6 +1624,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     self?.toggleToolExpansion(id: item.id)
                 })
 
+        case (let view as PCodeToolGroupCardView, .toolGroup(let payload)):
+            let attr = cachedToolGroupAttributedString(for: item.id, payload: payload)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                payload: payload,
+                attributedText: attr,
+                width: width,
+                theme: theme,
+                selectedRange: localSel,
+                onToggle: { [weak self] in
+                    self?.toggleToolGroupExpansion(id: item.id)
+                })
+
         case (let view as PCodeDiffCardView, .diff(let payload, let isExpanded)):
             let attr = isExpanded
                 ? cachedDiffAttributedString(for: item.id, payload: payload)
@@ -1264,6 +1690,25 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    private func toggleToolGroupExpansion(id: String) {
+        guard let index = itemIndexByID[id],
+              items.indices.contains(index),
+              case .toolGroup(let payload) = items[index].payload
+        else { return }
+        let willExpand = !payload.isExpanded
+        if willExpand {
+            stickyBottom.unpinForUserAction()
+            expandedGroupIDs.insert(id)
+        } else {
+            expandedGroupIDs.remove(id)
+        }
+        syncProjectedItems(
+            revealNewIDs: [],
+            foldSnapshot: nil,
+            animateShift: true,
+            animateExpandedGroupID: willExpand ? id : nil)
+    }
+
     private func toggleToolExpansion(id: String) {
         guard let index = itemIndexByID[id],
               items.indices.contains(index),
@@ -1276,6 +1721,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         notifySearchContentWillChange()
         removeAttributedCache(for: id)
+        if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
+            rawItems[rawIdx] = PCodeTranscriptItem(
+                id: id,
+                payload: .tool(call, isExpanded: !isExpanded),
+                spacingAfter: rawItems[rawIdx].spacingAfter,
+                revision: rawItems[rawIdx].revision &+ 1,
+                depth: rawItems[rawIdx].depth)
+        }
         items[index] = PCodeTranscriptItem(
             id: id,
             payload: .tool(call, isExpanded: !isExpanded),
@@ -1311,6 +1764,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         notifySearchContentWillChange()
         removeAttributedCache(for: id)
+        if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
+            rawItems[rawIdx] = PCodeTranscriptItem(
+                id: id,
+                payload: .diff(payload, isExpanded: !isExpanded),
+                spacingAfter: rawItems[rawIdx].spacingAfter,
+                revision: rawItems[rawIdx].revision &+ 1,
+                depth: rawItems[rawIdx].depth)
+        }
         items[index] = PCodeTranscriptItem(
             id: id,
             payload: .diff(payload, isExpanded: !isExpanded),
@@ -1346,6 +1807,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         notifySearchContentWillChange()
         removeAttributedCache(for: id)
+        if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
+            rawItems[rawIdx] = PCodeTranscriptItem(
+                id: id,
+                payload: .thinking(text: text, isExpanded: !isExpanded),
+                spacingAfter: rawItems[rawIdx].spacingAfter,
+                revision: rawItems[rawIdx].revision &+ 1,
+                depth: rawItems[rawIdx].depth)
+        }
         items[index] = PCodeTranscriptItem(
             id: id,
             payload: .thinking(text: text, isExpanded: !isExpanded),
@@ -1376,6 +1845,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .codeBlock: return PCodeCodeBlockView()
         case .table: return PCodeTableBlockView()
         case .tool: return PCodeToolCardView()
+        case .toolGroup: return PCodeToolGroupCardView()
         case .diff: return PCodeDiffCardView()
         case .thinking: return PCodeThinkingCardView()
         case .plan: return PCodePlanCardView()
@@ -1719,6 +2189,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if item.action == #selector(copyAnswerMarkdown(_:)) {
             return (item as? NSMenuItem)?.representedObject is String
         }
+        if item.action == #selector(toggleGroupToolsFromMenu(_:)) {
+            if let menuItem = item as? NSMenuItem {
+                menuItem.state = groupTools ? .on : .off
+            }
+            return true
+        }
         if item.action == #selector(performFindPanelAction(_:)),
            let finder = textFinder,
            let action = NSTextFinder.Action(rawValue: item.tag)
@@ -1816,12 +2292,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             height: entry.height)]
     }
 
-    /// Accessibility helper to toggle expandable `.tool`, `.diff`, or `.thinking` rows.
+    /// Accessibility helper to toggle expandable `.tool`, `.toolGroup`, `.diff`, or `.thinking` rows.
     func toggleExpansionForAccessibility(id: String) {
         guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return }
         switch items[idx].payload {
         case .tool:
             toggleToolExpansion(id: id)
+        case .toolGroup:
+            toggleToolGroupExpansion(id: id)
         case .diff:
             toggleDiffExpansion(id: id)
         case .thinking:
@@ -1877,7 +2355,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let selectAllItem = NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
         selectAllItem.target = self
         menu.addItem(selectAllItem)
+        menu.addItem(.separator())
+        let groupItem = NSMenuItem(
+            title: "Group Tool Calls",
+            action: #selector(toggleGroupToolsFromMenu(_:)),
+            keyEquivalent: "")
+        groupItem.target = self
+        groupItem.state = groupTools ? .on : .off
+        menu.addItem(groupItem)
         return menu
+    }
+
+    @objc func toggleGroupToolsFromMenu(_ sender: Any?) {
+        let next = !groupTools
+        PCodeTranscriptPreferences.shared.groupTools = next
+        if groupTools != next {
+            groupTools = next
+        }
     }
 
     /// The Markdown source of the answer whose prose is at `docPoint`, if any.
@@ -1922,6 +2416,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return table.plainText
         case .tool(let call, let isExpanded):
             return cachedToolAttributedString(for: item.id, call: call, isExpanded: isExpanded).string
+        case .toolGroup(let payload):
+            return cachedToolGroupAttributedString(for: item.id, payload: payload).string
         case .diff(let payload, let isExpanded):
             return isExpanded
                 ? cachedDiffAttributedString(for: item.id, payload: payload).string
@@ -1997,6 +2493,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private func estimatedHeight(for item: PCodeTranscriptItem) -> CGFloat {
         switch item.payload {
         case .tool: return 28
+        case .toolGroup: return PCodeToolGroupCardView.rowHeight
         case .status: return 24
         case .prompt(_, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))
@@ -2095,6 +2592,21 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let built = PCodeToolCardView.attributedText(
             for: call,
             isExpanded: isExpanded,
+            typography: typography,
+            theme: theme)
+        storeAttributedCache(built, for: id)
+        return built
+    }
+
+    private func cachedToolGroupAttributedString(
+        for id: String,
+        payload: PCodeToolGroupPayload
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodeToolGroupCardView.attributedText(
+            for: payload,
             typography: typography,
             theme: theme)
         storeAttributedCache(built, for: id)
@@ -2274,6 +2786,7 @@ final class PCodeTranscriptScrollView: NSScrollView {
     private let bottomDissolveView = PCodeBottomDissolveView()
     private var observers: [NSObjectProtocol] = []
     private var typographyCancellable: AnyCancellable?
+    private var preferencesCancellable: AnyCancellable?
     private var bottomContentInsetValue: CGFloat = 0
     private var lastClipHeight: CGFloat = 0
     /// Optional predicate gating `⌘F`/`⌘G`/`⌘⇧G` so the scroll view never steals shortcuts
@@ -2372,6 +2885,12 @@ final class PCodeTranscriptScrollView: NSScrollView {
         })
 
         subscribeTypography(typography)
+        preferencesCancellable = PCodeTranscriptPreferences.shared.$groupTools
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] grouped in
+                self?.transcriptDocumentView.groupTools = grouped
+            }
     }
 
     @available(*, unavailable)
