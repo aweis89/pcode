@@ -73,6 +73,29 @@ struct PCodeCompletionTests {
         #expect(inDrawer.editorRect.width == expectedOuter - 2 * PCodeDock.bottomMargin)
     }
 
+    @Test func dockCardCapsWidthAndCentersOnWidePanes() {
+        let wideSize = CGSize(width: 1600, height: 600)
+        let wide = PCodeDock.cardLayout(in: wideSize, rows: 4, cell: 20, drawerOpen: false)
+        #expect(wide.editorRect.width == PCodeDock.maxCardWidth)
+        #expect(wide.editorRect.minX == floor((wideSize.width - PCodeDock.maxCardWidth) * 0.5))
+
+        // Odd pane width keeps `outerMinX + outerWidth + trailingInset == paneWidth`.
+        let odd = PCodeDock.horizontalLayout(in: 1401, drawerOpen: false)
+        #expect(odd.cardWidth == PCodeDock.maxCardWidth)
+        #expect(odd.outerMinX + odd.outerWidth + odd.trailingInset == 1401)
+
+        // Wide /btw drawer also caps the card at `maxCardWidth` and centers it inside the drawer.
+        let wideDrawerSize = CGSize(width: 2000, height: 600)
+        let wideDrawer = PCodeDock.cardLayout(
+            in: wideDrawerSize, rows: 4, cell: 20, drawerOpen: true, drawerFraction: 0.70)
+        let drawerSlot = PCodeDrawer.width(
+            in: wideDrawerSize.width, fraction: 0.70, minWidth: PCodeDrawer.dockedMinWidth) - 1
+        let drawerMinX = wideDrawerSize.width - drawerSlot
+        let expectedOuterMinX = drawerMinX + floor((drawerSlot - (PCodeDock.maxCardWidth + 2 * PCodeDock.bottomMargin)) * 0.5)
+        #expect(wideDrawer.editorRect.width == PCodeDock.maxCardWidth)
+        #expect(wideDrawer.editorRect.minX == expectedOuterMinX + PCodeDock.bottomMargin)
+    }
+
     @Test func dockFillsThePaneUntilReadyThenShowsTheCard() {
         // Before `pcode;ready`: the whole pane inside the margins, and all of it takes clicks.
         #expect(PCodeDock.editorHeight(ready: false, cell: 20, paneHeight: 600)

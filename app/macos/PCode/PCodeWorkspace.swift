@@ -2639,13 +2639,14 @@ final class PCodeWorkspace: ObservableObject {
             let heightPx = UInt32(max(1, PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell) * scale))
             let card: (UInt32, UInt32)
             if let drawer = pane.surface.existingPCodeDrawer, drawer.isOpen {
-                let drawerWidth = PCodeDrawer.width(
+                let h = PCodeDock.horizontalLayout(
                     in: detailSize.width,
-                    fraction: drawer.fraction,
-                    minWidth: PCodeDrawer.dockedMinWidth) - 1
-                card = (UInt32(max(1, (drawerWidth - 2 * PCodeDock.bottomMargin) * scale)), heightPx)
+                    drawerOpen: true,
+                    drawerFraction: drawer.fraction)
+                card = (UInt32(max(1, h.cardWidth * scale)), heightPx)
             } else {
-                card = shownCard ?? (UInt32(max(1, (detailSize.width - 2 * PCodeDock.bottomMargin) * scale)), heightPx)
+                let h = PCodeDock.horizontalLayout(in: detailSize.width)
+                card = shownCard ?? (UInt32(max(1, h.cardWidth * scale)), heightPx)
             }
             Self.setSize(pane.surface, card, scale: scale)
         }

@@ -40,6 +40,11 @@ final class PCodeDock: NSObject, ObservableObject {
     /// The card's top and bottom margins, inside `footprint`.
     static let topMargin: CGFloat = 2
     static let bottomMargin: CGFloat = 8
+    /// Maximum visible width of the docked editor card in points.
+    /// Wider than `PCodeTranscriptDocumentView.maxContentWidth` (800pt) by ~20
+    /// monospace characters on each side (~160pt) so the composer stays roomy
+    /// under the reading column while stopping on wide windows.
+    static let maxCardWidth: CGFloat = 1120
 
     /// The card's own height for `rows` terminal rows of `cell` points.
     /// When `surfaceRows` is given and smaller than `gridRows` (e.g. a user
@@ -82,6 +87,52 @@ final class PCodeDock: NSObject, ObservableObject {
         cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows) + topMargin + bottomMargin
     }
 
+    /// Horizontal placement of `PCodeDockCard`'s outer container (including `bottomMargin`
+    /// on each side) inside a pane of `paneWidth`.
+    struct HorizontalLayout: Equatable {
+        /// Leading edge of the card's outer container in pane coordinates.
+        let outerMinX: CGFloat
+        /// Width of the card's outer container (visible card width + `2 * bottomMargin`).
+        let outerWidth: CGFloat
+        /// Trailing padding from the pane's right edge (for `.bottomTrailing` alignment).
+        let trailingInset: CGFloat
+        /// Visible card width inside `bottomMargin` on both sides.
+        var cardWidth: CGFloat { max(0, outerWidth - 2 * bottomMargin) }
+        /// Leading edge of the visible card (and its terminal surface) in pane coordinates.
+        var editorMinX: CGFloat { outerMinX + bottomMargin }
+    }
+
+    /// Computes the horizontal bounds of the dock card inside `paneWidth`: fills the
+    /// pane (or the `/btw` drawer slot) up to `maxCardWidth`, and centers within that
+    /// slot once wider.
+    static func horizontalLayout(
+        in paneWidth: CGFloat,
+        drawerOpen: Bool = false,
+        drawerFraction: CGFloat = 0.45
+    ) -> HorizontalLayout {
+        let maxOuter = maxCardWidth + 2 * bottomMargin
+        let slotWidth: CGFloat
+        let slotMinX: CGFloat
+        if drawerOpen {
+            slotWidth = max(0, PCodeDrawer.width(
+                in: paneWidth,
+                fraction: drawerFraction,
+                minWidth: PCodeDrawer.dockedMinWidth) - 1)
+            slotMinX = max(0, paneWidth - slotWidth)
+        } else {
+            slotWidth = max(0, paneWidth)
+            slotMinX = 0
+        }
+        let outerWidth = min(slotWidth, maxOuter)
+        let outerMinX = slotMinX + floor((slotWidth - outerWidth) * 0.5)
+        let trailingInset = max(0, paneWidth - outerMinX - outerWidth)
+        return HorizontalLayout(
+            outerMinX: outerMinX,
+            outerWidth: outerWidth,
+            trailingInset: trailingInset
+        )
+    }
+
     struct CardLayout: Equatable {
         /// The docked terminal surface's frame in the pane (top-left origin).
         let editorRect: CGRect
@@ -100,11 +151,12 @@ final class PCodeDock: NSObject, ObservableObject {
         drawerOpen: Bool = false,
         drawerFraction: CGFloat = 0.45
     ) -> CardLayout {
-        let outerWidth = drawerOpen
-            ? max(0, PCodeDrawer.width(in: size.width, fraction: drawerFraction, minWidth: PCodeDrawer.dockedMinWidth) - 1)
-            : size.width
-        let minX = max(0, min(size.width - outerWidth + bottomMargin, size.width))
-        let width = max(0, min(outerWidth - 2 * bottomMargin, size.width - minX))
+        let horizontal = horizontalLayout(
+            in: size.width,
+            drawerOpen: drawerOpen,
+            drawerFraction: drawerFraction)
+        let minX = max(0, min(horizontal.editorMinX, size.width))
+        let width = max(0, min(horizontal.cardWidth, size.width - minX))
         let height: CGFloat
         if let editorHeight, editorHeight > 0 {
             height = editorHeight
@@ -207,12 +259,10 @@ struct PCodeDockedSurface: View {
                     drawer: drawer,
                     isSplit: isSplit)
             } else {
-                let cardWidth = drawerOpen
-                    ? max(0, PCodeDrawer.width(
-                        in: geometry.size.width,
-                        fraction: drawer.fraction,
-                        minWidth: PCodeDrawer.dockedMinWidth) - 1)
-                    : geometry.size.width
+                let cardHorizontal = PCodeDock.horizontalLayout(
+                    in: geometry.size.width,
+                    drawerOpen: drawerOpen,
+                    drawerFraction: drawer.fraction)
                 let sid = surfaceView.pcodeSession ?? sessionID
                 let hid = surfaceView.pcodeHost ?? hostID
                 ZStack(alignment: .bottomTrailing) {
@@ -232,11 +282,11 @@ struct PCodeDockedSurface: View {
                         fallbackCell: paneCell,
                         isSplit: isSplit)
 
-                    // The editor card: full width at the bottom when no drawer is open, or
-                    // docked into the bottom of the drawer when /btw is open. Keeping
-                    // it at the same structural spot preserves its surface and focus;
-                    // width snaps once instead of animating so the PTY doesn't reflow
-                    // on every frame.
+                    // The editor card: centered at the bottom up to `maxCardWidth` when no
+                    // drawer is open, or docked into the bottom of the drawer when /btw is
+                    // open. Keeping it at the same structural spot preserves its surface
+                    // and focus; width snaps once instead of animating so the PTY doesn't
+                    // reflow on every frame.
                     PCodeDockCard(
                         docked: surfaceView,
                         dock: dock,
@@ -244,7 +294,8 @@ struct PCodeDockedSurface: View {
                         inDrawer: drawerOpen,
                         paneHeight: geometry.size.height,
                         isSplit: isSplit)
-                        .frame(width: cardWidth)
+                        .frame(width: cardHorizontal.outerWidth)
+                        .padding(.trailing, cardHorizontal.trailingInset)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
                     sessionID = surfaceView.pcodeSession

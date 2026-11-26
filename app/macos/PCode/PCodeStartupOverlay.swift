@@ -92,7 +92,7 @@ struct PCodeStartupOverlay: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: PCodeDock.maxCardWidth)
             .frame(height: height)
             .opacity(appeared ? 1 : 0)
             .background(
@@ -104,6 +104,7 @@ struct PCodeStartupOverlay: View {
             .padding(.top, PCodeDock.topMargin)
             .padding(.bottom, PCodeDock.bottomMargin)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var fullCover: some View {
