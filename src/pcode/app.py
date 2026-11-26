@@ -1110,8 +1110,12 @@ class PreviewApp:
             raise ValueError(f"Usage: /show-thinking [{'|'.join(THINKING_MODES)}]")
         if not argument:
             current = self.activity.thinking_mode
-            # Pcode.app's transcript has no activity panel: thinking is shown or not.
-            modes = ("off", "scrollback") if self.editor_only else THINKING_MODES
+            modes = THINKING_MODES
+            if self.editor_only:
+                # Pcode.app's transcript shows thinking or not, as the host's mode says;
+                # this editor's own copy is only what preferences said when it started.
+                modes = ("off", "scrollback")
+                current = getattr(self.controller, "state", {}).get("thinking_mode", current)
             index = modes.index(current) if current in modes else -1
             argument = modes[(index + 1) % len(modes)]
         self.set_thinking_mode(argument)

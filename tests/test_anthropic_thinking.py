@@ -195,6 +195,23 @@ def test_startup_and_toggle_preserve_effort_and_replace_settings():
     assert "next request" in app.transcript.console.file.getvalue()
 
 
+def test_app_editor_cycles_thinking_from_the_hosts_mode_between_off_and_scrollback():
+    save_preferences(show_thinking="scrollback")
+    agent = SimpleNamespace(model="anthropic:claude-opus-4-7", model_settings=None)
+    app = PreviewApp(
+        model=agent.model, runtime=SimpleNamespace(agent=agent), console=Console(file=StringIO())
+    )
+    app.editor_only = True
+    # The host is `off` though this editor started from `scrollback`: show it.
+    app.controller.state = {"thinking_mode": "off"}
+    app.show_thinking("")
+    assert app.activity.thinking_mode == "scrollback"
+    # No activity panel in the app: from it, a bare toggle goes to `off`.
+    app.controller.state = {"thinking_mode": "activity-panel"}
+    app.show_thinking("")
+    assert app.activity.thinking_mode == "off"
+
+
 def test_thinking_on_can_open_anthropic_without_credentials(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     save_preferences(show_thinking="scrollback")
