@@ -943,6 +943,60 @@ final class PCodeWorkspace: ObservableObject {
             .sink { [weak self] statuses in
                 self?.handleHostStatusesUpdate(statuses)
             }
+        reconcileTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.reconcileInterval, repeats: true
+        ) { [weak self] _ in
+            // Scheduled on the main run loop.
+            MainActor.assumeIsolated { self?.reconcilePanes() }
+        }
+    }
+
+    private var reconcileTimer: Timer?
+    private static let reconcileInterval: TimeInterval = 5
+    /// How long a new pane's pcode gets to start before its terminal is judged.
+    private static let reconcileGrace: TimeInterval = 10
+
+    /// Close panes whose pcode has exited when their close never arrived.
+    ///
+    /// A pane normally closes on Ghostty's close-surface notification, and the
+    /// sidebar lists every pane as open. When that notification is lost, the
+    /// pane outlives its process: an empty transcript, listed as open forever
+    /// and reopened on the next launch. This backstop checks each terminal
+    /// directly rather than trusting the event.
+    @MainActor
+    func reconcilePanes(now: Date = Date()) {
+        let dead = panes.filter { pane in
+            now.timeIntervalSince(pane.createdAt) > Self.reconcileGrace && Self.processGone(pane.surface)
+        }
+        dead.forEach(close)
+    }
+
+    /// Whether `view`'s command has exited: Ghostty saw it exit, or no process
+    /// has its terminal as controlling terminal any more.
+    @MainActor
+    static func processGone(
+        _ view: Ghostty.SurfaceView,
+        ttyInUse: (String) -> Bool? = PCodeWorkspace.ttyInUse
+    ) -> Bool {
+        guard view.surface != nil else { return false }  // Already freed: closing.
+        if view.processExited { return true }
+        guard let tty = view.surfaceModel?.ttyName, !tty.isEmpty else { return false }
+        return ttyInUse(tty) == false  // nil (could not tell): leave it to the notification.
+    }
+
+    /// Whether any process has the terminal at `path` as its controlling
+    /// terminal; nil when that can't be read.
+    static func ttyInUse(_ path: String) -> Bool? {
+        let device = path.hasPrefix("/") ? path : "/dev/\(path)"
+        var info = Darwin.stat()
+        guard Darwin.lstat(device, &info) == 0, (info.st_mode & S_IFMT) == S_IFCHR else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_TTY, Int32(info.st_rdev)]
+        var size = 0
+        // Asked with no buffer, the kernel answers with room to spare.
+        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, u_int(mib.count), &buffer, &size, nil, 0) == 0 else { return nil }
+        return size >= MemoryLayout<kinfo_proc>.stride
     }
 
     private func syncDetachedHostStatuses() {
@@ -985,6 +1039,7 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     deinit {
+        reconcileTimer?.invalidate()
         stopSidebarMonitoring()
         observers.forEach(NotificationCenter.default.removeObserver)
     }
