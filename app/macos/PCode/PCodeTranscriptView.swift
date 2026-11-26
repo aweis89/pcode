@@ -434,8 +434,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Speed multiplier applied to both reveal queue and smooth-scroll conveyor (`1.0` live / `4.0` fast replay).
     var streamingSpeedMultiplier: CGFloat = 1.0
 
-    /// True when new streaming content has arrived while the user is scrolled up.
+    /// True when new streaming content has arrived while the user is scrolled up or away.
     private(set) var hasUnreadStreamingContent: Bool = false
+    /// Whether this pane is currently focused and visible to the user (defaults to `true` for standalone views).
+    private(set) var isPaneActive: Bool = true
+    /// Pause duration after returning to a `pausedAway` pane before gently resuming auto-scroll.
+    var resumingDwellDuration: TimeInterval = 0.8
+    private var resumingDwellTimer: Timer?
+    private var lastNotifiedJumpToBottomVisible: Bool = false
     /// Invoked whenever the floating "Jump to bottom" pill visibility should change.
     var onJumpToBottomVisibilityChanged: ((Bool) -> Void)?
     /// Invoked whenever the smooth-scroll conveyor glide starts or settles (drives bottom-edge dissolve).
@@ -446,6 +452,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// True while either the reveal queue or the 120Hz smooth-scroll conveyor has active work.
     var isStreamingAnimationActive: Bool {
         !revealQueue.isEmpty || smoothGlide.isActive
+    }
+    /// True while gently catching up after returning to a paused pane.
+    var isResumeGlideActive: Bool {
+        smoothGlide.isResumeGlide && smoothGlide.isActive
     }
 
     override var isFlipped: Bool { true }
@@ -473,6 +483,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     deinit {
         stopDisplayLink()
         stopLiveRunningTimer()
+        cancelResumingDwellTimer()
     }
 
     /// Route clicks on explicit buttons/scrollers and scroll events on horizontal code/table
@@ -502,6 +513,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if newWindow == nil {
             stopDisplayLink()
             stopLiveRunningTimer()
+            cancelResumingDwellTimer()
         }
     }
 
@@ -631,6 +643,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         hoveredItemID = nil
         activeStream = nil
         revealQueue.reset()
+        cancelResumingDwellTimer()
         resetSmoothGlide()
         setHasUnreadStreamingContent(false)
         clearAttributedCache()
@@ -645,10 +658,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         layoutEngine.reset(items: estimates)
 
         if pinToBottom {
-            stickyBottom.pinToBottom()
+            stickyBottom.pinToBottom(isPaneActive: isPaneActive)
         } else {
             stickyBottom.unpinForUserAction()
         }
+        refreshJumpToBottomVisibility()
 
         let width = max(1, enclosingScrollView?.contentSize.width ?? bounds.width)
         lastContentWidth = width
@@ -959,6 +973,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             setHasUnreadStreamingContent(true)
         }
         mountViews(in: visibleRect)
+        markUnreadIfOverflowedWhilePaused()
         trackRunningState(for: item)
         return targetIdx
     }
@@ -1167,6 +1182,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
 
         mountViews(in: visibleRect)
+        if !revealNewIDs.isEmpty {
+            markUnreadIfOverflowedWhilePaused()
+        }
 
         // CoreAnimation polish (GPU-only, never mutates layout). Motion is measured on screen:
         // pinned to the bottom, a fold also moves the scroll origin, so document-space deltas
@@ -1355,8 +1373,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             id: "stream-turn-\(streamingTurnCounter)-prompt",
             payload: .prompt(label: isSide ? "/btw" : "", text: prompt, isSide: isSide),
             spacingAfter: 10)
-        if forcePin {
-            stickyBottom.pinToBottom()
+        if forcePin || (isPaneActive && stickyBottom.mode == .resumingDwell) {
+            cancelResumingDwellTimer()
+            stickyBottom.pinToBottom(isPaneActive: isPaneActive)
             setHasUnreadStreamingContent(false)
         }
         upsertItem(item, reveal: reveal)
@@ -1495,10 +1514,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             setHasUnreadStreamingContent(true)
         }
         mountViews(in: visibleRect)
+        markUnreadIfOverflowedWhilePaused()
     }
 
     private func enqueueRevealIfNeeded(for item: PCodeTranscriptItem, estimatedHeight: CGFloat) {
-        guard window != nil, paceMode != .off else { return }
+        guard window != nil,
+              paceMode != .off,
+              stickyBottom.mode != .pausedAway,
+              stickyBottom.mode != .resumingDwell
+        else { return }
         let style: PCodeRevealQueue.Style
         switch paceMode {
         case .off:
@@ -1547,8 +1571,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Re-pin to bottom and scroll immediately (used by the floating "Jump to bottom" pill).
     func scrollToBottomAndPin() {
+        cancelResumingDwellTimer()
         resetSmoothGlide()
-        stickyBottom.pinToBottom()
+        stickyBottom.pinToBottom(isPaneActive: isPaneActive)
         setHasUnreadStreamingContent(false)
         settlingAtTrueBottom {
             applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
@@ -1556,6 +1581,99 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         if !revealQueue.isEmpty {
             ensureDisplayLinkRunning()
+        }
+    }
+
+    /// Update whether this pane is currently focused and visible to the user.
+    /// Leaving freezes auto-scrolling in place; returning enters a brief dwell before gently
+    /// resuming if unread content accumulated below the fold.
+    func setPaneActive(_ active: Bool) {
+        guard active != isPaneActive else { return }
+        isPaneActive = active
+        if !active {
+            cancelResumingDwellTimer()
+            let wasFollowing = (stickyBottom.mode == .pinnedToBottom || stickyBottom.mode == .resumingDwell)
+            stickyBottom.didLeavePane()
+            if wasFollowing {
+                resetSmoothGlide()
+                completeAllReveals()
+                stopDisplayLink()
+                markUnreadIfOverflowedWhilePaused()
+                refreshJumpToBottomVisibility()
+            }
+            return
+        }
+
+        guard stickyBottom.mode == .pausedAway else { return }
+        completeAllReveals()
+        let dist = enclosingScrollView.map { distanceFromBottom(in: $0) } ?? 0
+        let newMode = stickyBottom.didReturnToPane(distanceFromBottom: dist)
+        switch newMode {
+        case .pinnedToBottom:
+            setHasUnreadStreamingContent(false)
+        case .resumingDwell:
+            setHasUnreadStreamingContent(true)
+            scheduleResumingDwellTimer()
+        case .pausedAway, .userScrolledUp:
+            refreshJumpToBottomVisibility()
+        }
+    }
+
+    /// Complete an active return-to-pane dwell immediately and begin a gentle resume glide.
+    func completeResumingDwellIfNeeded() {
+        cancelResumingDwellTimer()
+        guard isPaneActive, stickyBottom.mode == .resumingDwell else { return }
+        stickyBottom.didFinishResumingDwell()
+        setHasUnreadStreamingContent(false)
+        guard let scrollView = enclosingScrollView else { return }
+        let dist = distanceFromBottom(in: scrollView)
+        if dist > 0.5 {
+            if window != nil {
+                smoothGlide.startResumeGlide(offset: dist)
+                ensureDisplayLinkRunning()
+                notifyGlideActiveIfNeeded()
+            } else {
+                applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+                mountViews(in: visibleRect)
+            }
+        }
+    }
+
+    private func scheduleResumingDwellTimer() {
+        cancelResumingDwellTimer()
+        let duration = max(0, resumingDwellDuration)
+        if duration == 0 {
+            completeResumingDwellIfNeeded()
+            return
+        }
+        let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
+            self?.completeResumingDwellIfNeeded()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        resumingDwellTimer = timer
+    }
+
+    private func cancelResumingDwellTimer() {
+        resumingDwellTimer?.invalidate()
+        resumingDwellTimer = nil
+    }
+
+    private func completeAllReveals() {
+        guard !revealQueue.isEmpty else { return }
+        let updates = revealQueue.completeEntries { _ in true }
+        for update in updates {
+            guard let rowView = mountedViews[update.itemID] else { continue }
+            rowView.primaryTextView?.inkSweepFrontier = nil
+            rowView.setCurtainRevealProgress(nil)
+        }
+    }
+
+    private func markUnreadIfOverflowedWhilePaused() {
+        guard stickyBottom.mode == .pausedAway || stickyBottom.mode == .resumingDwell,
+              let scrollView = enclosingScrollView
+        else { return }
+        if distanceFromBottom(in: scrollView) > stickyBottom.bottomThreshold {
+            setHasUnreadStreamingContent(true)
         }
     }
 
@@ -1578,8 +1696,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     /// Explicitly unpin sticky-bottom tracking (e.g. Find jump or programmatic scroll-up).
     func unpinFromBottom() {
+        cancelResumingDwellTimer()
         resetSmoothGlide()
         stickyBottom.unpinForUserAction()
+        refreshJumpToBottomVisibility()
     }
 
     /// Programmatically update the model-owned selection (e.g. Find or tests).
@@ -1589,9 +1709,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     }
 
     private func setHasUnreadStreamingContent(_ value: Bool) {
-        guard hasUnreadStreamingContent != value else { return }
         hasUnreadStreamingContent = value
-        onJumpToBottomVisibilityChanged?(value && stickyBottom.mode == .userScrolledUp)
+        refreshJumpToBottomVisibility()
+    }
+
+    private func refreshJumpToBottomVisibility() {
+        let visible = hasUnreadStreamingContent && stickyBottom.showsJumpToBottomWhenUnread
+        guard visible != lastNotifiedJumpToBottomVisible else { return }
+        lastNotifiedJumpToBottomVisible = visible
+        onJumpToBottomVisibilityChanged?(visible)
     }
 
     /// Update typography or theme, invalidating heights while preserving the top-visible scroll anchor.
@@ -1660,16 +1786,22 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     // MARK: - Scroll Notifications (called by PCodeTranscriptScrollView)
 
     func handleWillStartLiveScroll() {
+        cancelResumingDwellTimer()
         resetSmoothGlide()
         stickyBottom.didStartLiveScroll()
+        refreshJumpToBottomVisibility()
         lastClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
     }
 
     func handleDidEndLiveScroll() {
         guard let scrollView = enclosingScrollView else { return }
-        stickyBottom.didEndLiveScroll(distanceFromBottom: distanceFromBottom(in: scrollView))
+        stickyBottom.didEndLiveScroll(
+            distanceFromBottom: distanceFromBottom(in: scrollView),
+            isPaneActive: isPaneActive)
         if stickyBottom.mode == .pinnedToBottom {
             setHasUnreadStreamingContent(false)
+        } else {
+            refreshJumpToBottomVisibility()
         }
     }
 
@@ -1691,13 +1823,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             // (negative distance) is the elastic bounce-back of an overshoot, not the user
             // scrolling up; moving up from exactly the bottom is.
             let movedUp = delta < 0 && dist + delta > -0.5
+            let wasDwelling = (stickyBottom.mode == .resumingDwell)
             if stickyBottom.isLiveScrolling {
                 stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
             } else {
-                stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
+                stickyBottom.didLegacyWheelScroll(
+                    distanceFromBottom: dist,
+                    movedUpward: movedUp,
+                    isPaneActive: isPaneActive)
                 if stickyBottom.mode == .pinnedToBottom {
                     setHasUnreadStreamingContent(false)
+                } else {
+                    refreshJumpToBottomVisibility()
                 }
+            }
+            if wasDwelling && stickyBottom.mode != .resumingDwell {
+                cancelResumingDwellTimer()
+                refreshJumpToBottomVisibility()
             }
             if movedUp && stickyBottom.mode == .userScrolledUp {
                 resetSmoothGlide()
@@ -1997,7 +2139,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         else { return }
         let willExpand = !payload.isExpanded
         if willExpand {
-            stickyBottom.unpinForUserAction()
+            unpinFromBottom()
             expandedGroupIDs.insert(id)
         } else {
             expandedGroupIDs.remove(id)
@@ -2026,7 +2168,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         // Keep sticky-bottom pinned when expanding a live running command so streaming
         // output stays in view; unpin for historical settled cards.
         if !isExpanded && !call.isRunning {
-            stickyBottom.unpinForUserAction()
+            unpinFromBottom()
         }
         notifySearchContentWillChange()
         removeAttributedCache(for: id)
@@ -2069,7 +2211,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
               case .diff(let payload, let isExpanded) = items[index].payload
         else { return }
         if !isExpanded {
-            stickyBottom.unpinForUserAction()
+            unpinFromBottom()
         }
         notifySearchContentWillChange()
         removeAttributedCache(for: id)
@@ -2428,7 +2570,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     // MARK: - Model-Owned Cross-Item Selection & Copy
 
     override func mouseDown(with event: NSEvent) {
+        let wasDwelling = (stickyBottom.mode == .resumingDwell)
         window?.makeFirstResponder(self)
+        if wasDwelling {
+            unpinFromBottom()
+        }
         let point = convert(event.locationInWindow, from: nil)
         guard let pos = selectionPosition(at: point) else {
             selection = nil
@@ -2444,8 +2590,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     override func mouseDragged(with event: NSEvent) {
         guard isDraggingSelection, var current = selection else { return }
         dragMoved = true
+        if stickyBottom.mode == .resumingDwell {
+            unpinFromBottom()
+        }
         if autoscroll(with: event) {
-            stickyBottom.unpinForUserAction()
+            unpinFromBottom()
         }
         let point = convert(event.locationInWindow, from: nil)
         if let pos = selectionPosition(at: point) {
@@ -3133,6 +3282,9 @@ final class PCodeTranscriptScrollView: NSScrollView {
     let jumpToBottomButton = PCodeJumpToBottomButton()
     private let bottomDissolveView = PCodeBottomDissolveView()
     private var observers: [NSObjectProtocol] = []
+    private var windowObservers: [NSObjectProtocol] = []
+    private var firstResponderObservation: NSKeyValueObservation?
+    private var pendingPaneActiveRefresh: Bool = false
     private var typographyCancellable: AnyCancellable?
     private var preferencesCancellable: AnyCancellable?
     private var promptStyleCancellable: AnyCancellable?
@@ -3141,6 +3293,10 @@ final class PCodeTranscriptScrollView: NSScrollView {
     /// Optional predicate gating `⌘F`/`⌘G`/`⌘⇧G` so the scroll view never steals shortcuts
     /// from overlays, `/btw` drawer, or the `⌘J` bottom shell.
     var canHandleFindShortcut: (() -> Bool)?
+    /// Whether this pane is currently the focused, visible pane in the key window.
+    /// When set, `PCodeTranscriptScrollView` observes window/responder/visibility changes
+    /// and forwards active transitions to `transcriptDocumentView.setPaneActive(_:)`.
+    var isPaneActiveProvider: (() -> Bool)?
     /// Whether the docked composer has a selection of its own (it then keeps Cmd+C).
     var composerHasSelection: (() -> Bool)?
 
@@ -3250,6 +3406,69 @@ final class PCodeTranscriptScrollView: NSScrollView {
         for obs in observers {
             NotificationCenter.default.removeObserver(obs)
         }
+        teardownWindowObservers()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        teardownWindowObservers()
+        if let window {
+            let nc = NotificationCenter.default
+            let names: [Notification.Name] = [
+                NSWindow.didBecomeKeyNotification,
+                NSWindow.didResignKeyNotification,
+                NSWindow.didChangeOcclusionStateNotification,
+                NSWindow.didMiniaturizeNotification,
+                NSWindow.didDeminiaturizeNotification,
+            ]
+            for name in names {
+                windowObservers.append(nc.addObserver(
+                    forName: name,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.refreshPaneActiveState()
+                })
+            }
+            firstResponderObservation = window.observe(\.firstResponder, options: [.new]) { [weak self] _, _ in
+                self?.scheduleRefreshPaneActiveState()
+            }
+        }
+        refreshPaneActiveState()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        refreshPaneActiveState()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        refreshPaneActiveState()
+    }
+
+    func refreshPaneActiveState() {
+        pendingPaneActiveRefresh = false
+        guard let provider = isPaneActiveProvider else { return }
+        transcriptDocumentView.setPaneActive(provider())
+    }
+
+    private func scheduleRefreshPaneActiveState() {
+        guard !pendingPaneActiveRefresh else { return }
+        pendingPaneActiveRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.pendingPaneActiveRefresh else { return }
+            self.refreshPaneActiveState()
+        }
+    }
+
+    private func teardownWindowObservers() {
+        firstResponderObservation?.invalidate()
+        firstResponderObservation = nil
+        for obs in windowObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        windowObservers.removeAll()
     }
 
     func subscribeTypography(_ typography: PCodeTypography) {

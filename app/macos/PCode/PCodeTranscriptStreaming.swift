@@ -313,6 +313,11 @@ struct PCodeSmoothScrollGlide: Equatable {
     private(set) var remainingOffset: CGFloat = 0
     /// Current conveyor velocity in points/sec.
     private(set) var velocity: CGFloat = 0
+    /// True while gently resuming after a return-to-pane dwell (uses `resumeSpeedMultiplier`
+    /// and never clamps `remainingOffset` to `maxOffset`, so returning never jumps).
+    private(set) var isResumeGlide: Bool = false
+    /// Gentle speed multiplier used while catching up after returning to a paused pane.
+    var resumeSpeedMultiplier: CGFloat = 0.55
 
     var isActive: Bool {
         remainingOffset > 0.25
@@ -333,12 +338,29 @@ struct PCodeSmoothScrollGlide: Equatable {
     mutating func reset() {
         remainingOffset = 0
         velocity = 0
+        isResumeGlide = false
+    }
+
+    /// Begin a gentle resume glide from zero velocity across `offset` points without clamping
+    /// to `maxOffset`, so returning to a paused pane starts scrolling smoothly from where you left off.
+    mutating func startResumeGlide(offset: CGFloat) {
+        guard offset.isFinite, offset > 0.25 else {
+            reset()
+            return
+        }
+        remainingOffset = offset
+        velocity = 0
+        isResumeGlide = true
     }
 
     /// Absorb a new bottom growth delta (`> 0` when content grew taller) into the active conveyor.
     mutating func addOffset(_ delta: CGFloat) {
         guard delta.isFinite, delta > 0.01 else { return }
-        remainingOffset = min(remainingOffset + delta, maxOffset)
+        if isResumeGlide {
+            remainingOffset += delta
+        } else {
+            remainingOffset = min(remainingOffset + delta, maxOffset)
+        }
     }
 
     /// Absorb a bottom shrink (e.g. an overestimated offscreen item measuring shorter) without
@@ -359,7 +381,8 @@ struct PCodeSmoothScrollGlide: Equatable {
             return 0
         }
         let clampedDt = CGFloat(min(max(dt, 1.0 / 240.0), 0.05))
-        let mult = max(0.25, speedMultiplier)
+        let resumeFactor: CGFloat = isResumeGlide ? max(0.2, resumeSpeedMultiplier) : 1.0
+        let mult = max(0.15, speedMultiplier * resumeFactor)
         let effMin = minSpeed * mult
         let effMax = maxSpeed * mult
         let effCatchUp = max(0.15, catchUpSeconds / mult)

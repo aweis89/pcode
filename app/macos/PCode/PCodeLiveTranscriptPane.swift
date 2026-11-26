@@ -664,6 +664,23 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
             }
             return false
         }
+        scrollView.isPaneActiveProvider = { [weak scrollView, weak composer] in
+            guard let scrollView,
+                  !scrollView.isHiddenOrHasHiddenAncestor,
+                  let window = scrollView.window,
+                  window.isKeyWindow,
+                  window.occlusionState.contains(.visible),
+                  let responder = window.firstResponder as? NSView
+            else { return false }
+            if responder === scrollView || responder.isDescendant(of: scrollView) {
+                return true
+            }
+            if let composer, responder === composer || responder.isDescendant(of: composer) {
+                return true
+            }
+            return false
+        }
+        scrollView.refreshPaneActiveState()
     }
 
     static func dismantleNSView(_ nsView: PCodeTranscriptScrollView, coordinator: Coordinator) {

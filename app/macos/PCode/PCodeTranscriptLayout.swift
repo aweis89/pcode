@@ -323,6 +323,12 @@ struct PCodeTranscriptLayoutEngine {
 struct PCodeStickyBottomState: Equatable {
     enum Mode: Equatable {
         case pinnedToBottom
+        /// Was `pinnedToBottom`, then the pane lost focus/visibility. Viewport stays frozen
+        /// at its last origin while new content appends below the fold.
+        case pausedAway
+        /// Returned to a `pausedAway` pane that has unread content below the fold. Holds still
+        /// briefly so the reader can re-acquire the text before gently resuming auto-scroll.
+        case resumingDwell
         case userScrolledUp
     }
 
@@ -336,6 +342,11 @@ struct PCodeStickyBottomState: Equatable {
     /// True only when programmatic bottom-pinning is safe to execute.
     var shouldProgrammaticallyPin: Bool {
         mode == .pinnedToBottom && !isLiveScrolling
+    }
+
+    /// True whenever unread content below the fold should surface the "Jump to bottom" cue.
+    var showsJumpToBottomWhenUnread: Bool {
+        mode != .pinnedToBottom
     }
 
     /// Exact target `clipView.bounds.origin.y` for the bottom of the document,
@@ -365,33 +376,82 @@ struct PCodeStickyBottomState: Equatable {
         return bottom - clipOriginY
     }
 
+    /// Pane lost focus, switched away, or was hidden/occluded.
+    /// Freezes auto-scrolling if following or dwelling; preserves `.userScrolledUp`.
+    mutating func didLeavePane() {
+        switch mode {
+        case .pinnedToBottom, .resumingDwell:
+            mode = .pausedAway
+        case .pausedAway, .userScrolledUp:
+            break
+        }
+    }
+
+    /// Pane regained focus and visibility. If nothing overflowed below the fold, resumes
+    /// `.pinnedToBottom` immediately; otherwise enters `.resumingDwell`.
+    @discardableResult
+    mutating func didReturnToPane(distanceFromBottom: CGFloat) -> Mode {
+        guard mode == .pausedAway else { return mode }
+        if distanceFromBottom <= bottomThreshold {
+            mode = .pinnedToBottom
+        } else {
+            mode = .resumingDwell
+        }
+        return mode
+    }
+
+    /// Dwell timer elapsed without user intervention: resume bottom following.
+    mutating func didFinishResumingDwell() {
+        guard mode == .resumingDwell else { return }
+        mode = .pinnedToBottom
+    }
+
     mutating func didStartLiveScroll() {
         isLiveScrolling = true
         liveScrollLastMovedUpward = false
+        if mode == .resumingDwell {
+            mode = .userScrolledUp
+        }
     }
 
     /// Report an actual live-scroll movement (callers skip no-op bounds notifications).
     mutating func didLiveScroll(distanceFromBottom: CGFloat, movedUpward: Bool) {
         liveScrollLastMovedUpward = movedUpward
-        if movedUpward && distanceFromBottom > unpinThreshold {
+        if mode == .resumingDwell {
+            mode = .userScrolledUp
+        } else if movedUpward && distanceFromBottom > unpinThreshold {
             mode = .userScrolledUp
         }
     }
 
     /// Re-pins near the bottom unless the gesture's last movement was upward.
-    mutating func didEndLiveScroll(distanceFromBottom: CGFloat) {
+    mutating func didEndLiveScroll(distanceFromBottom: CGFloat, isPaneActive: Bool = true) {
         isLiveScrolling = false
         if distanceFromBottom <= unpinThreshold
             || (distanceFromBottom <= bottomThreshold && !liveScrollLastMovedUpward)
         {
-            mode = .pinnedToBottom
+            mode = isPaneActive ? .pinnedToBottom : .pausedAway
         }
         liveScrollLastMovedUpward = false
     }
 
     /// Legacy mouse wheels do not always fire `willStartLiveScroll`/`didEndLiveScroll`.
     /// Report actual movements only; a no-op bounds change must not re-pin.
-    mutating func didLegacyWheelScroll(distanceFromBottom: CGFloat, movedUpward: Bool) {
+    mutating func didLegacyWheelScroll(
+        distanceFromBottom: CGFloat,
+        movedUpward: Bool,
+        isPaneActive: Bool = true
+    ) {
+        if mode == .resumingDwell {
+            if distanceFromBottom <= unpinThreshold
+                || (!movedUpward && distanceFromBottom <= bottomThreshold)
+            {
+                mode = isPaneActive ? .pinnedToBottom : .pausedAway
+            } else {
+                mode = .userScrolledUp
+            }
+            return
+        }
         if movedUpward && distanceFromBottom > unpinThreshold {
             mode = .userScrolledUp
         } else if distanceFromBottom <= unpinThreshold
@@ -399,18 +459,18 @@ struct PCodeStickyBottomState: Equatable {
         {
             // Landing on the bottom re-pins whatever the direction (e.g. AppKit clamping
             // the origin up when the window grows while unpinned near the bottom).
-            mode = .pinnedToBottom
+            mode = isPaneActive ? .pinnedToBottom : .pausedAway
         }
     }
 
     /// Unpin immediately for non-scroll user actions (selection autoscroll, Find jump,
-    /// expanding a card while pinned).
+    /// expanding a card while pinned, or clicking during dwell).
     mutating func unpinForUserAction() {
         mode = .userScrolledUp
     }
 
     /// Explicit re-pin (e.g. clicking "Jump to bottom" or submitting a new prompt).
-    mutating func pinToBottom() {
-        mode = .pinnedToBottom
+    mutating func pinToBottom(isPaneActive: Bool = true) {
+        mode = isPaneActive ? .pinnedToBottom : .pausedAway
     }
 }
