@@ -15,6 +15,9 @@ from datetime import datetime, timezone
 from time import monotonic
 
 from pydantic_ai import CapabilityEvent, RunContext, capture_run_messages
+
+# Private: no public way to reach the enclosing capture (Harness's, in `_child_run`).
+from pydantic_ai._agent_graph import get_captured_run_messages
 from pydantic_ai.agent import WrapperAgent
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import (
@@ -173,9 +176,17 @@ class ResumableAgent(WrapperAgent):
         earlier = handle.tokens if handle is not None else 0
         if message_history is None and handle is not None and handle.resume_from:
             # `continue_worker`: the follow-up joins the worker's own history.
-            message_history = handle.resume_from
+            # Repaired as Harness repairs its own resumes: a run that ended on
+            # deferred tool calls cannot otherwise take a new prompt.
+            message_history = repair_messages(handle.resume_from)
+        # Harness's own capture around this call, which ours below would hide.
+        try:
+            outer = get_captured_run_messages()
+        except LookupError:
+            outer = None
         # Responses already counted, by run: earlier runs and earlier attempts.
-        # By run id rather than position, which retries and compaction shift.
+        # By run id rather than position, which retries shift. (Responses a
+        # run's own compaction drops before it ends still go uncounted.)
         seen = {m.run_id for m in message_history or () if isinstance(m, ModelResponse)}
         spent = 0
         while True:
@@ -202,6 +213,9 @@ class ResumableAgent(WrapperAgent):
                     seen.update(m.run_id for m in added)
                     if handle is not None:
                         handle.tokens = earlier + spent
+                    if outer is not None:
+                        # For Harness's `keep_partial_output` on a timeout or stop.
+                        outer.messages[:] = captured
             if failure is None:
                 if handle is not None:
                     handle.messages = result.all_messages()
@@ -227,6 +241,9 @@ class ResumableAgent(WrapperAgent):
                         handle.messages = kept
                 raise error
             user_prompt, message_history = None, checkpoint.messages
+            if handle is not None:
+                # A stop or timeout during the wait below must not lose this run.
+                handle.messages = message_history
             # The panel shows the retry; a warning would print over it.
             logger.debug("Sub-agent %r: %s %s", self.name, error_message(error), activity)
             if handle is not None:

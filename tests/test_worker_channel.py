@@ -625,3 +625,40 @@ def test_rate_limit_wait_rules():
     wrapped.__cause__ = rate_limited(5)
     assert rate_limit_wait(wrapped, 0) == 5
     assert rate_limit_wait(ValueError("x"), 0) is None
+
+
+def test_a_worker_stopped_while_waiting_out_a_rate_limit_keeps_its_history(tmp_path, monkeypatch):
+    from pcode import delegation
+
+    (tmp_path / "notes.txt").write_text("NOTE CONTENT")
+    monkeypatch.setattr(delegation, "rate_limit_wait", lambda error, waits: 3600.0)
+    limited = asyncio.Event()
+    seen: list[str] = []
+
+    async def parent(messages, info):
+        text = request_text(messages)
+        seen.append(text)
+        if "stopped as requested" in text:
+            yield "Final"
+        elif "Stopping worker w1" in text:
+            yield "Waiting."
+        elif "Started in the background" in text:
+            await limited.wait()
+            yield call("manage_worker", "stop", action="stop", worker_id="w1")
+        else:
+            yield call(
+                "delegate_task",
+                "delegate",
+                agent_name="worker",
+                task="Survey",
+                run_in_background=True,
+            )
+
+    async def child(messages, info):
+        if "NOTE CONTENT" in all_text(messages):
+            limited.set()
+            raise rate_limited()
+        yield call("read_file", "read", path="notes.txt")
+
+    run(runtime(tmp_path, parent, child))
+    assert "continue_worker='w1'" in seen[-1]
