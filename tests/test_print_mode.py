@@ -135,7 +135,7 @@ def test_print_reports_background_completion_without_repeating_job_inspection(
         async def stream(self, text):
             yield ToolSummary("wait_for_job", "j14 · exit 2", failed=True, outcome="success")
             # The exit is written where the model collected it, not after the answer.
-            assert transcript.getvalue().count("✗ Run shell · j14 · exit 2") == 1
+            assert transcript.getvalue().count("• Run shell · j14 · exit 2") == 1
             yield ToolSummary("job_output", "j14 · exit 2", failed=True, outcome="success")
             if failed_turn:
                 raise RuntimeError("turn failed")
@@ -151,7 +151,7 @@ def test_print_reports_background_completion_without_repeating_job_inspection(
     )
     assert asyncio.run(app.run_print_async("go", stdout=StringIO())) is not failed_turn
     printed = transcript.getvalue()
-    assert printed.count("✗ Run shell · j14 · exit 2 · 1.0s") == 1
+    assert printed.count("• Run shell · j14 · exit 2 · 1.0s") == 1
     assert "wait_for_job" not in printed and "job_output" not in printed
 
 
