@@ -3208,6 +3208,13 @@ def test_observer_history_drops_what_the_app_never_draws(tmp_path):
         {"version": 1, "kind": "ThinkingDelta", "text": "hm"},
         {"version": 1, "kind": "RunStatus", "text": "working"},
         {"version": 1, "kind": "ToolStarted", "call_id": "c1", "arguments": {"x": "y" * 50}},
+        {
+            "version": 1,
+            "kind": "ToolStarted",
+            "call_id": "c2",
+            "name": "edit_file",
+            "arguments": '{"path":"a.py","target":"x","replacement":"y"}',
+        },
         {"version": 1, "kind": "compaction_checkpoint", "messages": []},
         {"version": 1, "kind": "Message", "markdown": "done"},
     ]
@@ -3219,8 +3226,9 @@ def test_observer_history_drops_what_the_app_never_draws(tmp_path):
     journal = SimpleNamespace(directory=tmp_path, tree=SimpleNamespace(nodes={}))
 
     history = observer_history(journal)
-    assert [r["kind"] for r in history] == ["turn_started", "ToolStarted", "Message"]
+    assert [r["kind"] for r in history] == ["turn_started", "ToolStarted", "ToolStarted", "Message"]
     assert "arguments" not in history[1] and history[1]["call_id"] == "c1"
+    assert history[2]["call_id"] == "c2" and "target" in history[2]["arguments"]
     # Up to the settled end only.
     assert [r["kind"] for r in observer_history(journal, len(lines[0]))] == ["turn_started"]
     missing = SimpleNamespace(directory=tmp_path / "missing", tree=journal.tree)

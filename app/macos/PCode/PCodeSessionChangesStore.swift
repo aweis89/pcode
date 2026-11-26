@@ -424,7 +424,7 @@ final class PCodeSessionChangesStore: ObservableObject {
         let truncated: Bool
     }
 
-    private static func isSynthesizableEditTool(_ name: String) -> Bool {
+    nonisolated static func isSynthesizableEditTool(_ name: String) -> Bool {
         switch name.lowercased() {
         case "edit_file", "write_file", "edit", "write":
             return true

@@ -295,14 +295,18 @@ enum PCodeHostEventDecoder {
         case "ToolStarted":
             let callID = (fields["call_id"] as? String) ?? ""
             guard !callID.isEmpty else { return nil }
+            let name = (fields["name"] as? String) ?? ""
+            let arguments: String = PCodeSessionChangesStore.isSynthesizableEditTool(name)
+                ? ((fields["arguments"] as? String) ?? "")
+                : ""
             return .toolStarted(
                 callID: callID,
                 parentCallID: (fields["parent_call_id"] as? String) ?? "",
-                name: (fields["name"] as? String) ?? "",
+                name: name,
                 detail: (fields["detail"] as? String) ?? "",
                 command: (fields["command"] as? String) ?? "",
                 purpose: (fields["purpose"] as? String) ?? "",
-                arguments: (fields["arguments"] as? String) ?? "")
+                arguments: arguments)
         case "ToolSummary", "JobFinished":
             let callID = (fields["call_id"] as? String) ?? ""
             return .toolSummary(

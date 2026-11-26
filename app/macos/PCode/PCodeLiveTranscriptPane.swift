@@ -81,6 +81,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private var shownHistory: [PCodeHostEvent]?
     /// A host's history has been drawn for this attach: a slower disk preload must not replace it.
     private var hostHistoryDrawn = false
+    private var isHydratingInspectorFromJournal = false
+    private var bufferedInspectorLiveEvents: [PCodeHostEvent] = []
     private var isConnectingSocket = false
     private var attachGeneration: UInt64 = 0
     private var hostRetryTimer: Timer?
@@ -180,6 +182,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
         isConnectingSocket = false
         shownHistory = nil
         hostHistoryDrawn = false
+        isHydratingInspectorFromJournal = false
+        bufferedInspectorLiveEvents.removeAll()
         reducer = nil
         documentView = nil
         attachedSessionID = nil
@@ -275,6 +279,17 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 if state != self.sessionState {
                     self.sessionState = state
                 }
+                // Compatibility with already-running hosts that strip `ToolStarted.arguments`
+                // from `observer_history`: hydrate the Inspector from the local journal when
+                // edit tool calls arrived without arguments and without `EditCompleted`.
+                if Self.historyNeedsDiskEditArguments(welcome.history),
+                   let sid = (state.sessionID.isEmpty ? self.attachedSessionID : state.sessionID),
+                   !sid.isEmpty {
+                    self.hydrateInspectorFromJournal(
+                        sessionID: sid,
+                        generation: generation,
+                        catchUpCalls: welcome.catchUpCalls)
+                }
                 // Kept rows keep the reader's scroll position; catch-up on top of them
                 // follows the bottom only if they were already pinned there.
                 if redraw { documentView.scrollToBottomAndPin() }
@@ -284,6 +299,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.shownHistory = nil
                 self.applySessionEvent(event)
                 reducer.apply(event, reveal: true)
+                if self.isHydratingInspectorFromJournal {
+                    self.bufferedInspectorLiveEvents.append(event)
+                }
                 self.onHostEvent?(event)
             },
             onError: { [weak self, weak documentView] message in
@@ -336,6 +354,56 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 reducer.loadHistory(initial.events)
                 self.shownHistory = initial.events
                 self.onHostEvent?(.history(initial.events))
+            }
+        }
+    }
+
+    static func historyNeedsDiskEditArguments(_ events: [PCodeHostEvent]) -> Bool {
+        var completedIDs: Set<String> = []
+        var missingArgEditIDs: [String] = []
+        for event in events {
+            switch event {
+            case .editCompleted(let callID, _, _, _, _, _, _, _):
+                if !callID.isEmpty { completedIDs.insert(callID) }
+            case .toolStarted(let callID, _, let name, _, _, _, let arguments):
+                if !callID.isEmpty,
+                   PCodeSessionChangesStore.isSynthesizableEditTool(name),
+                   arguments.isEmpty {
+                    missingArgEditIDs.append(callID)
+                }
+            default:
+                break
+            }
+        }
+        return missingArgEditIDs.contains { !completedIDs.contains($0) }
+    }
+
+    private func hydrateInspectorFromJournal(
+        sessionID: String,
+        generation: UInt64,
+        catchUpCalls: [PCodeHostEvent]
+    ) {
+        let dir = PCodeSessionInfo.root.appendingPathComponent(sessionID)
+        let path = dir.appendingPathComponent("transcript.jsonl").path
+        guard Self.isSafeOwnedDirectory(dir.path) else { return }
+
+        isHydratingInspectorFromJournal = true
+        bufferedInspectorLiveEvents.removeAll()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let initial = Self.readSettledInitialJournal(atPath: path)
+            DispatchQueue.main.async {
+                guard let self, self.attachGeneration == generation else { return }
+                let buffered = self.bufferedInspectorLiveEvents
+                self.isHydratingInspectorFromJournal = false
+                self.bufferedInspectorLiveEvents.removeAll()
+                guard !initial.events.isEmpty else { return }
+                self.onHostEvent?(.history(initial.events))
+                for event in catchUpCalls {
+                    self.onHostEvent?(event)
+                }
+                for event in buffered {
+                    self.onHostEvent?(event)
+                }
             }
         }
     }

@@ -118,7 +118,10 @@ OBSERVER_SKIPPED_KINDS = frozenset(
     }
 )
 # Fields an observer never reads; a tool's arguments can be most of a journal.
+# File-edit tools keep `arguments` so observers can synthesize diffs when a
+# backend records ToolStarted/ToolSummary without emitting EditCompleted.
 OBSERVER_DROPPED_FIELDS = {"ToolStarted": ("arguments",)}
+OBSERVER_EDIT_ARGUMENT_TOOLS = frozenset({"edit_file", "write_file", "edit", "write"})
 # Where a journal line names its kind: right after its version and time.
 _JOURNAL_KIND = re.compile(rb'"kind": "([^"]+)"')
 
@@ -156,7 +159,15 @@ def observer_history(journal, limit: int | None = None) -> list[dict]:
             recording = obj.get("run_id")
         if selected is not None and (obj.get("run_id") or recording) not in selected:
             continue
-        for name in OBSERVER_DROPPED_FIELDS.get(obj.get("kind"), ()):
+        kind = obj.get("kind")
+        keep_arguments = (
+            kind == "ToolStarted"
+            and isinstance(obj.get("name"), str)
+            and obj["name"].lower() in OBSERVER_EDIT_ARGUMENT_TOOLS
+        )
+        for name in OBSERVER_DROPPED_FIELDS.get(kind, ()):
+            if name == "arguments" and keep_arguments:
+                continue
             obj.pop(name, None)
         records.append(obj)
     return records
