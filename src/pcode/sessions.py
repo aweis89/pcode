@@ -98,12 +98,17 @@ def read_info(path: Path) -> SessionInfo:
     return info
 
 
-def list_sessions(root: Path | None = None) -> list[SessionInfo]:
+def list_sessions(root: Path | None = None, prefix: str = "") -> list[SessionInfo]:
+    """Saved sessions, newest first; only IDs starting with `prefix` if given.
+
+    A directory is named for its session's ID, so a prefix skips reading the
+    others: an app pane resuming one of a thousand sessions read them all.
+    """
     root = root or session_root()
     result = []
     if root.is_dir():
         for path in root.iterdir():
-            if path.is_dir() and not path.is_symlink():
+            if path.name.startswith(prefix) and path.is_dir() and not path.is_symlink():
                 try:
                     result.append(read_info(path))
                 except SessionError:
@@ -433,7 +438,7 @@ def resolve_session(selector: str, root: Path | None = None, workspace: Path | N
     root = root or session_root()
     if not is_session_selector(selector):
         raise SessionError("Use a session ID from --sessions, or omit it for the latest.")
-    sessions = list_sessions(root)
+    sessions = list_sessions(root, "" if selector == "latest" else selector)
     if selector != "latest":
         matches = [s for s in sessions if s.id.startswith(selector)]
     elif workspace is None:
