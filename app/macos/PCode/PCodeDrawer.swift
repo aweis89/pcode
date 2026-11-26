@@ -7,42 +7,37 @@ import SwiftUI
 /// pcode drives it with APCs from the terminal (see `PCode`):
 ///
 /// - `pcode;btw;<host>;<thread>`: show the thread (`host` is 8 lowercase hex
-///   digits, `thread` 1-64 plain characters), starting a viewer if needed.
-/// - `pcode;close`: close the drawer and end its viewer.
-/// - `pcode;hide`: hide the drawer but keep its viewer running.
-/// - `pcode;show`: show it again, if it has a viewer.
-/// - `pcode;focus`, from the viewer's own terminal while it has the keyboard:
-///   give the keyboard back to the terminal.
-/// - `pcode;hints;<base64 JSON>`, from the viewer's own terminal: the keys
-///   pcode's editor answers the thread with, in a footer pinned below it
-///   (`PCodeHint`; hidden while empty).
+///   digits, `thread` 1-64 plain characters), connecting to the host if needed.
+/// - `pcode;close`: close the drawer and drop its connection.
+/// - `pcode;hide`: hide the drawer but keep it connected.
+/// - `pcode;show`: show it again, if it has a thread.
 ///
 /// `pcode;?` is answered in Zig (`stream_handler.zig`) with `pcode;ok;1`.
 /// Popups (`pcode;popup;...`) are `PCodePopup`'s.
 ///
-/// The drawer is a second terminal surface, so it has this terminal's font,
-/// size and colors. It runs `python -m pcode.btw_tail <host> <thread>` with
-/// the session host's own interpreter, read from the host's entry file; that
-/// viewer reads the thread from the host and draws it. Nothing in the APC
-/// becomes part of the command but the checked host id and thread.
-final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
+/// The thread is drawn natively (`PCodeBtwDrawerContent`) with the
+/// transcript's block views, from the host's side-question stream
+/// (`PCodeAsideObserver`, the stream `pcode.btw_tail` draws in a terminal).
+/// Nothing in the APC reaches the host: the checked host id only names its
+/// socket, and the thread is matched against what the host sends.
+final class PCodeDrawer: NSObject, ObservableObject {
     @Published var visible = false
     /// The drawer's share of the surface's width, set by dragging its left edge.
     @Published var fraction: CGFloat = 0.70
-    /// The drawer's terminal while it is open; dropping it ends the viewer.
-    @Published private(set) var viewer: Ghostty.SurfaceView?
-    /// The viewer's key hints: empty for none.
-    @Published private(set) var hints: [PCodeHint] = []
-    /// pcode's terminal font as the viewer started, for the footer.
+    /// The thread shown while the drawer is open; dropping it ends its connection.
+    @Published private(set) var thread: PCodeBtwThreadModel?
+    /// pcode's terminal font as the thread opened, for the heading and footer.
     private(set) var fonts: PCodePickFonts?
+    /// The drawer's transcript while it is in a window, to tell whether it has the keyboard.
+    weak var contentView: NSView?
 
     static let minWidth: CGFloat = 260
     /// Minimum width when the docked editor card lives inside the drawer.
     static let dockedMinWidth: CGFloat = 360
     static let maxFraction: CGFloat = 0.85
 
-    /// True while the drawer is actually shown on screen with a live viewer.
-    var isOpen: Bool { visible && viewer != nil }
+    /// True while the drawer is actually shown on screen with a thread.
+    var isOpen: Bool { visible && thread != nil }
 
     static func width(in total: CGFloat, fraction: CGFloat, minWidth: CGFloat = PCodeDrawer.minWidth) -> CGFloat {
         let floor = min(total, minWidth)
@@ -51,15 +46,13 @@ final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
     }
 
     weak var surfaceView: Ghostty.SurfaceView?
-    private var shown: (host: String, thread: String)?
-    private var closeObserver: NSObjectProtocol?
 
     init(surfaceView: Ghostty.SurfaceView) {
         self.surfaceView = surfaceView
     }
 
     deinit {
-        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        thread?.stop()
     }
 
     // MARK: Commands
@@ -77,35 +70,25 @@ final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
             close()
         case "hide" where parts.count == 1:
             // While pcode draws a full-screen popup of its own over the terminal.
-            let hadFocus = viewerHasFocus
+            let hadFocus = contentHasFocus
             visible = false
             if hadFocus { focusTerminal() }
         case "show" where parts.count == 1:
-            if viewer != nil { visible = true }
+            if thread != nil { visible = true }
         default:
             break
         }
     }
 
-    /// From the viewer in the drawer's own terminal: its footer, or asking for the keyboard to go back.
-    func handleFromOverlay(_ payload: String, from overlay: Ghostty.SurfaceView) {
-        guard overlay === viewer else { return }
-        if payload.hasPrefix("hints;") {
-            if let decoded = PCodeHint.list(fromBase64: String(payload.dropFirst("hints;".count))),
-               decoded != hints {
-                hints = decoded
-            }
-            return
-        }
-        // Only while the drawer has the keyboard: anything else that prints
-        // the sequence there must not pull focus from another split.
-        if payload == "focus" && viewerHasFocus { focusTerminal() }
-    }
-
-    private func show(host: String, thread: String) {
-        if viewer == nil || shown?.host != host || shown?.thread != thread {
-            replaceViewer(with: makeViewer(host: host, thread: thread))
-            shown = (host, thread)
+    private func show(host: String, thread name: String) {
+        if let thread, thread.host == host {
+            // Another thread of the same host keeps the connection.
+            if thread.thread != name { thread.thread = name }
+            thread.refreshHints()
+        } else {
+            thread?.stop()
+            thread = PCodeBtwThreadModel(host: host, thread: name)
+            fonts = PCodePickFonts.of(surfaceView?.surface)
         }
         // Shown beside the terminal without taking its keyboard: typing goes on
         // in pcode's editor, which replies to the thread.
@@ -113,10 +96,10 @@ final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
     }
 
     func close() {
-        let hadFocus = viewerHasFocus
+        let hadFocus = contentHasFocus
         visible = false
-        shown = nil
-        replaceViewer(with: nil)
+        thread?.stop()
+        thread = nil
         if hadFocus { focusTerminal() }
     }
 
@@ -129,64 +112,9 @@ final class PCodeDrawer: NSObject, ObservableObject, PCodeOverlayOwner {
         Ghostty.moveFocus(to: surfaceView)
     }
 
-    private var viewerHasFocus: Bool {
-        guard let viewer, let responder = viewer.window?.firstResponder as? NSView else { return false }
-        return responder === viewer || responder.isDescendant(of: viewer)
-    }
-
-    // MARK: The viewer's terminal
-
-    private func replaceViewer(with next: Ghostty.SurfaceView?) {
-        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
-        closeObserver = nil
-        if let viewer, viewer !== next { PCode.retire(viewer) }
-        if viewer !== next {
-            // A new viewer sends its own.
-            hints = []
-            fonts = PCodePickFonts.of(surfaceView?.surface)
-        }
-        viewer = next
-        guard let next else { return }
-        // Cmd+W in the drawer, or the viewer exiting, asks to close its surface.
-        // No window controller owns this one, so the drawer closes instead.
-        closeObserver = NotificationCenter.default.addObserver(
-            forName: Ghostty.Notification.ghosttyCloseSurface, object: next, queue: .main
-        ) { [weak self, weak next] _ in
-            // After the notification, not inside the callback that posted it,
-            // which is still using the surface this frees. Only if it is still
-            // this viewer: a later one may have replaced it meanwhile.
-            DispatchQueue.main.async {
-                guard let self, let next, self.viewer === next else { return }
-                self.close()
-            }
-        }
-    }
-
-    private func makeViewer(host: String, thread: String) -> Ghostty.SurfaceView? {
-        let docked = surfaceView?.existingPCodeDock?.surface != nil
-        return PCode.makeOverlaySurface(
-            over: surfaceView, command: Self.viewerCommand(host: host, thread: thread, docked: docked), owner: self)
-    }
-
-    /// The viewer, run with the interpreter the session host runs on, so it
-    /// is the same pcode; or a message, if the host cannot say which that is.
-    private static func viewerCommand(host: String, thread: String, docked: Bool) -> String {
-        guard let python = PCode.entryPython(PCode.statePath("hosts/\(host).json")) else {
-            return message("This session host's pcode predates the drawer: run /restart in pcode.")
-        }
-        // The ids are plain by now.
-        // Tells the viewer we draw its key footer, so it leaves its own key line out.
-        return PCode.pythonCommand(
-            python,
-            module: "pcode.btw_tail",
-            args: [host, thread],
-            env: ["PCODE_NATIVE_HINTS=1", "PCODE_DOCKED=\(docked ? 1 : 0)"])
-    }
-
-    /// A command that only shows `text`; the embedded API waits after every
-    /// command, so it stays until a key or the drawer closes it.
-    private static func message(_ text: String) -> String {
-        "printf '%s\\n' \(PCode.shellQuoted(text))"
+    private var contentHasFocus: Bool {
+        guard let contentView, let responder = contentView.window?.firstResponder as? NSView else { return false }
+        return responder === contentView || responder.isDescendant(of: contentView)
     }
 }
 
@@ -231,9 +159,9 @@ struct PCodeDrawerSurface: View {
                 .overlay(alignment: .topTrailing) {
                     ZStack(alignment: .topTrailing) {
                         Color.clear
-                        if drawsDrawer, drawer.visible, let viewer = drawer.viewer {
+                        if drawsDrawer, drawer.visible, let thread = drawer.thread {
                             overlay(
-                                viewer,
+                                thread,
                                 width: width(in: geometry.size.width),
                                 height: height(in: geometry.size.height),
                                 total: geometry.size.width,
@@ -272,7 +200,7 @@ struct PCodeDrawerSurface: View {
     }
 
     private func overlay(
-        _ viewer: Ghostty.SurfaceView,
+        _ thread: PCodeBtwThreadModel,
         width: CGFloat,
         height: CGFloat,
         total: CGFloat,
@@ -309,25 +237,23 @@ struct PCodeDrawerSurface: View {
                     )
                     .zIndex(1)
                 VStack(spacing: 0) {
-                    Ghostty.SurfaceWrapper(surfaceView: viewer, isSplit: false)
-                        .id(ObjectIdentifier(viewer))
-                    if !drawer.hints.isEmpty {
-                        PCodeHintBar(
-                            hints: drawer.hints,
-                            fonts: drawer.fonts,
-                            muted: ghostty.config.foregroundColor.opacity(PCodePickTheme.mutedOpacity))
-                        .padding(.bottom, 6)
-                        .environment(\.colorScheme, colorScheme)
-                    }
+                    PCodeBtwDrawerContent(
+                        model: thread,
+                        docked: dockFootprint != nil,
+                        fonts: drawer.fonts,
+                        onFocusTerminal: { drawer.focusTerminal() },
+                        onClose: { drawer.close() },
+                        onContentView: { drawer.contentView = $0 })
+                    .id(ObjectIdentifier(thread))
                     if let dockFootprint {
                         // Reserve the card's exact footprint inside the drawer so the
-                        // viewer and hint bar always end above it, with no overlap.
+                        // thread and hint bar always end above it, with no overlap.
                         Color.clear
                             .frame(height: min(dockFootprint, max(0, totalHeight - Self.minHeight)))
                             .allowsHitTesting(false)
                     }
                 }
-                // Snap viewer/hint-bar height without animating so the viewer resizes
+                // Snap the content's height without animating so it lays out
                 // once per row change rather than on every animation frame.
                 .animation(nil, value: dockFootprint)
             }
