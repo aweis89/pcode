@@ -514,8 +514,10 @@ class SessionHost:
         self.run_ids = itertools.count(1)
         self.view = HostView(self)
         self.activity = MirroredActivity(lambda changes: self.emit("state", (changes,), {}))
-        self.controller = SessionController(self.view, self.activity, PreviewRuntime())
-        # Started with no model, it previews until /model finishes startup.
+        # Started with no model, it previews until /model finishes startup. With
+        # one, no preview stands in: a model that fails to start fails loudly.
+        runtime = None if entry.model else PreviewRuntime()
+        self.controller = SessionController(self.view, self.activity, runtime)
         self.controller.starts_on_model = True
         self.controller.interactive = True
         # A loop task cancelled while the host shuts down is not a Ctrl+C.

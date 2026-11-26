@@ -460,19 +460,19 @@ def test_session_host_on_with_a_model_is_hosted(monkeypatch, tmp_path):
     hosted.assert_called_once()
 
 
-def test_explicit_host_without_a_model_needs_one_in_a_terminal(monkeypatch, tmp_path, capsys):
+def test_explicit_host_without_a_model_stays_in_process_in_a_terminal(monkeypatch, tmp_path):
+    # The canned preview has nothing to host: a terminal keeps it in-process.
     monkeypatch.setattr(sys, "argv", ["pcode", "--host", "--no-worktree", "-C", str(tmp_path)])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.delenv("PCODE_EDITOR_ONLY", raising=False)
     with (
-        patch("pcode.project_trust.prompt_trust"),
         patch("pcode.app.load_preferences", return_value={}),
-        patch("pcode.remote.spawn_host", side_effect=AssertionError("spawned")),
-        pytest.raises(SystemExit),
+        patch("pcode.app._run_hosted", side_effect=AssertionError("hosted")),
+        patch("pcode.app.PreviewApp") as app,
     ):
         main()
-    assert "ValueError" in capsys.readouterr().err  # As before 48a73eed.
+    assert app.call_args.kwargs.get("host") is None
 
 
 def test_explicit_host_without_a_model_starts_a_preview_host(monkeypatch, tmp_path):

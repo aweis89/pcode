@@ -1984,8 +1984,15 @@ final class PCodeWorkspace: ObservableObject {
         let sessionID = pane.sessionID
         if let shell = pane.shell { PCode.retire(shell) }
         PCode.retire(pane.surface)
-        if shouldStopHost {
-            Self.stopHost(hostID: hostID, sessionID: sessionID)
+        if shouldStopHost, Self.stopHost(hostID: hostID, sessionID: sessionID).isEmpty,
+           let launchHostID = pane.launchHostID {
+            // Closed before its host registered: it may still be importing, so
+            // try the id the app gave it again once it has had time to appear.
+            for delay in [2.0, 6.0] {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+                    _ = Self.stopHost(hostID: launchHostID, sessionID: nil)
+                }
+            }
         }
         saveOpen()
         reloadHistory()

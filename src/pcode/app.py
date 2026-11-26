@@ -4463,12 +4463,6 @@ def _run_hosted(args: argparse.Namespace) -> None:
             )
         prompt_trust(workspace, ask=ask)
         model = saved_model or args.model or load_preferences().get("model")
-        from pcode.dock import editor_only_requested
-
-        # Pcode.app's panes are always hosted and pick a model with /model in the
-        # host's preview; a terminal asking for a host still needs one up front.
-        if not model and not editor_only_requested():
-            raise ValueError("A session host needs a model: pass -m or set a default with /model.")
         identity, process, log = spawn_host(
             identity=app_host_id(),
             model=model,
@@ -4718,14 +4712,16 @@ def _run_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.print and args.attach is not None:
         _print_hosted(args, parser)
         return
-    # A session runs in a background host when asked (--host, session_host on).
-    # An explicit --host with no model set yet starts the host in preview mode
-    # until /model picks one (Pcode.app relies on this); session_host=on alone
-    # keeps the canned preview in-process, as there is nothing to host.
+    # A session runs in a background host when asked (--host, session_host on);
+    # the canned preview (no model) has nothing to host and stays in-process.
+    # Pcode.app's editor-only panes are the exception: always hosted, they pick
+    # a model with /model in the host's preview.
+    from pcode.dock import editor_only_requested
+
     has_model = bool(args.model or args.resume or load_preferences().get("model"))
     hosted = (
         args.attach is not None
-        or args.host is True
+        or (args.host is True and (has_model or editor_only_requested()))
         or (
             args.host is None
             and has_model
