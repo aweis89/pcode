@@ -491,15 +491,7 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
     ) -> [PCodeSessionInfo] {
         let fm = FileManager.default
         guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return [] }
-        let decoder = JSONDecoder()
-        let all = dirs.compactMap { dir -> PCodeSessionInfo? in
-            guard let data = try? Data(contentsOf: dir.appendingPathComponent("session.json")),
-                  let info = try? decoder.decode(PCodeSessionInfo.self, from: data),
-                  info.id == dir.lastPathComponent,
-                  info.turns > 0 || hosted.contains(info.id)
-            else { return nil }
-            return info
-        }
+        let all = loadCache.infos(dirs).filter { $0.turns > 0 || hosted.contains($0.id) }
         let sorted = all.sorted { $0.updated > $1.updated }
         if limit == .max || sorted.count <= limit { return sorted }
         var trimmed = Array(sorted.prefix(limit))
@@ -508,6 +500,52 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
             trimmed.append(info)
         }
         return trimmed
+    }
+
+    private static let loadCache = LoadCache()
+
+    /// Decoded `session.json`s keyed by path, reused while the file's mtime and
+    /// size are unchanged: a reload then stats every session but parses only
+    /// the few that changed since the last one.
+    final class LoadCache {
+        private struct Entry {
+            let stamp: timespec
+            let size: off_t
+            let info: PCodeSessionInfo?
+        }
+
+        private let lock = NSLock()
+        private var entries: [String: Entry] = [:]
+        private(set) var decodes = 0
+
+        func infos(_ dirs: [URL]) -> [PCodeSessionInfo] {
+            lock.lock()
+            defer { lock.unlock() }
+            let decoder = JSONDecoder()
+            var fresh: [String: Entry] = [:]
+            fresh.reserveCapacity(dirs.count)
+            var result: [PCodeSessionInfo] = []
+            for dir in dirs {
+                let path = dir.appendingPathComponent("session.json").path
+                var st = Darwin.stat()
+                guard Darwin.lstat(path, &st) == 0 else { continue }
+                let entry: Entry
+                if let old = entries[path], old.size == st.st_size,
+                   old.stamp.tv_sec == st.st_mtimespec.tv_sec, old.stamp.tv_nsec == st.st_mtimespec.tv_nsec {
+                    entry = old
+                } else {
+                    decodes += 1
+                    let info = (try? Data(contentsOf: URL(fileURLWithPath: path)))
+                        .flatMap { try? decoder.decode(PCodeSessionInfo.self, from: $0) }
+                        .flatMap { $0.id == dir.lastPathComponent ? $0 : nil }
+                    entry = Entry(stamp: st.st_mtimespec, size: st.st_size, info: info)
+                }
+                fresh[path] = entry
+                if let info = entry.info { result.append(info) }
+            }
+            entries = fresh  // Drops deleted sessions.
+            return result
+        }
     }
 }
 

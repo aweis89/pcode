@@ -175,6 +175,37 @@ struct PCodeSidebarTests {
         #expect(loaded.map(\.id) == ["completed-new", "live-zero-turns", "live-old"])
     }
 
+    @Test func sessionLoadCacheParsesOnlyChangedFiles() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pcode-cache-test-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        func write(_ id: String, title: String) throws {
+            let dir = root.appendingPathComponent(id)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let json = """
+            {"id":"\(id)","workspace":"/tmp/proj","updated":"2026-11-26T01:00:00+00:00","title":"\(title)","turns":1}
+            """
+            try Data(json.utf8).write(to: dir.appendingPathComponent("session.json"))
+        }
+        try write("a", title: "A")
+        try write("b", title: "B")
+        let cache = PCodeSessionInfo.LoadCache()
+        func load() throws -> [String: String] {
+            let dirs = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            return Dictionary(uniqueKeysWithValues: cache.infos(dirs).map { ($0.id, $0.label) })
+        }
+
+        #expect(try load() == ["a": "A", "b": "B"])
+        #expect(cache.decodes == 2)
+        #expect(try load() == ["a": "A", "b": "B"])
+        #expect(cache.decodes == 2)  // Nothing changed: nothing parsed.
+        try write("b", title: "B renamed")
+        #expect(try load() == ["a": "A", "b": "B renamed"])
+        #expect(cache.decodes == 3)
+        try fm.removeItem(at: root.appendingPathComponent("a"))
+        #expect(try load() == ["b": "B renamed"])
+    }
+
     @Test func hostedSessionsSurfaceActivityAndUnseenInProjectGroup() throws {
         let data = Data("""
         {"id":"s1","workspace":"/tmp/proj","updated":"2026-11-26T02:00:00+00:00","title":"Saved Title","turns":0}
