@@ -245,6 +245,89 @@ enum PCodeExternalEditor {
         )
     }
 
+    struct FileLinkTarget: Equatable {
+        let path: String
+        let line: Int?
+    }
+
+    private static let lineFragmentRegex = try! NSRegularExpression(
+        pattern: #"^(?:L(\d+)(?:(?:C\d+)?(?:-(?:L?\d+(?:C\d+)?))?|:\d+)?|line=(\d+)|(\d+))$"#,
+        options: [.caseInsensitive]
+    )
+    private static let colonLineColRegex = try! NSRegularExpression(pattern: #"^(.*):(\d+):\d+$"#)
+    private static let colonLineRegex = try! NSRegularExpression(pattern: #"^(.*):(\d+)$"#)
+
+    /// Decodes a local `file://` URL into its filesystem path and optional 1-based line number.
+    /// Returns `nil` for non-`file` URLs, non-local hosts, or empty paths.
+    static func fileTarget(
+        for url: URL,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> FileLinkTarget? {
+        guard url.scheme?.lowercased() == "file" else { return nil }
+        if let host = url.host, !host.isEmpty, host.lowercased() != "localhost" {
+            return nil
+        }
+        var path = url.path
+        guard !path.isEmpty else { return nil }
+
+        var line: Int? = url.fragment.flatMap(parseLineFragment)
+        if line == nil, !fileExists(path) {
+            for regex in [colonLineColRegex, colonLineRegex] {
+                let nsPath = path as NSString
+                let fullRange = NSRange(location: 0, length: nsPath.length)
+                if let match = regex.firstMatch(in: path, range: fullRange),
+                   match.numberOfRanges >= 3
+                {
+                    let candidate = nsPath.substring(with: match.range(at: 1))
+                    if !candidate.isEmpty, fileExists(candidate) {
+                        path = candidate
+                        if let parsed = Int(nsPath.substring(with: match.range(at: 2))), parsed >= 1 {
+                            line = parsed
+                        }
+                        break
+                    }
+                }
+            }
+        }
+        return FileLinkTarget(path: path, line: line)
+    }
+
+    private static func parseLineFragment(_ fragment: String) -> Int? {
+        let nsFrag = fragment as NSString
+        let fullRange = NSRange(location: 0, length: nsFrag.length)
+        guard let match = lineFragmentRegex.firstMatch(in: fragment, range: fullRange) else {
+            return nil
+        }
+        for group in 1..<match.numberOfRanges {
+            let range = match.range(at: group)
+            if range.location != NSNotFound,
+               let parsed = Int(nsFrag.substring(with: range)),
+               parsed >= 1
+            {
+                return parsed
+            }
+        }
+        return nil
+    }
+
+    /// Opens a local `file://` URL (supporting `#L<n>`, `#L<n>-L<m>`, and `:line` suffixes).
+    /// Directories open in Finder via `NSWorkspace`; regular files open in the preferred GUI editor.
+    /// Returns `false` if the URL is not a local file URL or the target does not exist on disk.
+    @discardableResult
+    static func open(fileURL url: URL) -> Bool {
+        guard let target = fileTarget(for: url) else { return false }
+        let expandedPath = (target.path as NSString).expandingTildeInPath
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expandedPath, isDirectory: &isDirectory) else {
+            return false
+        }
+        if isDirectory.boolValue {
+            return NSWorkspace.shared.open(URL(fileURLWithPath: expandedPath, isDirectory: true))
+        }
+        open(path: expandedPath, line: target.line)
+        return true
+    }
+
     /// Opens `path` (at `line` when supported) in the user's preferred GUI editor,
     /// falling back to `NSWorkspace.shared.open` if no GUI editor is resolved or launch fails.
     static func open(path: String, line: Int? = nil) {

@@ -2819,7 +2819,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if !dragMoved {
             let point = convert(event.locationInWindow, from: nil)
             if let url = linkURL(at: point) {
-                NSWorkspace.shared.open(url)
+                Self.openLink(url)
             } else {
                 // Plain click with no dragged selection: hand keyboard focus back to the composer.
                 selection = nil
@@ -3176,6 +3176,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         else { return nil }
         let localPt = textView.convert(docPoint, from: self)
         return textView.linkURL(at: localPt)
+    }
+
+    private static func openLink(_ url: URL) {
+        if url.scheme?.lowercased() == "file" {
+            if !PCodeExternalEditor.open(fileURL: url) {
+                NSSound.beep()
+            }
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func updateMountedSelectionHighlights() {

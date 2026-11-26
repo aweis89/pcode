@@ -393,4 +393,63 @@ struct PCodeExternalEditorTests {
                 "Answer worker w7: "
         )
     }
+
+    // MARK: - file:// URL decoding
+
+    @Test func fileTargetDecodesLocalFileURLsAndLineFragments() {
+        let plain = URL(string: "file:///Users/dev/app.py")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: plain, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: nil)
+        )
+
+        let lineRange = URL(string: "file:///Users/dev/app.py#L3185-L3191")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: lineRange, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: 3185)
+        )
+
+        let localhost = URL(string: "file://localhost/Users/dev/my%20file.swift#L42C5-L50C9")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: localhost, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/my file.swift", line: 42)
+        )
+
+        let lineEq = URL(string: "file:///Users/dev/app.py#line=17")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: lineEq, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: 17)
+        )
+
+        let bareNum = URL(string: "file:///Users/dev/app.py#9")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: bareNum, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: 9)
+        )
+
+        let colonSuffix = URL(string: "file:///Users/dev/app.py:88:4")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: colonSuffix, fileExists: { $0 == "/Users/dev/app.py" }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: 88)
+        )
+
+        let nonNumericFragment = URL(string: "file:///Users/dev/README.md#overview")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: nonNumericFragment, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/README.md", line: nil)
+        )
+
+        let zeroLine = URL(string: "file:///Users/dev/app.py#L0")!
+        #expect(
+            PCodeExternalEditor.fileTarget(for: zeroLine, fileExists: { _ in true }) ==
+                PCodeExternalEditor.FileLinkTarget(path: "/Users/dev/app.py", line: nil)
+        )
+    }
+
+    @Test func fileTargetRejectsNonLocalAndNonFileURLs() {
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "https://example.com/a")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "javascript:alert(1)")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file://remote-host/share/a.txt")!) == nil)
+        #expect(PCodeExternalEditor.fileTarget(for: URL(string: "file://")!) == nil)
+    }
 }
