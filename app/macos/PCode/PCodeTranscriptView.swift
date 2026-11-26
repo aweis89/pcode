@@ -762,7 +762,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             // Running again: its pending fold no longer applies.
             heldOpenTokens.removeValue(forKey: item.id)
         }
-        var settlesLive = reveal && isGroupableItem && wasActiveBefore && !isActiveAfter
+        // A nested call settles in place inside its parent's window: no hold, ghost or pulse.
+        let isNested = item.depth > 0
+        var settlesLive = reveal && isGroupableItem && !isNested && wasActiveBefore && !isActiveAfter
         if !isActiveAfter {
             let shownSince = activeSinceByRawID.removeValue(forKey: item.id)
             // Settled too soon after appearing: keep its card until it has been readable,
@@ -812,7 +814,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         // Fast path: ungrouped mode, OR non-groupable item appended at tail / updated in place.
         // Hidden thinking makes display indices differ from raw ones, so positional inserts re-project.
-        if (!groupTools && (insertAt == nil || showThinking)) || (!isGroupableItem && (existingRawIdx != nil ? itemIndexByID[item.id] != nil : insertAt == nil)) {
+        // Anything folded into a group (a window's nested delegate, say) re-projects, so the
+        // group's summary sees the change even while its own row is shown expanded.
+        if (!groupTools && (insertAt == nil || showThinking))
+            || (!isGroupableItem && groupIDByRawItemID[item.id] == nil
+                && (existingRawIdx != nil ? itemIndexByID[item.id] != nil : insertAt == nil)) {
             let updatedItem = rawItems[finalRawIdx]
             return upsertDisplayItemDirectly(updatedItem, insertAt: groupTools ? nil : insertAt, reveal: reveal)
         }
@@ -1891,7 +1897,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 payload: payload,
                 attributedText: attr,
                 width: width,
-                lineHeight: typography.lineHeight(scale: 0.84),
+                lineHeight: PCodeToolGroupCardView.lineHeight(typography),
                 theme: theme,
                 selectedRange: localSel,
                 onToggle: { [weak self] in
@@ -2796,7 +2802,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .toolGroup(let payload):
             let rows = payload.windowEntries.count
             guard rows > 0 else { return PCodeToolGroupCardView.rowHeight }
-            return PCodeToolGroupCardView.windowHeight(rowCount: rows, lineHeight: typography.lineHeight(scale: 0.84))
+            return PCodeToolGroupCardView.windowHeight(rowCount: rows, lineHeight: PCodeToolGroupCardView.lineHeight(typography))
         case .status: return 24
         case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))

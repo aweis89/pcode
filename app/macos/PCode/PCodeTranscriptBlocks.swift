@@ -1639,7 +1639,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         theme: PCodeTranscriptTheme
     ) -> NSAttributedString {
         let out = NSMutableAttributedString()
-        let lineHeight = typography.lineHeight(scale: 0.84)
+        let lineHeight = Self.lineHeight(typography)
         let style = NSMutableParagraphStyle()
         style.minimumLineHeight = lineHeight
         style.maximumLineHeight = lineHeight
@@ -1789,6 +1789,11 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     }
 
     private static let windowBottomPad: CGFloat = 4
+
+    /// Every line's height, clamped in `attributedText`; the window's fixed height relies on it.
+    static func lineHeight(_ typography: PCodeTypographySnapshot) -> CGFloat {
+        typography.lineHeight(scale: 0.84)
+    }
 
     func configure(
         payload: PCodeToolGroupPayload,
