@@ -133,7 +133,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             let name,
             let detail,
             let command,
-            let purpose
+            let purpose,
+            _
         ):
             guard !callID.isEmpty else { return }
             var changed = false

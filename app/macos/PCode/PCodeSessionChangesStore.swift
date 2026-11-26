@@ -92,6 +92,15 @@ final class PCodeSessionChangesStore: ObservableObject {
     private var singleEditsByCallID: [String: PCodeFileDiff] = [:]
     private var previewPathByCallID: [String: String] = [:]
     private var sequence: Int = 0
+    private struct PendingToolEdit {
+        let name: String
+        let parentCallID: String
+        let detail: String
+        let arguments: String
+    }
+
+    private var pendingToolEditsByCallID: [String: PendingToolEdit] = [:]
+    private var completedEditCallIDs: Set<String> = []
     private var syntheticEditCounter: Int = 0
     private var gitRefreshGeneration: Int = 0
     private let tasks = TaskBox()
@@ -145,6 +154,16 @@ final class PCodeSessionChangesStore: ObservableObject {
 
     private func applyInternal(_ event: PCodeHostEvent, now: Date, replayingHistory: Bool) {
         switch event {
+        case .toolStarted(let callID, let parentCallID, let name, let detail, _, _, let arguments):
+            if !callID.isEmpty, Self.isSynthesizableEditTool(name) {
+                pendingToolEditsByCallID[callID] = PendingToolEdit(
+                    name: name,
+                    parentCallID: parentCallID,
+                    detail: detail,
+                    arguments: arguments
+                )
+            }
+
         case .editPreview(let callID, let path, let text, let kind):
             handleEditPreview(callID: callID, path: path, text: text, kind: kind, now: now)
             if !replayingHistory {
@@ -161,6 +180,10 @@ final class PCodeSessionChangesStore: ObservableObject {
             let removed,
             let truncated
         ):
+            if !callID.isEmpty {
+                completedEditCallIDs.insert(callID)
+                pendingToolEditsByCallID.removeValue(forKey: callID)
+            }
             handleEditCompleted(
                 callID: callID,
                 parentCallID: parentCallID,
@@ -188,7 +211,34 @@ final class PCodeSessionChangesStore: ObservableObject {
             resetSessionState()
             rebuildSessionFiles()
 
-        case .toolSummary:
+        case .toolSummary(let callID, let parentCallID, let name, let detail, _, let failed, _, _, let result, _, _):
+            if !callID.isEmpty,
+               let pending = pendingToolEditsByCallID.removeValue(forKey: callID),
+               !failed,
+               !completedEditCallIDs.contains(callID),
+               let synth = Self.synthesizeEditFromToolCall(
+                   name: name.isEmpty ? pending.name : name,
+                   detail: detail.isEmpty ? pending.detail : detail,
+                   argumentsJSON: pending.arguments,
+                   resultText: result
+               )
+            {
+                completedEditCallIDs.insert(callID)
+                handleEditCompleted(
+                    callID: callID,
+                    parentCallID: parentCallID.isEmpty ? pending.parentCallID : parentCallID,
+                    path: synth.path,
+                    operation: synth.operation,
+                    patch: synth.patch,
+                    added: synth.added,
+                    removed: synth.removed,
+                    truncated: synth.truncated,
+                    now: now
+                )
+                if !replayingHistory {
+                    rebuildSessionFiles()
+                }
+            }
             if !replayingHistory && (activeScope == .workingTree || activeScope == .branch) {
                 scheduleGitRefresh(for: activeScope)
             }
@@ -359,8 +409,169 @@ final class PCodeSessionChangesStore: ObservableObject {
         bucketsByPath.removeAll()
         singleEditsByCallID.removeAll()
         previewPathByCallID.removeAll()
+        pendingToolEditsByCallID.removeAll()
+        completedEditCallIDs.removeAll()
         sequence = 0
         syntheticEditCounter = 0
+    }
+
+    private struct SynthesizedEdit {
+        let path: String
+        let operation: String
+        let patch: String
+        let added: Int
+        let removed: Int
+        let truncated: Bool
+    }
+
+    private static func isSynthesizableEditTool(_ name: String) -> Bool {
+        switch name.lowercased() {
+        case "edit_file", "write_file", "edit", "write":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Synthesizes a unified diff from `edit_file` / `write_file` `ToolStarted.arguments` JSON
+    /// for backends (such as Antigravity) that record `ToolStarted`/`ToolSummary` without emitting
+    /// `EditCompleted` events.
+    private static func synthesizeEditFromToolCall(
+        name: String,
+        detail: String,
+        argumentsJSON: String,
+        resultText: String?
+    ) -> SynthesizedEdit? {
+        guard !argumentsJSON.isEmpty,
+              let data = argumentsJSON.data(using: .utf8),
+              let rawObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+
+        var lowerMap: [String: Any] = [:]
+        lowerMap.reserveCapacity(rawObj.count)
+        for (k, v) in rawObj {
+            lowerMap[k.lowercased()] = v
+        }
+
+        func str(_ keys: String...) -> String? {
+            for key in keys {
+                if let value = lowerMap[key] as? String {
+                    return value
+                }
+            }
+            return nil
+        }
+
+        let path = (str("path", "file_path", "target_file") ?? detail)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+
+        let loweredName = name.lowercased()
+        if loweredName == "write_file" || loweredName == "write" {
+            guard let content = str("content", "contents", "text") else { return nil }
+            let isAppend = (lowerMap["append"] as? Bool) == true
+            let isOverwrite = (lowerMap["overwrite"] as? Bool) == true
+            let operation = (isAppend || isOverwrite) ? "edit" : "write"
+            let lines = splitLines(content)
+            let maxLines = 400
+            let truncated = lines.count > maxLines
+            let shown = truncated ? Array(lines.prefix(maxLines)) : lines
+            var patchLines: [String] = ["@@ -0,0 +1,\(shown.count) @@"]
+            patchLines.reserveCapacity(shown.count + 1)
+            for line in shown {
+                patchLines.append("+" + line)
+            }
+            return SynthesizedEdit(
+                path: path,
+                operation: operation,
+                patch: patchLines.joined(separator: "\n"),
+                added: lines.count,
+                removed: 0,
+                truncated: truncated
+            )
+        }
+
+        // `edit_file` / `edit`
+        let target = str("target", "old_string", "old_text") ?? ""
+        let replacement = str("replacement", "new_string", "new_text") ?? ""
+        guard !target.isEmpty || !replacement.isEmpty else { return nil }
+
+        let oldLines = splitLines(target)
+        let newLines = splitLines(replacement)
+        let startLine = parseStartingLine(from: resultText) ?? 1
+
+        var prefix = 0
+        while prefix < oldLines.count && prefix < newLines.count && oldLines[prefix] == newLines[prefix] {
+            prefix += 1
+        }
+        var suffix = 0
+        while suffix < (oldLines.count - prefix)
+                && suffix < (newLines.count - prefix)
+                && oldLines[oldLines.count - 1 - suffix] == newLines[newLines.count - 1 - suffix]
+        {
+            suffix += 1
+        }
+
+        let context = 3
+        let ctxBefore = min(prefix, context)
+        let ctxAfter = min(suffix, context)
+        let hunkStartIdx = prefix - ctxBefore
+        let oldChangedCount = oldLines.count - prefix - suffix
+        let newChangedCount = newLines.count - prefix - suffix
+        let oldHunkCount = ctxBefore + oldChangedCount + ctxAfter
+        let newHunkCount = ctxBefore + newChangedCount + ctxAfter
+        let hunkStartLine = max(1, startLine + hunkStartIdx)
+
+        var patchLines: [String] = ["@@ -\(hunkStartLine),\(oldHunkCount) +\(hunkStartLine),\(newHunkCount) @@"]
+        if ctxBefore > 0 {
+            for i in hunkStartIdx..<prefix {
+                patchLines.append(" " + oldLines[i])
+            }
+        }
+        if oldChangedCount > 0 {
+            for i in prefix..<(oldLines.count - suffix) {
+                patchLines.append("-" + oldLines[i])
+            }
+        }
+        if newChangedCount > 0 {
+            for i in prefix..<(newLines.count - suffix) {
+                patchLines.append("+" + newLines[i])
+            }
+        }
+        if ctxAfter > 0 {
+            let afterStart = oldLines.count - suffix
+            for i in afterStart..<(afterStart + ctxAfter) {
+                patchLines.append(" " + oldLines[i])
+            }
+        }
+
+        return SynthesizedEdit(
+            path: path,
+            operation: "edit",
+            patch: patchLines.joined(separator: "\n"),
+            added: newChangedCount,
+            removed: oldChangedCount,
+            truncated: false
+        )
+    }
+
+    private static func splitLines(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if lines.last == "" && lines.count > 1 {
+            lines.removeLast()
+        }
+        return lines
+    }
+
+    private static func parseStartingLine(from resultText: String?) -> Int? {
+        guard let resultText, !resultText.isEmpty,
+              let range = resultText.range(of: "starting at line ")
+        else { return nil }
+        let tail = resultText[range.upperBound...]
+        let digits = tail.prefix { $0.isNumber }
+        return Int(digits)
     }
 
     private func handleEditPreview(

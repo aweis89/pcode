@@ -627,4 +627,49 @@ struct PCodeSessionChangesStoreTests {
         }
         return String(decoding: outData, as: UTF8.self)
     }
+
+    @Test @MainActor
+    func synthesizesSessionDiffsFromEditAndWriteToolCallsOnHistoryReplay() throws {
+        let store = PCodeSessionChangesStore(sessionDirectory: "/repo")
+        let writeArgs = #"{"Path":"/repo/src/NewFile.swift","Content":"let a = 1\nlet b = 2\n"}"#
+        let editArgs = #"{"path":"/repo/src/App.swift","target":"let x = 1\nlet y = 2\nlet z = 3","replacement":"let x = 1\nlet y = 99\nlet z = 3"}"#
+        let failedEditArgs = #"{"path":"/repo/src/Bad.swift","target":"a","replacement":"b"}"#
+        let nativeEditArgs = #"{"path":"/repo/src/Native.swift","target":"old","replacement":"new"}"#
+
+        store.apply(.history([
+            .toolStarted(callID: "w1", parentCallID: "", name: "write_file", detail: "src/NewFile.swift", command: "", purpose: "", arguments: writeArgs),
+            .toolSummary(callID: "w1", parentCallID: "", name: "write_file", detail: "src/NewFile.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: "Edited /repo/src/NewFile.swift", isBackgroundJob: false, exitCode: nil),
+
+            .toolStarted(callID: "e1", parentCallID: "", name: "edit_file", detail: "src/App.swift", command: "", purpose: "", arguments: editArgs),
+            .toolSummary(callID: "e1", parentCallID: "", name: "edit_file", detail: "src/App.swift", command: "", failed: false, elapsedSeconds: 0.2, error: "", result: "Made 1 replacement in /repo/src/App.swift starting at line 40 (+1/-1 lines).", isBackgroundJob: false, exitCode: nil),
+
+            // Failed edit should not appear
+            .toolStarted(callID: "f1", parentCallID: "", name: "edit_file", detail: "src/Bad.swift", command: "", purpose: "", arguments: failedEditArgs),
+            .toolSummary(callID: "f1", parentCallID: "", name: "edit_file", detail: "src/Bad.swift", command: "", failed: true, elapsedSeconds: 0.1, error: "target not found", result: nil, isBackgroundJob: false, exitCode: nil),
+
+            // Native edit with explicit EditCompleted should not be double-counted on ToolSummary
+            .toolStarted(callID: "n1", parentCallID: "", name: "edit_file", detail: "src/Native.swift", command: "", purpose: "", arguments: nativeEditArgs),
+            .editCompleted(callID: "n1", parentCallID: "", path: "src/Native.swift", operation: "edit", patch: "@@ -1,1 +1,1 @@\n-old\n+new", added: 1, removed: 1, truncated: false),
+            .toolSummary(callID: "n1", parentCallID: "", name: "edit_file", detail: "src/Native.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: "ok", isBackgroundJob: false, exitCode: nil),
+        ]))
+
+        #expect(store.sessionFiles.count == 3)
+        let paths = Set(store.sessionFiles.map(\.path))
+        #expect(paths == Set(["src/NewFile.swift", "src/App.swift", "src/Native.swift"]))
+
+        let appDiff = try #require(store.sessionFiles.first { $0.path == "src/App.swift" })
+        #expect(appDiff.added == 1)
+        #expect(appDiff.removed == 1)
+        #expect(appDiff.hunks.count == 1)
+        #expect(appDiff.hunks[0].oldStart == 40)
+        #expect(appDiff.hunks[0].lines.contains { $0.kind == .added && !$0.intralineSpans.isEmpty })
+
+        let newFileDiff = try #require(store.sessionFiles.first { $0.path == "src/NewFile.swift" })
+        #expect(newFileDiff.kind == .added)
+        #expect(newFileDiff.added == 2)
+        #expect(newFileDiff.removed == 0)
+
+        let nativeDiff = try #require(store.sessionFiles.first { $0.path == "src/Native.swift" })
+        #expect(nativeDiff.editCount == 1)
+    }
 }

@@ -78,7 +78,8 @@ enum PCodeHostEvent: Equatable {
         name: String,
         detail: String,
         command: String,
-        purpose: String)
+        purpose: String,
+        arguments: String = "")
     case toolSummary(
         callID: String,
         parentCallID: String,
@@ -300,7 +301,8 @@ enum PCodeHostEventDecoder {
                 name: (fields["name"] as? String) ?? "",
                 detail: (fields["detail"] as? String) ?? "",
                 command: (fields["command"] as? String) ?? "",
-                purpose: (fields["purpose"] as? String) ?? "")
+                purpose: (fields["purpose"] as? String) ?? "",
+                arguments: (fields["arguments"] as? String) ?? "")
         case "ToolSummary", "JobFinished":
             let callID = (fields["call_id"] as? String) ?? ""
             return .toolSummary(
@@ -488,7 +490,7 @@ final class PCodeTranscriptEventReducer {
                 in: doc,
                 reveal: reveal)
 
-        case .toolStarted(let callID, let parentCallID, let name, let detail, let command, let purpose):
+        case .toolStarted(let callID, let parentCallID, let name, let detail, let command, let purpose, _):
             // A retried request can skip the `Thinking` marker; never leave a block pulsing.
             if parentCallID.isEmpty { settleActiveThinking(in: doc, reveal: reveal) }
             finishActiveStreamIfNeeded(in: doc, reveal: reveal)

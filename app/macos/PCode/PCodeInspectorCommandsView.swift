@@ -76,6 +76,7 @@ final class PCodeInspectorCommandsStore: ObservableObject {
             let name,
             let detail,
             let command,
+            _,
             _
         ):
             guard !callID.isEmpty,
