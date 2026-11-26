@@ -1731,6 +1731,40 @@ struct PCodeTranscriptTests {
         #expect(doc.items[2].id == "call-t2")
     }
 
+    @Test @MainActor func heldToolCardIgnoresAnEarlierHoldsTimerAndWaitsWhileExpanded() async throws {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        doc.minimumLiveCardSeconds = 0.4
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+        func start() {
+            reducer.apply(.toolStarted(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", purpose: ""), reveal: true)
+        }
+        func settle() {
+            reducer.apply(.toolSummary(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.01, error: "", result: nil, isBackgroundJob: false), reveal: true)
+        }
+
+        reducer.apply(.turnStarted(prompt: "Inspect repo", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "t2", parentCallID: "", name: "shell", detail: "pytest", command: "pytest", purpose: ""), reveal: true)
+        start()
+        settle() // First hold: its timer fires at ~0.4s.
+        try await Task.sleep(nanoseconds: 250_000_000)
+        start()
+        settle() // Second hold, armed at ~0.25s: due at ~0.65s.
+
+        try await Task.sleep(nanoseconds: 250_000_000) // ~0.5s: past the first hold's timer.
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .tool])
+
+        // Expanded by the user: the fold waits rather than pulling it out from under them.
+        doc.toggleExpansionForAccessibility(id: "call-t1")
+        try await Task.sleep(nanoseconds: 400_000_000) // ~0.9s
+        #expect(doc.items.contains { $0.id == "call-t1" })
+
+        doc.toggleExpansionForAccessibility(id: "call-t1")
+        try await Task.sleep(nanoseconds: 600_000_000)
+        #expect(doc.items.map(\.kind) == [.prompt, .toolGroup, .tool])
+    }
+
     @Test @MainActor func toolGrouperKeepsLoneSettledToolUngrouped() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
