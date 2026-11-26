@@ -412,8 +412,10 @@ message.
 
 The footer below the editor shows the active total as `1 job` or `N jobs`,
 including jobs the model is waiting on, and hides the count when none remain.
-Use `/jobs` for details. While the model waits on a job, the status row says `Wait for job` and the tool row in the
-[activity panel](commands.md#activity-panel) names the job: `45.2s · j3 · running the e2e suite · make e2e`.
+Use `/jobs` for details. While the model waits on a job, the status row says `Wait for shell` and the tool row in the
+[activity panel](commands.md#activity-panel) names the job and its command like a foreground run:
+`$ j3 · running the e2e suite · make e2e`. With `show_commands` on, the job's output streams into the
+command preview under the same `$ command` line a foreground `shell` call shows.
 The finished job goes to scrollback at the end of the turn (or at once while
 idle) as a normal `Run shell` block labeled `background`, with its id and
 elapsed time; `show_commands` and `tool_error_scrollback` apply as for other

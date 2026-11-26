@@ -37,7 +37,9 @@ LABELS = {
     "create_directory": "Create directory",
     "file_info": "File info",
     "shell": "Run shell",
-    "wait_for_job": "Wait for job",
+    # Pairs with "Run shell": the call watches a shell command, and the row
+    # shows that command and its output just as a foreground run does.
+    "wait_for_job": "Wait for shell",
     "job_output": "Read job output",
     "stop_job": "Stop job",
     "list_files": "Find files",

@@ -151,9 +151,9 @@ def test_nerd_icons_are_single_cell_and_active_when_enabled():
         assert get_cwidth(char) == 1, f"{name} is not 1 cell wide (prompt_toolkit)"
         assert len(glyphs.to_ascii(char)) == 1 and glyphs.to_ascii(char).isascii()
 
-    # Wait for job no longer carries a redundant hourglass beside the spinner.
-    assert "Wait for job" not in TOOL_GLYPHS
-    assert _tool_glyph("Wait for job", "auto") is None
+    # A wait shares the shell's glyph, not an hourglass that repeats the spinner.
+    assert TOOL_GLYPHS["Wait for shell"] == "$"
+    assert _tool_glyph("Wait for shell", "auto") == "$"
 
     assert not glyphs.nerd()
     assert _tool_glyph("Search code", "auto") == "⌕"
@@ -165,7 +165,8 @@ def test_nerd_icons_are_single_cell_and_active_when_enabled():
     assert _tool_glyph("Search code", "auto") == glyphs.NERD_ICONS["search"]
     assert _tool_glyph("Run shell", "auto") == glyphs.NERD_ICONS["shell"]
     assert _tool_glyph("Run shell", "off") == "$"
-    assert _tool_glyph("Wait for job", "auto") is None
+    assert _tool_glyph("Wait for shell", "auto") == glyphs.NERD_ICONS["shell"]
+    assert _tool_glyph("Wait for shell", "off") == "$"
     assert (
         plan_row({"status": "cancelled", "content": "Drop it"}, "⠋")[1]
         == f"{glyphs.NERD_ICONS['cancelled']} Drop it"
