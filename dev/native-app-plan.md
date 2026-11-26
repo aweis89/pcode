@@ -1,6 +1,6 @@
 # Native app plan: making Ghostty a leaf in Pcode.app
 
-Status: step 1 done. Step 2 in progress. Step 3a surveyed (sequence below);
+Status: steps 1, 2 and 3a done.
 Steps 3b and 4 are undecided: do not start them. This came out of a code
 survey, not a full design; check the current code before extending any step.
 
@@ -75,13 +75,14 @@ process still needs a pty. The raw terminal can still be seen for a few seconds
 at startup before the dock is ready, in a pane whose pcode has exited, and in
 split panes. Step 3a removes that surface.
 
-### 2. Move `/btw` to native (in progress)
+### 2. Move `/btw` to native (done)
 
 `btw_tail` already reads the thread from the host socket, so a native drawer
 can do the same and reuse the transcript block views. This removes one terminal
-surface. The terminal-mode `/btw` path stays as it is.
+surface. The terminal-mode `/btw` path stays as it is. Merged in `b00c60ae` and
+`ba8e2c96`.
 
-### 3a. The app talks to the session host; the editor becomes a leaf
+### 3a. The app talks to the session host; the editor becomes a leaf (done)
 
 Make the session host own every session the app shows, and have the app read
 session state from the host socket. The terminal editor stays, as a client of
@@ -179,10 +180,19 @@ client.
 Decisions for the "always hosted" piece:
 
 - Closing a pane stops its host (owner, 2026-11-25), as closing ends the
-  session today; it does not detach.
-- No model configured: keep `--host`'s in-process fallback for now. While that
-  fallback exists, the old two-surface path cannot be deleted in piece 6; a
-  native "set up a model" card belongs with the sign-in long tail in 3b.
+  session today; it does not detach. The app picks the host's id up front
+  (`PCODE_HOST_ID`), so a pane closed before its host reports itself still
+  stops it.
+- No model configured: `pcode --host` starts a host in preview mode with no
+  model (`PreviewRuntime`) until `/model` activates an agent (owner, 2026-11-25),
+  so every app pane runs hosted on a single editor-only surface and the app's
+  two-surface dock handoff is removed. Only an explicit `--host` does this: in a terminal,
+  `session_host=on` with no model still runs the canned preview in-process
+  (owner).
+- Startup output: until `pcode;ready` the pane's surface fills the pane
+  unclipped, so the trust prompt and startup errors show at full height; a
+  pcode that exits non-zero before its editor started waits for Enter
+  (`dock.hold_failed_start`) instead of the pane vanishing.
 
 #### 3a sequence
 

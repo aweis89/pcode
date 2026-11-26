@@ -2410,6 +2410,35 @@ def test_spawned_host_inherits_the_terminal_environment_and_its_own_session(host
     assert log.parent == host_dir
 
 
+def test_spawned_host_leaves_out_the_app_panes_terminal_env(host_dir, tmp_path):
+    """Pcode.app's editor flags are for its pane's terminal, not the host or its children."""
+    app_env = {
+        "PCODE_EDITOR_ONLY": "1",
+        "PCODE_NATIVE_TRANSCRIPT": "1",
+        "PCODE_DOCK": "1",
+        "PCODE_HOST_ID": "0123abcd",
+    }
+    with patch("pcode.remote.subprocess.Popen") as popen:
+        with patch.dict(os.environ, app_env):
+            spawn_host(model="m", workspace=tmp_path, no_worktree=True)
+    env = popen.call_args.kwargs["env"]
+    assert not set(app_env) & set(env)
+    assert env["PCODE_HOST_DIR"] == str(host_dir)
+
+
+def test_app_host_id_is_used_once_and_never_over_a_live_host(host_dir, monkeypatch):
+    from pcode.remote import app_host_id
+
+    monkeypatch.setenv("PCODE_HOST_ID", "0123abcd")
+    assert app_host_id() == "0123abcd"
+    assert app_host_id() is None  # Consumed: a later /new gets its own id.
+    monkeypatch.setenv("PCODE_HOST_ID", "../etc")
+    assert app_host_id() is None
+    (host_dir / "4567cdef.json").write_text("{}")
+    monkeypatch.setenv("PCODE_HOST_ID", "4567cdef")
+    assert app_host_id() is None
+
+
 def test_a_turn_is_announced_on_the_desktop_once_however_many_terminals_see_it(host_dir):
     from pcode.host_protocol import claim
 
@@ -3045,6 +3074,169 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             writer.close()
         finally:
             await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_host_starts_without_a_model_and_activates_one_later(tmp_path, host_dir, monkeypatch):
+    """A host started with no model runs in preview mode until /model activates an agent."""
+    from pcode.host import TRANSCRIPT_OBSERVER_VERSION, SessionHost
+    from pcode.host_protocol import HostEntry, dumps, read_message, write_entry
+    from pcode.remote import RemoteController
+
+    script = Script()
+
+    def fake_create_agent(model, workspace, capabilities=(), subagents=(), advisor=None):
+        return Agent(FunctionModel(stream_function=script.model))
+
+    monkeypatch.setattr("pcode.agent.create_agent", fake_create_agent)
+    loaded, mcp_started = [], []
+    monkeypatch.setattr(
+        SessionController, "_load_extensions", lambda self, *args: loaded.append(args)
+    )
+    monkeypatch.setattr(SessionController, "start_mcp_defaults", lambda self: mcp_started.append(1))
+
+    async def run():
+        from pcode.host import plan_startup
+
+        entry = HostEntry(id="nomod111", pid=os.getpid(), model="", workspace=str(tmp_path))
+        write_entry(entry, host_dir)
+        host = SessionHost(entry, host_dir)
+        controller = host.controller
+        plan_startup(controller, None, None)
+        assert not controller.startup_pending and controller.startup_error is None
+        controller.workspace = tmp_path
+        controller.session_dir = tmp_path / "sessions"
+        controller.save_sessions = True
+        await host.serve()
+        await host.boot()
+        try:
+            view = View()
+            client, welcome = await RemoteController.connect(host.socket, view, Activity())
+            await client.start(welcome)
+            try:
+                assert client.model is None
+                # Connect a transcript observer and send a preview prompt before any model is set.
+                obs_r, obs_w = await asyncio.open_unix_connection(str(host.socket))
+                obs_w.write(
+                    dumps({"type": "observe_transcript", "version": TRANSCRIPT_OBSERVER_VERSION})
+                )
+                await obs_w.drain()
+                ready = await read_message(obs_r)
+                assert ready["type"] == "ready" and ready["model"] == ""
+
+                client.submit("hello preview", "queue")
+                await until(lambda: view.count("preview_reply"))
+                seen = []
+                while len(seen) < 2:
+                    msg = await asyncio.wait_for(read_message(obs_r), timeout=2.0)
+                    if msg["method"] in ("user", "turn_event"):
+                        seen.append(msg)
+                assert seen[0]["method"] == "user" and seen[0]["args"] == ["hello preview"]
+                assert seen[1]["method"] == "turn_event"
+                assert "local UI preview" in seen[1]["args"][0]["$event"]["fields"]["markdown"]
+
+                # Nothing to load or start until a model is picked.
+                assert not loaded and not mcp_started
+                # Activating a model upgrades the host from PreviewRuntime to AgentRuntime,
+                # finishing startup as a launch with a model would have.
+                await controller.activate_model("function:script")
+                assert isinstance(controller.runtime, AgentRuntime)
+                assert len(loaded) == 1
+                await controller.follow_up()  # What the host runs after /model returns.
+                assert mcp_started == [1]
+                host.push_state()
+                await until(lambda: client.model == "function:script")
+                assert host.entry.model == "function:script"
+                obs_w.close()
+            finally:
+                await client.detach()
+        finally:
+            await stop_host(host)
+
+    asyncio.run(run())
+
+
+def test_in_process_preview_model_only_swaps_the_runtime(tmp_path, monkeypatch):
+    """Outside a host, /model from the canned preview is unchanged: no extensions or MCP."""
+    from pcode.runtime import PreviewRuntime
+
+    script = Script()
+    monkeypatch.setattr(
+        "pcode.agent.create_agent",
+        lambda *args, **kwargs: Agent(FunctionModel(stream_function=script.model)),
+    )
+    monkeypatch.setattr(
+        SessionController,
+        "_load_extensions",
+        lambda self, *args: pytest.fail("extensions loaded in an in-process preview"),
+    )
+
+    async def run():
+        controller = SessionController(View(), Activity(), PreviewRuntime())
+        controller.workspace = tmp_path
+        assert not controller.starts_on_model
+        await controller.activate_model("function:script")
+        try:
+            assert isinstance(controller.runtime, AgentRuntime)
+            assert controller.model == "function:script"
+            assert not controller.mcp_defaults_requested
+            assert controller.extensions is None
+        finally:
+            controller.runtime.close()
+
+    asyncio.run(run())
+
+
+def test_resumed_host_without_a_model_waits_for_model_to_restore(tmp_path, host_dir, monkeypatch):
+    """A saved session with no model to resume with: startup settles, and /model restores it."""
+    from pcode.host import plan_startup
+
+    script = Script()
+    monkeypatch.setattr(
+        "pcode.agent.create_agent",
+        lambda *args, **kwargs: Agent(FunctionModel(stream_function=script.model)),
+    )
+    monkeypatch.setattr(SessionController, "_load_extensions", lambda self, *args: None)
+    saved = SavedSession.create("", tmp_path, tmp_path / "sessions")
+
+    async def run():
+        entry = HostEntry(
+            id="nomod222",
+            pid=os.getpid(),
+            model="",
+            workspace=str(tmp_path),
+            session_id=saved.info.id,
+        )
+        write_entry(entry, host_dir)
+        host = SessionHost(entry, host_dir)
+        controller = host.controller
+        plan_startup(controller, None, saved)
+        controller.workspace = tmp_path
+        controller.session_dir = tmp_path / "sessions"
+        controller.save_sessions = True
+        assert not controller.startup_pending
+        await host.serve()
+        await host.boot()
+        try:
+            assert not controller.startup_pending
+            assert "/model" in str(controller.startup_error)
+            terminal, _, _ = await attach(host)
+            try:
+                assert not terminal.startup_pending
+                assert "pick one with /model" in str(terminal.startup_error)
+                await controller.activate_model("function:script")
+                assert controller.startup_error is None
+                assert isinstance(controller.runtime, AgentRuntime)
+                assert controller.runtime.session is saved
+            finally:
+                await terminal.detach()
+        finally:
+            host.stop()
+            await host.close()
+            close = getattr(controller.runtime, "close", None)
+            if close is not None:
+                close()
 
     asyncio.run(run())
 

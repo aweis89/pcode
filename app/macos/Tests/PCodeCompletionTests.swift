@@ -72,4 +72,19 @@ struct PCodeCompletionTests {
         #expect(inDrawer.editorRect.minX == size.width - expectedOuter + PCodeDock.bottomMargin)
         #expect(inDrawer.editorRect.width == expectedOuter - 2 * PCodeDock.bottomMargin)
     }
+
+    @Test func dockFillsThePaneUntilReadyThenShowsTheCard() {
+        // Before `pcode;ready`: the whole pane inside the margins, and all of it takes clicks.
+        #expect(PCodeDock.editorHeight(ready: false, cell: 20, paneHeight: 600)
+            == 600 - PCodeDock.topMargin - PCodeDock.bottomMargin)
+        #expect(PCodeDock.visibleHeight(ready: false, rows: 4, cell: 20) == nil)
+        // Once ready: the fixed grid, with clicks only on the card's rows.
+        #expect(PCodeDock.editorHeight(ready: true, cell: 20, paneHeight: 600)
+            == PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: 20))
+        #expect(PCodeDock.visibleHeight(ready: true, rows: 4, cell: 20)
+            == PCodeDock.cardHeight(rows: 4, cell: 20))
+        // No cell size yet: nothing to clip by.
+        #expect(PCodeDock.visibleHeight(ready: true, rows: 4, cell: 0) == nil)
+        #expect(PCodeDock.editorHeight(ready: false, cell: 20, paneHeight: 4) == 0)
+    }
 }

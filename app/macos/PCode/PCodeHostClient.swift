@@ -241,7 +241,7 @@ enum PCodeHostEventDecoder {
                 return .dropOutput(callID: callID)
             }
             return nil
-        case "note":
+        case "note", "retained_note", "warning":
             if let text = args.first as? String, !text.isEmpty {
                 return .note(text)
             }

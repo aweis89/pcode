@@ -39,6 +39,14 @@ struct PCodeHostStateTests {
         #expect(PCodeHostEventDecoder.decodeRPCCall(method: "session_changed", args: ["s2"], kwargs: [:]) == .sessionChanged("s2"))
     }
 
+    @Test func decodesRetainedNotesAndWarningsAsNotes() {
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "retained_note", args: ["context"], kwargs: [:]) == .note("context"))
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "warning", args: ["heads up"], kwargs: [:]) == .note("heads up"))
+        // Nothing to show: no event.
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "warning", args: [""], kwargs: [:]) == nil)
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "retained_note", args: [], kwargs: [:]) == nil)
+    }
+
     @Test func foldsDeltasAndKeepsUnchangedFields() {
         var state = PCodeHostSessionState()
         state.sessionID = "abc"

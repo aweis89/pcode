@@ -98,46 +98,55 @@ def native_app() -> bool:
     return drawer_supported() or popup_supported()
 
 
+def _app_pane() -> bool:
+    """Whether this is a Pcode.app pane's editor-only terminal (`dock.editor_only_requested`)."""
+    from pcode import dock
+
+    return dock.editor_only_requested()
+
+
 def drawer_supported() -> bool:
     """Whether the startup probe found a terminal that opens pcode's drawer."""
     from pcode import drawer
 
-    return _drawer_protocol == drawer.PROTOCOL
+    return _drawer_protocol == drawer.PROTOCOL or _app_pane()
 
 
 def popup_supported() -> bool:
     """Whether the startup probe found a terminal that opens pcode's popups over itself."""
     from pcode import drawer
 
-    return _popup_protocol is not None and _popup_protocol >= drawer.POPUP_PROTOCOL
+    return (_popup_protocol is not None and _popup_protocol >= drawer.POPUP_PROTOCOL) or _app_pane()
 
 
 def native_pick_supported() -> bool:
     """Whether that terminal also draws pick lists natively (`PopupSurface.pick`)."""
     from pcode import drawer
 
-    return _popup_protocol is not None and _popup_protocol >= drawer.PICK_PROTOCOL
+    return (_popup_protocol is not None and _popup_protocol >= drawer.PICK_PROTOCOL) or _app_pane()
 
 
 def native_completion_supported() -> bool:
     """Whether that terminal also draws the editor's completion menu (`native_completions`)."""
     from pcode import drawer
 
-    return _popup_protocol is not None and _popup_protocol >= drawer.COMPLETE_PROTOCOL
+    return (
+        _popup_protocol is not None and _popup_protocol >= drawer.COMPLETE_PROTOCOL
+    ) or _app_pane()
 
 
 def native_hints_supported() -> bool:
     """Whether that terminal also draws an overlay popup's key hints (`popup_hints`)."""
     from pcode import drawer
 
-    return _popup_protocol is not None and _popup_protocol >= drawer.HINTS_PROTOCOL
+    return (_popup_protocol is not None and _popup_protocol >= drawer.HINTS_PROTOCOL) or _app_pane()
 
 
 def native_toast_supported() -> bool:
     """Whether that terminal also shows brief confirmations as toasts (`drawer.toast`)."""
     from pcode import drawer
 
-    return _popup_protocol is not None and _popup_protocol >= drawer.TOAST_PROTOCOL
+    return (_popup_protocol is not None and _popup_protocol >= drawer.TOAST_PROTOCOL) or _app_pane()
 
 
 def kitty_graphics_supported() -> bool:

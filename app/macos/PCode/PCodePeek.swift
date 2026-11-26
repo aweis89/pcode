@@ -594,8 +594,8 @@ final class PCodePeekController: ObservableObject {
     }
 }
 
-/// Transparent overlay that forwards scroll-wheel events to a live-peeked terminal
-/// while blocking mouse clicks from stealing focus or sending input into it.
+/// Transparent overlay that forwards scroll-wheel events to a live-peeked session's
+/// transcript scroll view while blocking mouse clicks from stealing focus or sending input.
 private struct PCodePeekScrollShield: NSViewRepresentable {
     let targetSurface: Ghostty.SurfaceView
 
@@ -613,7 +613,20 @@ private struct PCodePeekScrollShield: NSViewRepresentable {
         weak var targetSurface: Ghostty.SurfaceView?
 
         override func scrollWheel(with event: NSEvent) {
-            targetSurface?.scrollWheel(with: event)
+            if let transcript = peekedTranscript {
+                transcript.scrollWheel(with: event)
+            } else {
+                targetSurface?.scrollWheel(with: event)
+            }
+        }
+
+        /// The peeked pane's own transcript, the one its view mounted under this
+        /// shield; never another pane's, which a search of the view tree could find.
+        private var peekedTranscript: PCodeTranscriptScrollView? {
+            guard let transcript = targetSurface?.pcodeTranscriptScrollView,
+                  transcript.window === window,
+                  !transcript.isHiddenOrHasHiddenAncestor else { return nil }
+            return transcript
         }
 
         override func mouseDown(with event: NSEvent) {}

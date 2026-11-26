@@ -40,7 +40,7 @@ replaces.
 
 `/tmp/run.sh` is whatever the first terminal should run, for example
 `cd /tmp/demo && exec pcode --no-worktree`, or
-`PCODE_DOCK=1 uv run --no-sync pcode` in a pcode worktree for the spike's dock.
+`PCODE_EDITOR_ONLY=1 uv run --no-sync pcode --host` in a pcode worktree for the app's single-surface docked editor card.
 Launching brings the window to the front once. After that, nothing in the
 harness takes focus from the user unless you run `activate`.
 
@@ -98,7 +98,7 @@ launch. `--json` prints the raw reply.
   `launch` passes your environment on. Run from inside a pcode session, that
   is the parent's own pcode, not your worktree's: check with
   `pgrep -fl bin/pcode`. Export `PCODE_COMMAND=<worktree>/.venv/bin/pcode`
-  (plus `PCODE_DOCK=1` for the dock) before `launch`.
+  (workspace mode sets `PCODE_EDITOR_ONLY=1` and `--host` automatically) before `launch`.
 - **Shared worktrees collide.** Another session may be building and
   relaunching in the same Ghostty worktree. Commit only your own paths
   (`git commit <paths>`, never `-a`), and use your own `APP_NAME`, bundle ID

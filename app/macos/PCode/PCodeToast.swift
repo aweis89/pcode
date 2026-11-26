@@ -83,12 +83,11 @@ final class PCodeToast: ObservableObject {
             return Placement(cursor: nil, minX: 0, width: size.width, minBottomGap: 0)
         }
         guard let dock = surfaceView.existingPCodeDock,
-              let editor = dock.surface,
               let layout = dock.cardLayout(in: size, drawer: surfaceView.existingPCodeDrawer)
         else {
             return Placement(cursor: surfaceView.pcodeCursorCell, minX: 0, width: size.width, minBottomGap: 0)
         }
-        let cursor = editor.pcodeCursorCell?.offsetBy(dx: layout.editorRect.minX, dy: layout.editorRect.minY)
+        let cursor = surfaceView.pcodeCursorCell?.offsetBy(dx: layout.editorRect.minX, dy: layout.editorRect.minY)
         let width = layout.editorRect.width > 0 ? layout.editorRect.width : size.width
         return Placement(cursor: cursor, minX: layout.editorRect.minX, width: width, minBottomGap: layout.cardTopFromBottom)
     }

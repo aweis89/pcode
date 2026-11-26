@@ -2,26 +2,24 @@ import AppKit
 import GhosttyKit
 import SwiftUI
 
-/// SPIKE: pcode's editor, tasks and status bar in a card docked under its terminal.
+/// pcode's editor, tasks and status bar in a card docked at the bottom of a session pane.
 ///
-/// pcode (run with `PCODE_DOCK=1`) asks for the dock, and runs its whole
-/// prompt_toolkit editor on the dock's terminal, the same way it runs an
-/// overlay popup: the dock's terminal runs `pcode.popup_bridge <token>`, which
-/// hands its tty to pcode. pcode's own terminal is left as scrollback only.
+/// In Pcode.app, each workspace pane runs `pcode --host` with `PCODE_EDITOR_ONLY=1`
+/// directly on the pane's single `Ghostty.SurfaceView`, which is laid out as
+/// `PCodeDockCard` below the native transcript (`PCodeMainWindowTranscriptView`).
 ///
-/// - `pcode;dock;<token>`, from the terminal: open the dock (unseen until ready).
-/// - `pcode;dock-close`, from the terminal: remove it.
-/// - `pcode;ready`, from the dock's terminal: show it and give it the keyboard.
-/// - `pcode;dock-rows;<n>`, from the dock's terminal: the rows its layout needs.
-/// - Anything else from the dock's terminal is handled as if pcode had sent it
-///   in its own terminal (popups, the /btw drawer, toasts, its session id):
-///   pcode now writes everything to the terminal its editor runs on.
+/// Until pcode's editor is ready the surface fills the pane instead, unclipped,
+/// so whatever pcode prints before then (the trust prompt, startup errors) is
+/// seen and answered at full height.
 ///
-/// The dock ending (pcode exits and its bridge with it) removes it.
-final class PCodeDock: NSObject, ObservableObject, PCodeOverlayOwner {
-    @Published private(set) var surface: Ghostty.SurfaceView?
+/// - `pcode;ready`: switch to the card and give it the keyboard.
+/// - `pcode;dock-rows;<n>`: the rows its layout needs.
+final class PCodeDock: NSObject, ObservableObject {
     @Published private(set) var ready = false
     @Published private(set) var rows = 3
+    /// pcode waits on the user before its editor starts (`pcode;startup-input`):
+    /// the trust prompt or a held startup error, which the boot cover must not hide.
+    @Published private(set) var needsInput = false
 
     static let maxRows = 40
     /// The dock's terminal is always this tall and never resizes; the card
@@ -49,6 +47,20 @@ final class PCodeDock: NSObject, ObservableObject, PCodeOverlayOwner {
             padding = cardPadding
         }
         return CGFloat(rows) * cell + padding
+    }
+
+    /// The height of the editor terminal that takes clicks, from its bottom
+    /// edge: the card's while shown (the rest of the grid is clipped off), or
+    /// nil, the whole terminal, before pcode is ready and it fills the pane.
+    static func visibleHeight(ready: Bool, rows: Int, cell: CGFloat, surfaceRows: Int? = nil) -> CGFloat? {
+        guard ready, cell > 0 else { return nil }
+        return cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows)
+    }
+
+    /// The editor terminal's frame height in a pane of `paneHeight`: a fixed
+    /// `gridRows` grid once ready, or the whole pane inside the card's margins before.
+    static func editorHeight(ready: Bool, cell: CGFloat, paneHeight: CGFloat) -> CGFloat {
+        ready ? cardHeight(rows: gridRows, cell: cell) : max(0, paneHeight - topMargin - bottomMargin)
     }
 
     /// Everything the card covers at the bottom of pcode's pane for `rows`
@@ -101,9 +113,8 @@ final class PCodeDock: NSObject, ObservableObject, PCodeOverlayOwner {
 
     /// Where the active dock card sits inside `size`, or nil when not shown.
     func cardLayout(in size: CGSize, drawer: PCodeDrawer?) -> CardLayout? {
-        guard ready, let editor = surface else { return nil }
-        let fallbackCell = surfaceView?.cellSize.height ?? 0
-        let cell = editor.cellSize.height > 0 ? editor.cellSize.height : fallbackCell
+        guard ready, let editor = surfaceView else { return nil }
+        let cell = editor.cellSize.height
         let surfaceRows = editor.surfaceSize.map { Int($0.rows) }
         return Self.cardLayout(
             in: size,
@@ -117,98 +128,42 @@ final class PCodeDock: NSObject, ObservableObject, PCodeOverlayOwner {
     }
 
     weak var surfaceView: Ghostty.SurfaceView?
-    private var closeObserver: NSObjectProtocol?
 
     init(surfaceView: Ghostty.SurfaceView) {
         self.surfaceView = surfaceView
     }
 
-    deinit {
-        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
-        if let surface { PCode.retire(surface) }
-    }
-
-    /// From pcode in the terminal this dock belongs to.
+    /// From pcode in the editor terminal this card belongs to.
     func handle(_ payload: String) {
-        let parts = payload.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
-        switch parts.first {
-        case "dock" where parts.count == 2:
-            guard PCode.valid(parts[1], length: 16...16, hex: true) else { return }
-            open(token: parts[1])
-        case "dock-close":
-            close()
-        default:
-            break
-        }
-    }
-
-    /// From the dock's own terminal, where pcode's editor now runs.
-    func handleFromOverlay(_ payload: String, from overlay: Ghostty.SurfaceView) {
-        guard overlay === surface else { return }
         let parts = payload.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
         switch parts.first {
         case "ready":
             guard !ready else { return }
-            ready = true
-            Ghostty.moveFocus(to: overlay)
+            // Never animated: each frame from full height to the card would resize the grid.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { ready = true }
+            if let surfaceView { Ghostty.moveFocus(to: surfaceView) }
+        case "startup-input":
+            if !needsInput { needsInput = true }
         case "dock-rows" where parts.count == 2:
             guard let wanted = Int(parts[1]) else { return }
             let clamped = min(Self.maxRows, max(1, wanted))
             if clamped != rows { rows = clamped }
-        case "dock", "dock-close", "done", "title", "hints", "focus":
-            break
         default:
-            surfaceView?.pcodeEvent(payload)
+            break
         }
-    }
-
-    func close() {
-        guard let surface else { return }
-        let hadFocus = Self.hasFocus(surface)
-        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
-        closeObserver = nil
-        ready = false
-        rows = 3
-        self.surface = nil
-        PCode.retire(surface)
-        if hadFocus, let surfaceView { Ghostty.moveFocus(to: surfaceView) }
-    }
-
-    private func open(token: String) {
-        close()
-        guard let python = PCode.entryPython(PCode.statePath("popups/\(token).json")) else { return }
-        let command = PCode.pythonCommand(python, module: "pcode.popup_bridge", args: [token])
-        guard let view = PCode.makeOverlaySurface(over: surfaceView, command: command, owner: self) else { return }
-        // The bridge exits a moment after pcode lets go of it (or dies).
-        closeObserver = NotificationCenter.default.addObserver(
-            forName: Ghostty.Notification.ghosttyCloseSurface, object: view, queue: .main
-        ) { [weak self, weak view] _ in
-            DispatchQueue.main.async {
-                guard let self, let view, self.surface === view else { return }
-                self.close()
-            }
-        }
-        surface = view
-    }
-
-    private static func hasFocus(_ view: NSView) -> Bool {
-        guard let responder = view.window?.firstResponder as? NSView else { return false }
-        return responder === view || responder.isDescendant(of: view)
     }
 }
 
-/// The terminal (with its /btw drawer) above pcode's docked editor card.
+/// A session pane's content: the native AppKit transcript, the `/btw` drawer,
+/// and pcode's single terminal surface laid out as the docked editor card,
+/// in a split as anywhere else.
 ///
-/// An overlay, not a stack: pcode's terminal keeps its full height, and the
-/// card covers its bottom rows. pcode keeps those rows clear (a scroll region
-/// above the card, `pcode/dock.py`), so growing the editor scrolls the
-/// transcript like any output, which glides, instead of resizing the pane
-/// (a reflow and a redraw per step of the card's animation).
-///
-/// While the /btw drawer is open, the drawer spans the full height on the right
+/// While the `/btw` drawer is open, the drawer spans the full height on the right
 /// and reserves the card's live footprint at its bottom; the card narrows into
 /// that slot without leaving the view tree, so it keeps keyboard focus and the
-/// drawer's viewer and hint bar never go underneath it.
+/// drawer's content and hint bar never go underneath it.
 struct PCodeDockedSurface: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var surfaceView: Ghostty.SurfaceView
@@ -232,83 +187,66 @@ struct PCodeDockedSurface: View {
     var body: some View {
         let drawerOpen = drawer.isOpen
         GeometryReader { geometry in
-            let cardWidth = drawerOpen
-                ? max(0, PCodeDrawer.width(
-                    in: geometry.size.width,
-                    fraction: drawer.fraction,
-                    minWidth: PCodeDrawer.dockedMinWidth) - 1)
-                : geometry.size.width
-            ZStack(alignment: .bottomTrailing) {
-                // pcode's terminal, full height under the card and drawer: its size
-                // never follows either one.
+            if !surfaceView.pcodeIsSessionPane {
                 PCodeDrawerSurface(
-                    surfaceView: surfaceView, drawer: drawer, isSplit: isSplit,
-                    drawsDrawer: false)
-
-                // The native AppKit transcript, the session's only view. It covers the
-                // terminal, which stays underneath as pcode's pty and message channel.
-                // Shown whenever the docked composer card is active on a hosted or
-                // saved session; the no-model in-process preview (neither sessionID
-                // nor hostID) leaves the underlying terminal visible.
+                    surfaceView: surfaceView,
+                    drawer: drawer,
+                    isSplit: isSplit)
+            } else {
+                let cardWidth = drawerOpen
+                    ? max(0, PCodeDrawer.width(
+                        in: geometry.size.width,
+                        fraction: drawer.fraction,
+                        minWidth: PCodeDrawer.dockedMinWidth) - 1)
+                    : geometry.size.width
                 let sid = surfaceView.pcodeSession ?? sessionID
                 let hid = surfaceView.pcodeHost ?? hostID
-                if !isSplit,
-                   let docked = dock.surface,
-                   dock.ready,
-                   ((sid?.isEmpty == false) || (hid?.isEmpty == false))
-                {
+                ZStack(alignment: .bottomTrailing) {
                     PCodeDockedTranscriptLayer(
                         sessionID: sid,
                         hostID: hid,
                         dock: dock,
-                        docked: docked,
+                        docked: surfaceView,
                         fallbackCell: paneCell,
                         drawerOpen: drawerOpen)
-                }
 
-                // The /btw drawer over the right side, full height, reserving the
-                // card's live footprint at its bottom so the viewer and hint bar
-                // always end above the card (observing the dock's surface so font
-                // zoom updates the footprint immediately).
-                if let docked = dock.surface {
                     PCodeDockedDrawerLayer(
                         surfaceView: surfaceView,
                         drawer: drawer,
                         dock: dock,
-                        docked: docked,
+                        docked: surfaceView,
                         fallbackCell: paneCell,
                         isSplit: isSplit)
-                } else {
-                    PCodeDrawerSurface(
-                        surfaceView: surfaceView, drawer: drawer, isSplit: isSplit,
-                        drawsSurface: false)
-                }
-                // The card: full width at the bottom when no drawer is open, or
-                // docked into the bottom of the drawer when /btw is open. Keeping
-                // it at the same structural spot preserves its surface and focus;
-                // width snaps once instead of animating so the PTY doesn't reflow
-                // on every frame.
-                if let docked = dock.surface {
-                    PCodeDockCard(docked: docked, dock: dock, fallbackCell: paneCell, inDrawer: drawerOpen)
+
+                    // The editor card: full width at the bottom when no drawer is open, or
+                    // docked into the bottom of the drawer when /btw is open. Keeping
+                    // it at the same structural spot preserves its surface and focus;
+                    // width snaps once instead of animating so the PTY doesn't reflow
+                    // on every frame.
+                    PCodeDockCard(
+                        docked: surfaceView,
+                        dock: dock,
+                        fallbackCell: paneCell,
+                        inDrawer: drawerOpen,
+                        paneHeight: geometry.size.height,
+                        isSplit: isSplit)
                         .frame(width: cardWidth)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-            }
-            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: dock.ready)
-            .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
-                sessionID = surfaceView.pcodeSession
-                hostID = surfaceView.pcodeHost
-            }
-            .onChange(of: ObjectIdentifier(surfaceView)) { _ in
-                sessionID = surfaceView.pcodeSession
-                hostID = surfaceView.pcodeHost
-            }
-            .onAppear {
-                if sessionID != surfaceView.pcodeSession {
+                .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
                     sessionID = surfaceView.pcodeSession
-                }
-                if hostID != surfaceView.pcodeHost {
                     hostID = surfaceView.pcodeHost
+                }
+                .onChange(of: ObjectIdentifier(surfaceView)) { _ in
+                    sessionID = surfaceView.pcodeSession
+                    hostID = surfaceView.pcodeHost
+                }
+                .onAppear {
+                    if sessionID != surfaceView.pcodeSession {
+                        sessionID = surfaceView.pcodeSession
+                    }
+                    if hostID != surfaceView.pcodeHost {
+                        hostID = surfaceView.pcodeHost
+                    }
                 }
             }
         }
@@ -370,12 +308,17 @@ private struct PCodeDockedDrawerLayer: View {
 /// Its own view so it observes the dock's terminal: the card's height is in
 /// that terminal's cells, and pcode reckons the pane rows the card covers from
 /// them, so a font change there must resize the card at once.
+///
+/// Before `pcode;ready` the same card fills the pane, unclipped: the view
+/// tree stays put, so the terminal keeps its focus when it shrinks to the card.
 private struct PCodeDockCard: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var docked: Ghostty.SurfaceView
     @ObservedObject var dock: PCodeDock
     var fallbackCell: CGFloat
     var inDrawer: Bool
+    var paneHeight: CGFloat
+    var isSplit: Bool
 
     private static let cornerRadius: CGFloat = 12
 
@@ -409,12 +352,21 @@ private struct PCodeDockCard: View {
         // The terminal keeps a fixed `gridRows` height, bottom-aligned in the
         // card and clipped: pcode draws its layout at the bottom of it, so a
         // taller layout is already drawn when the card grows to show it.
+        // Before pcode is ready it fills the pane, clipped only at the rounded corners. The
+        // switch is not animated: each frame of it would resize the grid.
+        let editorHeight = PCodeDock.editorHeight(ready: dock.ready, cell: cell, paneHeight: paneHeight)
+        let shownHeight = dock.ready
+            ? PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows)
+            : editorHeight
         return ZStack(alignment: .bottom) {
-            Ghostty.SurfaceWrapper(surfaceView: docked, isSplit: false)
+            Ghostty.SurfaceWrapper(surfaceView: docked, isSplit: isSplit)
                 .id(ObjectIdentifier(docked))
-                .frame(height: PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell))
+                .frame(height: editorHeight)
+                // The grid's size never animates, even when `dock.rows` changes in
+                // the same update: only the card's clip does.
+                .transaction { $0.animation = nil }
         }
-            .frame(height: PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows), alignment: .bottom)
+            .frame(height: shownHeight, alignment: .bottom)
             .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: Self.cornerRadius)
@@ -433,7 +385,5 @@ private struct PCodeDockCard: View {
             .padding(.horizontal, PCodeDock.bottomMargin)
             .padding(.top, PCodeDock.topMargin)
             .padding(.bottom, PCodeDock.bottomMargin)
-            .opacity(dock.ready ? 1 : 0)
-            .allowsHitTesting(dock.ready)
     }
 }

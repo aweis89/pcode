@@ -147,7 +147,8 @@ enum PCodeWorkspaceMode {
         "PWD", "OLDPWD", "SHLVL", "_", "TERM", "TERM_PROGRAM",
         "TERM_PROGRAM_VERSION", "COLORTERM", "TERM_SESSION_ID",
         "TERMINFO", "XDG_DATA_DIRS", "MANPATH", "VTE_VERSION", "LANGUAGE",
-        "PCODE_DOCK", "PCODE_NATIVE_TRANSCRIPT", "PCODE_HUSH_LOGIN",
+        "PCODE_DOCK", "PCODE_EDITOR_ONLY", "PCODE_NATIVE_TRANSCRIPT", "PCODE_HUSH_LOGIN",
+        "PCODE_HOST_ID",
     ]
 
     private static let envSentinel = "__PCODE_ENV_START__"
@@ -525,6 +526,9 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     @Published var hostID: String?
     /// Last non-empty host id seen for this pane, kept across client teardown so closing stops the host.
     var lastHostID: String?
+    /// The id the app asked pcode to start this pane's host with (`PCODE_HOST_ID`),
+    /// so closing the pane stops that host even before it has reported itself.
+    var launchHostID: String?
     /// True once pcode has painted its ready UI (dock ready, or fallback timeout).
     @Published private(set) var isReady = false
     @Published private(set) var shell: Ghostty.SurfaceView?
@@ -541,8 +545,8 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     private var titleSubscription: AnyCancellable?
     private var hostSubscription: AnyCancellable?
     private var keySubscription: AnyCancellable?
-    private var dockSubscription: AnyCancellable?
     private var dockReadySubscription: AnyCancellable?
+    private var inputSubscription: AnyCancellable?
     private var progressSubscription: AnyCancellable?
     private var readyFallbackWork: DispatchWorkItem?
     private var readySafetyWork: DispatchWorkItem?
@@ -552,8 +556,6 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// not yet seen, or idle.
     enum Activity { case idle, running, failed }
     @Published private(set) var activity: Activity = .idle
-    /// Called when pcode's docked editor comes or goes, so a hidden pane can size it.
-    var onDockChange: (() -> Void)?
     /// Called when the pane's activity state transitions, so collapsed folder headers refresh.
     var onActivityChange: (() -> Void)?
     /// Called when a turn ends (running to idle or failed), so the workspace
@@ -615,13 +617,13 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
                 self.resolver.dismissFailure()
                 self.resolve()
             }
-        dockSubscription = surface.pcodeDock.$surface
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                // After the publish: the new surface is in place by then.
-                DispatchQueue.main.async { self?.onDockChange?() }
-            }
         dockReadySubscription = surface.pcodeDock.$ready
+            .filter { $0 }
+            .first()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.markReady() }
+        // pcode asks the user something before its editor starts: show it now.
+        inputSubscription = surface.pcodeDock.$needsInput
             .filter { $0 }
             .first()
             .receive(on: DispatchQueue.main)
@@ -664,29 +666,25 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         isReady = true
     }
 
-    /// Called when pcode reports its session ID: if no dock opens shortly after
-    /// (e.g. dock disabled or older pcode), dismiss the boot overlay anyway.
+    /// Called when pcode reports its session or host ID: if `pcode;ready` hasn't
+    /// arrived shortly after, dismiss the boot overlay anyway.
     func noteSessionReported() {
         guard !isReady, readyFallbackWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.isReady else { return }
-            if self.surface.existingPCodeDock?.surface == nil {
-                self.markReady()
-            }
+            self?.markReady()
         }
         readyFallbackWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
-    /// Every terminal this pane shows: pcode's, its docked editor's, and the shell.
+    /// Every terminal this pane shows: pcode's editor and the optional bottom shell.
     var surfaces: [Ghostty.SurfaceView] {
-        [surface, surface.existingPCodeDock?.surface, shell].compactMap { $0 }
+        [surface, shell].compactMap { $0 }
     }
 
-    /// The surface keys should go to: pcode's docked editor once shown, else its terminal.
+    /// The surface keys should go to: pcode's editor terminal.
     var keyboardSurface: Ghostty.SurfaceView {
-        if let dock = surface.existingPCodeDock, dock.ready, let docked = dock.surface { return docked }
-        return surface
+        surface
     }
 
     /// Worktree directory name when this pane runs in a worktree under `projectPath`.
@@ -2006,30 +2004,23 @@ final class PCodeWorkspace: ObservableObject {
         guard let window, detailSize.width > 0, detailSize.height > 0 else { return }
         let scale = window.backingScaleFactor
         let shown = selectedPane
-        // The shown terminals' own pixel sizes, as their layout gave them
-        // (scrollers and padding included), else estimates from the area.
-        let transcript = Self.pixels(shown?.surface)
-            ?? (UInt32(detailSize.width * scale), UInt32(detailSize.height * scale))
-        let shownDock = shown?.surface.existingPCodeDrawer?.isOpen == true
+        let shownCard = shown?.surface.existingPCodeDrawer?.isOpen == true
             ? nil
-            : Self.pixels(shown?.surface.existingPCodeDock?.surface)
+            : Self.pixels(shown?.surface)
         for pane in panes where pane.id != selected {
-            Self.setSize(pane.surface, transcript, scale: scale)
-            if let docked = pane.surface.existingPCodeDock?.surface {
-                let cell = docked.cellSize.height > 0 ? docked.cellSize.height : 18
-                let heightPx = UInt32(max(1, PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell) * scale))
-                let dock: (UInt32, UInt32)
-                if let drawer = pane.surface.existingPCodeDrawer, drawer.isOpen {
-                    let drawerWidth = PCodeDrawer.width(
-                        in: detailSize.width,
-                        fraction: drawer.fraction,
-                        minWidth: PCodeDrawer.dockedMinWidth) - 1
-                    dock = (UInt32(max(1, (drawerWidth - 16) * scale)), heightPx)
-                } else {
-                    dock = shownDock ?? (UInt32(max(1, (detailSize.width - 16) * scale)), heightPx)
-                }
-                Self.setSize(docked, dock, scale: scale)
+            let cell = pane.surface.cellSize.height > 0 ? pane.surface.cellSize.height : 18
+            let heightPx = UInt32(max(1, PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell) * scale))
+            let card: (UInt32, UInt32)
+            if let drawer = pane.surface.existingPCodeDrawer, drawer.isOpen {
+                let drawerWidth = PCodeDrawer.width(
+                    in: detailSize.width,
+                    fraction: drawer.fraction,
+                    minWidth: PCodeDrawer.dockedMinWidth) - 1
+                card = (UInt32(max(1, (drawerWidth - 2 * PCodeDock.bottomMargin) * scale)), heightPx)
+            } else {
+                card = shownCard ?? (UInt32(max(1, (detailSize.width - 2 * PCodeDock.bottomMargin) * scale)), heightPx)
             }
+            Self.setSize(pane.surface, card, scale: scale)
         }
     }
 
@@ -2056,7 +2047,6 @@ final class PCodeWorkspace: ObservableObject {
             // Re-sort open panes by last response and refresh folder status dots.
             self.objectWillChange.send()
         }
-        pane.onDockChange = { [weak self] in self?.schedulePresize() }
         pane.onActivityChange = { [weak self] in
             // Folder headers always surface live running/failed dots (collapsed or expanded).
             self?.objectWillChange.send()
@@ -2160,12 +2150,19 @@ final class PCodeWorkspace: ObservableObject {
         guard let index = panes.firstIndex(where: { $0 === pane }) else { return }
         panes.remove(at: index)
         let shouldStopHost = !restarting
-        let hostID = pane.hostID ?? pane.lastHostID ?? pane.hostStatus?.hostID
+        let hostID = pane.hostID ?? pane.lastHostID ?? pane.hostStatus?.hostID ?? pane.launchHostID
         let sessionID = pane.sessionID
         if let shell = pane.shell { PCode.retire(shell) }
         PCode.retire(pane.surface)
-        if shouldStopHost {
-            Self.stopHost(hostID: hostID, sessionID: sessionID)
+        if shouldStopHost, Self.stopHost(hostID: hostID, sessionID: sessionID).isEmpty,
+           let launchHostID = pane.launchHostID {
+            // Closed before its host registered: it may still be importing, so
+            // try the id the app gave it again once it has had time to appear.
+            for delay in [2.0, 6.0] {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+                    _ = Self.stopHost(hostID: launchHostID, sessionID: nil)
+                }
+            }
         }
         saveOpen()
         reloadHistory()
@@ -2228,21 +2225,34 @@ final class PCodeWorkspace: ObservableObject {
             config.environmentVariables[key] = value
         }
         config.workingDirectory = resolvedDir
-        // The docked editor (PCodeDock) is what the workspace shows under each session.
-        config.environmentVariables["PCODE_DOCK"] = "1"
+        // The pane's single surface runs pcode's editor-only host client (`PCodeDockCard`).
+        config.environmentVariables["PCODE_EDITOR_ONLY"] = "1"
         // Tell pcode the native transcript renders the session, so it leaves out
         // the editor rows only a terminal needs (tool rows, live command previews).
         config.environmentVariables["PCODE_NATIVE_TRANSCRIPT"] = "1"
         // Suppress macOS `login(1)` "Last login:" banner in pcode session panes.
         config.environmentVariables["PCODE_HUSH_LOGIN"] = "1"
+        // The id of the host pcode starts, known here before the host boots and
+        // reports it, so closing the pane early still stops it.
+        let launchHostID = Self.newHostID()
+        config.environmentVariables["PCODE_HOST_ID"] = launchHostID
+        // pcode keeps its own startup errors on screen until Enter (`hold_failed_start`).
         config.waitAfterCommand = false
         let view = Ghostty.SurfaceView(app, baseConfig: config)
+        view.pcodeSession = sessionID
         PCode.applyColorScheme(to: view)
-        return PCodeSessionPane(
+        let pane = PCodeSessionPane(
             surface: view,
             directory: resolvedDir,
             projectPath: resolvedProject,
             sessionID: sessionID)
+        pane.launchHostID = launchHostID
+        return pane
+    }
+
+    /// A fresh host id in pcode's format (`new_host_id`: 8 lowercase hex digits).
+    static func newHostID() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
     }
 
     private func surfaceClosed(_ view: Ghostty.SurfaceView, processAlive: Bool) {

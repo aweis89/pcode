@@ -69,15 +69,17 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     }
 
     func suppressesResizeOverlay(_ view: Ghostty.SurfaceView) -> Bool {
-        view.isPCodeOverlay || view.pcodeHasShownDock
+        view.isPCodeOverlay || view.pcodeIsSessionPane
     }
 
     func clickableHeight(_ view: Ghostty.SurfaceView) -> CGFloat? {
         view.pcodeDockVisibleHeight
     }
 
+    // No-op since panes run on one surface (no dock handoff); removing the
+    // hook from the fork's seam is pending, `dev/native-app-plan.md` step 7.
     func clicksThroughOnFocus(_ view: Ghostty.SurfaceView) -> Bool {
-        view.pcodeHasShownDock
+        false
     }
 
     func ignoresMouse(_ view: Ghostty.SurfaceView) -> Bool { view.pcodeIgnoresMouse }
@@ -86,7 +88,8 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
 
     func didBecomeFirstResponder(_ view: Ghostty.SurfaceView) { view.pcodeDidFocus() }
 
-    func didMouseUp(_ view: Ghostty.SurfaceView) { view.pcodeDidMouseUp() }
+    // No-op for the same reason as `clicksThroughOnFocus` (plan step 7).
+    func didMouseUp(_ view: Ghostty.SurfaceView) {}
 
     func willKeyDown(_ view: Ghostty.SurfaceView, _ event: NSEvent) { view.pcodeWillKeyDown(event) }
 
