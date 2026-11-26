@@ -6,7 +6,25 @@ import SwiftUI
 /// Short-lived protocol-2 host RPC helper for control intents (e.g., `stop_jobs`)
 /// without calling `attach`, so it never affects `attached`, `_latest`, or `unseen`.
 enum PCodeHostControlRPC {
-    private static let queue = DispatchQueue(label: "com.pcode.host.control-rpc", qos: .userInitiated)
+    private static let queue = DispatchQueue(
+        label: "com.pcode.host.control-rpc",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    static func stopJobs(_ jobIDs: [String]?, sessionID: String?, hostID: String?) {
+        queue.async {
+            guard let socketPath = PCodeSessionInfo.hostSocketPath(
+                forSessionID: sessionID,
+                hostID: hostID
+            ), !socketPath.isEmpty else { return }
+            _ = sendRequest(
+                socketPath: socketPath,
+                method: "stop_jobs",
+                args: [jobIDs as Any]
+            )
+        }
+    }
 
     static func stopJobs(_ jobIDs: [String]?, socketPath: String) {
         guard !socketPath.isEmpty else { return }
@@ -27,6 +45,9 @@ enum PCodeHostControlRPC {
         kwargs: [String: Any] = [:],
         timeoutSeconds: Double = 2.0
     ) -> Bool {
+        let clampedTimeout = max(0.2, timeoutSeconds)
+        let deadline = CFAbsoluteTimeGetCurrent() + clampedTimeout
+
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { Darwin.close(fd) }
@@ -35,8 +56,8 @@ enum PCodeHostControlRPC {
         _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
 
         var tv = timeval(
-            tv_sec: Int(timeoutSeconds),
-            tv_usec: Int32((timeoutSeconds - floor(timeoutSeconds)) * 1_000_000)
+            tv_sec: Int(clampedTimeout),
+            tv_usec: Int32((clampedTimeout - floor(clampedTimeout)) * 1_000_000)
         )
         _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
@@ -60,16 +81,18 @@ enum PCodeHostControlRPC {
         }
         guard connectResult == 0 else { return false }
 
-        // Verify the peer socket belongs to our own user.
+        // Verify the peer socket belongs to our effective user.
         var peerUID: uid_t = 0
         var peerGID: gid_t = 0
-        guard Darwin.getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == Darwin.getuid() else {
+        guard Darwin.getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == Darwin.geteuid() else {
             return false
         }
 
         let hello = "{\"type\":\"hello\",\"protocol\":2}\n"
         guard writeAll(fd: fd, data: Data(hello.utf8)) else { return false }
-        guard let readyLine = readLine(fd: fd),
+
+        var readBuffer = Data()
+        guard let readyLine = readLine(fd: fd, buffer: &readBuffer, deadline: deadline),
               let readyObj = try? JSONSerialization.jsonObject(with: readyLine) as? [String: Any],
               readyObj["type"] as? String == "ready"
         else {
@@ -89,12 +112,21 @@ enum PCodeHostControlRPC {
             "args": sanitizedArgs,
             "kwargs": kwargs,
         ]
-        guard var reqData = try? JSONSerialization.data(withJSONObject: reqObj) else { return false }
+        guard JSONSerialization.isValidJSONObject(reqObj),
+              var reqData = try? JSONSerialization.data(withJSONObject: reqObj)
+        else { return false }
         reqData.append(0x0A)
         guard writeAll(fd: fd, data: reqData) else { return false }
 
-        // Wait for reply so the host processes the intent before we close.
-        _ = readLine(fd: fd)
+        // Wait for reply and verify the host accepted the intent.
+        guard let replyLine = readLine(fd: fd, buffer: &readBuffer, deadline: deadline),
+              let replyObj = try? JSONSerialization.jsonObject(with: replyLine) as? [String: Any],
+              replyObj["type"] as? String == "reply",
+              (replyObj["id"] as? Int) == 1,
+              replyObj["error"] == nil
+        else {
+            return false
+        }
         return true
     }
 
@@ -114,21 +146,43 @@ enum PCodeHostControlRPC {
         }
     }
 
-    private static func readLine(fd: Int32, maxBytes: Int = 65_536) -> Data? {
-        var result = Data()
-        var byte: UInt8 = 0
-        while result.count < maxBytes {
-            let n = Darwin.read(fd, &byte, 1)
-            if n == 1 {
-                if byte == 0x0A { return result }
-                result.append(byte)
+    private static func readLine(
+        fd: Int32,
+        buffer: inout Data,
+        deadline: CFAbsoluteTime,
+        maxBytes: Int = 65_536
+    ) -> Data? {
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        while true {
+            if let nlIndex = buffer.firstIndex(of: 0x0A) {
+                let line = buffer.prefix(upTo: nlIndex)
+                buffer.removeSubrange(...nlIndex)
+                return Data(line)
+            }
+            if buffer.count >= maxBytes { return nil }
+
+            let remaining = deadline - CFAbsoluteTimeGetCurrent()
+            if remaining <= 0 { return nil }
+
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let timeoutMs = Int32(min(Double(Int32.max), ceil(remaining * 1000.0)))
+            let ready = Darwin.poll(&pfd, 1, timeoutMs)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if ready == 0 { return nil }
+
+            let n = Darwin.read(fd, &chunk, chunk.count)
+            if n > 0 {
+                buffer.append(contentsOf: chunk.prefix(n))
             } else if n < 0 && errno == EINTR {
                 continue
             } else {
                 break
             }
         }
-        return result.isEmpty ? nil : result
+        return nil
     }
 }
 
@@ -170,14 +224,25 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         ) ?? NSColor(ghostty.config.backgroundColor))
     }
 
-    private var actions: PCodeInspectorActions {
+    private func actions(isOverlay: Bool) -> PCodeInspectorActions {
         let surface = pane.surface
-        let directory = pane.directory
+        let directory = changesStore.sessionDirectory ?? pane.directory
         let sessionID = pane.sessionID
-        let lastHostID = pane.lastHostID
+        let hostID = surface.pcodeHost
+            ?? pane.hostID
+            ?? pane.hostStatus?.hostID
+            ?? pane.lastHostID
+            ?? pane.launchHostID
+        let state = inspectorState
         return PCodeInspectorActions(
             insertIntoComposer: { text in
                 guard !text.isEmpty else { return }
+                if state.isExpanded {
+                    state.isExpanded = false
+                }
+                if isOverlay {
+                    state.close()
+                }
                 surface.surfaceModel?.sendText(text)
                 Ghostty.moveFocus(to: surface)
             },
@@ -190,14 +255,15 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 NSPasteboard.general.setString(text, forType: .string)
             },
             stopJob: { jobID in
-                let hostID = surface.pcodeHost ?? lastHostID
-                guard let socketPath = PCodeSessionInfo.hostSocketPath(
-                    forSessionID: sessionID,
-                    hostID: hostID
-                ) else { return }
-                PCodeHostControlRPC.stopJobs([jobID], socketPath: socketPath)
+                PCodeHostControlRPC.stopJobs([jobID], sessionID: sessionID, hostID: hostID)
             }
         )
+    }
+
+    static func overlayDrawerWidth(in totalWidth: CGFloat, fraction: CGFloat) -> CGFloat {
+        let minWidth = min(totalWidth, PCodeInspectorState.minSplitWidth)
+        let maxWidth = max(minWidth, totalWidth * 0.85)
+        return min(maxWidth, max(minWidth, totalWidth * fraction))
     }
 
     private static func resolvePath(_ path: String, relativeTo directory: String) -> String {
@@ -215,63 +281,25 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         GeometryReader { geometry in
             let totalWidth = max(1, geometry.size.width)
             let useOverlay = PCodeInspectorState.shouldUseOverlay(containerWidth: totalWidth)
+            let isSplit = inspectorState.isOpen && !inspectorState.isExpanded && !useOverlay
+            let isOverlay = inspectorState.isOpen && !inspectorState.isExpanded && useOverlay
+            let isExpanded = inspectorState.isOpen && inspectorState.isExpanded
+            let inspectorWidth = isSplit
+                ? PCodeInspectorState.clampedWidth(in: totalWidth, fraction: inspectorState.splitFraction)
+                : 0
+            let drawerWidth = Self.overlayDrawerWidth(in: totalWidth, fraction: inspectorState.splitFraction)
 
-            if !inspectorState.isOpen {
-                mainContent()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if inspectorState.isExpanded {
-                // Keep mainContent mounted behind the expanded panel so the docked
-                // Ghostty terminal and transcript scroll position stay intact.
-                ZStack {
+            // Keep `mainContent()` at a single invariant structural position across all states
+            // so opening/closing/expanding or crossing the overlay width threshold never tears
+            // down the live transcript controller or Ghostty terminal surfaces.
+            ZStack(alignment: .trailing) {
+                HStack(spacing: 0) {
                     mainContent()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
+                        .allowsHitTesting(!isExpanded)
+                        .accessibilityHidden(isExpanded)
 
-                    inspectorPanel(totalWidth: totalWidth, isOverlay: false)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .transition(.opacity)
-                }
-            } else if useOverlay {
-                let drawerWidth = min(
-                    max(PCodeInspectorState.minSplitWidth, totalWidth * 0.85),
-                    max(PCodeInspectorState.minSplitWidth, totalWidth * inspectorState.splitFraction)
-                )
-                ZStack(alignment: .trailing) {
-                    mainContent()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    Color.black.opacity(colorScheme == .dark ? 0.34 : 0.18)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            inspectorState.close()
-                        }
-
-                    ZStack(alignment: .leading) {
-                        inspectorPanel(totalWidth: drawerWidth, isOverlay: true)
-                            .frame(width: drawerWidth)
-                            .frame(maxHeight: .infinity)
-                            .shadow(color: Color.black.opacity(0.28), radius: 14, x: -4, y: 0)
-
-                        resizeHandle(totalWidth: totalWidth, isOverlay: true)
-                            .frame(width: 11)
-                            .offset(x: -5)
-                    }
-                    .frame(width: drawerWidth)
-                    .frame(maxHeight: .infinity)
-                }
-            } else {
-                let inspectorWidth = PCodeInspectorState.clampedWidth(
-                    in: totalWidth,
-                    fraction: inspectorState.splitFraction
-                )
-                let dividerX = totalWidth - inspectorWidth
-
-                ZStack(alignment: .leading) {
-                    HStack(spacing: 0) {
-                        mainContent()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
+                    if isSplit {
                         Rectangle()
                             .fill(
                                 dividerHovered || dragStartFraction != nil
@@ -284,39 +312,97 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                             .frame(width: inspectorWidth)
                             .frame(maxHeight: .infinity)
                     }
+                }
 
-                    resizeHandle(totalWidth: totalWidth, isOverlay: false)
+                if isSplit {
+                    resizeHandle(
+                        totalWidth: totalWidth,
+                        displayedWidth: inspectorWidth,
+                        isOverlay: false
+                    )
+                    .frame(width: 11)
+                    .offset(x: -(inspectorWidth - 5))
+                    .zIndex(5)
+                }
+
+                if isOverlay {
+                    Color.black.opacity(colorScheme == .dark ? 0.34 : 0.18)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            inspectorState.close()
+                            Ghostty.moveFocus(to: pane.keyboardSurface)
+                        }
+
+                    ZStack(alignment: .leading) {
+                        inspectorPanel(totalWidth: drawerWidth, isOverlay: true)
+                            .frame(width: drawerWidth)
+                            .frame(maxHeight: .infinity)
+                            .shadow(color: Color.black.opacity(0.28), radius: 14, x: -4, y: 0)
+
+                        resizeHandle(
+                            totalWidth: totalWidth,
+                            displayedWidth: drawerWidth,
+                            isOverlay: true
+                        )
                         .frame(width: 11)
-                        .offset(x: dividerX - 5)
-                        .zIndex(5)
+                        .offset(x: -5)
+                    }
+                    .frame(width: drawerWidth)
+                    .frame(maxHeight: .infinity)
+                }
+
+                if isExpanded {
+                    inspectorPanel(totalWidth: totalWidth, isOverlay: false)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .background(
+                PCodeInspectorEscapeMonitor(enabled: isOverlay || isExpanded) {
+                    if inspectorState.isExpanded {
+                        inspectorState.isExpanded = false
+                    } else {
+                        inspectorState.close()
+                    }
+                    Ghostty.moveFocus(to: pane.keyboardSurface)
+                }
+            )
         }
         .onAppear {
-            if inspectorState.isOpen, inspectorState.activeTab == .changes {
-                changesStore.setActiveScope(inspectorState.diffScope, triggerRefresh: true)
-            }
+            syncChangesStoreGitPolling()
         }
-        .onChange(of: inspectorState.diffScope) { scope in
-            changesStore.setActiveScope(scope, triggerRefresh: inspectorState.isOpen)
+        .onChange(of: inspectorState.diffScope) { _ in
+            syncChangesStoreGitPolling()
         }
-        .onChange(of: inspectorState.isOpen) { isOpen in
-            if isOpen, inspectorState.activeTab == .changes {
-                changesStore.setActiveScope(inspectorState.diffScope, triggerRefresh: true)
-            }
+        .onChange(of: inspectorState.isOpen) { _ in
+            syncChangesStoreGitPolling()
+        }
+        .onChange(of: inspectorState.activeTab) { _ in
+            syncChangesStoreGitPolling()
         }
     }
 
-    private func resizeHandle(totalWidth: CGFloat, isOverlay: Bool) -> some View {
+    private func syncChangesStoreGitPolling() {
+        let shouldPollGit = inspectorState.isOpen
+            && inspectorState.activeTab == .changes
+            && (inspectorState.diffScope == .workingTree || inspectorState.diffScope == .branch)
+        if shouldPollGit {
+            changesStore.setActiveScope(inspectorState.diffScope, triggerRefresh: true)
+        } else {
+            changesStore.setActiveScope(.session, triggerRefresh: false)
+            changesStore.cancelPendingGitRefresh()
+        }
+    }
+
+    private func resizeHandle(totalWidth: CGFloat, displayedWidth: CGFloat, isOverlay: Bool) -> some View {
         PCodeResizeHandle(
             orientation: .horizontal,
             onHover: { dividerHovered = $0 },
             onDoubleClick: { inspectorState.toggleExpanded() },
             onDragStart: {
-                dragStartFraction = inspectorState.splitFraction
+                dragStartFraction = displayedWidth / max(1, totalWidth)
             },
             onDragChanged: { delta in
-                let base = dragStartFraction ?? inspectorState.splitFraction
+                let base = dragStartFraction ?? (displayedWidth / max(1, totalWidth))
                 let nextFraction = base - (delta / max(1, totalWidth))
                 let maxFrac: CGFloat = isOverlay ? 0.85 : PCodeInspectorState.maxSplitFraction
                 inspectorState.splitFraction = min(maxFrac, max(PCodeInspectorState.minSplitFraction, nextFraction))
@@ -335,18 +421,11 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 .fill(ghostty.config.splitDividerColor.opacity(0.75))
                 .frame(height: 1)
 
-            inspectorBody
+            inspectorBody(isOverlay: isOverlay)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(inspectorBackground)
         .environment(\.colorScheme, colorScheme)
-        .modifier(PCodeInspectorOverlayEscapeModifier(enabled: isOverlay || inspectorState.isExpanded) {
-            if inspectorState.isExpanded {
-                inspectorState.isExpanded = false
-            } else {
-                inspectorState.close()
-            }
-        })
     }
 
     private func inspectorHeader(isOverlay: Bool) -> some View {
@@ -449,7 +528,8 @@ struct PCodeInspectorSplit<MainContent: View>: View {
     }
 
     @ViewBuilder
-    private var inspectorBody: some View {
+    private func inspectorBody(isOverlay: Bool) -> some View {
+        let resolvedActions = actions(isOverlay: isOverlay)
         switch inspectorState.activeTab {
         case .changes:
             let diffs = changesStore.files(for: inspectorState.diffScope)
@@ -463,7 +543,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
             PCodeChangesInspectorView(
                 state: inspectorState,
                 diffs: diffs,
-                actions: actions,
+                actions: resolvedActions,
                 singleEditLabel: singleEditLabel,
                 isLoading: changesStore.isLoadingGit && (inspectorState.diffScope == .workingTree || inspectorState.diffScope == .branch),
                 codeFont: typography.snapshot.codeNSFont(scale: typography.snapshot.codeBlockScale),
@@ -481,31 +561,86 @@ struct PCodeInspectorSplit<MainContent: View>: View {
             PCodeInspectorAgentsView(
                 state: inspectorState,
                 store: agentsStore,
-                actions: actions
+                actions: resolvedActions
             )
         case .commands:
             PCodeInspectorCommandsView(
                 state: inspectorState,
                 store: commandsStore,
-                actions: actions
+                actions: resolvedActions
             )
         }
     }
 }
 
-/// Dismisses narrow-overlay or expanded Inspector on `Esc` on macOS 14+.
-private struct PCodeInspectorOverlayEscapeModifier: ViewModifier {
+/// Window-scoped local key monitor that dismisses narrow-overlay or expanded Inspector on `Esc`
+/// even when focus stays in the Ghostty composer or an AppKit transcript/text view.
+private struct PCodeInspectorEscapeMonitor: NSViewRepresentable {
     let enabled: Bool
     let onEscape: () -> Void
 
-    func body(content: Content) -> some View {
-        if #available(macOS 14.0, *), enabled {
-            content.onKeyPress(.escape) {
-                onEscape()
-                return .handled
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.enabled = enabled
+        view.onEscape = onEscape
+        return view
+    }
+
+    func updateNSView(_ view: MonitorView, context: Context) {
+        view.enabled = enabled
+        view.onEscape = onEscape
+    }
+
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) {
+        view.teardown()
+    }
+
+    final class MonitorView: NSView {
+        var enabled = false {
+            didSet { syncMonitor() }
+        }
+        var onEscape: (() -> Void)?
+        private var monitor: Any?
+
+        deinit {
+            teardown()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            syncMonitor()
+        }
+
+        func teardown() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
             }
-        } else {
-            content
+        }
+
+        private func syncMonitor() {
+            guard enabled, window != nil else {
+                teardown()
+                return
+            }
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      self.enabled,
+                      let window = self.window,
+                      event.window === window,
+                      event.keyCode == 53, // Escape
+                      event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+                else {
+                    return event
+                }
+                // Let active text-input fields (e.g. agent message draft or search bar) handle Escape first.
+                if let responder = window.firstResponder as? NSTextView, responder.isEditable {
+                    return event
+                }
+                self.onEscape?()
+                return nil
+            }
         }
     }
 }

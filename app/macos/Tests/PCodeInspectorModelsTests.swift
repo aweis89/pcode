@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import Ghostty
 
@@ -64,5 +65,13 @@ struct PCodeInspectorModelsTests {
         #expect(PCodeFileChangeKind(operation: "delete").badge == "D")
         #expect(PCodeFileChangeKind(operation: "rename").badge == "R")
         #expect(PCodeFileChangeKind(operation: "edit").badge == "M")
+    }
+
+    @Test @MainActor func overlayDrawerWidthClampsNarrowAndWideContainers() {
+        // Very narrow container (< minSplitWidth 320): never overflows totalWidth.
+        #expect(PCodeInspectorSplit<EmptyView>.overlayDrawerWidth(in: 240, fraction: 0.44) == 240)
+        // Normal overlay container (700pt): respects minSplitWidth and 0.85 cap.
+        #expect(PCodeInspectorSplit<EmptyView>.overlayDrawerWidth(in: 700, fraction: 0.25) == 320)
+        #expect(PCodeInspectorSplit<EmptyView>.overlayDrawerWidth(in: 700, fraction: 0.95) == 700 * 0.85)
     }
 }

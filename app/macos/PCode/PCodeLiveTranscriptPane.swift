@@ -260,8 +260,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
                         documentView.showThinking = thinking
                     }
                     reducer.loadHistory(welcome.history)
+                    self.onHostEvent?(.history(welcome.history))
                 }
-                self.onHostEvent?(.history(welcome.history))
                 self.shownHistory = welcome.catchUpCalls.isEmpty ? welcome.history : nil
                 var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
@@ -646,18 +646,17 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
             PCodeWorkspaceController.existing?.workspace.noteHostConnected(for: composer)
         }
         controller.onHostEvent = { event in
-            guard let composer,
-                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
-            else { return }
+            let forward: @MainActor () -> Void = {
+                guard let composer,
+                      let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+                else { return }
+                pane.applyInspectorEvent(event)
+            }
             if Thread.isMainThread {
-                MainActor.assumeIsolated {
-                    pane.applyInspectorEvent(event)
-                }
+                MainActor.assumeIsolated(forward)
             } else {
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        pane.applyInspectorEvent(event)
-                    }
+                    MainActor.assumeIsolated(forward)
                 }
             }
         }
@@ -674,10 +673,14 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
                   let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
             else { return }
             MainActor.assumeIsolated {
-                if !callID.isEmpty, pane.changesStore.singleEdit(for: callID) != nil {
-                    pane.inspectorState.openChanges(filePath: path, scope: .singleEdit(callID: callID))
+                if !callID.isEmpty, let single = pane.changesStore.singleEdit(for: callID) {
+                    pane.inspectorState.openChanges(filePath: single.path, scope: .singleEdit(callID: callID))
                 } else {
-                    pane.inspectorState.openChanges(filePath: path, scope: .session)
+                    let normalized = PCodePathNormalizer.normalize(
+                        rawPath: path,
+                        sessionDirectory: pane.changesStore.sessionDirectory
+                    ).displayPath
+                    pane.inspectorState.openChanges(filePath: normalized, scope: .session)
                 }
             }
         }
@@ -689,12 +692,19 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
                 pane.inspectorState.openAgent(callID: callID)
             }
         }
-        scrollView.transcriptDocumentView.onInspectCommand = { callID in
+        scrollView.transcriptDocumentView.onInspectCommand = { callID, command in
             guard let composer,
                   let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
             else { return }
             MainActor.assumeIsolated {
-                pane.inspectorState.openCommand(callID: callID)
+                if pane.commandsStore.command(for: callID) != nil {
+                    pane.inspectorState.openCommand(callID: callID)
+                } else if !command.isEmpty,
+                          let matched = pane.commandsStore.commands.first(where: { $0.command == command }) {
+                    pane.inspectorState.openCommand(callID: matched.id)
+                } else {
+                    pane.inspectorState.openCommand(callID: callID)
+                }
             }
         }
         scrollView.composerHasSelection = {

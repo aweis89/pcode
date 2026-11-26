@@ -2853,9 +2853,13 @@ final class PCodeWorkspace: ObservableObject {
             fresh.inspectorState.isOpen = pane.inspectorState.isOpen
             fresh.inspectorState.activeTab = pane.inspectorState.activeTab
             fresh.inspectorState.diffScope = pane.inspectorState.diffScope
+            fresh.inspectorState.diffLayout = pane.inspectorState.diffLayout
             fresh.inspectorState.splitFraction = pane.inspectorState.splitFraction
             fresh.inspectorState.isExpanded = pane.inspectorState.isExpanded
             fresh.inspectorState.focusedFilePath = pane.inspectorState.focusedFilePath
+            fresh.inspectorState.focusedAgentID = pane.inspectorState.focusedAgentID
+            fresh.inspectorState.focusedCommandID = pane.inspectorState.focusedCommandID
+            fresh.inspectorState.collapsedFiles = pane.inspectorState.collapsedFiles
             fresh.inspectorState.followAgent = pane.inspectorState.followAgent
         }
         if let shell = pane.shell {
@@ -2951,14 +2955,14 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     func toggleInspector() {
-        guard let pane = selectedPane else { return }
+        guard !showingDirectoryPicker, let pane = selectedPane else { return }
         MainActor.assumeIsolated {
             pane.inspectorState.toggle()
         }
     }
 
     func selectInspectorTab(_ tab: PCodeInspectorTab) {
-        guard let pane = selectedPane else { return }
+        guard !showingDirectoryPicker, let pane = selectedPane else { return }
         MainActor.assumeIsolated {
             pane.inspectorState.activeTab = tab
             pane.inspectorState.isOpen = true
@@ -2966,28 +2970,23 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     func toggleInspectorExpanded() {
-        guard let pane = selectedPane else { return }
+        guard !showingDirectoryPicker, let pane = selectedPane else { return }
         MainActor.assumeIsolated {
-            if !pane.inspectorState.isOpen {
-                pane.inspectorState.isOpen = true
-                pane.inspectorState.isExpanded = true
-            } else {
-                pane.inspectorState.toggleExpanded()
-            }
+            pane.inspectorState.toggleExpanded()
         }
     }
 
     func openInspectorFile(_ path: String, in pane: PCodeSessionPane) {
         select(pane)
         MainActor.assumeIsolated {
-            pane.inspectorState.openChanges(filePath: path)
+            pane.inspectorState.openChanges(filePath: path, scope: .session)
         }
     }
 
     func openInspectorChanges(in pane: PCodeSessionPane) {
         select(pane)
         MainActor.assumeIsolated {
-            pane.inspectorState.openChanges()
+            pane.inspectorState.openChanges(scope: .session)
         }
     }
 

@@ -344,7 +344,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     var onReturnFocusToComposer: (() -> Void)?
     var onInspectDiff: ((_ callID: String, _ path: String) -> Void)?
     var onInspectAgent: ((_ callID: String) -> Void)?
-    var onInspectCommand: ((_ callID: String) -> Void)?
+    var onInspectCommand: ((_ callID: String, _ command: String) -> Void)?
     /// In the `/btw` drawer, `q` hands focus back to the composer without forwarding `q` (`btw_tail`).
     var swallowsQToReturnFocus = false
     /// When `true` (default), consecutive settled tools/edits fold into an expandable summary pill
@@ -2244,7 +2244,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if call.isDelegate, let onInspectAgent {
                 inspectAction = { onInspectAgent(rawCallID) }
             } else if call.isShellLike && !call.isDelegate, let onInspectCommand {
-                inspectAction = { onInspectCommand(rawCallID) }
+                inspectAction = { onInspectCommand(rawCallID, call.command) }
             } else {
                 inspectAction = nil
             }
