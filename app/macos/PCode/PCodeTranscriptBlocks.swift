@@ -1262,7 +1262,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             nameColor = theme.secondaryForeground
         }
         out.append(NSAttributedString(
-            string: call.name,
+            string: call.displayName,
             attributes: [
                 .font: typography.codeNSFont(scale: 0.84, weight: typography.weight.nsEmphasisWeight),
                 .foregroundColor: nameColor,
@@ -1327,7 +1327,12 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
         // Lazy tool output rendering: only format/append output when expanded.
         if isExpanded {
-            if !call.output.isEmpty {
+            if !call.output.isEmpty && call.isDelegate {
+                // A sub-agent's report is Markdown written for a reader, not tool output.
+                out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: style]))
+                out.append(PCodeTranscriptMarkdown.attributedString(
+                    forProse: call.output, typography: typography, theme: theme, scale: 0.92))
+            } else if !call.output.isEmpty {
                 out.append(NSAttributedString(
                     string: "\n" + call.output,
                     attributes: [

@@ -64,6 +64,14 @@ struct PCodePeekToolCall: Identifiable, Equatable {
         return ""
     }
 
+    /// A `delegate_task` call: its row holds a sub-agent's nested calls and its
+    /// output is that sub-agent's Markdown report.
+    var isDelegate: Bool { PCodeToolGrouper.isDelegateTool(name) }
+
+    /// The row's title. Tool names stay as-is except delegation, whose internal
+    /// name says nothing to a reader about the sub-agent run it contains.
+    var displayName: String { isDelegate ? "Sub-agent" : name }
+
     var isShellLike: Bool {
         if !command.isEmpty { return true }
         let lower = name.lowercased()

@@ -117,7 +117,7 @@ struct PCodeTranscriptItem: Identifiable {
             return table.plainText
         case .tool(let call, _):
             let summary = call.summaryText
-            return summary.isEmpty ? call.name : "\(call.name) \(summary)"
+            return summary.isEmpty ? call.displayName : "\(call.displayName) \(summary)"
         case .toolGroup(let group):
             return group.plainSummaryText
         case .diff(let diff, let isExpanded):
