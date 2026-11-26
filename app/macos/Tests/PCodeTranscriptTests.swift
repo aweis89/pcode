@@ -1752,9 +1752,9 @@ struct PCodeTranscriptTests {
         let doc = scrollView.transcriptDocumentView
         doc.groupTools = false
 
-        let t1 = PCodePeekToolCall(id: "t1", name: "read_file", detail: "a.swift", command: "", output: "line1\nline2", isRunning: false, failed: false)
-        let t2 = PCodePeekToolCall(id: "t2", name: "read_file", detail: "b.swift", command: "", output: "line1\nline2", isRunning: false, failed: false)
-        let t3 = PCodePeekToolCall(id: "t3", name: "read_file", detail: "c.swift", command: "", output: "line1\nline2", isRunning: false, failed: false)
+        let t1 = PCodePeekToolCall(id: 1, name: "read_file", detail: "a.swift", failed: false, elapsedSeconds: 0.1, command: "", output: "line1\nline2")
+        let t2 = PCodePeekToolCall(id: 2, name: "read_file", detail: "b.swift", failed: false, elapsedSeconds: 0.1, command: "", output: "line1\nline2")
+        let t3 = PCodePeekToolCall(id: 3, name: "read_file", detail: "c.swift", failed: false, elapsedSeconds: 0.1, command: "", output: "line1\nline2")
         doc.setItems([
             PCodeTranscriptItem(id: "t1", payload: .tool(t1, isExpanded: false), spacingAfter: 4),
             PCodeTranscriptItem(id: "t2", payload: .tool(t2, isExpanded: false), spacingAfter: 4),
