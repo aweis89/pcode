@@ -4239,7 +4239,7 @@ def _leave_worktree_on_exit(app, ask=input, stream=None, owner: str | None = Non
         ask=ask,
         notify=lambda text: print(text, file=stream),
         owner=owner,
-        session_dir=getattr(app, "session_dir", None),
+        session_dir=app.session_dir,
     )
     if deleted:
         app.runtime.session = None
@@ -4304,13 +4304,20 @@ def _resume_workspace(info, requested: Path | None) -> Path:
     and the conversation is still worth resuming afterwards. Prefer an explicit
     `-C DIR`, already checked to be the same repository, then the checkout the
     worktree was made from. Refusing outright would strand the session on a
-    path nothing can recreate.
+    path nothing can recreate. A deleted session worktree is recreated first.
     """
     from pcode.sessions import SessionError
+    from pcode.worktree import restore
 
     workspace = Path(info.workspace)
     if workspace.is_dir():
         return workspace
+    if restored := restore(workspace, info.id, sys.stderr):
+        print(
+            f"workspace: {workspace} had been deleted; recreated it on branch {restored.branch}",
+            file=sys.stderr,
+        )
+        return restored.path
     for candidate in (requested, Path(info.project) if info.project else None):
         if candidate is not None and candidate.is_dir():
             print(

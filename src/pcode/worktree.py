@@ -11,6 +11,7 @@ for this one. The project script is arbitrary code shipped with the repo, so it
 only runs for a trusted repository, like `.pcode/extensions`.
 """
 
+import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -186,6 +187,63 @@ def create(repo: Path, name: str, base: str | None = None) -> Worktree:
     else:
         _git(main, "worktree", "add", "-b", name, str(path), base)
     return Worktree(path=path, branch=name, main=main)
+
+
+def restore(path: Path, owner: str | None = None, stream=None) -> Worktree | None:
+    """Recreate a session worktree deleted from under its session, at the same path.
+
+    Only a `<main>/.worktrees/pcode-*` checkout of a repository that still
+    exists qualifies. Its branch is reused if it survived, else started afresh
+    from the mainline: a worktree only goes without asking once nothing on it
+    is unmerged. Claimed for `owner` and set up as a new one would be; a setup
+    failure is reported to `stream` but keeps the checkout, which tools can
+    still run in. None when `path` isn't one or it can't be recreated.
+    """
+    path = Path(path)
+    if path.is_dir():
+        return describe(path)  # Another process got there first.
+    name, main = path.name, path.parent.parent
+    if not name.startswith(SESSION_WORKTREE_PREFIX) or path.parent.name != WORKTREES_DIR:
+        return None
+    try:
+        if main_checkout(main) != main.resolve():
+            return None
+        # Git still lists the deleted checkout, which blocks adding it again.
+        _git(main, "worktree", "prune")
+        created = create(main, name)
+    except WorktreeError, OSError:
+        return describe(path) if path.is_dir() else None
+    try:
+        if owner:
+            claim(created, owner)
+        run_setup(created, stream=stream)
+    except (WorktreeError, OSError) as error:
+        if stream is not None:
+            print(f"worktree: setup failed in {created.path}: {error}", file=stream)
+    return created
+
+
+def _named_by_a_session(path: Path, root: Path | None) -> bool:
+    """Whether any saved session might work in `path`, without the agent stack.
+
+    `pcode.sessions` pulls in Harness (most of a second), which a bare quit
+    must not pay; a text scan of `session.json` rules almost every exit out.
+    """
+    if root is None:
+        state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        root = Path(os.environ.get("PCODE_SESSION_DIR") or state / "pcode" / "sessions")
+    needle = json.dumps(str(path.resolve()), ensure_ascii=False)
+    try:
+        directories = list(Path(root).expanduser().iterdir())
+    except OSError:
+        return False
+    for directory in directories:
+        try:
+            if needle in (directory / "session.json").read_text():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 # Beside git's own bookkeeping for the worktree (`.git/worktrees/<name>/`),
@@ -746,12 +804,21 @@ def leave_worktree(
     # under the other one, open or waiting to be resumed. Asked even without a
     # session: a host stopped before its runtime loaded has none, yet its
     # owner ID passes the check above while a fork of it works here.
-    from pcode.sessions import sharing
+    root = session.directory.parent if session is not None else session_dir
+    others = []
+    if session is not None or _named_by_a_session(linked.path, root):
+        from pcode.sessions import sharing
 
-    if session is not None:
-        others = sharing(linked.path, session.directory.parent, exclude=session.info.id)
-    else:
-        others = sharing(linked.path, session_dir, exclude=owner)
+        if session is not None:
+            others = sharing(linked.path, root, exclude=session.info.id)
+        else:
+            # The owner's own session counts only while open elsewhere (it was
+            # resumed after `/stop`); closed, it is the one leaving.
+            others = [
+                (other, running)
+                for other, running in sharing(linked.path, root)
+                if other != owner or running
+            ]
     if others:
         other, running = others[0]
         state = "is still open in" if running else "still works in"

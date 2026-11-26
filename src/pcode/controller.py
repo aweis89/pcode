@@ -7,6 +7,7 @@ dev/development.md#session-hosts.
 
 import asyncio
 import inspect
+import io
 import threading
 from collections.abc import Callable
 from contextlib import aclosing, suppress
@@ -1776,6 +1777,7 @@ class SessionController:
             self.activity.start_prompt(label, kind="system", detail=detail)
         else:
             self.activity.start_prompt(text)
+        await self.restore_workspace()
         self.activity.status = "Waiting for model…"
 
         def compaction_notice(text):
@@ -3900,6 +3902,29 @@ class SessionController:
             )
         self.mcp_defaults_requested = True
 
+    async def restore_workspace(self) -> None:
+        """Recreate this session's worktree if it was deleted from elsewhere.
+
+        Otherwise every turn fails on the missing directory (`WorkspaceGuard`)
+        until the session is resumed somewhere else.
+        """
+        if self.workspace.is_dir():
+            return
+        from pcode.worktree import restore
+
+        session = getattr(self.runtime, "session", None)
+        owner = self.worktree_owner or (session.info.id if session is not None else None)
+        self.activity.status = "Recreating workspace…"
+        log = io.StringIO()
+        restored = await asyncio.to_thread(restore, self.workspace, owner, log)
+        if restored is not None:
+            self.view.note(
+                f"Workspace {restored.path} was deleted from elsewhere; recreated it on "
+                f"branch {restored.branch}."
+            )
+        if failed := [line for line in log.getvalue().splitlines() if "setup failed" in line]:
+            self.view.warning(failed[-1])
+
     def _resume_workspace(self, info) -> Path:
         """Where a resumed session works: its own directory, if this repository's.
 
@@ -3912,9 +3937,22 @@ class SessionController:
         continue it here when this is the same repository.
         """
         from pcode.sessions import SessionError
-        from pcode.worktree import repo_scope, session_scope
+        from pcode.worktree import repo_scope, restore, session_scope
 
         target = Path(info.workspace).resolve()
+        if target == self.workspace and target.is_dir():
+            return target
+        # Only this repository's: a foreign one is refused below, not recreated.
+        if not target.is_dir() and (
+            target == self.workspace or session_scope(info) == repo_scope(self.workspace)
+        ):
+            log = io.StringIO()
+            if restored := restore(target, info.id, log):
+                self.view.note(
+                    f"Session workspace {target} had been deleted; recreated it on branch "
+                    f"{restored.branch}."
+                )
+                return restored.path
         if target == self.workspace:
             return target
         if not target.is_dir():
