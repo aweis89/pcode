@@ -194,9 +194,15 @@ struct PCodeSidebarTests {
         defer { root.remove() }
         try root.write("a", title: "A")
         try root.write("b", title: "B")
-        // Not a session: a symlink to one, and a session.json naming another id.
+        // Not sessions: a symlink to one, a symlinked session.json, and a
+        // session.json naming another id.
         try root.fm.createSymbolicLink(
             at: root.url.appendingPathComponent("link"), withDestinationURL: root.url.appendingPathComponent("a"))
+        try root.write("d")
+        try root.fm.removeItem(at: root.url.appendingPathComponent("d/session.json"))
+        try root.fm.createSymbolicLink(
+            at: root.url.appendingPathComponent("d/session.json"),
+            withDestinationURL: root.url.appendingPathComponent("a/session.json"))
         try root.write("c")
         try Data(#"{"id":"other","workspace":"/tmp/proj","updated":"x","turns":1}"#.utf8)
             .write(to: root.url.appendingPathComponent("c/session.json"))
@@ -338,9 +344,35 @@ struct PCodeSidebarTests {
         #expect(groups[0].unstarredRecentSessions.count == page)
         #expect(groups[0].remainingRecentCount == 117 - page)
 
-        let all117 = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [proj: page + 100], defaultLimit: 5)
-        #expect(all117.sessions.count == 120)
-        #expect(all117.remaining.isEmpty)
+        let everything = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [proj: page + 100], defaultLimit: 5)
+        #expect(everything.sessions.count == 120)
+        #expect(everything.remaining.isEmpty)
+    }
+
+    @Test func hiddenFolderCountsRemainingOnlyWhenItListsUnstarredSessions() throws {
+        let starredOnly = PCodeWorkspace.normalizePath("/tmp/hidden-starred-only")
+        let withHost = PCodeWorkspace.normalizePath("/tmp/hidden-with-host")
+        let all = try (0..<8).map { i in
+            try makeInfo("a\(i)", workspace: starredOnly, updated: "2026-11-26T0\(9 - i):00:00+00:00")
+        } + (0..<8).map { i in
+            try makeInfo("b\(i)", workspace: withHost, updated: "2026-11-25T0\(9 - i):00:00+00:00")
+        }
+        let host = PCodeHostStatus(
+            hostID: "h", pid: 1, sessionID: "b0", state: "idle", title: "", outcome: "", turns: 1, unseen: false, updated: 1)
+        let keep: Set<String> = ["a3", "b0"]
+        let slice = PCodeWorkspace.sliceHistory(all, keep: keep, recentLimits: [:], defaultLimit: 5)
+        #expect(slice.remaining == [starredOnly: 2, withHost: 2])
+        let groups = PCodeWorkspace.buildProjectGroups(
+            panes: [], projectPathForPane: { $0.projectPath }, history: slice.sessions,
+            detachedHostStatuses: ["b0": host], pinnedFolders: [], hiddenFolders: [starredOnly, withHost],
+            starredSessionIDs: ["a3"], remainingRecentCounts: slice.remaining)
+        #expect(groups.map(\.path) == [withHost, starredOnly])
+        // A live host shows the hidden folder's recents, and counts the rest.
+        #expect(groups[0].recentSessions.count == 5)
+        #expect(groups[0].remainingRecentCount == 2)
+        // Shown only for its starred session: no others, so nothing to count.
+        #expect(groups[1].recentSessions.map(\.id) == ["a3"])
+        #expect(groups[1].remainingRecentCount == 0)
     }
 
     @Test func hostedSessionsSurfaceActivityAndUnseenInProjectGroup() throws {
