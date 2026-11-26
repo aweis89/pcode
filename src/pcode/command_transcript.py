@@ -7,9 +7,9 @@ from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.text import Text
 
-from pcode import glyphs
 from pcode.block import INDENT, block_heading, block_rule
 from pcode.syntax import transparent_theme
+from pcode.tool_display import outcome_icon
 
 # Marks where a multi-line command (a heredoc, say) ends and its output begins.
 SEPARATOR = "┄" * 12
@@ -21,6 +21,7 @@ class CommandTranscript:
     output: str
     title: str
     failed: bool = False
+    exit_code: int | None = None
     elapsed_seconds: float | None = None
     max_lines: int | None = None
     code_theme: str = "monokai"
@@ -31,7 +32,7 @@ class CommandTranscript:
         # detail behind a non-zero exit.
         yield block_rule(
             block_heading(
-                glyphs.icon("fail") if self.failed else glyphs.icon("ok"),
+                outcome_icon(self.failed, self.exit_code),
                 self.title,
                 self.elapsed_seconds,
             )

@@ -53,6 +53,10 @@ class ToolSummary:
     # delegate's result) that lands whenever it finishes, not where the model
     # is; such notices share the normal command-result rendering.
     execution: str = ""
+    # A command's exit status, when its result reports one. `failed` stays the
+    # verdict (could not run, or was killed); a non-zero status without it is a
+    # command that ran and answered "no", which the UI marks apart from both.
+    exit_code: int | None = None
 
 
 @dataclass(frozen=True)

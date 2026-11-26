@@ -77,7 +77,7 @@ from pcode.ui import Transcript
             {"command": "pytest -q"},
             "[stderr]\nprivate text\n[exit code: 1]",
             "pytest -q → exit 1",
-            True,
+            False,
         ),
         (
             "run_command",
@@ -114,6 +114,13 @@ from pcode.ui import Transcript
             {"job_id": "j4"},
             "output\n[j4 · exit 2 · 3.0s]",
             "j4 · exit 2",
+            False,
+        ),
+        (
+            "wait_for_job",
+            {"job_id": "j4"},
+            "output\n[j4 · exit -11 · 3.0s]",
+            "j4 · exit -11 · Killed by SIGSEGV",
             True,
         ),
         (
@@ -129,6 +136,47 @@ from pcode.ui import Transcript
 )
 def test_safe_result_metrics(name, args, content, expected, failed):
     assert result_detail(name, args, content, "success") == (expected, failed)
+
+
+@pytest.mark.parametrize(
+    ("code", "detail", "failed"),
+    [
+        (0, "", False),
+        (1, "exit 1", False),
+        (2, "exit 2", False),
+        (255, "exit 255", False),
+        (126, "exit 126 · Not executable", True),
+        (127, "exit 127 · Executable not found", True),
+        (-9, "exit -9 · Killed by SIGKILL", True),
+        (139, "exit 139 · Killed by SIGSEGV", True),
+        (141, "exit 141", False),
+        (-13, "exit -13", False),
+        (130, "exit 130 · Interrupted", False),
+        (-15, "exit -15 · Interrupted", False),
+    ],
+)
+def test_only_failing_to_run_or_finish_counts_as_a_shell_failure(code, detail, failed):
+    from pcode.tool_display import shell_status
+
+    assert shell_status(code) == (detail, failed)
+
+
+def test_outcome_icon_marks_a_nonzero_exit_apart_from_ok_and_fail():
+    from pcode import glyphs
+    from pcode.tool_display import outcome_icon
+
+    assert outcome_icon(False, None) == outcome_icon(False, 0) == glyphs.icon("ok")
+    assert outcome_icon(False, 1) == glyphs.icon("nonzero")
+    assert outcome_icon(True, 127) == glyphs.icon("fail")
+
+
+def test_command_exit_code_reads_job_markers_and_exit_trailers():
+    from pcode.tool_display import command_exit_code
+
+    assert command_exit_code("shell", "out\n[j2 · exit 1 · 0.1s]") == 1
+    assert command_exit_code("wait_for_job", "[j2 · running · 1.0s]") is None
+    assert command_exit_code("run_command", "[stderr]\nx\n[exit code: 2]") == 2
+    assert command_exit_code("read_file", "[j2 · exit 1 · 0.1s]") is None
 
 
 @pytest.mark.parametrize(

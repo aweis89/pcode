@@ -8,6 +8,7 @@ dev/development.md#session-hosts.
 import asyncio
 import inspect
 import io
+import signal
 import threading
 from collections.abc import Callable
 from contextlib import aclosing, suppress
@@ -60,7 +61,7 @@ from pcode.preferences import (
 from pcode.rpc import transportable
 from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
 from pcode.shell_mode import execute, shell_command
-from pcode.tool_display import command_text
+from pcode.tool_display import command_text, shell_status
 
 # What the terminal handles itself. A skill or extension command may not take
 # one of these names (nor a session command's): built-ins win.
@@ -1063,10 +1064,18 @@ class SessionController:
             if truncated:
                 output = REDUCED_SHELL_OUTPUT + "\n" + output
             result = output + f"\n[{job.id} · {job.outcome()} · {format_duration(job.elapsed)}]"
+            # A stop is the user's or model's choice, not a failure. One that
+            # had to escalate to SIGKILL publishes no status; say so.
+            exit_code = job.exit_code
+            if exit_code is None and job.stopped:
+                exit_code = -signal.SIGKILL
+            status, failed = shell_status(exit_code)
             event = JobFinished(
                 "shell",
-                f"{command_text(job.label())} → {job.id} · {job.outcome()}",
-                failed=job.stopped or job.exit_code != 0,
+                f"{command_text(job.label())} → {job.id} · "
+                + (job.outcome() if job.stopped else status or job.outcome()),
+                failed=failed and not job.stopped,
+                exit_code=exit_code,
                 elapsed_seconds=job.elapsed,
                 command=command_text(job.command),
                 result=command_text(result),

@@ -85,6 +85,8 @@ class ToolCall:
     started: float = field(default_factory=monotonic)
     settled: float | None = None
     failed: bool = False
+    # A non-zero exit that `failed` does not cover: ran, and answered "no".
+    exit_code: int | None = None
     # A delegate's slot in the hue ring, kept for its whole run.
     hue: int = 0
     # A delegate's short id (`w3`, `w3.1`), once its worker status arrives.
@@ -229,6 +231,7 @@ class ToolHistory:
             if existing is None:
                 return
             existing.failed = event.failed
+            existing.exit_code = event.exit_code
             existing.settled = monotonic()
             if existing.event.name != DELEGATE:
                 self.recent = existing

@@ -305,7 +305,7 @@ def test_reduced_shell_keeps_handles_and_status(tmp_path, delegated, mode):
                 text = parts[-1].content
                 assert len(text) < 2000
                 # The job marker is control information, never reduced away.
-                assert job_status(text) == ("j1 · exit 7", True)
+                assert job_status(text) == ("j1 · exit 7", False)
             yield "Done"
 
     runtime = AgentRuntime(
@@ -315,7 +315,7 @@ def test_reduced_shell_keeps_handles_and_status(tmp_path, delegated, mode):
     async def run():
         events = [event async for event in runtime.stream("Run")]
         shell = next(e for e in events if isinstance(e, ToolSummary) and e.name == "shell")
-        assert shell.failed
+        assert not shell.failed and shell.exit_code == 7
         assert "exit 7" in shell.detail
         assert shell.result.startswith(REDUCED_SHELL_OUTPUT)
         assert observed_shell

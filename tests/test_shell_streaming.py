@@ -273,7 +273,8 @@ def test_preview_cap_and_nonzero_status_come_from_upstream_events(tmp_path):
     async def run():
         events = [event async for event in runtime.stream("run")]
         result = next(e for e in events if isinstance(e, ToolSummary))
-        assert result.failed and "exit 7" in result.detail
+        # It ran and exited non-zero: marked apart from success, not a failure.
+        assert not result.failed and result.exit_code == 7 and "exit 7" in result.detail
         assert "preview capped" in result.detail
         assert "· exit 7 ·" in result.error
         previews = [e for e in events if isinstance(e, CommandOutput)]
@@ -291,6 +292,6 @@ def test_result_marker_supersedes_an_earlier_running_event():
     assert job_status(running) == ("j4 · still running", False)
     # A command that exits between the event and the result must not be
     # reported as running just because the event said so.
-    assert job_status("boom\n[j4 · exit 9 · 2.0s]") == ("j4 · exit 9", True)
+    assert job_status("boom\n[j4 · exit 9 · 2.0s]") == ("j4 · exit 9", False)
     assert job_status("[j4 · exit 0 · 2.0s]") == ("", False)
     assert job_status("no marker here") == ("", False)

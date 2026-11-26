@@ -144,7 +144,7 @@ def test_job_count_excludes_older_exits(tmp_path):
 
 @pytest.mark.parametrize("busy", [False, True])
 @pytest.mark.parametrize("show_commands", ["off", "on"])
-@pytest.mark.parametrize("outcome", ["success", "failure", "stopped"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "crash", "stopped"])
 def test_finished_jobs_leave_footer_count_and_report_once_like_run_commands(
     tmp_path, busy, show_commands, outcome
 ):
@@ -173,7 +173,7 @@ def test_finished_jobs_leave_footer_count_and_report_once_like_run_commands(
 
     job.ended_at = job.started_at + 8.8
     job.stopped = outcome == "stopped"
-    job.exit_code = None if job.stopped else 0 if outcome == "success" else 2
+    job.exit_code = {"success": 0, "failure": 2, "crash": -11}.get(outcome)
     assert app.controller.refresh_jobs() is True
     assert app.activity.job_count == 0
     assert job.announced == set()
@@ -184,7 +184,8 @@ def test_finished_jobs_leave_footer_count_and_report_once_like_run_commands(
     app.activity.busy = False
     assert app.controller.report_finished_jobs() == [job]
     printed = stream.getvalue()
-    marker = "✓" if outcome == "success" else "✗"
+    # A non-zero exit or a stop is an ordinary ending; only a crash failed.
+    marker = {"success": "✓", "crash": "✗"}.get(outcome, "•")
     assert f"{marker} Run shell · j12 · " in printed
     assert "j12" in printed and "8.8s" in printed
     assert "make test" in printed

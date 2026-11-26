@@ -575,6 +575,7 @@ class SessionBrowser:
                             failed=block.failed,
                             elapsed_seconds=block.elapsed_seconds,
                             command=block.command,
+                            exit_code=block.exit_code,
                         )
                     ]
                 elif text := literal(block):

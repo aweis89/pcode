@@ -116,6 +116,7 @@ from pcode.tool_display import (
     command_preview,
     command_text,
     label,
+    outcome_icon,
     plain,
     split_outcome,
     tool_summary_lines,
@@ -844,7 +845,7 @@ def _row_key(call: ToolCall) -> tuple:
     Its state is part of it: a failure, or a call still running, never hides
     behind a lookalike's mark.
     """
-    return (*call_parts(call), call.change, call.failed, call.settled is None)
+    return (*call_parts(call), call.change, call.failed, call.exit_code, call.settled is None)
 
 
 def head_rows(text: str, width: int, rows: int) -> list[str]:
@@ -1624,6 +1625,8 @@ class Activity:
             mark = spinner if isinstance(spinner, tuple) else ("class:activity.tool", spinner)
         elif call.failed:
             mark = ("class:activity.tool.failed", glyphs.icon("fail"))
+        elif call.exit_code:
+            mark = ("class:activity.tool.done", glyphs.icon("nonzero"))
         else:
             mark = ("class:activity.tool.done", glyphs.icon("tool_done"))
         # A wide spinner (`dots12`) would push running rows' text past
@@ -6077,6 +6080,7 @@ class Transcript:
                 # line is syntax-highlighted as shell and should stay runnable.
                 title=f"{title} · {event.purpose}" if event.purpose else title,
                 failed=event.failed,
+                exit_code=event.exit_code,
                 elapsed_seconds=event.elapsed_seconds,
                 max_lines=self.command_scrollback_lines,
                 code_theme=self.code_theme,
@@ -6121,7 +6125,7 @@ class Transcript:
     def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
         """The compact rows a settled call leaves in scrollback."""
         if event.name not in COMMAND_TOOLS and not event.command:
-            mark = glyphs.icon("fail") if event.failed else glyphs.icon("ok")
+            mark = outcome_icon(event.failed, event.exit_code)
             return [
                 Text.assemble(
                     (f"{mark} {label(event.name)}  ", "pcode.thinking"),
@@ -6139,13 +6143,16 @@ class Transcript:
         # panel, passes the whole detail to the same renderer.
         result = (
             " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=60)
-            if event.failed or (event.name != "run_command" and " → " in event.detail)
+            if event.failed
+            or event.exit_code
+            or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
         return tool_summary_lines(
             event.name,
             result,
             failed=event.failed,
+            exit_code=event.exit_code,
             elapsed_seconds=event.elapsed_seconds,
             command=event.command,
             width=max(1, self.console.width - indent),
