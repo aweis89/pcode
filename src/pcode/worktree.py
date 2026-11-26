@@ -189,38 +189,55 @@ def create(repo: Path, name: str, base: str | None = None) -> Worktree:
     return Worktree(path=path, branch=name, main=main)
 
 
-def restore(path: Path, owner: str | None = None, stream=None) -> Worktree | None:
+def restore(path: Path, owners=(), stream=None) -> str | None:
     """Recreate a session worktree deleted from under its session, at the same path.
 
     Only a `<main>/.worktrees/pcode-*` checkout of a repository that still
     exists qualifies. Its branch is reused if it survived, else started afresh
     from the mainline: a worktree only goes without asking once nothing on it
-    is unmerged. Claimed for `owner` and set up as a new one would be; a setup
-    failure is reported to `stream` but keeps the checkout, which tools can
-    still run in. None when `path` isn't one or it can't be recreated.
+    is unmerged. Claimed for each of `owners` and set up as a new one would
+    be; a setup failure is reported in the result but keeps the checkout,
+    which tools can still run in.
+
+    Returns a note saying what happened, or None when nothing was recreated:
+    `path` isn't one, it exists again (another process got there first), or a
+    removal or restore holds the lifecycle lock -- the next turn tries again.
     """
+    from pcode.task_worktrees import parent_operation
+
     path = Path(path)
-    if path.is_dir():
-        return describe(path)  # Another process got there first.
     name, main = path.name, path.parent.parent
-    if not name.startswith(SESSION_WORKTREE_PREFIX) or path.parent.name != WORKTREES_DIR:
+    if path.exists() or not name.startswith(SESSION_WORKTREE_PREFIX):
+        return None
+    if path.parent.name != WORKTREES_DIR:
         return None
     try:
         if main_checkout(main) != main.resolve():
             return None
-        # Git still lists the deleted checkout, which blocks adding it again.
-        _git(main, "worktree", "prune")
-        created = create(main, name)
+        with parent_operation(path, main):
+            if path.exists():
+                return None
+            # Git still lists the deleted checkout, which blocks adding it again.
+            _git(main, "worktree", "prune")
+            ref = f"refs/heads/{name}"
+            fresh = _git(main, "show-ref", "--quiet", "--verify", ref, check=False).returncode
+            created = create(main, name)
+            for owner in dict.fromkeys(filter(None, owners)):
+                claim(created, owner)
     except WorktreeError, OSError:
-        return describe(path) if path.is_dir() else None
+        return None
+    note = f"{path} was deleted from elsewhere; recreated it on branch {name}"
+    if fresh:
+        mainline = mainline_branch(main)
+        note += (
+            f", started fresh from {mainline} since the old branch was gone "
+            "(anything unmerged on it is not here)"
+        )
     try:
-        if owner:
-            claim(created, owner)
         run_setup(created, stream=stream)
     except (WorktreeError, OSError) as error:
-        if stream is not None:
-            print(f"worktree: setup failed in {created.path}: {error}", file=stream)
-    return created
+        note += f"; its setup failed ({error})"
+    return note + "."
 
 
 def _named_by_a_session(path: Path, root: Path | None) -> bool:
@@ -229,9 +246,12 @@ def _named_by_a_session(path: Path, root: Path | None) -> bool:
     `pcode.sessions` pulls in Harness (most of a second), which a bare quit
     must not pay; a text scan of `session.json` rules almost every exit out.
     """
-    if root is None:
-        state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-        root = Path(os.environ.get("PCODE_SESSION_DIR") or state / "pcode" / "sessions")
+    if root is None:  # As `pcode.sessions.session_root`, which this must not import.
+        if value := os.environ.get("PCODE_SESSION_DIR"):
+            root = Path(value)
+        else:
+            state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+            root = state / "pcode" / "sessions"
     needle = json.dumps(str(path.resolve()), ensure_ascii=False)
     try:
         directories = list(Path(root).expanduser().iterdir())
@@ -239,9 +259,9 @@ def _named_by_a_session(path: Path, root: Path | None) -> bool:
         return False
     for directory in directories:
         try:
-            if needle in (directory / "session.json").read_text():
+            if needle in (directory / "session.json").read_text(encoding="utf-8"):
                 return True
-        except OSError:
+        except OSError, ValueError:
             continue
     return False
 

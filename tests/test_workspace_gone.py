@@ -144,7 +144,7 @@ def test_continue_without_any_surviving_directory_says_where_to_go(tmp_path, mon
 def test_continue_elsewhere_in_the_same_repository_is_allowed(repo, tmp_path, monkeypatch):
     from pcode import worktree
 
-    created = worktree.create(repo, "hand-explicit")
+    created = worktree.create(repo, "pcode-explicit")  # -C wins over recreating it.
     sibling = worktree.create(repo, "pcode-sibling")
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", created.path, root)

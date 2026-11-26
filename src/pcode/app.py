@@ -4310,14 +4310,13 @@ def _resume_workspace(info, requested: Path | None) -> Path:
     from pcode.worktree import restore
 
     workspace = Path(info.workspace)
+    # An explicit `-C DIR` elsewhere is where the user asked to continue.
+    if not workspace.is_dir() and (requested is None or requested.resolve() == workspace):
+        owners = (info.id, info.forked_from or "")
+        if note := restore(workspace, owners, sys.stderr):
+            print(f"workspace: {note}", file=sys.stderr)
     if workspace.is_dir():
         return workspace
-    if restored := restore(workspace, info.id, sys.stderr):
-        print(
-            f"workspace: {workspace} had been deleted; recreated it on branch {restored.branch}",
-            file=sys.stderr,
-        )
-        return restored.path
     for candidate in (requested, Path(info.project) if info.project else None):
         if candidate is not None and candidate.is_dir():
             print(

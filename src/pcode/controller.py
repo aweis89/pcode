@@ -575,6 +575,8 @@ class SessionController:
         self.workspace = Path.cwd()
         # Where saved sessions live, and whether this one is saved.
         self.session_dir: Path | None = None
+        # `/worktree remove` or `finish` took this workspace away on purpose.
+        self.workspace_removed = False
         self.save_sessions = False
         # Consumed by the first saved session so it shares its ID with the
         # worktree created for it; later `/new` sessions get their own.
@@ -1777,7 +1779,6 @@ class SessionController:
             self.activity.start_prompt(label, kind="system", detail=detail)
         else:
             self.activity.start_prompt(text)
-        await self.restore_workspace()
         self.activity.status = "Waiting for model…"
 
         def compaction_notice(text):
@@ -1839,6 +1840,8 @@ class SessionController:
         if journaled:
             self.start_naming(first_prompt)
         try:
+            # Inside the try: an Esc during a slow setup script still ends the turn.
+            await self.restore_workspace()
             async with aclosing(source) as stream:
                 async for event in stream:
                     if not journaled and getattr(runtime, "session", None) is not None:
@@ -3394,6 +3397,7 @@ class SessionController:
 
             def remove() -> list[str]:
                 result = worktree.remove(linked)
+                self.workspace_removed = True  # Not for the next turn to recreate.
                 self._leave_worktree(linked)
                 return [result, "This session's workspace no longer exists; /quit."]
 
@@ -3402,6 +3406,7 @@ class SessionController:
             # Refusals raise before anything is deleted, so the session stays put.
             def finish() -> list[str]:
                 result = worktree.finish(linked)
+                self.workspace_removed = True
                 self._leave_worktree(linked)
                 self.running = False
                 return [f"\u2713 {result}"]
@@ -3829,6 +3834,7 @@ class SessionController:
             return
         saved = SavedSession.open(identity, self.session_dir, fork_if_open=True)
         try:
+            await self._restore_resumed_workspace(saved.info)
             target = self._resume_workspace(saved.info)
             # A session from another worktree gets that worktree's extensions
             # and skills; the same workspace keeps what is already loaded.
@@ -3908,22 +3914,43 @@ class SessionController:
         Otherwise every turn fails on the missing directory (`WorkspaceGuard`)
         until the session is resumed somewhere else.
         """
-        if self.workspace.is_dir():
+        if self.workspace.is_dir() or self.workspace_removed:
             return
+        session = getattr(self.runtime, "session", None)
+        if session is not None and session.info.workspace != str(self.workspace):
+            return  # Repointed on purpose (it was left or removed here).
         from pcode.worktree import restore
 
-        session = getattr(self.runtime, "session", None)
-        owner = self.worktree_owner or (session.info.id if session is not None else None)
+        info = session.info if session is not None else None
+        owners = (self.worktree_owner, *self._session_ids(info))
         self.activity.status = "Recreating workspace…"
-        log = io.StringIO()
-        restored = await asyncio.to_thread(restore, self.workspace, owner, log)
-        if restored is not None:
-            self.view.note(
-                f"Workspace {restored.path} was deleted from elsewhere; recreated it on "
-                f"branch {restored.branch}."
-            )
-        if failed := [line for line in log.getvalue().splitlines() if "setup failed" in line]:
-            self.view.warning(failed[-1])
+        try:
+            note = await asyncio.to_thread(restore, self.workspace, owners, io.StringIO())
+        finally:
+            self.activity.status = "Waiting for model…"
+        if note:
+            self.view.note(f"Workspace {note}")
+
+    @staticmethod
+    def _session_ids(info) -> tuple[str, ...]:
+        """A session and the one it was copied from: both may tidy its worktree."""
+        return () if info is None else (info.id, info.forked_from or "")
+
+    async def _restore_resumed_workspace(self, info) -> None:
+        """Recreate a resumed session's deleted worktree, if it is this repository's.
+
+        A foreign one is left for `_resume_workspace` to refuse.
+        """
+        from pcode.worktree import repo_scope, restore, session_scope
+
+        target = Path(info.workspace).resolve()
+        if target.is_dir():
+            return
+        if target != self.workspace and session_scope(info) != repo_scope(self.workspace):
+            return
+        note = await asyncio.to_thread(restore, target, self._session_ids(info), io.StringIO())
+        if note:
+            self.view.note(f"Session workspace {note}")
 
     def _resume_workspace(self, info) -> Path:
         """Where a resumed session works: its own directory, if this repository's.
@@ -3937,22 +3964,9 @@ class SessionController:
         continue it here when this is the same repository.
         """
         from pcode.sessions import SessionError
-        from pcode.worktree import repo_scope, restore, session_scope
+        from pcode.worktree import repo_scope, session_scope
 
         target = Path(info.workspace).resolve()
-        if target == self.workspace and target.is_dir():
-            return target
-        # Only this repository's: a foreign one is refused below, not recreated.
-        if not target.is_dir() and (
-            target == self.workspace or session_scope(info) == repo_scope(self.workspace)
-        ):
-            log = io.StringIO()
-            if restored := restore(target, info.id, log):
-                self.view.note(
-                    f"Session workspace {target} had been deleted; recreated it on branch "
-                    f"{restored.branch}."
-                )
-                return restored.path
         if target == self.workspace:
             return target
         if not target.is_dir():
@@ -3978,6 +3992,7 @@ class SessionController:
         Project preferences and trust are per repository, so they stay.
         """
         self.workspace = workspace
+        self.workspace_removed = False
         self.extensions = extensions
         self.register_extension_commands()
         for name in self.skill_command_names:
