@@ -4159,7 +4159,7 @@ def main() -> None:
         return
     args.command = None
     if args.resume is not None:
-        from pcode.sessions import is_session_selector
+        from pcode.session_ids import is_session_selector
 
         if not is_session_selector(args.resume):
             # SESSION is optional, so argparse would otherwise swallow the first
@@ -4490,13 +4490,18 @@ def _running_host(selector: str, session_dir: Path | None, workspace: Path):
     be attached to: going there keeps one conversation instead of two.
     """
     from pcode.host_protocol import list_hosts
+
+    hosts = list_hosts()
+    # A full ID, as an app pane passes, names its host outright.
+    if running := next((entry for entry in hosts if entry.session_id == selector), None):
+        return running
     from pcode.sessions import SessionError, resolve_session
 
     try:
         identity = resolve_session(selector, session_dir, workspace).name
     except SessionError:
         return None  # The usual resume path reports it.
-    return next((entry for entry in list_hosts() if entry.session_id == identity), None)
+    return next((entry for entry in hosts if entry.session_id == identity), None)
 
 
 def _run_hosted(args: argparse.Namespace) -> None:

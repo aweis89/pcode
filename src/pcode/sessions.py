@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import sqlite3
 import tempfile
@@ -22,6 +21,7 @@ from pydantic import BaseModel
 
 from pcode.conversation_tree import ConversationTree, side_record
 from pcode.diagnostics import error_report, redact, versions
+from pcode.session_ids import is_session_selector
 
 
 class SessionError(ValueError):
@@ -426,11 +426,6 @@ def compact_snapshots(directory: Path, keep: int = SNAPSHOTS_PER_RUN) -> tuple[i
     finally:
         lock.release()
     return before, _store_bytes(database)
-
-
-def is_session_selector(value: str) -> bool:
-    """Tell an ID/prefix apart from prompt text after an optional-argument flag."""
-    return value == "latest" or bool(re.fullmatch(r"[a-f0-9-]{8,36}", value))
 
 
 def resolve_session(selector: str, root: Path | None = None, workspace: Path | None = None) -> Path:
