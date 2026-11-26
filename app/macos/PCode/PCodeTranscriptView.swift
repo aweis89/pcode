@@ -3144,8 +3144,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 : PCodeDiffCardView.summaryLine(for: payload)
         case .thinking(let thinking):
             return cachedThinkingAttributedString(for: item.id, thinking: thinking).string
-        case .note(let text, let tone):
-            return cachedNoteAttributedString(for: item.id, text: text, tone: tone).string
+        case .note(let text, _):
+            return text
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
         }
@@ -3218,7 +3218,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             guard rows > 0 else { return PCodeToolGroupCardView.rowHeight }
             return PCodeToolGroupCardView.windowHeight(rowCount: rows, lineHeight: PCodeToolGroupCardView.lineHeight(typography))
         case .note(let text, _):
-            let lines = max(1, min(12, text.count / 84 + 1))
+            let newlineLines = text.split(separator: "\n", omittingEmptySubsequences: false).count
+            let wrappedLines = text.count / 84 + 1
+            let lines = max(1, min(40, max(newlineLines, wrappedLines)))
             return 2 + CGFloat(lines) * typography.lineHeight(scale: PCodeNoteRowView.fontScale)
         case .status: return 24
         case .prompt(let label, let text, _):

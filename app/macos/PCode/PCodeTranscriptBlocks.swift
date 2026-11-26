@@ -2293,10 +2293,6 @@ final class PCodeNoteRowView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
-    func resetForTranscriptReuse() {
-        setSelectedRange(nil)
-    }
-
     static func attributedText(
         for text: String,
         tone: PCodeNoteTone,
@@ -2313,7 +2309,9 @@ final class PCodeNoteRowView: NSView, PCodeTranscriptRowHosting {
             color = .systemRed
         }
         let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = typography.lineHeight(scale: Self.fontScale)
+        let lineHeight = typography.lineHeight(scale: Self.fontScale)
+        paragraph.minimumLineHeight = lineHeight
+        paragraph.maximumLineHeight = lineHeight
         paragraph.lineBreakMode = .byWordWrapping
         return NSAttributedString(
             string: text,

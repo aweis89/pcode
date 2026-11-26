@@ -2941,11 +2941,16 @@ struct PCodeTranscriptTests {
         #expect(warnColor == .systemOrange)
         #expect(errColor == .systemRed)
 
+        let scrollView = PCodeTranscriptScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let doc = PCodeTranscriptDocumentView(typography: typography, theme: theme)
+        scrollView.documentView = doc
+        doc.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
         reducer.apply(.note("Loaded repository instructions: AGENTS.md"), reveal: false)
         reducer.apply(.warning("Heads up"), reveal: false)
         reducer.apply(.error("Something failed"), reveal: false)
+        doc.layoutSubtreeIfNeeded()
 
         #expect(doc.items.count == 3)
         if case .note(let text, let tone) = doc.items[0].payload {
@@ -2967,5 +2972,23 @@ struct PCodeTranscriptTests {
             Issue.record("expected .note(.error) payload for host error")
         }
         #expect(doc.plainTextForCopy(at: 0) == "Loaded repository instructions: AGENTS.md")
+
+        // Verify mounted note row configures, measures non-zero height, and cleans up on reuse.
+        let noteRow = PCodeNoteRowView()
+        let h = noteRow.configure(attributedText: infoAttr, width: 400, selectedRange: NSRange(location: 0, length: 6))
+        #expect(h > 10)
+        noteRow.setCurtainRevealProgress(0.5)
+        #expect(noteRow.layer?.mask != nil)
+        noteRow.resetForTranscriptReuse()
+        #expect(noteRow.textView.selectedRange == nil)
+        #expect(noteRow.layer?.mask == nil)
+
+        // Verify accessibility proxies expose concise labels without duplicating the full note body.
+        let axChildren = (doc.accessibilityChildren() as? [NSAccessibilityElement]) ?? []
+        #expect(axChildren.count == 3)
+        #expect(axChildren[0].accessibilityLabel() == "System note")
+        #expect((axChildren[0].accessibilityValue() as? String) == "Loaded repository instructions: AGENTS.md")
+        #expect(axChildren[1].accessibilityLabel() == "Warning")
+        #expect(axChildren[2].accessibilityLabel() == "Error")
     }
 }
