@@ -1442,7 +1442,10 @@ final class PCodeWorkspace: ObservableObject {
             Self.clearRestartMarker()
             let reopen: ([PCodeSessionInfo]) -> Void = { [weak self] all in
                 PCodeStartupTrace.mark("history loaded (\(all.count) sessions)")
-                guard let self, self.panes.isEmpty else { return }
+                // Even when a session was opened meanwhile (restore waits on the
+                // login shell): `open` skips one already here, and `reopen`
+                // leaves the user's choice selected.
+                guard let self else { return }
                 self.reopen(
                     saved: saved, marked: Set(marked), ready: ready, all: all, selectedID: selectedID,
                     hosted: hosted, openElsewhere: openElsewhere)
@@ -1468,6 +1471,7 @@ final class PCodeWorkspace: ObservableObject {
         hosted: Set<String>, openElsewhere: Set<String>
     ) {
         let infos = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let openedMeanwhile = !panes.isEmpty
         // Any session a host holds (`hosted`), even one a terminal is attached
         // to as well: `pcode -c` attaches to the host, and the window shows them all.
         let extra = all.map(\.id).filter { hosted.contains($0) && !saved.contains($0) }
@@ -1480,7 +1484,9 @@ final class PCodeWorkspace: ObservableObject {
             let openable = hosted.contains(id) || (marked.contains(id) ? ready.contains(id) : !openElsewhere.contains(id))
             if openable { open(info, select: false) }
         }
-        if !panes.isEmpty {
+        if openedMeanwhile {
+            return
+        } else if !panes.isEmpty {
             select(panes.first { $0.sessionID != nil && $0.sessionID == selectedID } ?? panes[0])
         } else {
             // Nothing reopened: stay on the inline project launcher instead of spawning a blank session.
