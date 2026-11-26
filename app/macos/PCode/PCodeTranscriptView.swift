@@ -369,6 +369,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var itemIndexByID: [String: Int] = [:]
     private var expandedGroupIDs: Set<String> = []
     private var absorbPulseByGroupID: [String: UInt64] = [:]
+    /// When each live tool/diff card started showing as active, so a fast one is held open.
+    private var activeSinceByRawID: [String: CFTimeInterval] = [:]
+    /// Settled cards still shown on their own until `minimumLiveCardSeconds` has passed.
+    private var heldOpenRawIDs: Set<String> = []
+    /// Bumped by `setItems` so a fold scheduled for the previous transcript does nothing.
+    private var foldHoldGeneration: UInt64 = 0
+    /// A live card that settles sooner than this stays visible until it has shown this long,
+    /// rather than flashing in and folding straight into its group.
+    var minimumLiveCardSeconds: CFTimeInterval = 3
     private var groupIDByRawItemID: [String: String] = [:]
     private var activeFoldGhostLayers: [CALayer] = []
     private var reusePools: [PCodeTranscriptItem.Kind: [any PCodeTranscriptRowHosting]] = [:]
@@ -599,16 +608,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         notifySearchContentWillChange()
         expandedGroupIDs.removeAll(keepingCapacity: false)
         absorbPulseByGroupID.removeAll(keepingCapacity: false)
+        activeSinceByRawID.removeAll(keepingCapacity: false)
+        heldOpenRawIDs.removeAll(keepingCapacity: false)
+        foldHoldGeneration &+= 1
         clearActiveFoldGhostLayers()
         rawItems = newItems
         bottomSlack = 0
         rebuildRawItemIndexMap()
-        let projection = PCodeToolGrouper.project(
-            rawItems: rawItems,
-            groupTools: groupTools,
-            hideThinking: !showThinking,
-            expandedGroupIDs: expandedGroupIDs,
-            absorbPulses: absorbPulseByGroupID)
+        let projection = projectRawItems()
         items = projection.items
         groupIDByRawItemID = projection.groupIDByRawItemID
         rebuildItemIndexMap()
@@ -749,8 +756,29 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let isActiveAfter = PCodeToolGrouper.isActive(item)
         let isGroupableItem = PCodeToolGrouper.isGroupable(item) || (existingRaw.map { PCodeToolGrouper.isGroupable($0) } ?? false)
 
+        let now = CACurrentMediaTime()
+        if isActiveAfter && !wasActiveBefore {
+            activeSinceByRawID[item.id] = now
+            // Running again: its pending fold no longer applies.
+            heldOpenRawIDs.remove(item.id)
+        }
+        var settlesLive = reveal && isGroupableItem && wasActiveBefore && !isActiveAfter
+        if !isActiveAfter {
+            let shownSince = activeSinceByRawID.removeValue(forKey: item.id)
+            // Settled too soon after appearing: keep its card until it has been readable,
+            // then fold it with the same animation a slower call gets.
+            if settlesLive, groupTools, let since = shownSince {
+                let remaining = minimumLiveCardSeconds - (now - since)
+                if remaining > 0 {
+                    heldOpenRawIDs.insert(item.id)
+                    scheduleHeldFold(rawItemID: item.id, after: remaining)
+                    settlesLive = false
+                }
+            }
+        }
+
         // Capture a visual snapshot right before a live active tool/diff folds into its group.
-        let foldSnapshot: FoldSnapshot? = (groupTools && reveal && isGroupableItem && wasActiveBefore && !isActiveAfter)
+        let foldSnapshot: FoldSnapshot? = (groupTools && settlesLive)
             ? captureFoldSnapshot(for: item.id)
             : nil
 
@@ -792,15 +820,44 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         // Grouped path: re-project and apply minimal diff.
         let revealIDs: Set<String> = (reveal && existingRawIdx == nil) ? [item.id] : []
-        let pulseRawID: String? = (reveal && wasActiveBefore && !isActiveAfter && PCodeToolGrouper.isGroupable(item))
+        let pulseRawID: String? = (settlesLive && PCodeToolGrouper.isGroupable(item))
             ? item.id
             : nil
         syncProjectedItems(
             revealNewIDs: revealIDs,
             foldSnapshot: foldSnapshot,
             pulseForRawItemID: pulseRawID,
-            animateShift: reveal && wasActiveBefore && !isActiveAfter)
+            animateShift: settlesLive)
         return itemIndexByID[item.id] ?? (groupIDByRawItemID[item.id].flatMap { itemIndexByID[$0] } ?? max(0, items.count - 1))
+    }
+
+    private func projectRawItems() -> PCodeToolGrouper.Projection {
+        PCodeToolGrouper.project(
+            rawItems: rawItems,
+            groupTools: groupTools,
+            hideThinking: !showThinking,
+            expandedGroupIDs: expandedGroupIDs,
+            absorbPulses: absorbPulseByGroupID,
+            heldOpenIDs: heldOpenRawIDs)
+    }
+
+    /// Fold a held-open card into its group once its minimum time on screen is up.
+    private func scheduleHeldFold(rawItemID: String, after delay: CFTimeInterval) {
+        let generation = foldHoldGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  self.foldHoldGeneration == generation,
+                  self.heldOpenRawIDs.remove(rawItemID) != nil,
+                  self.rawItemIndexByID[rawItemID] != nil
+            else { return }
+            guard self.groupTools else { return }
+            let snapshot = self.captureFoldSnapshot(for: rawItemID)
+            self.syncProjectedItems(
+                revealNewIDs: [],
+                foldSnapshot: snapshot,
+                pulseForRawItemID: rawItemID,
+                animateShift: true)
+        }
     }
 
     @discardableResult
@@ -881,23 +938,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         animateExpandedGroupID: String? = nil
     ) {
         // First projection to discover target group ID for any absorb pulse.
-        var projection = PCodeToolGrouper.project(
-            rawItems: rawItems,
-            groupTools: groupTools,
-            hideThinking: !showThinking,
-            expandedGroupIDs: expandedGroupIDs,
-            absorbPulses: absorbPulseByGroupID)
+        var projection = projectRawItems()
 
         if let pulseRawID = pulseForRawItemID,
            let targetGroupID = projection.groupIDByRawItemID[pulseRawID]
         {
             absorbPulseByGroupID[targetGroupID, default: 0] &+= 1
-            projection = PCodeToolGrouper.project(
-                rawItems: rawItems,
-                groupTools: groupTools,
-                hideThinking: !showThinking,
-                expandedGroupIDs: expandedGroupIDs,
-                absorbPulses: absorbPulseByGroupID)
+            projection = projectRawItems()
         }
 
         let oldItems = items
@@ -1225,6 +1272,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             rawItems.remove(at: rawIdx)
             rebuildRawItemIndexMap()
         }
+        activeSinceByRawID.removeValue(forKey: id)
+        heldOpenRawIDs.remove(id)
         if groupTools {
             syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: false)
             return

@@ -1251,6 +1251,8 @@ struct PCodeTranscriptTests {
         scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
+        // Instant settles here are about folding, not the minimum time on screen.
+        doc.minimumLiveCardSeconds = 0
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         reducer.apply(.turnStarted(prompt: "Run tests", isSide: false, runID: "r1"), reveal: true)
@@ -1372,6 +1374,8 @@ struct PCodeTranscriptTests {
         scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 480)
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
+        // Instant settles here are about folding, not the minimum time on screen.
+        doc.minimumLiveCardSeconds = 0
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         // Cancelled turn settles any still-running tool call as failed and not running.
@@ -1646,6 +1650,8 @@ struct PCodeTranscriptTests {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
         doc.groupTools = true
+        // Instant settles here are about folding, not the minimum time on screen.
+        doc.minimumLiveCardSeconds = 0
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         reducer.apply(.turnStarted(prompt: "Inspect repo", isSide: false, runID: "r1"), reveal: false)
@@ -1690,6 +1696,39 @@ struct PCodeTranscriptTests {
         } else {
             Issue.record("Expected updated toolGroup at index 1")
         }
+    }
+
+    @Test @MainActor func fastSettlingToolKeepsItsCardUntilMinimumTimeOnScreen() async throws {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        doc.minimumLiveCardSeconds = 0.2
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Inspect repo", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", purpose: ""), reveal: true)
+        reducer.apply(.toolStarted(callID: "t2", parentCallID: "", name: "shell", detail: "pytest", command: "pytest", purpose: ""), reveal: true)
+        reducer.apply(.toolSummary(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.01, error: "", result: nil, isBackgroundJob: false), reveal: true)
+
+        // Settled at once, so its card stays (now finished) instead of folding straight away.
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .tool])
+        #expect(doc.items[1].id == "call-t1")
+        if case .tool(let call, _) = doc.items[1].payload {
+            #expect(call.isRunning == false)
+        } else {
+            Issue.record("Expected the settled t1 card at index 1")
+        }
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        #expect(doc.items.map(\.kind) == [.prompt, .toolGroup, .tool])
+        if case .toolGroup(let payload) = doc.items[1].payload {
+            #expect(payload.totalCount == 1)
+            #expect(payload.absorbPulse == 1)
+        } else {
+            Issue.record("Expected t1 folded into a group")
+        }
+        #expect(doc.items[2].id == "call-t2")
     }
 
     @Test @MainActor func toolGrouperKeepsLoneSettledToolUngrouped() {
@@ -1800,6 +1839,8 @@ struct PCodeTranscriptTests {
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
         doc.groupTools = true
+        // Instant settles here are about folding, not the minimum time on screen.
+        doc.minimumLiveCardSeconds = 0
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         reducer.apply(.turnStarted(prompt: "Inspect", isSide: false, runID: "r1"), reveal: false)
@@ -1843,6 +1884,8 @@ struct PCodeTranscriptTests {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
         doc.groupTools = true
+        // Instant settles here are about folding, not the minimum time on screen.
+        doc.minimumLiveCardSeconds = 0
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         reducer.apply(.turnStarted(prompt: "Parallel", isSide: false, runID: "r1"), reveal: false)

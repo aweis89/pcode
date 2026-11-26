@@ -303,12 +303,16 @@ enum PCodeToolGrouper {
     }
 
     /// Project canonical `rawItems` into display `items`.
+    ///
+    /// `heldOpenIDs` are settled items that keep their own card as if still running, so a
+    /// call that finishes in milliseconds is readable before it folds into its group.
     static func project(
         rawItems: [PCodeTranscriptItem],
         groupTools: Bool,
         hideThinking: Bool = false,
         expandedGroupIDs: Set<String>,
-        absorbPulses: [String: UInt64]
+        absorbPulses: [String: UInt64],
+        heldOpenIDs: Set<String> = []
     ) -> Projection {
         let rawItems = hideThinking ? rawItems.filter { $0.kind != .thinking } : rawItems
         guard groupTools else {
@@ -350,7 +354,7 @@ enum PCodeToolGrouper {
             var settled: [PCodeTranscriptItem] = []
             var active: [PCodeTranscriptItem] = []
             for r in run {
-                if isActive(r) {
+                if isActive(r) || heldOpenIDs.contains(r.id) {
                     active.append(r)
                 } else {
                     settled.append(r)
