@@ -1011,7 +1011,7 @@ final class PCodeWorkspace: ObservableObject {
             self.syncDetachedHostStatuses()
             self.saveOpen()
             if pane.id == self.selected { self.saveSelected() }
-            self.reloadHistory()
+            self.scheduleHistoryReload()
         })
         hostWatcherSubscription = PCodeHostWatcher.shared.$statuses
             .receive(on: DispatchQueue.main)
@@ -1121,7 +1121,7 @@ final class PCodeWorkspace: ObservableObject {
             return host.turns != prev.turns
         }
         if appearedUnknown || disappeared || turnFinished {
-            reloadHistory()
+            scheduleHistoryReload()
         }
     }
 
@@ -1244,6 +1244,22 @@ final class PCodeWorkspace: ObservableObject {
             }
         }
     }
+
+    /// Reload history shortly, folding in every request until then: at launch
+    /// each restored pane reports its session and host, one reload apiece.
+    func scheduleHistoryReload() {
+        guard historyReloadWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.historyReloadWork = nil
+            self.reloadHistory()
+        }
+        historyReloadWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.historyReloadCoalesce, execute: work)
+    }
+
+    private var historyReloadWork: DispatchWorkItem?
+    private static let historyReloadCoalesce: TimeInterval = 0.25
 
     private var historyGeneration = 0
     private var pendingHistoryCallbacks: [([PCodeSessionInfo]) -> Void] = []
