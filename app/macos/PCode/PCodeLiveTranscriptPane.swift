@@ -38,6 +38,12 @@ final class PCodeLiveTranscriptController: ObservableObject {
     private var attachedSessionID: String?
     private var attachedHostID: String?
     private var connectedSocketPath: String?
+    /// The settled history the transcript shows now and nothing since, so a host's
+    /// welcome carrying the same history needs no redraw. Nil once anything else
+    /// (a live event, a catch-up replay) has been drawn on top.
+    private var shownHistory: [PCodeHostEvent]?
+    /// A host's history has been drawn for this attach: a slower disk preload must not replace it.
+    private var hostHistoryDrawn = false
     private var isConnectingSocket = false
     private var attachGeneration: UInt64 = 0
     private var hostRetryTimer: Timer?
@@ -95,14 +101,15 @@ final class PCodeLiveTranscriptController: ObservableObject {
             return
         }
 
+        documentView.setItems([], pinToBottom: true)
+        // Draw the saved conversation straight from disk, as Peek does, even when
+        // a host is up: its welcome takes a round trip and a pass over the journal
+        // in Python. When it lands with the same history, nothing is redrawn.
+        preloadJournal(sessionID: normalizedSession, generation: gen, reducer: newReducer)
         if let sockPath = resolveSocketPath(normalizedSession, normalizedHost) {
             connectToHost(socketPath: sockPath, generation: gen, documentView: documentView, reducer: newReducer)
         } else {
-            loadInitialHistoryAndWaitForHost(
-                sessionID: normalizedSession,
-                generation: gen,
-                documentView: documentView,
-                reducer: newReducer)
+            startHostReconnectTimer(generation: gen, documentView: documentView, reducer: newReducer)
         }
     }
 
@@ -113,6 +120,8 @@ final class PCodeLiveTranscriptController: ObservableObject {
         socketClient.close()
         connectedSocketPath = nil
         isConnectingSocket = false
+        shownHistory = nil
+        hostHistoryDrawn = false
         reducer = nil
         documentView = nil
         attachedSessionID = nil
@@ -160,14 +169,20 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.connectionState = .connected
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
-                // `loadHistory` replaces everything; clearing first keeps a `showThinking`
-                // change below from re-projecting rows about to be dropped.
-                documentView.setItems([], pinToBottom: true)
-                // After clearing, so a change doesn't re-project rows about to be dropped.
-                if let mode = welcome.showThinking {
-                    documentView.showThinking = PCodeThinkingVisibility.isShown(mode: mode)
+                self.hostHistoryDrawn = true
+                let thinking = welcome.showThinking.map(PCodeThinkingVisibility.isShown(mode:))
+                if Self.welcomeNeedsRedraw(
+                    shown: self.shownHistory, welcome: welcome.history,
+                    showThinking: thinking, shownThinking: documentView.showThinking) {
+                    // `loadHistory` replaces everything; clearing first keeps a `showThinking`
+                    // change below from re-projecting rows about to be dropped.
+                    documentView.setItems([], pinToBottom: true)
+                    if let thinking, thinking != documentView.showThinking {
+                        documentView.showThinking = thinking
+                    }
+                    reducer.loadHistory(welcome.history)
                 }
-                reducer.loadHistory(welcome.history)
+                self.shownHistory = welcome.catchUpCalls.isEmpty ? welcome.history : nil
                 var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
                     state.apply(event)
@@ -179,10 +194,11 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 if state != self.sessionState {
                     self.sessionState = state
                 }
-                documentView.scrollToBottomAndPin()
+                if self.shownHistory == nil { documentView.scrollToBottomAndPin() }
             },
             onEvent: { [weak self] event in
                 guard let self, self.attachGeneration == generation else { return }
+                self.shownHistory = nil
                 self.applySessionEvent(event)
                 reducer.apply(event, reveal: true)
             },
@@ -207,30 +223,34 @@ final class PCodeLiveTranscriptController: ObservableObject {
 
     // MARK: - Initial History Preload & Host Reconnection
 
-    private func loadInitialHistoryAndWaitForHost(
+    /// Whether a host's welcome must redraw the transcript. Not when it carries the
+    /// history already on screen (the disk preload, or the same host after a
+    /// reconnect) with the same thinking visibility: every row, its layout and the
+    /// scroll position then stay as they are.
+    static func welcomeNeedsRedraw(
+        shown: [PCodeHostEvent]?, welcome: [PCodeHostEvent],
+        showThinking: Bool?, shownThinking: Bool
+    ) -> Bool {
+        shown != welcome || (showThinking != nil && showThinking != shownThinking)
+    }
+
+    /// Draw `sessionID`'s settled journal from disk unless a host's history beats it here.
+    private func preloadJournal(
         sessionID: String?,
         generation: UInt64,
-        documentView: PCodeTranscriptDocumentView,
         reducer: PCodeTranscriptEventReducer
     ) {
-        documentView.setItems([], pinToBottom: true)
-        reducer.reset()
-        startHostReconnectTimer(generation: generation, documentView: documentView, reducer: reducer)
-
         guard let sessionID else { return }
         let dir = PCodeSessionInfo.root.appendingPathComponent(sessionID)
         let path = dir.appendingPathComponent("transcript.jsonl").path
         guard Self.isSafeOwnedDirectory(dir.path) else { return }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak documentView] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let initial = Self.readSettledInitialJournal(atPath: path)
             DispatchQueue.main.async {
-                guard let self, let documentView,
-                      self.attachGeneration == generation,
-                      self.connectedSocketPath == nil,
-                      !self.isConnectingSocket
-                else { return }
+                guard let self, self.attachGeneration == generation, !self.hostHistoryDrawn else { return }
                 reducer.loadHistory(initial.events)
+                self.shownHistory = initial.events
             }
         }
     }
@@ -455,6 +475,8 @@ struct PCodeMainWindowTranscriptView: View {
     var hostID: String? = nil
     let bottomContentInset: CGFloat
     var composerSurface: Ghostty.SurfaceView? = nil
+    /// The pane's boot card is showing: it already says the session is starting.
+    var booting = false
     @ObservedObject private var typography = PCodeTypography.shared
     @StateObject private var controller = PCodeLiveTranscriptController()
 
@@ -480,7 +502,7 @@ struct PCodeMainWindowTranscriptView: View {
                 composerSurface: composerSurface)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if controller.connectionState != .connected {
+            if controller.connectionState != .connected && !(booting && controller.connectionState == .starting) {
                 PCodeHostConnectionCard(state: controller.connectionState)
                     .padding(.horizontal, 18)
                     .padding(.bottom, max(12, bottomContentInset + 10))

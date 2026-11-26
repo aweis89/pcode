@@ -2222,6 +2222,19 @@ struct PCodeTranscriptTests {
         #expect(PCodeLiveTranscriptController.sniffJournalKind(journal[20...]) == "RunStatus")
     }
 
+    @Test func hostWelcomeRedrawsOnlyWhatDiffersFromThePreload() {
+        let history = Self.sampleHistory(turns: 3)
+        func redraw(_ shown: [PCodeHostEvent]?, _ thinking: Bool? = nil) -> Bool {
+            PCodeLiveTranscriptController.welcomeNeedsRedraw(
+                shown: shown, welcome: history, showThinking: thinking, shownThinking: true)
+        }
+        #expect(!redraw(history))  // The disk preload already drew it.
+        #expect(!redraw(history, true))
+        #expect(redraw(history, false))  // Thinking visibility changes every row.
+        #expect(redraw(nil))  // Live events were drawn on top.
+        #expect(redraw(Array(history.dropLast())))  // The journal grew meanwhile.
+    }
+
     @Test @MainActor func loadedHistoryLandsOnTheTrueBottomWithNoBlankSlack() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)

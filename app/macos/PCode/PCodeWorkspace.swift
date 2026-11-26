@@ -942,12 +942,16 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         readySafetyWork?.cancel()
         readySafetyWork = nil
         isReady = true
+        if surface.pcodeDock.bootCovered { surface.pcodeDock.bootCovered = false }
     }
 
     /// Called when pcode reports its session or host ID: if `pcode;ready` hasn't
     /// arrived shortly after, dismiss the boot overlay anyway.
     func noteSessionReported() {
-        guard !isReady, readyFallbackWork == nil else { return }
+        // A resumed pane already shows its transcript under a compact boot card:
+        // dropping that early would swap in the full-pane terminal for a moment
+        // before the dock card. It waits for the dock (or the safety timeout).
+        guard !isReady, readyFallbackWork == nil, !surface.pcodeDock.bootCovered else { return }
         let work = DispatchWorkItem { [weak self] in
             self?.markReady(via: "session fallback")
         }
@@ -2762,6 +2766,8 @@ final class PCodeWorkspace: ObservableObject {
         let view = Ghostty.SurfaceView(app, baseConfig: config)
         PCodeStartupTrace.paneCreated(launch.command.hasPrefix("/usr/bin/env") ? "direct" : "login-shell fallback")
         view.pcodeSession = sessionID
+        // A resumed session has a transcript to show while pcode starts (`PCodeStartupOverlay`).
+        view.pcodeDock.bootCovered = sessionID != nil
         PCode.applyColorScheme(to: view)
         let pane = PCodeSessionPane(
             surface: view,
@@ -4429,7 +4435,12 @@ struct PCodeSessionPaneView: View {
                     PCodeStartupOverlay(
                         isReady: pane.isReady,
                         label: (pane.projectPath as NSString).lastPathComponent,
-                        resuming: pane.resuming
+                        resuming: pane.resuming,
+                        compactCardHeight: pane.resuming
+                            ? PCodeDock.cardHeight(
+                                rows: pane.surface.pcodeDock.rows,
+                                cell: pane.surface.cellSize.height > 0 ? pane.surface.cellSize.height : 18)
+                            : nil
                     )
                 }
                 if pane.shellVisible, let shell = pane.shell {

@@ -15,6 +15,10 @@ struct PCodeStartupOverlay: View {
     let isReady: Bool
     let label: String?
     let resuming: Bool
+    /// For a resumed session, the editor card's height: the overlay is then only
+    /// a card-shaped placeholder where that card will be, so the saved transcript
+    /// above it shows at once and the real card fades in under the same outline.
+    let compactCardHeight: CGFloat?
 
     @State private var appeared = false
     @State private var hiding = false
@@ -23,10 +27,11 @@ struct PCodeStartupOverlay: View {
     private static let fadeInDuration: Double = 0.16
     private static let fadeOutDuration: Double = 0.20
 
-    init(isReady: Bool, label: String?, resuming: Bool) {
+    init(isReady: Bool, label: String?, resuming: Bool, compactCardHeight: CGFloat? = nil) {
         self.isReady = isReady
         self.label = label
         self.resuming = resuming
+        self.compactCardHeight = compactCardHeight
         // Start already dismissed for panes that are live when mounted (e.g.
         // pane switches and Live Peek) so there is zero 1-frame flash.
         _dismissed = State(initialValue: isReady)
@@ -34,6 +39,74 @@ struct PCodeStartupOverlay: View {
 
     var body: some View {
         if !dismissed {
+            content
+            .opacity(hiding ? 0 : 1)
+            .allowsHitTesting(false)
+            .onAppear {
+                if isReady {
+                    dismissed = true
+                    return
+                }
+                withAnimation(.easeOut(duration: Self.fadeInDuration)) {
+                    appeared = true
+                }
+            }
+            .onChange(of: isReady) { ready in
+                guard ready, !hiding else { return }
+                withAnimation(.easeOut(duration: Self.fadeOutDuration)) {
+                    hiding = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.fadeOutDuration + 0.04) {
+                    if hiding { dismissed = true }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let compactCardHeight {
+            compactCard(height: compactCardHeight)
+        } else {
+            fullCover
+        }
+    }
+
+    /// Drawn like `PCodeDockCard` (same margins, corners and shadow), so the swap is a cross-fade.
+    private func compactCard(height: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: 12) {
+                PCodeGyroSpinner(
+                    primary: primaryColor,
+                    secondary: secondaryColor,
+                    isLight: colorScheme == .light
+                )
+                .frame(width: 26, height: 26)
+                if let caption {
+                    Text(caption)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .foregroundStyle(ghostty.config.foregroundColor.opacity(0.48))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .opacity(appeared ? 1 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(ghostty.config.backgroundColor)
+                    .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: -2)
+            )
+            .padding(.horizontal, PCodeDock.bottomMargin)
+            .padding(.top, PCodeDock.topMargin)
+            .padding(.bottom, PCodeDock.bottomMargin)
+        }
+    }
+
+    private var fullCover: some View {
             ZStack {
                 ghostty.config.backgroundColor
 
@@ -56,27 +129,6 @@ struct PCodeStartupOverlay: View {
                 }
                 .opacity(hiding ? 0 : (appeared ? 1 : 0))
             }
-            .opacity(hiding ? 0 : 1)
-            .allowsHitTesting(false)
-            .onAppear {
-                if isReady {
-                    dismissed = true
-                    return
-                }
-                withAnimation(.easeOut(duration: Self.fadeInDuration)) {
-                    appeared = true
-                }
-            }
-            .onChange(of: isReady) { ready in
-                guard ready, !hiding else { return }
-                withAnimation(.easeOut(duration: Self.fadeOutDuration)) {
-                    hiding = true
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + Self.fadeOutDuration + 0.04) {
-                    if hiding { dismissed = true }
-                }
-            }
-        }
     }
 
     private var caption: String? {

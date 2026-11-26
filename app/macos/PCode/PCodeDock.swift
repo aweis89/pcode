@@ -20,6 +20,10 @@ final class PCodeDock: NSObject, ObservableObject {
     /// pcode waits on the user before its editor starts (`pcode;startup-input`):
     /// the trust prompt or a held startup error, which the boot cover must not hide.
     @Published private(set) var needsInput = false
+    /// A resumed pane's compact boot card stands in for this card until the pane
+    /// is ready: the full-pane terminal stays hidden so the saved transcript shows,
+    /// and the transcript keeps the card's room so nothing moves when it appears.
+    @Published var bootCovered = false
 
     static let maxRows = 40
     /// The dock's terminal is always this tall and never resizes; the card
@@ -270,14 +274,16 @@ private struct PCodeDockedTranscriptLayer: View {
     var body: some View {
         let cell = docked.cellSize.height > 0 ? docked.cellSize.height : fallbackCell
         let surfaceRows = docked.surfaceSize.map { Int($0.rows) }
-        let bottomInset: CGFloat = (!drawerOpen && dock.ready)
-            ? PCodeDock.footprint(rows: dock.rows, cell: cell, surfaceRows: surfaceRows)
+        // Before ready the terminal fills the pane, so its row count says nothing of the card's.
+        let bottomInset: CGFloat = (!drawerOpen && (dock.ready || dock.bootCovered))
+            ? PCodeDock.footprint(rows: dock.rows, cell: cell, surfaceRows: dock.ready ? surfaceRows : nil)
             : 0
         PCodeMainWindowTranscriptView(
             sessionID: sessionID,
             hostID: hostID,
             bottomContentInset: bottomInset,
-            composerSurface: docked)
+            composerSurface: docked,
+            booting: dock.bootCovered && !dock.ready)
     }
 }
 
@@ -338,6 +344,8 @@ private struct PCodeDockCard: View {
                 .padding(.leading, inDrawer ? 4 : 0)
                 .allowsHitTesting(dock.ready)
             card(cell: cell, surfaceRows: surfaceRows)
+                // Not removed: the view tree stays put so the terminal keeps its grid and focus.
+                .opacity(dock.ready || !dock.bootCovered ? 1 : 0)
         }
         // Only the card's clip animates as `dock.rows` changes, never its width.
         .animation(.easeOut(duration: 0.12), value: dock.rows)
