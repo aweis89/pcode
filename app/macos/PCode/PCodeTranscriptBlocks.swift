@@ -311,10 +311,10 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsSide = false
     private var lastStyle: PCodePromptStyle = .rightPill
-    private var lastIsFirstItem = false
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    var hasVisibleSurface: Bool { !surfaceLayer.isHidden && surfaceLayer.backgroundColor != nil }
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
@@ -352,14 +352,11 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         width: CGFloat,
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?,
-        isFirstItem: Bool = false,
-        contentInsetX: CGFloat = 0,
-        typography: PCodeTypographySnapshot = PCodeTypography.shared.snapshot
+        contentInsetX: CGFloat = 0
     ) -> CGFloat {
         lastTheme = theme
         lastIsSide = isSidePrompt
         lastStyle = style
-        lastIsFirstItem = isFirstItem
 
         let totalHeight: CGFloat
         var surfaceRect: CGRect = .zero
@@ -368,7 +365,7 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
 
         switch style {
         case .rightPill:
-            let padX: CGFloat = 15
+            let padX: CGFloat = min(15, floor(width * 0.25))
             let padY: CGFloat = 10
             let maxPillWidth = min(width, max(200, floor(width * 0.72)))
             let maxTextWidth = max(1, maxPillWidth - padX * 2)
@@ -387,7 +384,7 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
             surfaceRect = CGRect(x: pillX, y: 0, width: pillWidth, height: totalHeight)
 
         case .leftWash:
-            let padX: CGFloat = 15
+            let padX: CGFloat = min(15, floor(width * 0.25))
             let padY: CGFloat = 10
             let maxTextWidth = max(1, width - padX * 2)
             let naturalWidth = ceil(attributedText.boundingRect(
@@ -422,7 +419,7 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
         case .bar:
             let topPad: CGFloat = 3
             let bottomPad: CGFloat = 3
-            let textX: CGFloat = 15
+            let textX: CGFloat = min(15, floor(width * 0.25))
             let textWidth = max(1, width - textX - 4)
             let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
             textView.selectedRange = selectedRange
@@ -481,8 +478,10 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
                 surfaceLayer.borderWidth = 0
                 surfaceLayer.borderColor = nil
             case .band:
-                surfaceLayer.backgroundColor = theme.foreground
-                    .withAlphaComponent(theme.isDark ? 0.045 : 0.036).cgColor
+                let fill: NSColor = lastIsSide
+                    ? NSColor.systemOrange.withAlphaComponent(theme.isDark ? 0.11 : 0.075)
+                    : theme.foreground.withAlphaComponent(theme.isDark ? 0.045 : 0.036)
+                surfaceLayer.backgroundColor = fill.cgColor
                 surfaceLayer.cornerRadius = 0
                 surfaceLayer.borderWidth = 0
                 surfaceLayer.borderColor = nil
@@ -1240,6 +1239,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsRunning = false
+    private var lastIsFailed = false
     private var lastIsExpanded = false
     private var lastHovered = false
     private var lastStackPosition: PCodeToolStackPosition = .standalone
@@ -1316,6 +1316,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
     func resetForTranscriptReuse() {
         lastHovered = false
+        lastIsFailed = false
         lastStackPosition = .standalone
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
@@ -1509,6 +1510,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         self.onToggle = onToggle
         self.lastTheme = theme
         self.lastIsRunning = call.isRunning
+        self.lastIsFailed = call.failed
         self.lastIsExpanded = isExpanded
         self.lastStackPosition = stackPosition
         self.currentCall = call
@@ -1637,6 +1639,10 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             bgColor = theme.toolBackground
             borderWidth = 1
             borderColor = theme.accent.withAlphaComponent(theme.isDark ? 0.36 : 0.28)
+        } else if lastIsFailed {
+            bgColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.08 : 0.055)
+            borderWidth = 1
+            borderColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.30 : 0.24)
         } else if lastIsExpanded {
             bgColor = theme.toolBackground
             borderWidth = 1
@@ -1653,7 +1659,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             borderColor = nil
         }
 
-        let effectiveStack: PCodeToolStackPosition = (lastIsRunning || lastIsExpanded) ? .standalone : lastStackPosition
+        let effectiveStack: PCodeToolStackPosition = (lastIsRunning || lastIsFailed || lastIsExpanded) ? .standalone : lastStackPosition
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin()
             if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -1713,6 +1719,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     private let tapButton = PCodeContextMenuForwardingButton()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
+    private var lastIsRunning = false
     private var lastIsExpanded = false
     private var lastHasFailures = false
     private var lastHovered = false
@@ -1789,6 +1796,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         elapsedLabel.isHidden = true
         elapsedLabel.stringValue = ""
         onToggle = nil
+        lastIsRunning = false
         lastIsExpanded = false
         lastHasFailures = false
         lastAbsorbPulse = 0
@@ -1986,6 +1994,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
 
         self.onToggle = onToggle
         self.lastTheme = theme
+        self.lastIsRunning = payload.runningCount > 0
         self.lastIsExpanded = payload.isExpanded
         self.lastHasFailures = payload.failedCount > 0
         self.lastStackPosition = stackPosition
@@ -2126,14 +2135,19 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
             bgColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.08 : 0.055)
             borderWidth = 1
             borderColor = NSColor.systemRed.withAlphaComponent(theme.isDark ? 0.30 : 0.24)
+        } else if lastIsRunning {
+            bgColor = theme.toolBackground
+            borderWidth = 1
+            borderColor = theme.accent.withAlphaComponent(theme.isDark ? 0.36 : 0.28)
+        } else if lastIsExpanded {
+            bgColor = theme.foreground.withAlphaComponent(
+                lastHovered ? (theme.isDark ? 0.085 : 0.062) : (theme.isDark ? 0.055 : 0.042))
+            borderWidth = 1
+            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.09)
         } else if lastHovered {
             bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.088 : 0.068)
             borderWidth = 0
             borderColor = nil
-        } else if lastIsExpanded {
-            bgColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.055 : 0.042)
-            borderWidth = 1
-            borderColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.09)
         } else {
             // Collapsed, settled tool groups use a soft borderless fill at rest so they
             // separate cleanly from prose without heavy boxed borders.
@@ -2142,7 +2156,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
             borderColor = nil
         }
 
-        let effectiveStack: PCodeToolStackPosition = (lastIsExpanded || lastHasFailures) ? .standalone : lastStackPosition
+        let effectiveStack: PCodeToolStackPosition = (lastIsRunning || lastIsExpanded || lastHasFailures) ? .standalone : lastStackPosition
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin()
             if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {

@@ -365,8 +365,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         didSet {
             guard promptStyle != oldValue else { return }
             appearanceGeneration &+= 1
-            layoutEngine.invalidateAllMeasurements()
-            remountVisibleViews()
+            settlingAtTrueBottom {
+                layoutEngine.invalidateAllMeasurements()
+                remountVisibleViews()
+            }
         }
     }
 
@@ -633,7 +635,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         resetBottomSlack()
         rebuildRawItemIndexMap()
         let projection = projectRawItems()
-        items = projection.items
+        var projectedItems = projection.items
+        Self.normalizeStackedToolSpacings(&projectedItems)
+        items = projectedItems
         groupIDByRawItemID = projection.groupIDByRawItemID
         rebuildItemIndexMap()
         invalidateSearchIndex()
@@ -944,6 +948,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 items[existingIdx] = item
                 layoutEngine.replaceEntry(at: existingIdx, id: item.id, spacingAfter: item.spacingAfter)
             }
+            syncStackedToolSpacing(around: existingIdx)
             invalidateSearchIndex()
             mountViews(in: visibleRect)
             trackRunningState(for: item)
@@ -961,6 +966,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             rebuildItemIndexMap()
             layoutEngine.insert(at: targetIdx, id: item.id, height: estHeight, spacingAfter: item.spacingAfter, measured: false)
         }
+        syncStackedToolSpacing(around: targetIdx)
         invalidateSearchIndex()
 
         if reveal {
@@ -1007,18 +1013,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         let oldItems = items
         var newItems = projection.items
-        // Collapse vertical gaps between consecutive settled, collapsed tool rows at the same
-        // depth so they render as one continuous rounded container with hairline dividers.
-        if newItems.count > 1 {
-            for i in 0..<(newItems.count - 1) {
-                if Self.isSettledStackableTool(newItems[i]),
-                   Self.isSettledStackableTool(newItems[i + 1]),
-                   newItems[i].depth == newItems[i + 1].depth
-                {
-                    newItems[i] = newItems[i].withSpacingAfter(0)
-                }
-            }
-        }
+        Self.normalizeStackedToolSpacings(&newItems)
         groupIDByRawItemID = projection.groupIDByRawItemID
 
         let oldCount = oldItems.count
@@ -1362,6 +1357,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         items.remove(at: idx)
         rebuildItemIndexMap()
         layoutEngine.remove(at: idx)
+        syncStackedToolSpacing(around: idx)
         invalidateSearchIndex()
         clampSelectionToCurrentItems()
         runningToolIDs.remove(id)
@@ -1903,11 +1899,56 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private static func isSettledStackableTool(_ item: PCodeTranscriptItem) -> Bool {
         switch item.payload {
         case .tool(let call, let isExpanded):
-            return !call.isRunning && !isExpanded
+            return !call.isRunning && !call.failed && !isExpanded
         case .toolGroup(let payload):
             return !payload.isExpanded && payload.failedCount == 0 && payload.runningCount == 0
         default:
             return false
+        }
+    }
+
+    /// Collapse vertical gaps between consecutive settled, collapsed tool rows at the same
+    /// depth so they render as one continuous rounded container.
+    private static func normalizeStackedToolSpacings(_ list: inout [PCodeTranscriptItem]) {
+        guard list.count > 1 else { return }
+        for i in 0..<(list.count - 1) {
+            if isSettledStackableTool(list[i]),
+               isSettledStackableTool(list[i + 1]),
+               list[i].depth == list[i + 1].depth
+            {
+                list[i] = list[i].withSpacingAfter(0)
+            }
+        }
+    }
+
+    private func baseSpacingAfter(for item: PCodeTranscriptItem) -> CGFloat {
+        if let rawIdx = rawItemIndexByID[item.id], rawItems.indices.contains(rawIdx) {
+            return rawItems[rawIdx].spacingAfter
+        }
+        switch item.payload {
+        case .tool: return 4
+        case .toolGroup: return 6
+        default: return item.spacingAfter
+        }
+    }
+
+    /// Re-sync `spacingAfter` (and `layoutEngine`) for `index - 1` and `index` after an
+    /// in-place mutation (`toggleToolExpansion`, ungrouped upsert, or item removal).
+    private func syncStackedToolSpacing(around index: Int) {
+        let lo = max(0, index - 1)
+        let hi = min(items.count - 1, index)
+        guard lo <= hi else { return }
+        for i in lo...hi {
+            let item = items[i]
+            let joinsNext = (i + 1) < items.count
+                && Self.isSettledStackableTool(item)
+                && Self.isSettledStackableTool(items[i + 1])
+                && item.depth == items[i + 1].depth
+            let desired: CGFloat = joinsNext ? 0 : baseSpacingAfter(for: item)
+            if abs(item.spacingAfter - desired) > 0.001 {
+                items[i] = item.withSpacingAfter(desired)
+                layoutEngine.updateSpacingAfter(at: i, spacingAfter: desired)
+            }
         }
     }
 
@@ -1949,9 +1990,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 width: width,
                 theme: theme,
                 selectedRange: localSel,
-                isFirstItem: index == 0,
-                contentInsetX: contentInsetX,
-                typography: typography)
+                contentInsetX: contentInsetX)
 
         case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, let copyMarkdown)):
             view.pasteboard = pasteboard
@@ -2114,6 +2153,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             spacingAfter: items[index].spacingAfter,
             revision: items[index].revision &+ 1,
             depth: items[index].depth)
+        syncStackedToolSpacing(around: index)
         invalidateSearchIndex()
         mountViews(in: visibleRect)
         // If collapsing a long tool card from its bottom button, unpin and keep its top visible.
@@ -2691,11 +2731,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if !out.isEmpty { return out }
         }
         let entry = layoutEngine.entries[index]
+        let indent = CGFloat(items[index].depth) * 16
         let col = Self.columnMetrics(forAvailableWidth: bounds.width)
         return [CGRect(
-            x: col.originX,
+            x: col.originX + indent,
             y: entry.yOffset,
-            width: col.contentWidth,
+            width: max(1, col.contentWidth - indent),
             height: entry.height)]
     }
 
