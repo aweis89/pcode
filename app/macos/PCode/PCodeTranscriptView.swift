@@ -909,13 +909,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return
         }
 
-        // Capture old frames of mounted views so surviving rows can glide smoothly when heights shift.
-        var previousFrames: [String: CGRect] = [:]
+        // Capture where mounted rows are drawn now (frame plus any in-flight shift) so surviving
+        // rows can glide smoothly when heights shift.
+        var previousRowYs: [String: CGFloat] = [:]
         let shouldAnimateMotion = window != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let previousClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
+        let previousTotalHeight = layoutEngine.totalHeight
         if shouldAnimateMotion && (animateShift || animateExpandedGroupID != nil) {
-            previousFrames.reserveCapacity(mountedViews.count)
+            previousRowYs.reserveCapacity(mountedViews.count)
             for (id, view) in mountedViews {
-                previousFrames[id] = view.frame
+                previousRowYs[id] = view.frame.minY + Self.inFlightShift(of: view)
             }
         }
 
@@ -1059,16 +1062,24 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         mountViews(in: visibleRect)
 
-        // CoreAnimation polish (GPU-only, never mutates layout).
+        // CoreAnimation polish (GPU-only, never mutates layout). Motion is measured on screen:
+        // pinned to the bottom, a fold also moves the scroll origin, so document-space deltas
+        // would slide rows that never moved and snap the ones that did.
         if shouldAnimateMotion {
+            let originShift = (enclosingScrollView?.contentView.bounds.origin.y ?? 0) - previousClipOriginY
             if let snap = foldSnapshot,
                let targetGroupID = groupIDByRawItemID[snap.rawItemID],
                let groupView = mountedViews[targetGroupID]
             {
-                animateFoldSnapshot(snap, into: groupView.frame)
+                animateFoldSnapshot(snap, into: groupView.frame, originShift: originShift)
             }
-            if !previousFrames.isEmpty {
-                animateVerticalShifts(from: previousFrames)
+            if !previousRowYs.isEmpty {
+                animateVerticalShifts(
+                    from: previousRowYs,
+                    originShift: originShift,
+                    unchangedAbove: prefix,
+                    unchangedFrom: newCount - suffix,
+                    tailShift: previousTotalHeight - layoutEngine.totalHeight)
             }
             if let expandedID = animateExpandedGroupID,
                let groupIdx = itemIndexByID[expandedID],
@@ -1088,7 +1099,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         activeFoldGhostLayers.removeAll(keepingCapacity: false)
     }
 
-    private func animateFoldSnapshot(_ snap: FoldSnapshot, into targetFrame: CGRect) {
+    /// The `transform.translation.y` a row is currently drawn at by an in-flight shift animation.
+    private static func inFlightShift(of view: NSView) -> CGFloat {
+        guard let value = view.layer?.presentation()?.value(forKeyPath: "transform.translation.y") as? NSNumber
+        else { return 0 }
+        return CGFloat(value.doubleValue)
+    }
+
+    private func animateFoldSnapshot(_ snap: FoldSnapshot, into targetFrame: CGRect, originShift: CGFloat) {
         guard let hostLayer = layer else { return }
         let ghost = snap.layer
         hostLayer.addSublayer(ghost)
@@ -1098,7 +1116,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
 
         let moveY = CABasicAnimation(keyPath: "position.y")
-        moveY.fromValue = snap.originFrame.midY
+        // Start where the row was on screen, even if the scroll origin moved with the fold.
+        moveY.fromValue = snap.originFrame.midY + originShift
         moveY.toValue = targetFrame.midY
 
         let scaleY = CABasicAnimation(keyPath: "transform.scale.y")
@@ -1125,12 +1144,38 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         CATransaction.commit()
     }
 
-    private func animateVerticalShifts(from previousFrames: [String: CGRect]) {
+    /// Slide each mounted row from where it was drawn on screen to its new frame.
+    ///
+    /// `previousRowYs` holds each row's old drawn document Y; `originShift` is how far the scroll
+    /// origin moved meanwhile. Rows mounted only now (scrolled into view by the change) have no
+    /// old Y, so it is inferred: rows before `unchangedAbove` kept their document Y, and rows from
+    /// `unchangedFrom` on moved by `tailShift`. Without that, a row revealed above a fold would
+    /// sit still while its neighbours slide, overlapping it.
+    private func animateVerticalShifts(
+        from previousRowYs: [String: CGFloat],
+        originShift: CGFloat,
+        unchangedAbove: Int,
+        unchangedFrom: Int,
+        tailShift: CGFloat
+    ) {
         let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
         for (id, view) in mountedViews {
-            guard let oldFrame = previousFrames[id] else { continue }
-            let dy = oldFrame.minY - view.frame.minY
-            guard abs(dy) > 1.0 && abs(dy) < 400, let viewLayer = view.layer else { continue }
+            let oldY: CGFloat
+            if let known = previousRowYs[id] {
+                oldY = known
+            } else if let idx = itemIndexByID[id], idx < unchangedAbove {
+                oldY = view.frame.minY
+            } else if let idx = itemIndexByID[id], idx >= unchangedFrom {
+                oldY = view.frame.minY + tailShift
+            } else {
+                continue
+            }
+            let dy = oldY + originShift - view.frame.minY
+            guard abs(dy) > 1.0 && abs(dy) < 400, let viewLayer = view.layer else {
+                // A row that now stays put must not keep sliding toward a stale target.
+                view.layer?.removeAnimation(forKey: "pcode.row.shift")
+                continue
+            }
             let anim = CABasicAnimation(keyPath: "transform.translation.y")
             anim.fromValue = dy
             anim.toValue = 0
