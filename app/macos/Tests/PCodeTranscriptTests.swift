@@ -1039,14 +1039,16 @@ struct PCodeTranscriptTests {
             command: "ls -la",
             output: "a\nb\nc")
         doc.setItems([
-            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "You", text: "List files", isSide: false), spacingAfter: 10),
+            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "", text: "List files", isSide: false), spacingAfter: 10),
             PCodeTranscriptItem(id: "t1", payload: .tool(call, isExpanded: false), spacingAfter: 8),
         ], pinToBottom: false)
 
         #expect(doc.accessibilityRole() == .list)
         let children = (doc.accessibilityChildren() as? [PCodeTranscriptAccessibilityRowElement]) ?? []
         #expect(children.count == 2)
+        // Unlabeled main prompts render only their text but still announce "You".
         #expect(children[0].accessibilityLabel() == "You")
+        #expect(doc.plainTextForCopy(at: 0) == "List files")
         #expect(children[1].isExpandable)
         #expect(!doc.isItemExpanded(id: "t1"))
 

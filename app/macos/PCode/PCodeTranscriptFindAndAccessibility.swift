@@ -357,7 +357,7 @@ extension PCodeTranscriptDocumentView {
     ) -> (role: NSAccessibility.Role, roleDescription: String, label: String, expandable: Bool) {
         switch item.payload {
         case .prompt(let label, _, _):
-            return (.staticText, "Prompt", label, false)
+            return (.staticText, "Prompt", label.isEmpty ? "You" : label, false)
         case .prose:
             return (.staticText, "Response", "Assistant response", false)
         case .codeBlock(let lang, _, _, _, _):

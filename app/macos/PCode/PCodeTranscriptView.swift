@@ -99,7 +99,7 @@ struct PCodeTranscriptItem: Identifiable {
     var plainText: String {
         switch payload {
         case .prompt(let label, let text, _):
-            return "\(label)\n\(text)"
+            return label.isEmpty ? text : "\(label)\n\(text)"
         case .prose(let markdown, _, _):
             return markdown
         case .codeBlock(_, let code, _, _, _):
@@ -145,7 +145,7 @@ struct PCodeTranscriptItem: Identifiable {
         switch kind {
         case .prompt:
             self.payload = .prompt(
-                label: secondaryText.isEmpty ? (isSidePrompt ? "/btw" : "You") : secondaryText,
+                label: secondaryText.isEmpty ? (isSidePrompt ? "/btw" : "") : secondaryText,
                 text: plainText,
                 isSide: isSidePrompt)
         case .prose:
@@ -213,7 +213,7 @@ struct PCodeTranscriptItem: Identifiable {
             result.append(PCodeTranscriptItem(
                 id: "turn-\(turn.id)-prompt",
                 payload: .prompt(
-                    label: turn.side ? "/btw" : "You",
+                    label: turn.side ? "/btw" : "",
                     text: turn.prompt,
                     isSide: turn.side),
                 spacingAfter: 10))
@@ -1165,7 +1165,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         streamingTurnCounter += 1
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-prompt",
-            payload: .prompt(label: isSide ? "/btw" : "You", text: prompt, isSide: isSide),
+            payload: .prompt(label: isSide ? "/btw" : "", text: prompt, isSide: isSide),
             spacingAfter: 10)
         if forcePin {
             stickyBottom.pinToBottom()
@@ -2587,9 +2587,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .tool: return 28
         case .toolGroup: return PCodeToolGroupCardView.rowHeight
         case .status: return 24
-        case .prompt(_, let text, _):
+        case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))
-            return 28 + CGFloat(lines) * typography.lineHeight()
+            return (label.isEmpty ? 20 : 28) + CGFloat(lines) * typography.lineHeight()
         case .prose(let markdown, _, _):
             let lines = max(1, min(40, markdown.count / 72 + 1))
             return CGFloat(lines) * typography.lineHeight()
@@ -2656,10 +2656,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             .foregroundColor: isSide ? NSColor.systemOrange : theme.accent,
             .paragraphStyle: labelStyle,
         ]
+        // Main prompts carry no label: the card and accent bar already say
+        // whose turn it is. `/btw` keeps one because it names the model.
         if trimmedText.isEmpty {
             out.append(NSAttributedString(string: label, attributes: labelAttrs))
         } else {
-            out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
+            if !label.isEmpty {
+                out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
+            }
             let bodyAttrs: [NSAttributedString.Key: Any] = [
                 .font: typography.proseNSFont(),
                 .foregroundColor: theme.foreground,
