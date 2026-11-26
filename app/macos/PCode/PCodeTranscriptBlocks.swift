@@ -2331,23 +2331,21 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
 
 // MARK: - Thinking Row (Muted Inline Reasoning)
 
-/// Thinking renders as quiet prose in the answer's column, not a card: a small label
-/// ("Thinking", pulsing while it streams, then "Thought for 12s") over the full text,
-/// slightly smaller and in the secondary colour, behind a hairline rule. pcode's
-/// `show_thinking` decides whether these rows show at all.
+/// Thinking renders as quiet prose in the answer's column, not a card: the full text,
+/// slightly smaller and in the secondary colour, behind a hairline rule that pulses while
+/// it streams. No label; the styling says what it is. pcode's `show_thinking` decides
+/// whether these rows show at all.
 final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
-    static let headerHeight: CGFloat = 20
+    static let verticalPadding: CGFloat = 3
     static let bodyScale: CGFloat = 0.9
     /// Matches `PCodeProseRowView`'s left inset so thinking lines up with the answer.
     private static let leadingInset: CGFloat = 4
     /// Body text indent past the hairline rule.
     private static let bodyIndent: CGFloat = 12
-    private static let bottomPadding: CGFloat = 4
     private static let pulseKey = "thinkingPulse"
 
     let itemKind: PCodeTranscriptItem.Kind = .thinking
     let textView = PCodeTextKit2BlockView()
-    private let headerLabel = NSTextField(labelWithString: "")
     private let rule = NSView()
     private var lastTheme: PCodeTranscriptTheme?
 
@@ -2362,9 +2360,6 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
         rule.wantsLayer = true
         rule.layer?.cornerRadius = 1
         addSubview(rule)
-        headerLabel.wantsLayer = true
-        headerLabel.isSelectable = false
-        addSubview(headerLabel)
     }
 
     @available(*, unavailable)
@@ -2381,8 +2376,9 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
         applyLayerColors()
     }
 
-    /// "Thinking" while streaming, then "Thought for 12s" (or "Thought" when no duration was recorded).
-    static func headerTitle(for thinking: PCodeThinkingPayload) -> String {
+    /// "Thinking" while streaming, then "Thought for 12s" (or "Thought" when no duration was
+    /// recorded); the row's accessibility label, since nothing on screen names it.
+    static func accessibilityTitle(for thinking: PCodeThinkingPayload) -> String {
         if thinking.isStreaming { return "Thinking" }
         guard let seconds = thinking.elapsedSeconds else { return "Thought" }
         let whole = max(1, Int(seconds.rounded()))
@@ -2446,16 +2442,6 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
         selectedRange: NSRange?
     ) -> CGFloat {
         lastTheme = theme
-        headerLabel.attributedStringValue = NSAttributedString(
-            string: Self.headerTitle(for: thinking),
-            attributes: [
-                .font: typography.proseNSFont(scale: 0.8, weight: typography.weight.nsEmphasisWeight),
-                .foregroundColor: theme.secondaryForeground,
-            ])
-        headerLabel.sizeToFit()
-        headerLabel.frame.origin = CGPoint(
-            x: Self.leadingInset,
-            y: (Self.headerHeight - headerLabel.frame.height) / 2)
         setPulsing(thinking.isStreaming)
 
         let inset = Self.leadingInset
@@ -2466,11 +2452,12 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
         textView.isHidden = attributedText.length == 0
         rule.isHidden = textView.isHidden
         textView.selectedRange = selectedRange
-        textView.frame = CGRect(x: inset + Self.bodyIndent, y: Self.headerHeight, width: textWidth, height: textHeight)
-        rule.frame = CGRect(x: inset + 1, y: Self.headerHeight + 2, width: 2, height: max(0, textHeight - 4))
+        let top = Self.verticalPadding
+        textView.frame = CGRect(x: inset + Self.bodyIndent, y: top, width: textWidth, height: textHeight)
+        rule.frame = CGRect(x: inset + 1, y: top + 2, width: 2, height: max(0, textHeight - 4))
 
         applyLayerColors()
-        return Self.headerHeight + textHeight + Self.bottomPadding
+        return textHeight + Self.verticalPadding * 2
     }
 
     func resetForTranscriptReuse() {
@@ -2482,12 +2469,12 @@ final class PCodeThinkingCardView: NSView, PCodeTranscriptRowHosting {
     }
 
     private func setPulsing(_ pulsing: Bool) {
-        guard let layer = headerLabel.layer else { return }
+        guard let layer = rule.layer else { return }
         let animating = layer.animation(forKey: Self.pulseKey) != nil
         if pulsing && !animating && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let pulse = CABasicAnimation(keyPath: "opacity")
             pulse.fromValue = 1.0
-            pulse.toValue = 0.35
+            pulse.toValue = 0.25
             pulse.duration = 0.9
             pulse.autoreverses = true
             pulse.repeatCount = .infinity

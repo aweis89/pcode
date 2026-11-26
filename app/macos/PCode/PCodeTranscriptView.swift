@@ -2644,7 +2644,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .thinking(let thinking):
             // Always shown in full, so long thoughts need an honest estimate.
             let lines = max(1, min(400, thinking.text.count / 80 + 1))
-            return PCodeThinkingCardView.headerHeight
+            return PCodeThinkingCardView.verticalPadding * 2
                 + CGFloat(lines) * typography.lineHeight(scale: PCodeThinkingCardView.bodyScale)
         }
     }
