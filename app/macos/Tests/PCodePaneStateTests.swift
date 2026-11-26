@@ -160,4 +160,40 @@ struct PCodePaneStateTests {
         r.setHost(Self.status(outcome: "cancelled"))
         #expect(r.activity == .idle)
     }
+
+    @Test func hostLookupAndStopHostCoverUnsavedAndSavedHosts() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pcode-host-stop-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // h1: brand-new host before turn 1 (empty session_id); h2: saved session s2.
+        let h1 = #"{"id":"8f3a1b2c","pid":101,"session_id":"","state":"idle"}"#
+        let h2 = #"{"id":"1234abcd","pid":202,"session_id":"s2","state":"working"}"#
+        let stopped = #"{"id":"deadbeef","pid":303,"session_id":"s3","state":"stopped"}"#
+        try Data(h1.utf8).write(to: dir.appendingPathComponent("8f3a1b2c.json"))
+        try Data(h2.utf8).write(to: dir.appendingPathComponent("1234abcd.json"))
+        try Data(stopped.utf8).write(to: dir.appendingPathComponent("deadbeef.json"))
+
+        let entries = PCodeSessionInfo.liveHostEntries(in: dir, isAlive: { $0 == 101 || $0 == 202 || $0 == 303 })
+        #expect(Set(entries.map(\.id)) == ["8f3a1b2c", "1234abcd"])
+
+        var signalled: [Int32] = []
+        let byHost = PCodeWorkspace.stopHost(
+            hostID: "8f3a1b2c",
+            sessionID: nil,
+            in: dir,
+            isAlive: { _ in true },
+            signal: { signalled.append($0) })
+        #expect(byHost == [101] && signalled == [101])
+
+        signalled.removeAll()
+        let bySession = PCodeWorkspace.stopHost(
+            hostID: nil,
+            sessionID: "s2",
+            in: dir,
+            isAlive: { _ in true },
+            signal: { signalled.append($0) })
+        #expect(bySession == [202] && signalled == [202])
+    }
 }

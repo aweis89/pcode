@@ -358,43 +358,25 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
 
     var directoryName: String { (workspace as NSString).lastPathComponent }
 
-    /// Sessions a running background host holds (pcode's `hosts/<id>.json`
-    /// entries, as `host_protocol.list_hosts` reads them).
-    static func hosted() -> Set<String> {
-        struct Entry: Decodable {
-            let pid: Int32
-            let session_id: String?
-        }
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: hostRoot, includingPropertiesForKeys: nil) else { return [] }
-        let decoder = JSONDecoder()
-        var ids = Set<String>()
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let entry = try? decoder.decode(Entry.self, from: data),
-                  let id = entry.session_id, !id.isEmpty, entry.pid > 0,
-                  // Alive and still a host, not a reused pid.
-                  kill(entry.pid, 0) == 0, PCodeProcess.isPCodeOrHost(entry.pid)
-            else { continue }
-            ids.insert(id)
-        }
-        return ids
-    }
-
-    /// Return the live Unix socket path (`hosts/<host_id>.sock`) for a running hosted session, if any.
-    static func hostSocketPath(forSessionID sessionID: String) -> String? {
-        guard !sessionID.isEmpty else { return nil }
+    /// Running background hosts (`hosts/<id>.json`), including brand-new ones
+    /// that do not have a `session_id` yet.
+    static func liveHostEntries(
+        in directory: URL = hostRoot,
+        isAlive: (Int32) -> Bool = { kill($0, 0) == 0 && PCodeProcess.isPCodeOrHost($0) }
+    ) -> [(id: String, pid: Int32, sessionID: String)] {
         struct Entry: Decodable {
             let id: String
             let pid: Int32
             let session_id: String?
+            let state: String?
         }
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: hostRoot, includingPropertiesForKeys: nil) else {
-            return nil
+        guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return []
         }
         let uid = Darwin.getuid()
         let decoder = JSONDecoder()
+        var entries: [(id: String, pid: Int32, sessionID: String)] = []
         for file in files where file.pathExtension == "json" {
             var jsonStat = stat()
             guard Darwin.lstat(file.path, &jsonStat) == 0,
@@ -403,12 +385,40 @@ struct PCodeSessionInfo: Identifiable, Hashable, Decodable {
                   let data = try? Data(contentsOf: file),
                   let entry = try? decoder.decode(Entry.self, from: data),
                   PCode.valid(entry.id, length: 1...64),
-                  entry.session_id == sessionID,
+                  entry.id == file.deletingPathExtension().lastPathComponent,
+                  (entry.state ?? "") != "stopped",
                   entry.pid > 0,
-                  kill(entry.pid, 0) == 0,
-                  PCodeProcess.isPCodeOrHost(entry.pid)
+                  isAlive(entry.pid)
             else { continue }
-            let sockURL = hostRoot.appendingPathComponent("\(entry.id).sock")
+            entries.append((id: entry.id, pid: entry.pid, sessionID: entry.session_id ?? ""))
+        }
+        return entries
+    }
+
+    /// Sessions a running background host holds (pcode's `hosts/<id>.json`
+    /// entries, as `host_protocol.list_hosts` reads them).
+    static func hosted() -> Set<String> {
+        Set(liveHostEntries().map(\.sessionID).filter { !$0.isEmpty })
+    }
+
+    /// Return the live Unix socket path (`hosts/<host_id>.sock`) for a running hosted session, if any.
+    static func hostSocketPath(
+        forSessionID sessionID: String?,
+        hostID: String? = nil,
+        in directory: URL = hostRoot,
+        isAlive: (Int32) -> Bool = { kill($0, 0) == 0 && PCodeProcess.isPCodeOrHost($0) }
+    ) -> String? {
+        let validHost = (hostID?.isEmpty == false) ? hostID : nil
+        let validSession = (sessionID?.isEmpty == false) ? sessionID : nil
+        guard validHost != nil || validSession != nil else { return nil }
+        let uid = Darwin.getuid()
+        let entries = liveHostEntries(in: directory, isAlive: isAlive)
+        // Prefer an exact host ID match, then fall back to matching by session ID
+        // (e.g. after `/restart` replaces the host with a successor for the same session).
+        let ordered = entries.filter { $0.id == validHost }
+            + entries.filter { $0.id != validHost && validSession != nil && !$0.sessionID.isEmpty && $0.sessionID == validSession }
+        for entry in ordered {
+            let sockURL = directory.appendingPathComponent("\(entry.id).sock")
             var sockStat = stat()
             if Darwin.lstat(sockURL.path, &sockStat) == 0,
                (sockStat.st_mode & S_IFMT) == S_IFSOCK,
@@ -511,6 +521,10 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     let resuming: Bool
     /// The session pcode reports (`pcode;session;<id>`), once it has.
     @Published var sessionID: String?
+    /// The session host pcode attaches to (`pcode;host;<id>`), even before turn 1 creates a session id.
+    @Published var hostID: String?
+    /// Last non-empty host id seen for this pane, kept across client teardown so closing stops the host.
+    var lastHostID: String?
     /// True once pcode has painted its ready UI (dock ready, or fallback timeout).
     @Published private(set) var isReady = false
     @Published private(set) var shell: Ghostty.SurfaceView?
@@ -571,6 +585,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             .sink { [weak self] status in
                 guard let self else { return }
                 self.hostStatus = status
+                if let hostID = status?.hostID { self.lastHostID = hostID }
                 self.resolver.setHost(status)
                 self.resolve()
             }
@@ -852,6 +867,8 @@ final class PCodeWorkspace: ObservableObject {
                   let pane = self.panes.first(where: { $0.surface === view }) else { return }
             let old = pane.sessionID
             pane.sessionID = view.pcodeSession
+            pane.hostID = view.pcodeHost
+            if let host = view.pcodeHost { pane.lastHostID = host }
             pane.noteSessionReported()
             self.sessionIDChanged(pane, from: old)
             self.syncDetachedHostStatuses()
@@ -1433,7 +1450,7 @@ final class PCodeWorkspace: ObservableObject {
         hiddenFolders.remove(dir)
         collapsedFolders.remove(dir)
         showingDirectoryPicker = false
-        guard let pane = makePane(args: [], directory: dir, projectPath: dir, sessionID: nil) else { return }
+        guard let pane = makePane(args: ["--host"], directory: dir, projectPath: dir, sessionID: nil) else { return }
         adopt(pane)
         panes.insert(pane, at: 0)
         select(pane)
@@ -1636,7 +1653,7 @@ final class PCodeWorkspace: ObservableObject {
         hiddenFolders.remove(project)
         collapsedFolders.remove(project)
         guard let pane = makePane(
-            args: ["-c", info.id],
+            args: ["--host", "-c", info.id],
             directory: info.workspace,
             projectPath: project,
             sessionID: info.id
@@ -1942,13 +1959,44 @@ final class PCodeWorkspace: ObservableObject {
         ghostty.requestClose(surface: surface)
     }
 
-    /// Remove `pane` and end its terminals. Not from inside one of their callbacks.
+    /// Stop any running background host for `hostID` or `sessionID` (`SIGTERM`),
+    /// so closing a workspace pane ends its session rather than detaching.
+    @discardableResult
+    static func stopHost(
+        hostID: String?,
+        sessionID: String?,
+        in directory: URL = PCodeSessionInfo.hostRoot,
+        isAlive: (Int32) -> Bool = { kill($0, 0) == 0 && PCodeProcess.isPCodeOrHost($0) },
+        signal: (Int32) -> Void = { _ = kill($0, SIGTERM) }
+    ) -> [Int32] {
+        let validHost = (hostID?.isEmpty == false) ? hostID : nil
+        let validSession = (sessionID?.isEmpty == false) ? sessionID : nil
+        guard validHost != nil || validSession != nil else { return [] }
+        var stopped: [Int32] = []
+        for entry in PCodeSessionInfo.liveHostEntries(in: directory, isAlive: isAlive) {
+            let matchesHost = validHost != nil && entry.id == validHost
+            let matchesSession = validSession != nil && !entry.sessionID.isEmpty && entry.sessionID == validSession
+            guard matchesHost || matchesSession else { continue }
+            signal(entry.pid)
+            stopped.append(entry.pid)
+        }
+        return stopped
+    }
+
+    /// Remove `pane` and end its terminals (and its session host, unless quitting to restart).
+    /// Not from inside one of their callbacks.
     func close(_ pane: PCodeSessionPane) {
         peek.clearHover(paneID: pane.id)
         guard let index = panes.firstIndex(where: { $0 === pane }) else { return }
         panes.remove(at: index)
+        let shouldStopHost = !restarting
+        let hostID = pane.hostID ?? pane.lastHostID ?? pane.hostStatus?.hostID
+        let sessionID = pane.sessionID
         if let shell = pane.shell { PCode.retire(shell) }
         PCode.retire(pane.surface)
+        if shouldStopHost {
+            Self.stopHost(hostID: hostID, sessionID: sessionID)
+        }
         saveOpen()
         reloadHistory()
         if selected == pane.id {
