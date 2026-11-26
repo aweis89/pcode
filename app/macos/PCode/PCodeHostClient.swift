@@ -103,6 +103,12 @@ enum PCodeHostEvent: Equatable {
         added: Int,
         removed: Int,
         truncated: Bool)
+    case workerStatus(
+        callID: String,
+        workerID: String,
+        question: String?,
+        answered: Bool?,
+        status: String?)
     case turnEnded(status: PCodePeekTurn.Status)
     case user(text: String)
     case shellResult(command: String, output: String, failed: Bool, elapsedSeconds: Double?)
@@ -347,8 +353,21 @@ enum PCodeHostEventDecoder {
                 added: (fields["added"] as? Int) ?? 0,
                 removed: (fields["removed"] as? Int) ?? 0,
                 truncated: (fields["truncated"] as? Bool) == true)
-        case "PlanUpdated", "PlanPreview", "ChildText", "ChildPlan", "WorkerStatus", "RunStatus", "CacheBust":
-            // Display-only plan/worker/status events do not create permanent transcript items:
+        case "WorkerStatus":
+            let callID = (fields["call_id"] as? String) ?? ""
+            guard !callID.isEmpty else { return nil }
+            let workerID = (fields["worker_id"] as? String) ?? ""
+            let question = fields["question"] as? String
+            let answered = fields["answered"] as? Bool
+            let status = fields["status"] as? String
+            return .workerStatus(
+                callID: callID,
+                workerID: workerID,
+                question: question,
+                answered: answered,
+                status: status)
+        case "PlanUpdated", "PlanPreview", "ChildText", "ChildPlan", "RunStatus", "CacheBust":
+            // Display-only plan/status events do not create permanent transcript items:
             // a plan is a live snapshot, not conversation history.
             return nil
         default:
@@ -689,6 +708,10 @@ final class PCodeTranscriptEventReducer {
                 spacingAfter: 5,
                 depth: depth)
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
+
+        case .workerStatus:
+            // Display-only for the Inspector Agents tab; does not create a transcript item.
+            break
 
         case .turnEnded(let status):
             settleActiveThinking(in: doc, reveal: reveal)

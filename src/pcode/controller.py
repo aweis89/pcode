@@ -2359,6 +2359,70 @@ class SessionController:
         # Now, not at the watcher's next tick: the rows answer this command.
         self.refresh_jobs()
 
+    def manage_worker(self, action: str, worker_id: str, text: str = "") -> dict[str, object]:
+        """Directly message, answer, or stop a delegated worker in this session."""
+        from pcode.worker_channel import WorkerHub
+
+        act = action.strip().lower()
+        target = worker_id.strip()
+        if act not in {"message", "answer", "stop"}:
+            return {"ok": False, "message": f"Unknown worker action {action!r}."}
+        if not target:
+            return {"ok": False, "message": "worker_id is required."}
+
+        hub: WorkerHub | None = None
+        agent = getattr(self.runtime, "agent", None)
+        root_cap = getattr(agent, "root_capability", None)
+        for capability in getattr(root_cap, "capabilities", ()):
+            if isinstance(candidate := getattr(capability, "hub", None), WorkerHub):
+                hub = candidate
+                break
+
+        if hub is None:
+            return {"ok": False, "message": "No worker hub is active in this session."}
+        handle = hub.get(target)
+        if handle is None:
+            return {"ok": False, "message": f"Unknown worker {target!r}."}
+
+        if act == "stop":
+            if not handle.running:
+                return {"ok": False, "message": f"Worker {handle.id} is already {handle.status}."}
+            if handle.cancel is None:
+                return {
+                    "ok": False,
+                    "message": (
+                        f"Worker {handle.id} is not in the background"
+                        " and cannot be stopped directly."
+                    ),
+                }
+            handle.stop_requested = True
+            handle.cancel()
+            self.view.note(f"Stopping worker {handle.id}.")
+            return {"ok": True, "message": f"Stopping worker {handle.id}."}
+
+        body = text.strip()
+        if not body:
+            return {"ok": False, "message": f"{act.capitalize()} text is required."}
+
+        if act == "answer":
+            question = handle.question
+            if question is None:
+                return {
+                    "ok": False,
+                    "message": f"Worker {handle.id} has no open question.",
+                }
+            question.answer = body
+            question.delivered = True
+            question.answered.set()
+            self.view.note(f"Answered worker {handle.id}.")
+            return {"ok": True, "message": f"Answered worker {handle.id}."}
+
+        if not handle.running:
+            return {"ok": False, "message": f"Worker {handle.id} is {handle.status}."}
+        handle.inbox.append(body)
+        self.view.note(f"Queued message for worker {handle.id}.")
+        return {"ok": True, "message": f"Queued for worker {handle.id}."}
+
     # --- MCP servers ---
 
     def mcp_arguments(self) -> tuple[str, ...]:

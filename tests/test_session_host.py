@@ -3562,3 +3562,48 @@ def test_connect_or_respawn_host_spawns_fresh_host_when_resumed_host_vanished(
         attach_only = HostLaunch("deadhost", process=None, directory=host_dir, resume=None)
         with pytest.raises(HostError, match="no longer running"):
             asyncio.run(PreviewApp._connect_or_respawn_host(app, attach_only))
+
+
+def test_controller_manage_worker_direct_actions():
+    from types import SimpleNamespace
+
+    from pcode.controller import SessionController
+    from pcode.worker_channel import Question, WorkerHandle, WorkerHub
+
+    hub = WorkerHub()
+    cancelled: list[str] = []
+    handle = WorkerHandle(id="w1", call_id="call-1", agent="worker", task="check tests")
+    handle.cancel = lambda: cancelled.append(handle.id)
+    hub._handles[handle.id] = handle
+
+    notes: list[str] = []
+    cap = SimpleNamespace(hub=hub)
+    ctrl = SimpleNamespace(
+        runtime=SimpleNamespace(
+            agent=SimpleNamespace(root_capability=SimpleNamespace(capabilities=(cap,)))
+        ),
+        view=SimpleNamespace(note=notes.append),
+    )
+
+    # Message a running worker directly
+    res = SessionController.manage_worker(ctrl, "message", handle.id, "focus on edge cases")
+    assert res["ok"] is True
+    assert list(handle.inbox) == ["focus on edge cases"]
+
+    # Answer a pending question directly
+    question = Question(text="Proceed?", fallback="abort")
+    handle.question = question
+    res = SessionController.manage_worker(ctrl, "answer", handle.id, "yes, proceed")
+    assert res["ok"] is True
+    assert question.answer == "yes, proceed"
+    assert question.answered.is_set()
+
+    # Stop a background worker directly
+    res = SessionController.manage_worker(ctrl, "stop", handle.id)
+    assert res["ok"] is True
+    assert handle.stop_requested is True
+    assert cancelled == [handle.id]
+
+    # Unknown worker returns ok=False
+    bad = SessionController.manage_worker(ctrl, "message", "w999", "hi")
+    assert bad["ok"] is False

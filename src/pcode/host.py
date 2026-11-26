@@ -364,6 +364,9 @@ class _Client:
     def stop_jobs(self, job_ids) -> None:
         self.host.controller.stop_jobs(job_ids)
 
+    def manage_worker(self, action: str, worker_id: str, text: str = "") -> dict[str, object]:
+        return self.host.controller.manage_worker(action, worker_id, text)
+
     def cancel_asides(self) -> None:
         self.host.controller.cancel_asides()
 

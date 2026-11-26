@@ -37,6 +37,51 @@ enum PCodeHostControlRPC {
         }
     }
 
+    struct ControlError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    static func manageWorker(
+        action: String,
+        workerID: String,
+        text: String,
+        sessionID: String?,
+        hostID: String?,
+        completion: @escaping @MainActor (Result<String, Error>) -> Void
+    ) {
+        queue.async {
+            guard let socketPath = PCodeSessionInfo.hostSocketPath(
+                forSessionID: sessionID,
+                hostID: hostID
+            ), !socketPath.isEmpty else {
+                Task { @MainActor in
+                    completion(.failure(ControlError(message: "Session host is not running.")))
+                }
+                return
+            }
+            let outcome = sendRequestWithReply(
+                socketPath: socketPath,
+                method: "manage_worker",
+                args: [action, workerID, text]
+            )
+            Task { @MainActor in
+                switch outcome {
+                case .success(let value):
+                    if let dict = value as? [String: Any] {
+                        let ok = (dict["ok"] as? Bool) ?? false
+                        let msg = (dict["message"] as? String) ?? (ok ? "Done." : "Request failed.")
+                        completion(ok ? .success(msg) : .failure(ControlError(message: msg)))
+                    } else {
+                        completion(.success("Sent."))
+                    }
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
     @discardableResult
     static func sendRequest(
         socketPath: String,
@@ -45,11 +90,30 @@ enum PCodeHostControlRPC {
         kwargs: [String: Any] = [:],
         timeoutSeconds: Double = 2.0
     ) -> Bool {
+        if case .success = sendRequestWithReply(
+            socketPath: socketPath,
+            method: method,
+            args: args,
+            kwargs: kwargs,
+            timeoutSeconds: timeoutSeconds
+        ) {
+            return true
+        }
+        return false
+    }
+
+    static func sendRequestWithReply(
+        socketPath: String,
+        method: String,
+        args: [Any],
+        kwargs: [String: Any] = [:],
+        timeoutSeconds: Double = 2.0
+    ) -> Result<Any?, Error> {
         let clampedTimeout = max(0.2, timeoutSeconds)
         let deadline = CFAbsoluteTimeGetCurrent() + clampedTimeout
 
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
+        guard fd >= 0 else { return .failure(ControlError(message: "Failed to open socket.")) }
         defer { Darwin.close(fd) }
 
         var noSigPipe: Int32 = 1
@@ -66,7 +130,9 @@ enum PCodeHostControlRPC {
         addr.sun_family = sa_family_t(AF_UNIX)
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
         let bytes = Array(socketPath.utf8)
-        guard bytes.count < maxLen else { return false }
+        guard bytes.count < maxLen else {
+            return .failure(ControlError(message: "Host socket path is too long."))
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { buf in
             for (idx, byte) in bytes.enumerated() {
                 buf[idx] = byte
@@ -79,24 +145,28 @@ enum PCodeHostControlRPC {
                 Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard connectResult == 0 else { return false }
+        guard connectResult == 0 else {
+            return .failure(ControlError(message: "Could not connect to session host."))
+        }
 
         // Verify the peer socket belongs to our effective user.
         var peerUID: uid_t = 0
         var peerGID: gid_t = 0
         guard Darwin.getpeereid(fd, &peerUID, &peerGID) == 0, peerUID == Darwin.geteuid() else {
-            return false
+            return .failure(ControlError(message: "Host socket permission check failed."))
         }
 
         let hello = "{\"type\":\"hello\",\"protocol\":2}\n"
-        guard writeAll(fd: fd, data: Data(hello.utf8)) else { return false }
+        guard writeAll(fd: fd, data: Data(hello.utf8)) else {
+            return .failure(ControlError(message: "Failed to write handshake."))
+        }
 
         var readBuffer = Data()
         guard let readyLine = readLine(fd: fd, buffer: &readBuffer, deadline: deadline),
               let readyObj = try? JSONSerialization.jsonObject(with: readyLine) as? [String: Any],
               readyObj["type"] as? String == "ready"
         else {
-            return false
+            return .failure(ControlError(message: "Session host did not respond to handshake."))
         }
 
         let sanitizedArgs: [Any] = args.map { value in
@@ -114,20 +184,27 @@ enum PCodeHostControlRPC {
         ]
         guard JSONSerialization.isValidJSONObject(reqObj),
               var reqData = try? JSONSerialization.data(withJSONObject: reqObj)
-        else { return false }
+        else { return .failure(ControlError(message: "Invalid RPC payload.")) }
         reqData.append(0x0A)
-        guard writeAll(fd: fd, data: reqData) else { return false }
+        guard writeAll(fd: fd, data: reqData) else {
+            return .failure(ControlError(message: "Failed to send request to host."))
+        }
 
         // Wait for reply and verify the host accepted the intent.
         guard let replyLine = readLine(fd: fd, buffer: &readBuffer, deadline: deadline),
               let replyObj = try? JSONSerialization.jsonObject(with: replyLine) as? [String: Any],
               replyObj["type"] as? String == "reply",
-              (replyObj["id"] as? Int) == 1,
-              replyObj["error"] == nil
+              (replyObj["id"] as? Int) == 1
         else {
-            return false
+            return .failure(ControlError(message: "No reply from session host."))
         }
-        return true
+        if let err = replyObj["error"] {
+            if let errDict = err as? [String: Any], let msg = errDict["message"] as? String {
+                return .failure(ControlError(message: msg))
+            }
+            return .failure(ControlError(message: "\(err)"))
+        }
+        return .success(replyObj["result"])
     }
 
     private static func writeAll(fd: Int32, data: Data) -> Bool {
@@ -253,6 +330,16 @@ struct PCodeInspectorSplit<MainContent: View>: View {
             },
             stopJob: { jobID in
                 PCodeHostControlRPC.stopJobs([jobID], sessionID: sessionID, hostID: hostID)
+            },
+            manageWorker: { action, workerID, text, completion in
+                PCodeHostControlRPC.manageWorker(
+                    action: action,
+                    workerID: workerID,
+                    text: text,
+                    sessionID: sessionID,
+                    hostID: hostID,
+                    completion: completion
+                )
             }
         )
     }

@@ -348,6 +348,98 @@ struct PCodeInspectorTabsTests {
         #expect(PCodeInspectorAgentsView.stopActionPrompt(for: unnamed) == "Stop the worker.")
     }
 
+    @Test @MainActor
+    func workerStatusEventUpdatesWorkerIDAndPendingQuestion() {
+        let store = PCodeInspectorAgentsStore()
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+
+        store.apply(
+            .toolStarted(
+                callID: "call-w",
+                parentCallID: "",
+                name: "delegate_task",
+                detail: "Code Reviewer",
+                command: "",
+                purpose: "Reviewing diff"
+            ),
+            now: t0
+        )
+
+        store.apply(
+            .workerStatus(
+                callID: "call-w",
+                workerID: "w7",
+                question: "Keep backwards compatibility?",
+                answered: nil,
+                status: "waiting"
+            ),
+            now: t0.addingTimeInterval(2)
+        )
+
+        var agent = store.agent(for: "call-w")
+        #expect(agent?.workerID == "w7")
+        #expect(agent?.status == .waiting)
+        #expect(agent?.pendingQuestion == "Keep backwards compatibility?")
+
+        store.apply(
+            .workerStatus(
+                callID: "call-w",
+                workerID: "w7",
+                question: nil,
+                answered: true,
+                status: "running"
+            ),
+            now: t0.addingTimeInterval(4)
+        )
+
+        agent = store.agent(for: "call-w")
+        #expect(agent?.status == .running)
+        #expect(agent?.pendingQuestion == nil)
+    }
+
+    @Test
+    func reportResolverStripsHeadersLoadsSpilledFileAndSlicesLines() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pcode-spill-test-\(UUID().uuidString)", isDirectory: true)
+        let runDir = tempRoot.appendingPathComponent("run-123", isDirectory: true)
+        try FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let fullLines = (1...80).map { "Line \($0)" }.joined(separator: "\n")
+        let spillFile = runDir.appendingPathComponent("call_abc.0", isDirectory: false)
+        try ("[worker w9]\n" + fullLines).write(to: spillFile, atomically: true, encoding: .utf8)
+
+        let rawSpilled = """
+        [Tool output too large (17,007 chars); stored to handle 'run-123/call_abc.0'. Read it with read_tool_result(handle='run-123/call_abc.0', offset=0, limit=200, from_end=False, pattern=None).]
+        [worker w9]
+        Preview only
+        """
+
+        let parsed = try #require(PCodeAgentReportResolver.parseSpill(rawSpilled))
+        #expect(parsed.handle == "run-123/call_abc.0")
+        #expect(parsed.previewBody == "Preview only")
+
+        let loaded = try #require(
+            PCodeAgentReportResolver.loadSpilledReport(handle: parsed.handle, baseDirectory: tempRoot)
+        )
+        #expect(loaded == fullLines)
+        #expect(!loaded.contains("[worker w9]"))
+
+        // Reject path traversal
+        #expect(PCodeAgentReportResolver.loadSpilledReport(handle: "../etc/passwd", baseDirectory: tempRoot) == nil)
+
+        // Progressive line slicing
+        let firstSlice = PCodeAgentReportResolver.sliceLines(loaded, lineLimit: 40)
+        #expect(firstSlice.isTruncated)
+        #expect(firstSlice.shownLines == 40)
+        #expect(firstSlice.totalLines == 80)
+        #expect(firstSlice.remainingLines == 40)
+
+        let fullSlice = PCodeAgentReportResolver.sliceLines(loaded, lineLimit: 0)
+        #expect(!fullSlice.isTruncated)
+        #expect(fullSlice.shownLines == 80)
+    }
+
     // MARK: - PCodeInspectorCommandsStore
 
     @Test @MainActor

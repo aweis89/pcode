@@ -411,6 +411,12 @@ struct PCodeInspectorActions {
     let copyToClipboard: @MainActor (String) -> Void
     let stopJob: @MainActor (_ jobID: String) -> Void
     let prefillWorkerAction: @MainActor (_ text: String) -> Void
+    let manageWorker: (@MainActor (
+        _ action: String,
+        _ workerID: String,
+        _ text: String,
+        _ completion: @escaping @MainActor (Result<String, Error>) -> Void
+    ) -> Void)?
 
     init(
         insertIntoComposer: @escaping @MainActor (String) -> Void = { _ in },
@@ -420,13 +426,20 @@ struct PCodeInspectorActions {
             NSPasteboard.general.setString(text, forType: .string)
         },
         stopJob: @escaping @MainActor (_ jobID: String) -> Void = { _ in },
-        prefillWorkerAction: (@MainActor (_ text: String) -> Void)? = nil
+        prefillWorkerAction: (@MainActor (_ text: String) -> Void)? = nil,
+        manageWorker: (@MainActor (
+            _ action: String,
+            _ workerID: String,
+            _ text: String,
+            _ completion: @escaping @MainActor (Result<String, Error>) -> Void
+        ) -> Void)? = nil
     ) {
         self.insertIntoComposer = insertIntoComposer
         self.openInEditor = openInEditor
         self.copyToClipboard = copyToClipboard
         self.stopJob = stopJob
         self.prefillWorkerAction = prefillWorkerAction ?? insertIntoComposer
+        self.manageWorker = manageWorker
     }
 
     static let noop = PCodeInspectorActions()

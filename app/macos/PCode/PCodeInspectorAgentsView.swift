@@ -254,6 +254,27 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 }
             }
 
+        case .workerStatus(let callID, let workerID, let question, let answered, let status):
+            let mappedStatus: PCodeInspectorAgentItem.Status? = {
+                guard let status else { return nil }
+                switch status.lowercased() {
+                case "running": return .running
+                case "waiting": return .waiting
+                case "done", "completed": return .completed
+                case "failed", "error": return .failed
+                case "stopped", "cancelled", "canceled": return .cancelled
+                default: return nil
+                }
+            }()
+            updateWorkerState(
+                callID: callID,
+                workerID: workerID.isEmpty ? nil : workerID,
+                status: mappedStatus,
+                pendingQuestion: question,
+                clearPendingQuestion: answered == true,
+                now: now
+            )
+
         case .turnEnded(let status):
             let settled = settleActiveAgents(for: status, now: now, replayingHistory: replayingHistory)
             if settled && !replayingHistory {
@@ -741,6 +762,11 @@ struct PCodeInspectorAgentsView: View {
     @State private var selectedAgentID: String?
     @State private var draftMessages: [String: String] = [:]
     @State private var copiedReportID: String?
+    @State private var resolvedSpilledReports: [String: String] = [:]
+    @State private var failedSpillHandles: Set<String> = []
+    @State private var reportLineLimits: [String: Int] = [:]
+    @State private var workerFeedbackByAgentID: [String: (text: String, isError: Bool)] = [:]
+    @State private var inFlightWorkerAgentIDs: Set<String> = []
 
     init(
         state: PCodeInspectorState,
@@ -1151,35 +1177,82 @@ struct PCodeInspectorAgentsView: View {
 
     private func activeActionBar(for agent: PCodeInspectorAgentItem) -> some View {
         let isWaiting = agent.status == .waiting || (agent.pendingQuestion?.isEmpty == false)
+        let workerID = agent.workerID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let canSteerDirectly = !workerID.isEmpty && actions.manageWorker != nil
+        let isBusy = inFlightWorkerAgentIDs.contains(agent.id)
         let draftBinding = Binding<String>(
             get: { draftMessages[agent.id] ?? "" },
             set: { draftMessages[agent.id] = $0 }
         )
+        let hasDraft = !(draftMessages[agent.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 TextField(
-                    isWaiting ? "Answer worker…" : "Message worker…",
+                    isWaiting ? "Answer \(Self.targetLabel(for: agent))…" : "Message \(Self.targetLabel(for: agent))…",
                     text: draftBinding
                 )
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11.5))
                 .onSubmit {
-                    submitWorkerPrompt(for: agent, isAnswer: isWaiting)
+                    if canSteerDirectly {
+                        sendDirectWorkerAction(
+                            for: agent,
+                            workerID: workerID,
+                            action: isWaiting ? "answer" : "message"
+                        )
+                    } else {
+                        submitWorkerPromptViaParent(for: agent, isAnswer: isWaiting)
+                    }
                 }
 
-                Button {
-                    submitWorkerPrompt(for: agent, isAnswer: isWaiting)
-                } label: {
-                    Label(isWaiting ? "Answer" : "Message", systemImage: "paperplane")
-                        .font(.system(size: 11, weight: .medium))
+                if canSteerDirectly {
+                    Button {
+                        sendDirectWorkerAction(
+                            for: agent,
+                            workerID: workerID,
+                            action: isWaiting ? "answer" : "message"
+                        )
+                    } label: {
+                        Label(isWaiting ? "Answer" : "Send", systemImage: "paperplane.fill")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isBusy || !hasDraft)
+                    .help(
+                        isWaiting
+                            ? "Answer \(workerID) directly"
+                            : "Send directly to \(workerID) before its next step"
+                    )
+
+                    Button {
+                        submitWorkerPromptViaParent(for: agent, isAnswer: isWaiting)
+                    } label: {
+                        Label("Via Parent", systemImage: "arrow.turn.up.left")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Prefill in main composer so the parent agent relays it")
+                } else {
+                    Button {
+                        submitWorkerPromptViaParent(for: agent, isAnswer: isWaiting)
+                    } label: {
+                        Label(isWaiting ? "Answer" : "Message", systemImage: "paperplane")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(isWaiting ? "Prefill answer in composer" : "Prefill message in composer")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(isWaiting ? "Prefill answer in composer" : "Prefill message in composer")
 
                 Button(role: .destructive) {
-                    actions.prefillWorkerAction(Self.stopActionPrompt(for: agent))
+                    if canSteerDirectly {
+                        sendDirectWorkerAction(for: agent, workerID: workerID, action: "stop")
+                    } else {
+                        actions.prefillWorkerAction(Self.stopActionPrompt(for: agent))
+                    }
                 } label: {
                     Label("Stop", systemImage: "stop.circle")
                         .font(.system(size: 11, weight: .medium))
@@ -1187,12 +1260,58 @@ struct PCodeInspectorAgentsView: View {
                 .buttonStyle(.bordered)
                 .tint(.red)
                 .controlSize(.small)
-                .help("Prefill stop command in composer")
+                .disabled(isBusy)
+                .help(canSteerDirectly ? "Stop \(workerID) directly" : "Prefill stop command in composer")
+            }
+
+            if let feedback = workerFeedbackByAgentID[agent.id] {
+                HStack(spacing: 4) {
+                    Image(systemName: feedback.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .font(.system(size: 10))
+                    Text(feedback.text)
+                        .font(.system(size: 10.5))
+                        .lineLimit(2)
+                }
+                .foregroundStyle(feedback.isError ? Color.red : Color.green)
             }
         }
     }
 
-    private func submitWorkerPrompt(for agent: PCodeInspectorAgentItem, isAnswer: Bool) {
+    private func sendDirectWorkerAction(
+        for agent: PCodeInspectorAgentItem,
+        workerID: String,
+        action: String
+    ) {
+        guard let manageWorker = actions.manageWorker else {
+            submitWorkerPromptViaParent(for: agent, isAnswer: action == "answer")
+            return
+        }
+        let body = action == "stop" ? "" : (draftMessages[agent.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if action != "stop" && body.isEmpty {
+            return
+        }
+        inFlightWorkerAgentIDs.insert(agent.id)
+        workerFeedbackByAgentID.removeValue(forKey: agent.id)
+        manageWorker(action, workerID, body) { result in
+            inFlightWorkerAgentIDs.remove(agent.id)
+            switch result {
+            case .success(let message):
+                if action != "stop" {
+                    draftMessages[agent.id] = ""
+                }
+                workerFeedbackByAgentID[agent.id] = (text: message, isError: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    if workerFeedbackByAgentID[agent.id]?.text == message {
+                        workerFeedbackByAgentID.removeValue(forKey: agent.id)
+                    }
+                }
+            case .failure(let error):
+                workerFeedbackByAgentID[agent.id] = (text: error.localizedDescription, isError: true)
+            }
+        }
+    }
+
+    private func submitWorkerPromptViaParent(for agent: PCodeInspectorAgentItem, isAnswer: Bool) {
         let body = draftMessages[agent.id] ?? ""
         let prompt = isAnswer
             ? Self.answerActionPrompt(for: agent, body: body)
@@ -1438,15 +1557,40 @@ struct PCodeInspectorAgentsView: View {
 
     private func reportSection(agent: PCodeInspectorAgentItem) -> some View {
         let isCopied = copiedReportID == agent.id
+        let spill = PCodeAgentReportResolver.parseSpill(agent.reportMarkdown)
+        let loadedSpill = spill.flatMap { resolvedSpilledReports[$0.handle] }
+        let spillUnavailable = spill.map { failedSpillHandles.contains($0.handle) } ?? false
+        let fullMarkdown: String = {
+            if let loadedSpill {
+                return loadedSpill
+            }
+            if let spill {
+                return spill.previewBody
+            }
+            return PCodeAgentReportResolver.stripWorkerHeader(agent.reportMarkdown)
+        }()
+
+        let currentLimit = reportLineLimits[agent.id] ?? PCodeAgentReportResolver.initialLineLimit
+        let slice = PCodeAgentReportResolver.sliceLines(fullMarkdown, lineLimit: currentLimit)
+        let canCollapse = currentLimit == 0 || (currentLimit > PCodeAgentReportResolver.initialLineLimit && slice.totalLines > PCodeAgentReportResolver.initialLineLimit + PCodeAgentReportResolver.lineLimitTolerance)
 
         return VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            HStack(spacing: 6) {
                 Text("Report")
                     .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(.secondary)
+                if let spill, loadedSpill == nil {
+                    Text(spillUnavailable ? "Preview only" : "Loading full report…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                } else if slice.totalLines > PCodeAgentReportResolver.initialLineLimit + PCodeAgentReportResolver.lineLimitTolerance {
+                    Text("\(slice.totalLines) lines")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Button {
-                    actions.copyToClipboard(agent.reportMarkdown)
+                    actions.copyToClipboard(fullMarkdown)
                     copiedReportID = agent.id
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                         if copiedReportID == agent.id {
@@ -1463,20 +1607,82 @@ struct PCodeInspectorAgentsView: View {
                     .foregroundStyle(isCopied ? .green : .secondary)
                 }
                 .buttonStyle(.borderless)
-                .help("Copy Markdown report")
+                .help("Copy full Markdown report")
             }
 
-            PCodeInspectorMarkdownView(markdown: agent.reportMarkdown, isDark: isDark)
-                .padding(9)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.primary.opacity(isDark ? 0.04 : 0.025))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.primary.opacity(isDark ? 0.1 : 0.08), lineWidth: 1)
-                )
+            VStack(alignment: .leading, spacing: 0) {
+                PCodeInspectorMarkdownView(markdown: slice.text, isDark: isDark)
+                    .padding(9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if slice.isTruncated || canCollapse {
+                    Divider()
+                        .opacity(0.4)
+                    HStack(spacing: 10) {
+                        if slice.isTruncated {
+                            let step = min(PCodeAgentReportResolver.pageSize, slice.remainingLines)
+                            Button {
+                                reportLineLimits[agent.id] = slice.shownLines + PCodeAgentReportResolver.pageSize
+                            } label: {
+                                Text(
+                                    step == slice.remainingLines
+                                        ? "Show \(slice.remainingLines) more lines"
+                                        : "Show \(step) more lines (\(slice.remainingLines) remaining)"
+                                )
+                                .font(.system(size: 10.5, weight: .medium))
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(Color.accentColor)
+
+                            if slice.remainingLines > PCodeAgentReportResolver.pageSize {
+                                Button("Show all") {
+                                    reportLineLimits[agent.id] = 0
+                                }
+                                .font(.system(size: 10.5))
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Spacer(minLength: 4)
+
+                        if canCollapse {
+                            Button("Show less") {
+                                reportLineLimits.removeValue(forKey: agent.id)
+                            }
+                            .font(.system(size: 10.5))
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(Color.primary.opacity(isDark ? 0.03 : 0.02))
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(isDark ? 0.04 : 0.025))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(isDark ? 0.1 : 0.08), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .task(id: spill?.handle) {
+            guard let handle = spill?.handle,
+                  resolvedSpilledReports[handle] == nil,
+                  !failedSpillHandles.contains(handle)
+            else { return }
+            let loaded = await Task.detached(priority: .userInitiated) {
+                PCodeAgentReportResolver.loadSpilledReport(handle: handle)
+            }.value
+            if let loaded {
+                resolvedSpilledReports[handle] = loaded
+            } else {
+                failedSpillHandles.insert(handle)
+            }
         }
     }
 
@@ -1493,6 +1699,8 @@ struct PCodeInspectorAgentsView: View {
         let validIDs = Set(ids)
         expandedAgentIDs = expandedAgentIDs.intersection(validIDs)
         draftMessages = draftMessages.filter { validIDs.contains($0.key) }
+        reportLineLimits = reportLineLimits.filter { validIDs.contains($0.key) }
+        workerFeedbackByAgentID = workerFeedbackByAgentID.filter { validIDs.contains($0.key) }
         if let copied = copiedReportID, !validIDs.contains(copied) {
             copiedReportID = nil
         }
@@ -1695,5 +1903,131 @@ private struct PCodeInspectorMarkdownView: View {
 
         flushParagraph()
         return blocks
+    }
+}
+
+/// Cleans model-facing report wrappers (`[Tool output too large ...]` / `[worker wN]`),
+/// loads full spilled reports from `~/.local/state/pcode/tool-results`, and slices long reports.
+enum PCodeAgentReportResolver {
+    struct ParsedSpill: Equatable {
+        let handle: String
+        let previewBody: String
+    }
+
+    struct VisibleSlice: Equatable {
+        let text: String
+        let totalLines: Int
+        let shownLines: Int
+
+        var remainingLines: Int { max(0, totalLines - shownLines) }
+        var isTruncated: Bool { remainingLines > 0 }
+    }
+
+    static let initialLineLimit = 40
+    static let lineLimitTolerance = 10
+    static let pageSize = 120
+
+    static var defaultToolResultsDirectory: URL {
+        if let xdg = ProcessInfo.processInfo.environment["XDG_STATE_HOME"], !xdg.isEmpty {
+            return URL(fileURLWithPath: xdg, isDirectory: true)
+                .appendingPathComponent("pcode", isDirectory: true)
+                .appendingPathComponent("tool-results", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local", isDirectory: true)
+            .appendingPathComponent("state", isDirectory: true)
+            .appendingPathComponent("pcode", isDirectory: true)
+            .appendingPathComponent("tool-results", isDirectory: true)
+    }
+
+    static func parseSpill(_ raw: String) -> ParsedSpill? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("[Tool output too large (") else { return nil }
+        let header: String
+        let remainder: String
+        if let firstNewline = trimmed.firstIndex(of: "\n") {
+            header = String(trimmed[..<firstNewline])
+            remainder = String(trimmed[trimmed.index(after: firstNewline)...])
+        } else {
+            header = trimmed
+            remainder = ""
+        }
+        guard header.hasSuffix("]"), let handle = extractHandle(from: header) else { return nil }
+        return ParsedSpill(handle: handle, previewBody: stripWorkerHeader(remainder))
+    }
+
+    static func stripWorkerHeader(_ raw: String) -> String {
+        let trimmedLeading = raw.drop(while: { $0 == "\n" || $0 == "\r" })
+        let text = String(trimmedLeading)
+        guard text.hasPrefix("[worker ") else { return raw }
+        let pattern = #"^\[worker\s+w\d+(?:\.\d+)?\]\r?\n?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return raw }
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else { return raw }
+        return ns.substring(from: match.range.upperBound)
+    }
+
+    static func loadSpilledReport(
+        handle: String,
+        baseDirectory: URL = defaultToolResultsDirectory
+    ) -> String? {
+        let cleanedHandle = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedHandle.isEmpty,
+              !cleanedHandle.hasPrefix("/"),
+              !cleanedHandle.contains("\\")
+        else { return nil }
+
+        let components = cleanedHandle.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.isEmpty,
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+        else { return nil }
+
+        let baseResolved = baseDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let basePrefix = baseResolved.path.hasSuffix("/") ? baseResolved.path : baseResolved.path + "/"
+
+        var candidate = baseResolved
+        for comp in components {
+            candidate.appendPathComponent(String(comp), isDirectory: false)
+        }
+
+        let candidates = [
+            candidate,
+            URL(fileURLWithPath: candidate.path + ".content", isDirectory: false),
+        ]
+
+        for url in candidates {
+            let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
+            guard resolved.path.hasPrefix(basePrefix) else { continue }
+            guard let data = try? Data(contentsOf: resolved),
+                  let text = String(data: data, encoding: .utf8)
+            else { continue }
+            return stripWorkerHeader(text)
+        }
+        return nil
+    }
+
+    static func sliceLines(_ markdown: String, lineLimit: Int) -> VisibleSlice {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+        let total = lines.count
+        if lineLimit <= 0 || total <= lineLimit + lineLimitTolerance {
+            return VisibleSlice(text: markdown, totalLines: total, shownLines: total)
+        }
+        let clipped = lines.prefix(lineLimit).joined(separator: "\n")
+        return VisibleSlice(text: clipped, totalLines: total, shownLines: lineLimit)
+    }
+
+    private static func extractHandle(from header: String) -> String? {
+        let pattern = #"stored to handle '([^']+)'"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = header as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard let match = regex.firstMatch(in: header, options: [], range: range),
+              match.numberOfRanges > 1
+        else { return nil }
+        let capture = match.range(at: 1)
+        guard capture.location != NSNotFound else { return nil }
+        let handle = ns.substring(with: capture).trimmingCharacters(in: .whitespacesAndNewlines)
+        return handle.isEmpty ? nil : handle
     }
 }
