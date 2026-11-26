@@ -23,6 +23,7 @@ import contextlib
 import itertools
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -91,6 +92,63 @@ TRANSCRIPT_OBSERVER_CALLS = frozenset(
 # View calls that change what the conversation is, so a terminal attaching
 # later reads it from the journal instead of from the buffer.
 RESETS = {"conversation_reset", "replay_conversation", "show_branch"}
+# Of those, the ones that redraw the conversation from the journal. A transcript
+# observer has no journal reader of its own, so it gets the records instead, as
+# a `history` call (`SessionHost.emit`).
+REPLAYS = {"replay_conversation", "show_branch"}
+
+# Journal records a transcript observer never draws: streaming deltas (the
+# settled Message and Thinking follow them), status ticks, plan snapshots, and
+# model traffic. A long session's journal is mostly these, and its whole history
+# goes to an observer in one message.
+OBSERVER_SKIPPED_KINDS = frozenset(
+    {
+        "TextDelta",
+        "ThinkingDelta",
+        "RunStatus",
+        "PlanUpdated",
+        "PlanPreview",
+        "ChildText",
+        "ChildPlan",
+        "WorkerStatus",
+        "CacheBust",
+        "compaction_checkpoint",
+        "request",
+        "response",
+    }
+)
+# Fields an observer never reads; a tool's arguments can be most of a journal.
+OBSERVER_DROPPED_FIELDS = {"ToolStarted": ("arguments",)}
+# Where a journal line names its kind: right after its version and time.
+_JOURNAL_KIND = re.compile(rb'"kind": "([^"]+)"')
+
+
+def observer_history(path: Path, limit: int | None = None) -> list[dict]:
+    """The journal's records up to byte `limit`, as a transcript observer draws them."""
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read() if limit is None else fh.read(max(0, limit))
+    except OSError:
+        return []
+    records: list[dict] = []
+    for line in raw.splitlines():
+        if not line:
+            continue
+        # Skip the bulk without parsing it; anything unexpected is parsed and checked.
+        sniffed = _JOURNAL_KIND.search(line, 0, 200)
+        if sniffed is not None and sniffed[1].decode(errors="replace") in OBSERVER_SKIPPED_KINDS:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict) or obj.get("kind") in OBSERVER_SKIPPED_KINDS:
+            continue
+        for name in OBSERVER_DROPPED_FIELDS.get(obj.get("kind"), ()):
+            obj.pop(name, None)
+        records.append(obj)
+    return records
+
 
 # What a terminal may call besides the controller's intents.
 HOST_CALLS = frozenset(
@@ -749,31 +807,17 @@ class SessionHost:
             peer.close()
 
     def _read_settled_history(self) -> list[dict]:
-        """Read settled transcript journal records up to `self.settled_end` as JSON dicts."""
+        """The settled journal (up to `settled_end`) as a transcript observer draws it."""
         session = getattr(self.controller.runtime, "session", None)
-        if session is None:
+        if session is not None:
+            return observer_history(session.directory / "transcript.jsonl", self.settled_end)
+        # Still booting: the conversation being resumed is on disk already, and
+        # boot's `replay_conversation` sends it again once it has loaded. Without
+        # this, an observer that connects first is told the session is empty.
+        saved = getattr(self.controller, "_saved_session", None)
+        if saved is None:
             return []
-        path = session.directory / "transcript.jsonl"
-        if not path.is_file():
-            return []
-        limit = self.settled_end
-        records: list[dict] = []
-        skip_kinds = {"TextDelta", "ThinkingDelta"}
-        try:
-            with path.open("rb") as fh:
-                raw = fh.read() if limit is None else fh.read(max(0, limit))
-        except OSError:
-            return []
-        for line in raw.splitlines():
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict) and obj.get("kind") not in skip_kinds:
-                records.append(obj)
-        return records
+        return observer_history(saved.directory / "transcript.jsonl")
 
     async def _observe_transcript(
         self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -1032,9 +1076,15 @@ class SessionHost:
             self.own_jobs()
         for client in list(self.clients.values()):
             client.peer.notify(method, *args, **kwargs)
-        if method in TRANSCRIPT_OBSERVER_CALLS:
-            for peer in list(self.transcript_observers):
-                peer.notify(method, *args, **kwargs)
+        if method in TRANSCRIPT_OBSERVER_CALLS and self.transcript_observers:
+            if method in REPLAYS:
+                # After `reset_buffer`, so this is everything shown until now.
+                history = self._read_settled_history()
+                for peer in list(self.transcript_observers):
+                    peer.notify("history", history)
+            else:
+                for peer in list(self.transcript_observers):
+                    peer.notify(method, *args, **kwargs)
         if method in RESETS:
             return
         self._buffer(method, args, kwargs)

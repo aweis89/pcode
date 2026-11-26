@@ -161,15 +161,11 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.paceMode = welcome.pacedScrollback
                 documentView.paceMode = welcome.pacedScrollback
                 documentView.setItems([], pinToBottom: true)
-                reducer.reset()
                 // After clearing, so a change doesn't re-project rows about to be dropped.
                 if let mode = welcome.showThinking {
                     documentView.showThinking = PCodeThinkingVisibility.isShown(mode: mode)
                 }
-                for event in welcome.history {
-                    reducer.apply(event, reveal: false, isLive: false)
-                }
-                reducer.settleHistory()
+                reducer.loadHistory(welcome.history)
                 var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
                     state.apply(event)
@@ -232,11 +228,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                       self.connectedSocketPath == nil,
                       !self.isConnectingSocket
                 else { return }
-                for event in initial.events {
-                    reducer.apply(event, reveal: false, isLive: false)
-                }
-                reducer.settleHistory()
-                documentView.scrollToBottomAndPin()
+                reducer.loadHistory(initial.events)
             }
         }
     }
@@ -274,6 +266,23 @@ final class PCodeLiveTranscriptController: ObservableObject {
         return (st.st_mode & S_IFMT) == S_IFREG && st.st_uid == Darwin.getuid()
     }
 
+    /// Journal kinds the transcript never draws (the host's `OBSERVER_SKIPPED_KINDS`).
+    static let undrawnJournalKinds: Set<String> = [
+        "TextDelta", "ThinkingDelta", "RunStatus", "PlanUpdated", "PlanPreview", "ChildText",
+        "ChildPlan", "WorkerStatus", "CacheBust", "compaction_checkpoint", "request", "response",
+    ]
+    private static let journalKindPrefix = Data("\"kind\": \"".utf8)
+
+    /// A journal line's kind without parsing it: pcode writes `"kind": "..."` right after
+    /// the version and time, so it is in the first couple of hundred bytes.
+    static func sniffJournalKind(_ line: Data) -> String? {
+        let window = line.prefix(200)
+        guard let start = window.range(of: journalKindPrefix)?.upperBound,
+              let end = window[start...].firstIndex(of: 0x22)
+        else { return nil }
+        return String(data: window[start..<end], encoding: .utf8)
+    }
+
     private static func readSettledInitialJournal(
         atPath path: String
     ) -> (events: [PCodeHostEvent], offset: UInt64, inode: UInt64, dev: Int32) {
@@ -307,17 +316,18 @@ final class PCodeLiveTranscriptController: ObservableObject {
         }
         data.count = totalRead
 
-        // Decode settled records only (skip TextDelta/ThinkingDelta so initial load is O(N) and fast).
-        let skipKinds: Set<String> = ["TextDelta", "ThinkingDelta"]
+        // Decode settled records only, skipping the deltas and status ticks that are most of a
+        // long journal before parsing them (as the host's `observer_history` does).
         var events: [PCodeHostEvent] = []
         var scan = 0
         while scan < data.count, let nl = data[scan...].firstIndex(of: 0x0A) {
             let line = data[scan..<nl]
             scan = nl + 1
+            if let kind = Self.sniffJournalKind(line), Self.undrawnJournalKinds.contains(kind) {
+                continue
+            }
             guard !line.isEmpty,
                   let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let kind = obj["kind"] as? String,
-                  !skipKinds.contains(kind),
                   let event = PCodeHostEventDecoder.decodeJournalRecord(obj)
             else { continue }
             events.append(event)

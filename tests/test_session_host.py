@@ -3179,6 +3179,12 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             assert msg["method"] == "turn_event"
             assert msg["args"][0]["$event"]["fields"]["markdown"] == "side answer"
 
+            # A conversation redrawn from the journal reaches the observer as its records.
+            host.emit("replay_conversation", (), {})
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert msg["method"] == "history"
+            assert isinstance(msg["args"][0], list)
+
             # Observer is read-only: RPC requests are refused with PermissionError.
             req = {"type": "request", "id": 1, "method": "submit", "args": ["hi", "queue"]}
             writer.write(dumps(req))
@@ -3191,6 +3197,46 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             await stop_host(host)
 
     asyncio.run(run())
+
+
+def test_observer_history_drops_what_the_app_never_draws(tmp_path):
+    from pcode.host import observer_history
+
+    records = [
+        {"version": 1, "kind": "turn_started", "prompt": "hi"},
+        {"version": 1, "kind": "ThinkingDelta", "text": "hm"},
+        {"version": 1, "kind": "RunStatus", "text": "working"},
+        {"version": 1, "kind": "ToolStarted", "call_id": "c1", "arguments": {"x": "y" * 50}},
+        {"version": 1, "kind": "compaction_checkpoint", "messages": []},
+        {"version": 1, "kind": "Message", "markdown": "done"},
+    ]
+    path = tmp_path / "transcript.jsonl"
+    lines = [json.dumps(record).encode() + b"\n" for record in records]
+    path.write_bytes(b"".join(lines) + b"not json\n")
+
+    history = observer_history(path)
+    assert [r["kind"] for r in history] == ["turn_started", "ToolStarted", "Message"]
+    assert "arguments" not in history[1] and history[1]["call_id"] == "c1"
+    # Up to the settled end only.
+    assert [r["kind"] for r in observer_history(path, len(lines[0]))] == ["turn_started"]
+    assert observer_history(tmp_path / "missing.jsonl") == []
+
+
+def test_a_booting_host_shows_observers_the_conversation_it_is_resuming(tmp_path):
+    """The socket opens before the runtime loads; history comes from the saved session."""
+    from types import SimpleNamespace
+
+    (tmp_path / "transcript.jsonl").write_text(
+        json.dumps({"version": 1, "kind": "Message", "markdown": "earlier"}) + "\n"
+    )
+    saved = SimpleNamespace(directory=tmp_path)
+    booting = SimpleNamespace(
+        controller=SimpleNamespace(runtime=None, _saved_session=saved), settled_end=None
+    )
+    history = SessionHost._read_settled_history(booting)
+    assert [r["markdown"] for r in history] == ["earlier"]
+    booting.controller._saved_session = None
+    assert SessionHost._read_settled_history(booting) == []
 
 
 def test_host_starts_without_a_model_and_activates_one_later(tmp_path, host_dir, monkeypatch):
