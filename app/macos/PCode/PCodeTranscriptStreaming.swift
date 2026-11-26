@@ -692,6 +692,8 @@ final class PCodeTranscriptStreamReplayer {
                 switch block {
                 case .markdown(let blockID, let text):
                     out.append(.settledMessage(id: "replay-turn-\(turn.id)-md-\(blockID)", markdown: text))
+                case .steering(_, let text):
+                    out.append(.beginTurn(prompt: text, isSide: false))
                 case .tool(let call):
                     out.append(.toolCall(
                         name: call.name,

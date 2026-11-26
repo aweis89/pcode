@@ -128,14 +128,32 @@ enum PCodeHostEvent: Equatable {
     case thinkingMode(String)
 }
 
+/// One user message waiting to be delivered to the model (either steering the active turn
+/// or queued for the next turn).
+struct PCodePendingPrompt: Identifiable, Equatable {
+    enum Mode: String, Equatable {
+        case steering
+        case queued
+    }
+
+    let id: String
+    let text: String
+    let mode: Mode
+}
+
 /// The `SESSION_FIELDS` (`pcode.controller`) a `state` notify carries that the app tracks.
 /// Each is nil when that field did not change; the host sends only what changed.
 struct PCodeHostSessionDelta: Equatable {
     var busy: Bool?
     var promptState: String?
     var turnOutcome: String?
+    var queuedPrompts: [String]?
+    var queuedModes: [String]?
 
-    var isEmpty: Bool { busy == nil && promptState == nil && turnOutcome == nil }
+    var isEmpty: Bool {
+        busy == nil && promptState == nil && turnOutcome == nil
+            && queuedPrompts == nil && queuedModes == nil
+    }
 }
 
 /// The session state a host observer mirrors: the `state` deltas folded together, plus the
@@ -147,6 +165,37 @@ struct PCodeHostSessionState: Equatable {
     var promptState = ""
     /// `Activity.turn_outcome`: "", "done", "cancelled" or "failed".
     var turnOutcome = ""
+    /// `Activity.queued_prompts` / `queued_modes`: pending user messages waiting for delivery.
+    var queuedPrompts: [String] = []
+    var queuedModes: [String] = []
+
+    /// User-typed pending messages (steering or queued), skipping internal wake/continue modes.
+    var pendingPrompts: [PCodePendingPrompt] {
+        var result: [PCodePendingPrompt] = []
+        var seen: [String: Int] = [:]
+        for (idx, text) in queuedPrompts.enumerated() {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let rawMode = idx < queuedModes.count ? queuedModes[idx] : "queue"
+            let mode: PCodePendingPrompt.Mode
+            switch rawMode {
+            case "steering":
+                mode = .steering
+            case "queue", "interrupt", "shell":
+                mode = .queued
+            default:
+                continue
+            }
+            let baseKey = "\(mode.rawValue):\(trimmed)"
+            let occurrence = seen[baseKey, default: 0]
+            seen[baseKey] = occurrence + 1
+            result.append(PCodePendingPrompt(
+                id: "\(baseKey)#\(occurrence)",
+                text: trimmed,
+                mode: mode))
+        }
+        return result
+    }
 
     init() {}
 
@@ -155,6 +204,8 @@ struct PCodeHostSessionState: Equatable {
         sessionID = welcome.sessionID
         busy = welcome.hostState == "working"
         if busy { promptState = "running" }
+        queuedPrompts = welcome.queuedPrompts
+        queuedModes = welcome.queuedModes
     }
 
     /// Fold one host event in; returns whether anything changed.
@@ -166,11 +217,15 @@ struct PCodeHostSessionState: Equatable {
             if let busy = delta.busy { self.busy = busy }
             if let promptState = delta.promptState { self.promptState = promptState }
             if let turnOutcome = delta.turnOutcome { self.turnOutcome = turnOutcome }
+            if let queuedPrompts = delta.queuedPrompts { self.queuedPrompts = queuedPrompts }
+            if let queuedModes = delta.queuedModes { self.queuedModes = queuedModes }
         case .sessionChanged(let id):
             if !id.isEmpty { sessionID = id }
         case .conversationReset:
             sessionID = ""
             turnOutcome = ""
+            queuedPrompts = []
+            queuedModes = []
         default:
             break
         }
@@ -276,8 +331,10 @@ enum PCodeHostEventDecoder {
             let delta = PCodeHostSessionDelta(
                 busy: changes["busy"] as? Bool,
                 promptState: changes["prompt_state"] as? String,
-                turnOutcome: changes["turn_outcome"] as? String)
-            // Deltas of only untracked fields (queue, notice, status) are dropped here.
+                turnOutcome: changes["turn_outcome"] as? String,
+                queuedPrompts: changes["queued_prompts"] as? [String],
+                queuedModes: changes["queued_modes"] as? [String])
+            // Deltas of only untracked fields (notice, status) are dropped here.
             return delta.isEmpty ? nil : .sessionState(delta)
         case "session_changed":
             return .sessionChanged((args.first as? String) ?? "")
@@ -991,6 +1048,8 @@ final class PCodeHostSocketClient {
         let pacedScrollback: PCodeStreamingPaceMode
         /// The host's `show_thinking` mode; nil from a host too old to report it.
         var showThinking: String? = nil
+        var queuedPrompts: [String] = []
+        var queuedModes: [String] = []
         let history: [PCodeHostEvent]
         let catchUpCalls: [PCodeHostEvent]
     }
@@ -1267,6 +1326,8 @@ final class PCodeHostSocketClient {
             hostState: (obj["state"] as? String) ?? "",
             pacedScrollback: pace,
             showThinking: obj["show_thinking"] as? String,
+            queuedPrompts: (obj["queued_prompts"] as? [String]) ?? [],
+            queuedModes: (obj["queued_modes"] as? [String]) ?? [],
             history: history,
             catchUpCalls: catchUp)
     }

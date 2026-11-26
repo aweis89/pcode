@@ -1522,6 +1522,38 @@ struct PCodeTranscriptTests {
         }
     }
 
+    @Test func peekFlattenIncludesMidTurnSteeringInOrder() {
+        let turn = PCodePeekTurn(
+            id: 0,
+            prompt: "Start task",
+            blocks: [
+                .markdown(id: 0, text: "First step."),
+                .steering(id: 1, text: "Also check docs"),
+                .markdown(id: 2, text: "Checked docs too."),
+            ],
+            status: .complete,
+            side: false)
+        let items = PCodeTranscriptItem.flatten(turns: [turn])
+        let prompts = items.compactMap { item -> String? in
+            if case .prompt(_, let text, _) = item.payload { return text }
+            return nil
+        }
+        #expect(prompts == ["Start task", "Also check docs"])
+        let steerIdx = items.firstIndex {
+            if case .prompt(_, let text, _) = $0.payload { return text == "Also check docs" }
+            return false
+        }!
+        let firstMsgIdx = items.firstIndex {
+            if case .prose(let md, _, _) = $0.payload { return md.contains("First step.") }
+            return false
+        }!
+        let secondMsgIdx = items.firstIndex {
+            if case .prose(let md, _, _) = $0.payload { return md.contains("Checked docs too.") }
+            return false
+        }!
+        #expect(firstMsgIdx < steerIdx && steerIdx < secondMsgIdx)
+    }
+
     @Test @MainActor func turnEndedAndShellModeSettleRunningTools() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)

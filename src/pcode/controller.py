@@ -302,6 +302,9 @@ class PromptQueue:
         self._items: asyncio.Queue[Item] = asyncio.Queue()
         # What `get` handed out and nobody has acted on yet (see `take_all`).
         self._fetched: Item | None = None
+        # Deferred steering texts already sent to a provider, still shown as
+        # pending until the step boundary commits them to the transcript.
+        self._deferred_steering: list[str] = []
 
     def __len__(self) -> int:
         return len(self.activity.queued_prompts)
@@ -341,10 +344,12 @@ class PromptQueue:
     def clear(self) -> int:
         """Drop everything waiting and start a new generation. Returns how many were dropped."""
         self.generation += 1
-        count = len(self.activity.queued_prompts)
+        # Only count unconsumed waiting items; deferred steers were already sent.
+        count = max(0, len(self.activity.queued_prompts) - len(self._deferred_steering))
         for _generation, _text, _mode, owner, _sent_at in self._drain():
             if owner is not None:
                 owner.dropped()
+        self._deferred_steering.clear()
         self.activity.queued_prompts.clear()
         self.activity.queued_modes.clear()
         self._sync()
@@ -361,10 +366,16 @@ class PromptQueue:
             if generation == self.generation and mode == "steering"
         )
 
-    def take_steering(self, limit: int | None = None) -> list[Steer]:
+    def take_steering(self, limit: int | None = None, *, keep_visible: bool = False) -> list[Steer]:
         """Remove and return the current steering messages, the first `limit` of
         them if given; everything else keeps its place. Their owners are told
-        they started, so a headless sender follows the turn it joined."""
+        they started, so a headless sender follows the turn it joined.
+
+        When `keep_visible=True`, the messages remain in `activity.queued_prompts`
+        until `finish_visible_steering` is called (so a provider that accepts
+        steering mid-step can keep showing the pending bubble until the model
+        reaches the step boundary).
+        """
         messages = []
         for item in self._drain():
             generation, text, mode, owner, sent_at = item
@@ -376,19 +387,35 @@ class PromptQueue:
                 messages.append(Steer(text, sent_at))
                 if owner is not None:
                     owner.started()
-                index = next(
-                    i
-                    for i, queued in enumerate(
-                        zip(self.activity.queued_prompts, self.activity.queued_modes)
+                if keep_visible:
+                    self._deferred_steering.append(text)
+                else:
+                    index = next(
+                        i
+                        for i, queued in enumerate(
+                            zip(self.activity.queued_prompts, self.activity.queued_modes)
+                        )
+                        if queued == (text, mode)
                     )
-                    if queued == (text, mode)
-                )
-                self.activity.queued_prompts.pop(index)
-                self.activity.queued_modes.pop(index)
+                    self.activity.queued_prompts.pop(index)
+                    self.activity.queued_modes.pop(index)
             else:
                 self._items.put_nowait(item)
         self._sync()
         return messages
+
+    def finish_visible_steering(self, text: str) -> None:
+        """Remove one deferred steering entry from the visible pending list."""
+        if text in self._deferred_steering:
+            self._deferred_steering.remove(text)
+        for index, queued in enumerate(
+            zip(self.activity.queued_prompts, self.activity.queued_modes)
+        ):
+            if queued == (text, "steering"):
+                self.activity.queued_prompts.pop(index)
+                self.activity.queued_modes.pop(index)
+                self._sync()
+                return
 
     def take_all(self) -> list[tuple[str, str, str]]:
         """Remove and return every waiting message, its mode and when it was sent,
@@ -1394,19 +1421,26 @@ class SessionController:
         limit = self._steering_limit()
         return self.prompts.steering() > 0 and (limit is None or limit > 0)
 
-    def take_steering(self) -> list[Steer]:
+    def take_steering(self, *, defer_commit: bool = False) -> list[Steer]:
         """The runtime's hook: steering messages for the next model request."""
         limit = self._steering_limit()
-        messages = self.prompts.take_steering(limit)
+        messages = self.prompts.take_steering(limit, keep_visible=defer_commit)
         self.steering_before_mcp = None if limit is None else limit - len(messages)
+        if not defer_commit:
+            self.commit_steering(messages, clear_visible=False)
+        return messages
+
+    def commit_steering(self, messages: list[Steer], *, clear_visible: bool = True) -> None:
+        """Display steering messages in the transcript and clear their pending pills."""
         for steer in messages:
             # The send time is for the runtime's journal; the view gets text.
             text = str(steer)
+            if clear_visible:
+                self.prompts.finish_visible_steering(text)
             self.activity.start_prompt(text)
             self.view.user(text)
         if messages:
             self.view.redraw()
-        return messages
 
     def turn_ended(self, success: bool) -> None:
         """Settle the queue after a turn: a failure drops what was waiting behind it."""
@@ -1696,6 +1730,7 @@ class SessionController:
                 else:
                     self.activity.start_prompt(text)
                 self.runtime.take_steering = self.take_steering
+                self.runtime.commit_steering = self.commit_steering
                 self.runtime.has_steering = self.has_steering
                 self.live_task = asyncio.create_task(
                     self.run_turn(

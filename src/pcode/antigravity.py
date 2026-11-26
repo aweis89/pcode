@@ -57,6 +57,7 @@ from pydantic_ai.messages import (
     ModelResponseStreamEvent,
     NativeToolCallPart,
     NativeToolReturnPart,
+    PartEndEvent,
     RetryPromptPart,
     TextContent,
     TextPart,
@@ -1822,6 +1823,51 @@ class AntigravityStream(StreamedResponse):
     events_seen: bool = field(default=False, init=False)
     failed: bool = field(default=False, init=False)
     context_used: int | None = field(default=None, init=False)
+    # Deferred steering commits: sent to `agy` immediately, committed to the
+    # transcript/journal once the in-flight model step and its tools finish.
+    pending_steer_commits: list[Callable[[], None]] = field(default_factory=list, init=False)
+    flush_after_part_end: list[Callable[[], None]] = field(default_factory=list, init=False)
+    step_open: bool = field(default=False, init=False)
+    step_emitted: bool = field(default=False, init=False)
+
+    def __aiter__(self) -> AsyncIterator[ModelResponseStreamEvent]:
+        base = super().__aiter__()
+
+        async def iterate() -> AsyncIterator[ModelResponseStreamEvent]:
+            try:
+                async for event in base:
+                    yield event
+                    if isinstance(event, PartEndEvent) and self.flush_after_part_end:
+                        self._run_commits(self.flush_after_part_end)
+            finally:
+                self._flush_all_steers()
+
+        return iterate()
+
+    @staticmethod
+    def _run_commits(commits: list[Callable[[], None]]) -> None:
+        batch = list(commits)
+        commits.clear()
+        for commit in batch:
+            commit()
+
+    def _stage_pending_steers(self) -> None:
+        """Commit pending steering now, or right after the open text/thinking part closes."""
+        if not self.pending_steer_commits:
+            return
+        if self.part_kind in {"text", "thinking"}:
+            # Force the next step's output to start a new part so `PartEndEvent`
+            # settles step 1's message/thinking ahead of the steering record.
+            self._vendor("steer")
+            self.flush_after_part_end.extend(self.pending_steer_commits)
+            self.pending_steer_commits.clear()
+        else:
+            self._vendor("steer")
+            self._run_commits(self.pending_steer_commits)
+
+    def _flush_all_steers(self) -> None:
+        self._run_commits(self.flush_after_part_end)
+        self._run_commits(self.pending_steer_commits)
 
     @property
     def model_name(self) -> str:
@@ -1917,8 +1963,11 @@ class AntigravityStream(StreamedResponse):
         loop = asyncio.get_running_loop()
         reply_open = False
         quiet_deadline: float | None = None
+        flush_deadline: float | None = None
         # When the current wait for a launched native subagent gives up.
         subagent_deadline: float | None = None
+        self.step_open = not self.continuation
+        self.step_emitted = False
         if self.continuation:
             self.holding = True
             quiet_deadline = loop.time() + DEFERRED_FINALIZE_DEBOUNCE
@@ -1933,6 +1982,18 @@ class AntigravityStream(StreamedResponse):
                     reply_open = False
                     quiet_deadline = None
             timeout = STEER_POLL
+            if flush_deadline is not None:
+                remaining = flush_deadline - loop.time()
+                if remaining <= 0:
+                    flush_deadline = None
+                    if (
+                        self.pending_steer_commits
+                        and not self.step_open
+                        and not self._has_running_tools()
+                    ):
+                        self._stage_pending_steers()
+                else:
+                    timeout = min(timeout, remaining)
             if self.holding and quiet_deadline is not None:
                 remaining = quiet_deadline - loop.time()
                 if remaining <= 0:
@@ -1942,6 +2003,14 @@ class AntigravityStream(StreamedResponse):
             try:
                 update = await asyncio.wait_for(updates.get(), timeout)
             except TimeoutError:
+                if flush_deadline is not None and loop.time() >= flush_deadline:
+                    flush_deadline = None
+                    if (
+                        self.pending_steer_commits
+                        and not self.step_open
+                        and not self._has_running_tools()
+                    ):
+                        self._stage_pending_steers()
                 if self.holding and quiet_deadline is not None and loop.time() >= quiet_deadline:
                     self.holding = False
                     break
@@ -1956,6 +2025,7 @@ class AntigravityStream(StreamedResponse):
                         self.holding = False
                         break
                     self.holding = True
+                    self.step_open = False
                     self.awaiting_subagent = self.subagent_launched
                     self.subagent_launched = False
                     reply_open = False
@@ -1968,6 +2038,27 @@ class AntigravityStream(StreamedResponse):
                             quiet_deadline = subagent_deadline
                 continue  # A prompt a steering message took over, or held for background work.
             kind = update.get("sessionUpdate")
+            content = update.get("content")
+            chunk_text = content.get("text", "") if isinstance(content, dict) else ""
+            if kind in {"agent_thought_chunk", "agent_message_chunk"} and chunk_text:
+                if (
+                    self.pending_steer_commits
+                    and not self.step_open
+                    and not self._has_running_tools()
+                ):
+                    flush_deadline = None
+                    self._stage_pending_steers()
+                self.step_open = True
+                self.step_emitted = True
+            elif (
+                kind == "tool_call"
+                and self.pending_steer_commits
+                and not self.step_open
+                and not self._has_running_tools()
+                and flush_deadline is None
+            ):
+                # Step 2 started directly with a tool call (no text/thinking preamble).
+                self._stage_pending_steers()
             substantive_wake = _is_wake_update(
                 update, buffering=reply_open, daemon_tools=session.daemon_tools
             )
@@ -1976,6 +2067,21 @@ class AntigravityStream(StreamedResponse):
             for event in self._map(update):
                 self.events_seen = True
                 yield event
+            if kind == "usage_update":
+                if self.step_emitted:
+                    self.step_open = False
+                    self.step_emitted = False
+                    if self.pending_steer_commits and not self._has_running_tools():
+                        # Brief grace window in case a tool_call from this step follows immediately.
+                        flush_deadline = loop.time() + 0.05
+            elif kind in {"tool_call", "tool_call_update"}:
+                self.step_open = False
+                self.step_emitted = True
+                if self._has_running_tools():
+                    flush_deadline = None
+                elif self.pending_steer_commits:
+                    flush_deadline = None
+                    self._stage_pending_steers()
             if self.holding:
                 if kind == "usage_update":
                     reply_open = False
@@ -2031,7 +2137,7 @@ class AntigravityStream(StreamedResponse):
         models get them, so the history says what Antigravity was told.
         """
         from pcode.retries import RequestCheckpoint
-        from pcode.steering import take_user_steering
+        from pcode.steering import take_user_steering_deferred
 
         ctx = self.run_context
         assert ctx is not None
@@ -2041,7 +2147,9 @@ class AntigravityStream(StreamedResponse):
         for capability in ctx.capabilities.values():
             if isinstance(capability, RequestCheckpoint) and capability.messages:
                 requests.append(capability.messages[-1])
-        for message in await take_user_steering(ctx):
+        messages, commit = await take_user_steering_deferred(ctx)
+        sent_any = False
+        for message in messages:
             blocks, refused = content_blocks(message)  # Only text and images can go.
             if refused:
                 self.notify(
@@ -2053,6 +2161,13 @@ class AntigravityStream(StreamedResponse):
                     request.parts.append(UserPromptPart(message))
             if blocks:
                 self._send_prompt(blocks, updates)
+                sent_any = True
+        if messages:
+            if not sent_any or (not self.step_open and not self._has_running_tools()):
+                self.pending_steer_commits.append(commit)
+                self._stage_pending_steers()
+            else:
+                self.pending_steer_commits.append(commit)
 
     def _finish(self, result: dict) -> None:
         stop = result.get("stopReason")

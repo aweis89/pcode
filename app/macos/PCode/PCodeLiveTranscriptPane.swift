@@ -637,6 +637,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     let typography: PCodeTypography
     let controller: PCodeLiveTranscriptController
     var bottomContentInset: CGFloat = 0
+    var extraBottomScrollPadding: CGFloat = 0
     weak var composerSurface: Ghostty.SurfaceView?
 
     func makeCoordinator() -> Coordinator {
@@ -646,6 +647,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> PCodeTranscriptScrollView {
         let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
         scrollView.bottomContentInset = bottomContentInset
+        scrollView.extraBottomScrollPadding = extraBottomScrollPadding
         // So a live peek of this pane scrolls this transcript, not another pane's.
         composerSurface?.pcodeTranscriptScrollView = scrollView
         wireFocusHandlers(on: scrollView)
@@ -671,6 +673,7 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         let typoID = ObjectIdentifier(typography)
 
         nsView.bottomContentInset = bottomContentInset
+        nsView.extraBottomScrollPadding = extraBottomScrollPadding
         wireFocusHandlers(on: nsView)
         wireWorkspaceRecovery()
 
@@ -841,6 +844,13 @@ struct PCodeMainWindowTranscriptView: View {
     var booting = false
     @ObservedObject private var typography = PCodeTypography.shared
     @StateObject private var controller = PCodeLiveTranscriptController()
+    @State private var pendingOverlayHeight: CGFloat = 0
+
+    private var pendingScrollPadding: CGFloat {
+        controller.sessionState.pendingPrompts.isEmpty
+            ? 0
+            : (pendingOverlayHeight > 0 ? pendingOverlayHeight + 10 : 0)
+    }
 
     private var transcriptTheme: PCodeTranscriptTheme {
         PCodeTranscriptTheme.make(
@@ -861,6 +871,7 @@ struct PCodeMainWindowTranscriptView: View {
                 typography: typography,
                 controller: controller,
                 bottomContentInset: bottomContentInset,
+                extraBottomScrollPadding: pendingScrollPadding,
                 composerSurface: composerSurface)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -884,19 +895,185 @@ struct PCodeMainWindowTranscriptView: View {
                 .allowsHitTesting(false)
             }
 
-            if controller.connectionState != .connected && !(booting && controller.connectionState == .starting) {
-                PCodeHostConnectionCard(
-                    state: controller.connectionState,
-                    onReopen: { controller.reopenHost() })
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, max(12, bottomContentInset + 10))
-                    .allowsHitTesting(controller.connectionState.showsAction)
-                    .transition(.opacity)
+            VStack(spacing: 8) {
+                if !controller.sessionState.pendingPrompts.isEmpty {
+                    PCodePendingPromptsOverlay(
+                        prompts: controller.sessionState.pendingPrompts,
+                        theme: transcriptTheme,
+                        typography: typography)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .onAppear { pendingOverlayHeight = proxy.size.height }
+                                    .onChange(of: proxy.size.height) { _, newHeight in
+                                        pendingOverlayHeight = newHeight
+                                    }
+                            }
+                        )
+                        .allowsHitTesting(false)
+                }
+
+                if controller.connectionState != .connected && !(booting && controller.connectionState == .starting) {
+                    PCodeHostConnectionCard(
+                        state: controller.connectionState,
+                        onReopen: { controller.reopenHost() })
+                        .padding(.horizontal, 18)
+                        .allowsHitTesting(controller.connectionState.showsAction)
+                        .transition(.opacity)
+                }
             }
+            .padding(.bottom, max(12, bottomContentInset + 10))
         }
         .animation(.easeOut(duration: 0.15), value: controller.connectionState)
+        .animation(.spring(response: 0.30, dampingFraction: 0.82), value: controller.sessionState.pendingPrompts)
+        .onChange(of: controller.sessionState.pendingPrompts.isEmpty) { _, isEmpty in
+            if isEmpty { pendingOverlayHeight = 0 }
+        }
         .background(ghostty.config.backgroundColor)
         .environment(\.colorScheme, colorScheme)
+    }
+}
+
+/// Floating bubbles pinned just above the docked editor for pending steering and queued
+/// messages, aligned with the transcript's right-hand user-bubble column. They rise up
+/// from the editor when submitted and lift upward into scrollback when delivered.
+struct PCodePendingPromptsOverlay: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    let prompts: [PCodePendingPrompt]
+    let theme: PCodeTranscriptTheme
+    @ObservedObject var typography: PCodeTypography
+
+    private static let maxVisibleBubbles = 3
+
+    var body: some View {
+        let visible = Array(prompts.prefix(Self.maxVisibleBubbles))
+        let overflow = max(0, prompts.count - visible.count)
+
+        VStack(alignment: .trailing, spacing: 8) {
+            ForEach(visible) { item in
+                PCodePendingPromptBubble(
+                    prompt: item,
+                    theme: theme,
+                    bodyFont: Font(typography.snapshot.proseNSFont()))
+                    .transition(Self.bubbleTransition)
+            }
+
+            if overflow > 0 {
+                Text("+\(overflow) more waiting")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ghostty.config.foregroundColor.opacity(0.62))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(ghostty.config.backgroundColor)
+                            .shadow(color: .black.opacity(theme.isDark ? 0.28 : 0.08), radius: 6, x: 0, y: 2)
+                    )
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(ghostty.config.foregroundColor.opacity(theme.isDark ? 0.14 : 0.10), lineWidth: 1)
+                    )
+                    .transition(Self.bubbleTransition)
+            }
+        }
+        .frame(maxWidth: PCodeTranscriptDocumentView.maxContentWidth, alignment: .trailing)
+        .padding(.horizontal, PCodeTranscriptDocumentView.horizontalPadding)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private static var bubbleTransition: AnyTransition {
+        .asymmetric(
+            insertion: .offset(y: 16)
+                .combined(with: .opacity)
+                .combined(with: .scale(scale: 0.96, anchor: .bottomTrailing)),
+            removal: .offset(y: -14)
+                .combined(with: .opacity)
+                .combined(with: .scale(scale: 0.97, anchor: .topTrailing))
+        )
+    }
+}
+
+/// One floating pending user-message bubble: accent styling with a subtle live pulse for
+/// steering messages, calm neutral styling for queued next-turn messages.
+private struct PCodePendingPromptBubble: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let prompt: PCodePendingPrompt
+    let theme: PCodeTranscriptTheme
+    let bodyFont: Font
+
+    @State private var pulse = false
+
+    private var isSteering: Bool { prompt.mode == .steering }
+
+    private var accentColor: Color {
+        Color(nsColor: theme.accent)
+    }
+
+    private var surfaceFill: Color {
+        if isSteering {
+            return accentColor.opacity(theme.isDark ? 0.16 : 0.11)
+        }
+        return ghostty.config.foregroundColor.opacity(theme.isDark ? 0.085 : 0.055)
+    }
+
+    private var borderColor: Color {
+        if isSteering {
+            return accentColor.opacity(theme.isDark ? 0.42 : 0.34)
+        }
+        return ghostty.config.foregroundColor.opacity(theme.isDark ? 0.16 : 0.12)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                if isSteering {
+                    Image(systemName: "arrow.turn.up.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(accentColor)
+                        .opacity(pulse ? 0.45 : 1.0)
+                        .onAppear {
+                            guard !reduceMotion else { return }
+                            withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
+                                pulse = true
+                            }
+                        }
+                    Text("Steering")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(accentColor)
+                } else {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(ghostty.config.foregroundColor.opacity(0.56))
+                    Text("Queued")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(ghostty.config.foregroundColor.opacity(0.62))
+                }
+            }
+
+            Text(prompt.text)
+                .font(bodyFont)
+                .foregroundStyle(ghostty.config.foregroundColor.opacity(0.92))
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(ghostty.config.backgroundColor)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(surfaceFill)
+            }
+            .shadow(color: .black.opacity(theme.isDark ? 0.28 : 0.08), radius: 6, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(borderColor, lineWidth: 1)
+        )
+        .frame(maxWidth: 540, alignment: .trailing)
     }
 }
 
