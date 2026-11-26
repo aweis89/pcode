@@ -2945,6 +2945,9 @@ private struct PCodeRunningDot: View {
                                 gradient: Gradient(stops: [
                                     .init(color: Color.green.opacity(0), location: 0),
                                     .init(color: Color.green, location: 0.32),
+                                    // Fade back out past the head, so the tail's
+                                    // round cap (just behind 0) isn't solid.
+                                    .init(color: Color.green.opacity(0), location: 1),
                                 ]),
                                 center: .center
                             ),
@@ -3849,7 +3852,7 @@ private struct PCodeActivityIndicator: View {
         case .failed?:
             Circle().fill(Color.red).frame(width: 6, height: 6)
         case _ where unseen:
-            Circle().fill(Color.green).frame(width: 7, height: 7)
+            Circle().fill(Color.green).frame(width: 6, height: 6)
                 .help("New response")
         case .idle?:
             Circle().fill(Color.secondary.opacity(0.7)).frame(width: 6, height: 6)
