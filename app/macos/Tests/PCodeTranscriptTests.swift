@@ -499,6 +499,24 @@ struct PCodeTranscriptTests {
 
     // MARK: - Rich Block Document View Mounting & Selection
 
+    @Test @MainActor func copiedSubAgentReportCodeUsesRealNewlines() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 600)
+        scrollView.layoutSubtreeIfNeeded()
+        let call = PCodePeekToolCall(
+            id: 1, name: "delegate_task", detail: "worker · fix", failed: false,
+            elapsedSeconds: 3, command: "", output: "Run:\n\n```sh\nmake lint\nmake test\n```")
+        let doc = scrollView.transcriptDocumentView
+        doc.setItems([PCodeTranscriptItem(id: "call-1", payload: .tool(call, isExpanded: true), spacingAfter: 5)],
+                     pinToBottom: false)
+
+        doc.selectAll(nil)
+        let copied = doc.selectedPlainText()
+        #expect(copied.contains("make lint\nmake test"))
+        #expect(!copied.contains("\u{2028}"))
+    }
+
     @Test @MainActor func documentViewMountsRichBlocksAndExtractsSelection() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
