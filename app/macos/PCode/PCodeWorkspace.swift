@@ -538,6 +538,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
 
     init(surface: Ghostty.SurfaceView, directory: String, projectPath: String? = nil, sessionID: String?) {
         self.surface = surface
+        surface.pcodeIsSessionPane = true
         self.directory = directory
         self.projectPath = PCodeWorkspace.normalizePath(projectPath ?? directory)
         self.resuming = sessionID != nil
@@ -3102,6 +3103,7 @@ struct PCodeSessionPaneView: View {
             VStack(spacing: 0) {
                 ZStack {
                     Ghostty.InspectableSurface(surfaceView: pane.surface, isSplit: false)
+                    PCodeSurfaceOverlay(surfaceView: pane.surface)
                     PCodeStartupOverlay(
                         isReady: pane.isReady,
                         label: (pane.projectPath as NSString).lastPathComponent,

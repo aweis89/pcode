@@ -155,6 +155,7 @@ private var pcodeToastKey: UInt8 = 0
 private var pcodeDockKey: UInt8 = 0
 private var pcodeOwnerKey: UInt8 = 0
 private var pcodeSessionKey: UInt8 = 0
+private var pcodeSessionPaneKey: UInt8 = 0
 
 /// Holds the owner weakly: the owner holds its overlay's surface, not the other way round.
 private final class WeakOwner: NSObject {
@@ -269,6 +270,13 @@ extension Ghostty.SurfaceView {
 
     /// True if this surface is a pcode popup's or dock's overlay terminal, even a dropped one.
     var isPCodeOverlay: Bool { pcodeOwnerBox != nil }
+
+    /// True for a `PCodeSessionPane`'s primary surface, whose popup, completion
+    /// and toast layers are mounted at pane level in `PCodeSessionPaneView`.
+    var pcodeIsSessionPane: Bool {
+        get { (objc_getAssociatedObject(self, &pcodeSessionPaneKey) as? Bool) ?? false }
+        set { objc_setAssociatedObject(self, &pcodeSessionPaneKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
 
     /// The popup or dock this surface is the overlay terminal of, while it is still there.
     var pcodeOwner: PCodeOverlayOwner? { pcodeOwnerBox?.owner }

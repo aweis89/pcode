@@ -103,15 +103,13 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     }
 
     func surfaceOverlay(_ view: Ghostty.SurfaceView) -> AnyView {
-        // The completion list and toast over the terminal, and the popup over
-        // all of it, with or without the inspector.
-        AnyView(
-            Color.clear
-                .allowsHitTesting(false)
-                .overlay { PCodeCompletionLayer(completion: view.pcodeCompletion) }
-                .overlay { PCodeToastLayer(toast: view.pcodeToast) }
-                .overlay { PCodePopupLayer(popup: view.pcodePopup) }
-        )
+        // Workspace session panes mount their completion, toast and popup layers
+        // at pane level in `PCodeSessionPaneView` so they span the full pane even
+        // when the terminal surface is sized to the editor card.
+        if view.pcodeIsSessionPane {
+            return AnyView(EmptyView())
+        }
+        return AnyView(PCodeSurfaceOverlay(surfaceView: view))
     }
 
     // MARK: Debug socket

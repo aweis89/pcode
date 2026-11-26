@@ -263,6 +263,19 @@ final class PCodePopup: NSObject, ObservableObject, PCodeOverlayOwner {
     }
 }
 
+/// The completion list, toast and modal popup over a session pane or standalone terminal surface.
+struct PCodeSurfaceOverlay: View {
+    @ObservedObject var surfaceView: Ghostty.SurfaceView
+
+    var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .overlay { PCodeCompletionLayer(completion: surfaceView.pcodeCompletion) }
+            .overlay { PCodeToastLayer(toast: surfaceView.pcodeToast) }
+            .overlay { PCodePopupLayer(popup: surfaceView.pcodePopup) }
+    }
+}
+
 /// The open popup of a terminal, centered over it and a dimmed scrim.
 ///
 /// Laid over everything the terminal shows, its /btw drawer and inspector
