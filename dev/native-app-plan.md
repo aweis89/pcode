@@ -1,6 +1,6 @@
 # Native app plan: making Ghostty a leaf in Pcode.app
 
-Status: step 1 is done and on `master`. Step 2 is in progress. Step 3a is next.
+Status: step 1 done. Step 2 in progress. Step 3a surveyed (sequence below);
 Steps 3b and 4 are undecided: do not start them. This came out of a code
 survey, not a full design; check the current code before extending any step.
 
@@ -129,6 +129,84 @@ Main unknown: how much of the editor assumes it shares a process with the
 transcript renderer. Survey that before sizing the work. The states listed
 under step 1 where the raw terminal shows need a native answer here, since the
 surface they fall back to is the one being removed.
+
+#### 3a survey findings (2026-11-25)
+
+The main unknown is mostly answered: the editor does not need the transcript
+renderer in its process, but it builds the task list, tool rows, worker rows
+and command/edit previews client-side from the transcript events it receives
+(`present_stream_event` both prints and updates `Activity`). So an editor-only
+client must keep processing view calls and send their output to a null sink.
+
+Already there, no protocol change needed:
+
+- Terminal host clients exist: `pcode --host` spawns a host and attaches,
+  `pcode -c <id>` attaches when a host holds the session (`RemoteController`
+  in `remote.py`). Both run the same `PreviewApp`, so `PCODE_DOCK` works there.
+- `observe_transcript` already forwards `state` (`SESSION_FIELDS` deltas:
+  busy, prompt state, turn outcome, queue) and `session_changed`; the Swift
+  decoder ignores them. `hosts/<id>.json` is rewritten on every change and
+  carries title, state, session id, unseen and outcome.
+- Status bar, completions, drafts, history, image paste and the `/btw` thread
+  already work over the host protocol. Popups, native pick, completions and
+  toasts are APCs on the editor's own tty, so they keep working from whichever
+  surface runs the editor.
+- No Ghostty fork (Zig or seam) change is required. Several seam hooks become
+  dead (`clickableHeight`, `clicksThroughOnFocus`, `allowsMouseFocus`,
+  `didMouseUp`, `willKeyDown`); removing them from the fork is optional.
+
+What has to change:
+
+- Editor-only frontend (Python, gated on a new app-only env var such as
+  `PCODE_EDITOR_ONLY=1`): a `Dock` variant on its own stdin/stdout with no
+  `open_dock` handoff, pane forwarding, scroll region, CPR or glide, plus a
+  null sink for `Transcript`/`TerminalOutput` writes, replay, `/redraw` and the
+  full-screen popup fallback's redraw. Terminal mode never sets the variable.
+- Popup, completion and toast layers are mounted per surface by the
+  `surfaceOverlay` hook; on a card-sized editor surface they would be clipped.
+  Mount them at pane level in `PCodeSessionPaneView` instead (Swift only).
+- Native states for what the hidden terminal shows today: startup output
+  (project-trust prompt, "needs a model", config errors), no session id yet,
+  host stopped/reconnecting (replacing the journal-tail fallback), session
+  ended. `startup_pending`/`startup_error` already exist host-side.
+- Peek's scroll shield forwards to the hidden `pane.surface`
+  (`PCodePeek.swift`); repoint it at the transcript.
+
+Unverified: whether a clipped, fixed-grid editor surface sits well inside the
+fork's split tree; host boot latency; what SIGUSR2 (Restart) does to a hosted
+client.
+
+Owner decisions needed before the "always hosted" piece:
+
+- Closing a pane once every pane is hosted: stop the host, or detach (the host
+  lingers until `session_host_idle_minutes` and `reopen` brings it back)?
+- No model configured: `--host` falls back to in-process. Keep that fallback,
+  or show a native "set up a model" card?
+
+#### 3a sequence
+
+Each piece merges to `master` on its own and leaves the app working; the old
+two-surface path stays the default until piece 6.
+
+1. Swift: decode `state` and `session_changed` in `PCodeHostEventDecoder` and
+   publish busy/outcome on the transcript controller. Unit tests; no consumer.
+2. Swift: host-sourced pane state. Watch `hosts/<id>.json` for title, outcome
+   and session id; pane activity and title prefer host data when hosted and
+   fall back to OSC/APC otherwise.
+3. Python: editor-only frontend behind `PCODE_EDITOR_ONLY`, with tests that
+   nothing outside the editor layout reaches stdout and that tasks/tool rows
+   still update.
+4. Swift: move popup, completion and toast layers to pane level, still fed by
+   the dock surface. No visible change.
+5. Swift: app panes always hosted (`--host [-c id]`), with native
+   startup/error and host-stopped cards replacing the journal fallback.
+   Needs the two owner decisions above.
+6. Swift: one surface. `makePane` runs the editor-only client as the pane
+   surface laid out as the card; delete the dock handoff, `presizeHidden`'s
+   dock branch and the spike hooks; repoint Peek; update the `ui-loop` skill.
+   The Python handoff code stays for the standalone fork until that drops it.
+7. Optional, owner's call: remove the dead seam hooks in the fork and
+   `make app-lock`.
 
 ### 3b. Native composer (undecided)
 
