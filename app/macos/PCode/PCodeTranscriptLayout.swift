@@ -315,6 +315,11 @@ struct PCodeTranscriptLayoutEngine {
 /// Unpins strictly on user intent (live scroll away from bottom, legacy wheel upward,
 /// selection drag autoscroll, Find jump, or card expansion) and never writes clip origin
 /// while an AppKit live scroll or momentum gesture is active.
+///
+/// Hysteresis: any upward user scroll that leaves the bottom (`unpinThreshold`) unpins, but
+/// re-pinning needs a downward scroll into the wider `bottomThreshold` band. Unpinning only
+/// past `bottomThreshold` would let small wheel steps or a short trackpad nudge stay pinned,
+/// so the next streamed chunk snapped the reader straight back down.
 struct PCodeStickyBottomState: Equatable {
     enum Mode: Equatable {
         case pinnedToBottom
@@ -323,7 +328,10 @@ struct PCodeStickyBottomState: Equatable {
 
     private(set) var mode: Mode = .pinnedToBottom
     private(set) var isLiveScrolling: Bool = false
+    /// Whether the current live scroll's most recent movement was upward.
+    private var liveScrollLastMovedUpward: Bool = false
     var bottomThreshold: CGFloat = 8
+    var unpinThreshold: CGFloat = 1
 
     /// True only when programmatic bottom-pinning is safe to execute.
     var shouldProgrammaticallyPin: Bool {
@@ -359,24 +367,32 @@ struct PCodeStickyBottomState: Equatable {
 
     mutating func didStartLiveScroll() {
         isLiveScrolling = true
+        liveScrollLastMovedUpward = false
     }
 
+    /// Report an actual live-scroll movement (callers skip no-op bounds notifications).
     mutating func didLiveScroll(distanceFromBottom: CGFloat, movedUpward: Bool) {
-        if movedUpward && distanceFromBottom > bottomThreshold {
+        liveScrollLastMovedUpward = movedUpward
+        if movedUpward && distanceFromBottom > unpinThreshold {
             mode = .userScrolledUp
         }
     }
 
+    /// Re-pins near the bottom unless the gesture's last movement was upward.
     mutating func didEndLiveScroll(distanceFromBottom: CGFloat) {
         isLiveScrolling = false
-        if distanceFromBottom <= bottomThreshold {
+        if distanceFromBottom <= unpinThreshold
+            || (distanceFromBottom <= bottomThreshold && !liveScrollLastMovedUpward)
+        {
             mode = .pinnedToBottom
         }
+        liveScrollLastMovedUpward = false
     }
 
     /// Legacy mouse wheels do not always fire `willStartLiveScroll`/`didEndLiveScroll`.
+    /// Report actual movements only; a no-op bounds change must not re-pin.
     mutating func didLegacyWheelScroll(distanceFromBottom: CGFloat, movedUpward: Bool) {
-        if movedUpward && distanceFromBottom > bottomThreshold {
+        if movedUpward && distanceFromBottom > unpinThreshold {
             mode = .userScrolledUp
         } else if !movedUpward && distanceFromBottom <= bottomThreshold {
             mode = .pinnedToBottom

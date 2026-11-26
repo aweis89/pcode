@@ -1,12 +1,6 @@
 import Darwin
 import Foundation
 
-/// One step in a Harness plan (`PlanUpdated` / `PlanPreview`).
-struct PCodePlanItem: Equatable {
-    let content: String
-    let status: String
-}
-
 /// Structured diff payload (`EditPreview` morphs into `EditCompleted` under the same `call_id`,
 /// coalescing with the matching `edit_file` / `write_file` tool call).
 struct PCodeDiffPayload: Equatable {
@@ -107,8 +101,6 @@ enum PCodeHostEvent: Equatable {
         added: Int,
         removed: Int,
         truncated: Bool)
-    case planUpdated(items: [PCodePlanItem])
-    case planPreview(items: [PCodePlanItem]?)
     case turnEnded(status: PCodePeekTurn.Status)
     case user(text: String)
     case shellResult(command: String, output: String, failed: Bool, elapsedSeconds: Double?)
@@ -332,28 +324,12 @@ enum PCodeHostEventDecoder {
                 added: (fields["added"] as? Int) ?? 0,
                 removed: (fields["removed"] as? Int) ?? 0,
                 truncated: (fields["truncated"] as? Bool) == true)
-        case "PlanUpdated":
-            let rawItems = (fields["items"] as? [[String: Any]]) ?? []
-            return .planUpdated(items: parsePlanItems(rawItems))
-        case "PlanPreview":
-            if let rawItems = fields["items"] as? [[String: Any]] {
-                return .planPreview(items: parsePlanItems(rawItems))
-            }
-            return .planPreview(items: nil)
-        case "ChildText", "ChildPlan", "WorkerStatus", "RunStatus", "CacheBust":
-            // Display-only worker/status events do not create permanent transcript items.
+        case "PlanUpdated", "PlanPreview", "ChildText", "ChildPlan", "WorkerStatus", "RunStatus", "CacheBust":
+            // Display-only plan/worker/status events do not create permanent transcript items:
+            // a plan is a live snapshot, not conversation history.
             return nil
         default:
             return nil
-        }
-    }
-
-    private static func parsePlanItems(_ raw: [[String: Any]]) -> [PCodePlanItem] {
-        raw.compactMap { dict in
-            let content = (dict["content"] as? String) ?? (dict["title"] as? String) ?? ""
-            guard !content.isEmpty else { return nil }
-            let status = (dict["status"] as? String) ?? "pending"
-            return PCodePlanItem(content: content, status: status)
         }
     }
 }
@@ -363,7 +339,6 @@ enum PCodeHostEventDecoder {
 /// - `call_id` upserts (`ToolStarted` -> `CommandOutput`/`EditPreview` -> `ToolSummary`/`JobFinished`/`EditCompleted`)
 /// - `parent_call_id` flattened nesting (`depth = 1`, with orphan buffering when child arrives before parent)
 /// - `ThinkingDelta` / `Thinking` collapsed-by-default thinking cards
-/// - Single upserted `PlanCardView` per turn
 final class PCodeTranscriptEventReducer {
     static let maxCommandOutputLines = 80
 
@@ -371,7 +346,6 @@ final class PCodeTranscriptEventReducer {
     private var messageCounter = 0
     private var toolCounter = 0
     private var thinkingCounter = 0
-    private var planCounter = 0
     private var noteCounter = 0
     private var streamedTextInCurrentMessage = false
     private var turnAlreadyTerminated = false
@@ -379,9 +353,7 @@ final class PCodeTranscriptEventReducer {
     private var activeThinkingText: String = ""
     /// Wall-clock start of the live thinking block (nil while replaying history).
     private var activeThinkingStartedAt: Date?
-    private var activePlanItemID: String?
     private var activeShellModeCallID: String?
-    private var lastAuthoritativePlan: [PCodePlanItem] = []
     private var toolCallsByID: [String: PCodePeekToolCall] = [:]
     private var diffsByCallID: [String: PCodeDiffPayload] = [:]
     private var toolDepthByID: [String: Int] = [:]
@@ -395,16 +367,13 @@ final class PCodeTranscriptEventReducer {
         messageCounter = 0
         toolCounter = 0
         thinkingCounter = 0
-        planCounter = 0
         noteCounter = 0
         streamedTextInCurrentMessage = false
         turnAlreadyTerminated = false
         activeThinkingID = nil
         activeThinkingText = ""
         activeThinkingStartedAt = nil
-        activePlanItemID = nil
         activeShellModeCallID = nil
-        lastAuthoritativePlan.removeAll()
         toolCallsByID.removeAll()
         diffsByCallID.removeAll()
         toolDepthByID.removeAll()
@@ -428,9 +397,7 @@ final class PCodeTranscriptEventReducer {
         case .turnStarted(let prompt, let isSide, _):
             settleRunningItems(failed: false, in: doc)
             settleActiveThinking(in: doc, reveal: reveal)
-            activePlanItemID = nil
             activeShellModeCallID = nil
-            lastAuthoritativePlan.removeAll()
             streamedTextInCurrentMessage = false
             turnAlreadyTerminated = false
             doc.beginStreamingTurn(prompt: prompt, isSide: isSide, forcePin: false, reveal: reveal)
@@ -683,15 +650,6 @@ final class PCodeTranscriptEventReducer {
                 depth: depth)
             insertWithParentNesting(item: item, parentCallID: parentCallID, reveal: reveal, in: doc)
 
-        case .planUpdated(let items):
-            lastAuthoritativePlan = items
-            applyPlanItems(items, reveal: reveal, in: doc)
-
-        case .planPreview(let items):
-            // Per runtime.py: `PlanPreview(None)` restores the last authoritative `PlanUpdated` snapshot.
-            let effective = items ?? lastAuthoritativePlan
-            applyPlanItems(effective, reveal: reveal, in: doc)
-
         case .turnEnded(let status):
             settleActiveThinking(in: doc, reveal: reveal)
             activeShellModeCallID = nil
@@ -878,26 +836,6 @@ final class PCodeTranscriptEventReducer {
     private func finishActiveStreamIfNeeded(in doc: PCodeTranscriptDocumentView, reveal: Bool) {
         streamedTextInCurrentMessage = false
         doc.finishStreamingMessage(reveal: reveal)
-    }
-
-    private func applyPlanItems(_ items: [PCodePlanItem], reveal: Bool, in doc: PCodeTranscriptDocumentView) {
-        guard !items.isEmpty else {
-            if let id = activePlanItemID {
-                doc.removeItem(id: id)
-                activePlanItemID = nil
-            }
-            return
-        }
-        let id: String
-        if let existing = activePlanItemID {
-            id = existing
-        } else {
-            planCounter += 1
-            id = "host-plan-\(planCounter)"
-            activePlanItemID = id
-        }
-        let item = PCodeTranscriptItem(id: id, payload: .plan(items), spacingAfter: 8)
-        doc.upsertItem(item, reveal: reveal)
     }
 
     private func flushOrphans(forParentCallID parentCallID: String, reveal: Bool, in doc: PCodeTranscriptDocumentView) {

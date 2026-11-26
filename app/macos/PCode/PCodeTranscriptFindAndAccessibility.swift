@@ -357,7 +357,7 @@ extension PCodeTranscriptDocumentView {
     ) -> (role: NSAccessibility.Role, roleDescription: String, label: String, expandable: Bool) {
         switch item.payload {
         case .prompt(let label, _, _):
-            return (.staticText, "Prompt", label, false)
+            return (.staticText, "Prompt", label.isEmpty ? "You" : label, false)
         case .prose:
             return (.staticText, "Response", "Assistant response", false)
         case .codeBlock(let lang, _, _, _, _):
@@ -377,8 +377,6 @@ extension PCodeTranscriptDocumentView {
         case .thinking(let thinking, let isExpanded):
             let state = isExpanded ? "expanded" : "collapsed"
             return (.group, "Thinking", "\(PCodeThinkingCardView.headerTitle(for: thinking)) (\(state))", true)
-        case .plan(let planItems):
-            return (.group, "Plan", "Plan (\(planItems.count) steps)", false)
         case .status(let status):
             return (.staticText, "Status", PCodeStatusRowView.displayLabel(for: status), false)
         }

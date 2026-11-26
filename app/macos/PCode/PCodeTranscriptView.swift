@@ -59,7 +59,6 @@ struct PCodeTranscriptItem: Identifiable {
         case toolGroup
         case diff
         case thinking
-        case plan
         case status
     }
 
@@ -72,7 +71,6 @@ struct PCodeTranscriptItem: Identifiable {
         case toolGroup(PCodeToolGroupPayload)
         case diff(PCodeDiffPayload, isExpanded: Bool)
         case thinking(PCodeThinkingPayload, isExpanded: Bool)
-        case plan([PCodePlanItem])
         case status(PCodePeekTurn.Status)
     }
 
@@ -94,7 +92,6 @@ struct PCodeTranscriptItem: Identifiable {
         case .toolGroup: return .toolGroup
         case .diff: return .diff
         case .thinking: return .thinking
-        case .plan: return .plan
         case .status: return .status
         }
     }
@@ -111,7 +108,7 @@ struct PCodeTranscriptItem: Identifiable {
     var plainText: String {
         switch payload {
         case .prompt(let label, let text, _):
-            return "\(label)\n\(text)"
+            return label.isEmpty ? text : "\(label)\n\(text)"
         case .prose(let markdown, _, _):
             return markdown
         case .codeBlock(_, let code, _, _, _):
@@ -127,8 +124,6 @@ struct PCodeTranscriptItem: Identifiable {
             return isExpanded ? "\(diff.path)\n\(diff.patch)" : PCodeDiffCardView.summaryLine(for: diff)
         case .thinking(let thinking, _):
             return thinking.text
-        case .plan(let items):
-            return items.map(\.content).joined(separator: "\n")
         case .status(let status):
             return PCodeStatusRowView.displayLabel(for: status)
         }
@@ -159,7 +154,7 @@ struct PCodeTranscriptItem: Identifiable {
         switch kind {
         case .prompt:
             self.payload = .prompt(
-                label: secondaryText.isEmpty ? (isSidePrompt ? "/btw" : "You") : secondaryText,
+                label: secondaryText.isEmpty ? (isSidePrompt ? "/btw" : "") : secondaryText,
                 text: plainText,
                 isSide: isSidePrompt)
         case .prose:
@@ -207,8 +202,6 @@ struct PCodeTranscriptItem: Identifiable {
                 depth: 0), isExpanded: false)
         case .thinking:
             self.payload = .thinking(PCodeThinkingPayload(text: plainText), isExpanded: false)
-        case .plan:
-            self.payload = .plan([PCodePlanItem(content: plainText, status: "pending")])
         case .status:
             let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
             self.payload = .status(status)
@@ -229,7 +222,7 @@ struct PCodeTranscriptItem: Identifiable {
             result.append(PCodeTranscriptItem(
                 id: "turn-\(turn.id)-prompt",
                 payload: .prompt(
-                    label: turn.side ? "/btw" : "You",
+                    label: turn.side ? "/btw" : "",
                     text: turn.prompt,
                     isSide: turn.side),
                 spacingAfter: 10))
@@ -1223,7 +1216,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         streamingTurnCounter += 1
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-prompt",
-            payload: .prompt(label: isSide ? "/btw" : "You", text: prompt, isSide: isSide),
+            payload: .prompt(label: isSide ? "/btw" : "", text: prompt, isSide: isSide),
             spacingAfter: 10)
         if forcePin {
             stickyBottom.pinToBottom()
@@ -1495,15 +1488,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         lastClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
     }
 
-    func handleDidLiveScroll() {
-        guard let scrollView = enclosingScrollView else { return }
-        let originY = scrollView.contentView.bounds.origin.y
-        let movedUp = originY < lastClipOriginY - 0.5
-        lastClipOriginY = originY
-        let dist = distanceFromBottom(in: scrollView)
-        stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
-    }
-
     func handleDidEndLiveScroll() {
         guard let scrollView = enclosingScrollView else { return }
         stickyBottom.didEndLiveScroll(distanceFromBottom: distanceFromBottom(in: scrollView))
@@ -1512,6 +1496,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    /// Tracks user scroll movement for both live (trackpad) and legacy wheel scrolls.
+    /// This is the only place that reads movement: AppKit posts `boundsDidChange` before
+    /// `didLiveScroll`, so a separate live-scroll handler would always see a zero delta
+    /// and never unpin, letting the next streamed chunk yank the reader back down.
     func handleBoundsDidChange() {
         guard let scrollView = enclosingScrollView else { return }
         let originY = scrollView.contentView.bounds.origin.y
@@ -1519,18 +1507,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             lastClipOriginY = originY
             return
         }
-        if !stickyBottom.isLiveScrolling {
-            let movedUp = originY < lastClipOriginY - 0.5
+        let delta = originY - lastClipOriginY
+        if abs(delta) > 0.5 {
+            let movedUp = delta < 0
             let dist = distanceFromBottom(in: scrollView)
-            stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
+            if stickyBottom.isLiveScrolling {
+                stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
+            } else {
+                stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
+                if stickyBottom.mode == .pinnedToBottom {
+                    setHasUnreadStreamingContent(false)
+                }
+            }
             if movedUp && stickyBottom.mode == .userScrolledUp {
                 resetSmoothGlide()
             }
-            if stickyBottom.mode == .pinnedToBottom {
-                setHasUnreadStreamingContent(false)
-            }
+            lastClipOriginY = originY
         }
-        lastClipOriginY = originY
         mountViews(in: visibleRect)
         if !revealQueue.isEmpty, window != nil {
             ensureDisplayLinkRunning()
@@ -1794,15 +1787,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     self?.toggleThinkingExpansion(id: item.id)
                 })
 
-        case (let view as PCodePlanCardView, .plan(let planItems)):
-            let attr = cachedPlanAttributedString(for: item.id, planItems: planItems)
-            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
-            return view.configure(
-                attributedText: attr,
-                width: width,
-                theme: theme,
-                selectedRange: localSel)
-
         case (let view as PCodeStatusRowView, .status(let status)):
             let attr = cachedStatusAttributedString(for: item.id, status: status)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
@@ -1983,7 +1967,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .toolGroup: return PCodeToolGroupCardView()
         case .diff: return PCodeDiffCardView()
         case .thinking: return PCodeThinkingCardView()
-        case .plan: return PCodePlanCardView()
         case .status: return PCodeStatusRowView()
         }
     }
@@ -2619,8 +2602,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 : PCodeDiffCardView.summaryLine(for: payload)
         case .thinking(let thinking, let isExpanded):
             return cachedThinkingAttributedString(for: item.id, thinking: thinking, isExpanded: isExpanded).string
-        case .plan(let planItems):
-            return cachedPlanAttributedString(for: item.id, planItems: planItems).string
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
         }
@@ -2690,9 +2671,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .tool: return 28
         case .toolGroup: return PCodeToolGroupCardView.rowHeight
         case .status: return 24
-        case .prompt(_, let text, _):
+        case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))
-            return 28 + CGFloat(lines) * typography.lineHeight()
+            return (label.isEmpty ? 20 : 28) + CGFloat(lines) * typography.lineHeight()
         case .prose(let markdown, _, _):
             let lines = max(1, min(40, markdown.count / 72 + 1))
             return CGFloat(lines) * typography.lineHeight()
@@ -2715,8 +2696,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return thinking.isStreaming
                 ? header + PCodeThinkingCardView.tailHeight(typography: typography)
                 : header
-        case .plan(let planItems):
-            return 28 + CGFloat(max(1, planItems.count)) * typography.lineHeight(scale: 0.88)
         }
     }
 
@@ -2768,10 +2747,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             .foregroundColor: isSide ? NSColor.systemOrange : theme.accent,
             .paragraphStyle: labelStyle,
         ]
+        // Main prompts carry no label: the card and accent bar already say
+        // whose turn it is. `/btw` keeps one because it names the model.
         if trimmedText.isEmpty {
             out.append(NSAttributedString(string: label, attributes: labelAttrs))
         } else {
-            out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
+            if !label.isEmpty {
+                out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
+            }
             let bodyAttrs: [NSAttributedString.Key: Any] = [
                 .font: typography.proseNSFont(),
                 .foregroundColor: theme.foreground,
@@ -2856,21 +2839,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let built = PCodeThinkingCardView.attributedText(
             for: thinking,
             isExpanded: isExpanded,
-            typography: typography,
-            theme: theme)
-        storeAttributedCache(built, for: id)
-        return built
-    }
-
-    private func cachedPlanAttributedString(
-        for id: String,
-        planItems: [PCodePlanItem]
-    ) -> NSAttributedString {
-        if let cached = attributedCache[id] {
-            return cached
-        }
-        let built = PCodePlanCardView.attributedText(
-            for: planItems,
             typography: typography,
             theme: theme)
         storeAttributedCache(built, for: id)
@@ -3064,13 +3032,6 @@ final class PCodeTranscriptScrollView: NSScrollView {
             queue: .main
         ) { [weak self] _ in
             self?.transcriptDocumentView.handleWillStartLiveScroll()
-        })
-        observers.append(nc.addObserver(
-            forName: NSScrollView.didLiveScrollNotification,
-            object: self,
-            queue: .main
-        ) { [weak self] _ in
-            self?.transcriptDocumentView.handleDidLiveScroll()
         })
         observers.append(nc.addObserver(
             forName: NSScrollView.didEndLiveScrollNotification,

@@ -123,6 +123,63 @@ struct PCodeTranscriptTests {
         #expect(state.shouldProgrammaticallyPin)
     }
 
+    @Test func stickyBottomUnpinsOnSmallUpwardScrollAndOnlyRepinsMovingDown() {
+        var state = PCodeStickyBottomState()
+
+        // A short trackpad nudge inside the re-pin band still unpins and stays unpinned.
+        state.didStartLiveScroll()
+        state.didLiveScroll(distanceFromBottom: 4, movedUpward: true)
+        #expect(state.mode == .userScrolledUp)
+        state.didEndLiveScroll(distanceFromBottom: 4)
+        #expect(state.mode == .userScrolledUp)
+
+        // Scrolling back down into the band re-pins at gesture end.
+        state.didStartLiveScroll()
+        state.didLiveScroll(distanceFromBottom: 3, movedUpward: false)
+        state.didEndLiveScroll(distanceFromBottom: 3)
+        #expect(state.mode == .pinnedToBottom)
+
+        // Same for small legacy wheel steps.
+        state.didLegacyWheelScroll(distanceFromBottom: 3, movedUpward: true)
+        #expect(state.mode == .userScrolledUp)
+        state.didLegacyWheelScroll(distanceFromBottom: 6, movedUpward: true)
+        #expect(state.mode == .userScrolledUp)
+        state.didLegacyWheelScroll(distanceFromBottom: 0, movedUpward: false)
+        #expect(state.mode == .pinnedToBottom)
+    }
+
+    @Test @MainActor func userScrollUpIsNotPulledBackByStreaming() {
+        for isLive in [true, false] {
+            let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+            let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+            scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 300)
+            scrollView.layoutSubtreeIfNeeded()
+            let doc = scrollView.transcriptDocumentView
+            let clip = scrollView.contentView
+
+            doc.beginStreamingTurn(prompt: "Stream a long answer")
+            doc.beginStreamingMessage(id: "msg-1")
+            for i in 0..<40 {
+                doc.appendStreamingDelta("Paragraph \(i) with enough words to wrap a little.\n\n")
+            }
+            #expect(doc.stickyBottom.mode == .pinnedToBottom)
+
+            // Scroll up a few points, as a slow trackpad drag or a smooth mouse wheel would.
+            if isLive { doc.handleWillStartLiveScroll() }
+            clip.scroll(to: CGPoint(x: 0, y: clip.bounds.origin.y - 4))
+            doc.handleBoundsDidChange()
+            if isLive { doc.handleDidEndLiveScroll() }
+            #expect(doc.stickyBottom.mode == .userScrolledUp)
+
+            let readingY = clip.bounds.origin.y
+            for i in 0..<10 {
+                doc.appendStreamingDelta("More streamed text \(i).\n\n")
+            }
+            #expect(abs(clip.bounds.origin.y - readingY) < 0.5)
+            #expect(doc.stickyBottom.mode == .userScrolledUp)
+        }
+    }
+
     @Test func stickyBottomHandlesLegacyWheelAndUserActions() {
         var state = PCodeStickyBottomState()
         state.didLegacyWheelScroll(distanceFromBottom: 24, movedUpward: true)
@@ -829,9 +886,12 @@ struct PCodeTranscriptTests {
             kwargs: [:])
         #expect(rpcEvent == .editPreview(callID: "c4", path: "src/app.py", text: "+new", kind: "edit"))
 
-        // Display-only ChildText and terminal-only redraw are ignored cleanly
+        // Display-only ChildText, plan snapshots, and terminal-only redraw are ignored cleanly
         #expect(PCodeHostEventDecoder.decodeRPCCall(method: "redraw", args: [], kwargs: [:]) == nil)
         #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "ChildText", fields: ["call_id": "c1", "text": "hi"]) == nil)
+        let planFields: [String: Any] = ["items": [["content": "Step", "status": "pending"]]]
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "PlanUpdated", fields: planFields) == nil)
+        #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "PlanPreview", fields: planFields) == nil)
     }
 
     @Test func thinkingHeaderTitleFormatsDuration() {
@@ -902,7 +962,7 @@ struct PCodeTranscriptTests {
         })
     }
 
-    @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsThinkingAndPlan() {
+    @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsAndThinking() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
         scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
@@ -956,24 +1016,6 @@ struct PCodeTranscriptTests {
             #expect(doc.plainTextForCopy(at: idx).contains("+x = 1"))
         } else {
             Issue.record("Expected coalesced collapsible diff row for call-e1")
-        }
-
-        // PlanUpdated upserts single card; PlanPreview(nil) restores authoritative plan instead of deleting it!
-        reducer.apply(.planUpdated(items: [
-            PCodePlanItem(content: "Inspect code", status: "completed"),
-            PCodePlanItem(content: "Write tests", status: "in_progress"),
-        ]), reveal: false)
-        #expect(doc.items.filter { $0.kind == .plan }.count == 1)
-        reducer.apply(.planPreview(items: [PCodePlanItem(content: "Draft step", status: "pending")]), reveal: false)
-        reducer.apply(.planPreview(items: nil), reveal: false)
-        #expect(doc.items.filter { $0.kind == .plan }.count == 1)
-        if let planItem = doc.items.first(where: { $0.kind == .plan }),
-           case .plan(let restored) = planItem.payload
-        {
-            #expect(restored.count == 2)
-            #expect(restored[0].content == "Inspect code")
-        } else {
-            Issue.record("Expected restored authoritative plan")
         }
 
         // Streamed TextDelta followed by closing Message must NOT duplicate the assistant prose!
@@ -1123,14 +1165,16 @@ struct PCodeTranscriptTests {
             command: "ls -la",
             output: "a\nb\nc")
         doc.setItems([
-            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "You", text: "List files", isSide: false), spacingAfter: 10),
+            PCodeTranscriptItem(id: "p1", payload: .prompt(label: "", text: "List files", isSide: false), spacingAfter: 10),
             PCodeTranscriptItem(id: "t1", payload: .tool(call, isExpanded: false), spacingAfter: 8),
         ], pinToBottom: false)
 
         #expect(doc.accessibilityRole() == .list)
         let children = (doc.accessibilityChildren() as? [PCodeTranscriptAccessibilityRowElement]) ?? []
         #expect(children.count == 2)
+        // Unlabeled main prompts render only their text but still announce "You".
         #expect(children[0].accessibilityLabel() == "You")
+        #expect(doc.plainTextForCopy(at: 0) == "List files")
         #expect(children[1].isExpandable)
         #expect(!doc.isItemExpanded(id: "t1"))
 
