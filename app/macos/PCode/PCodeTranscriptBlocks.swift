@@ -1239,6 +1239,17 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         return 0
     }
 
+    /// The last non-blank line a running shell-like call has printed, bounded for one row;
+    /// nil for any other call (a sub-agent's report is not a stream) or before output.
+    static func latestOutputLine(for call: PCodePeekToolCall) -> String? {
+        guard call.isRunning, call.isShellLike, !call.isDelegate else { return nil }
+        guard let line = call.output.split(separator: "\n").last(where: {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else { return nil }
+        let text = String(line).trimmingCharacters(in: .whitespaces)
+        return text.count > 200 ? String(text.prefix(200)) + "…" : text
+    }
+
     /// The settled row's mark: a check, a red cross for a hard failure, or a small dot for a
     /// command that ran and exited non-zero in the ordinary way (mirrors pcode's `nonzero` icon).
     static func settledMark(for call: PCodePeekToolCall) -> (symbol: String, label: String, pointSize: CGFloat) {
@@ -1308,19 +1319,34 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         if !isExpanded {
             let lineCount = expandableLineCount(for: call)
             if call.isRunning {
-                let liveLabel: String
-                if lineCount > 0 {
-                    liveLabel = lineCount == 1 ? "  · live · 1 line" : "  · live · \(lineCount) lines"
+                let lines = lineCount == 1 ? "1 line" : "\(lineCount) lines"
+                if let latest = latestOutputLine(for: call) {
+                    // A running command's newest line, on a line of its own so a long
+                    // command on the header can't push it (or the count) out of view:
+                    // the stream is visible without expanding the card.
+                    out.append(NSAttributedString(
+                        string: "\nlive · \(lines)  ",
+                        attributes: [
+                            .font: typography.codeNSFont(scale: 0.78),
+                            .foregroundColor: theme.accent.withAlphaComponent(0.85),
+                            .paragraphStyle: style,
+                        ]))
+                    out.append(NSAttributedString(
+                        string: latest,
+                        attributes: [
+                            .font: typography.codeNSFont(scale: 0.80),
+                            .foregroundColor: theme.foreground.withAlphaComponent(0.84),
+                            .paragraphStyle: style,
+                        ]))
                 } else {
-                    liveLabel = "  · running"
+                    out.append(NSAttributedString(
+                        string: lineCount > 0 ? "  · live · \(lines)" : "  · running",
+                        attributes: [
+                            .font: typography.codeNSFont(scale: 0.78),
+                            .foregroundColor: theme.accent.withAlphaComponent(0.85),
+                            .paragraphStyle: style,
+                        ]))
                 }
-                out.append(NSAttributedString(
-                    string: liveLabel,
-                    attributes: [
-                        .font: typography.codeNSFont(scale: 0.78),
-                        .foregroundColor: theme.accent.withAlphaComponent(0.85),
-                        .paragraphStyle: style,
-                    ]))
             } else if lineCount > 0 {
                 let label = lineCount == 1 ? "1 line" : "\(lineCount) lines"
                 out.append(NSAttributedString(

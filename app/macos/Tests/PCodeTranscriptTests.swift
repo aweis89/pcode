@@ -1140,6 +1140,38 @@ struct PCodeTranscriptTests {
         #expect(!expanded.string.contains("`"))
     }
 
+    @Test @MainActor func jobWaitCardNamesTheShellCommandAndStreamsItsOutput() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let snap = PCodeTypography.shared.snapshot
+        let call = PCodePeekToolCall(
+            id: 1,
+            name: "wait_for_job",
+            detail: "j3",
+            failed: false,
+            elapsedSeconds: nil,
+            command: "make e2e",
+            output: "checks: 1/12\nchecks: 2/12",
+            isRunning: true,
+            startedAt: Date())
+
+        let compact = PCodeToolCardView.attributedText(for: call, isExpanded: false, typography: snap, theme: theme)
+        #expect(compact.string.hasPrefix("Wait for shell  j3 · make e2e"))
+        // The newest line streams on a row of its own, under the command, while collapsed.
+        #expect(compact.string.hasSuffix("\nlive · 2 lines  checks: 2/12"))
+        #expect(!compact.string.contains("checks: 1/12"))
+        #expect(!compact.string.contains("wait_for_job"))
+        #expect(call.canExpand)
+
+        let expanded = PCodeToolCardView.attributedText(for: call, isExpanded: true, typography: snap, theme: theme)
+        #expect(expanded.string.contains("make e2e"))
+        #expect(expanded.string.contains("checks: 2/12"))
+
+        // A job the runtime could not name still says which one is waited on.
+        let unknown = PCodePeekToolCall(
+            id: 2, name: "wait_for_job", detail: "j9", failed: false, elapsedSeconds: nil, command: "")
+        #expect(unknown.summaryText == "j9")
+    }
+
     @Test @MainActor func toolCardShowsCompactLineCountAndBottomCollapseWhenExpanded() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let snap = PCodeTypography.shared.snapshot
