@@ -480,6 +480,7 @@ struct PCodeInspectorCommandsView: View {
     @ObservedObject var store: PCodeInspectorCommandsStore
     let actions: PCodeInspectorActions
     let codeFont: NSFont?
+    let foregroundColor: NSColor?
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedCommandID: String?
@@ -491,12 +492,14 @@ struct PCodeInspectorCommandsView: View {
         state: PCodeInspectorState,
         store: PCodeInspectorCommandsStore,
         actions: PCodeInspectorActions = .noop,
-        codeFont: NSFont? = nil
+        codeFont: NSFont? = nil,
+        foregroundColor: NSColor? = nil
     ) {
         self.state = state
         self.store = store
         self.actions = actions
         self.codeFont = codeFont
+        self.foregroundColor = foregroundColor
     }
 
     private var isDark: Bool { colorScheme == .dark }
@@ -522,7 +525,7 @@ struct PCodeInspectorCommandsView: View {
             Divider()
             contentArea
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color.clear)
         .onAppear {
             syncSelection(preferredID: state.focusedCommandID)
         }
@@ -621,7 +624,7 @@ struct PCodeInspectorCommandsView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+        .background(Color.primary.opacity(isDark ? 0.04 : 0.035))
     }
 
     // MARK: - Content Layout
@@ -875,7 +878,7 @@ struct PCodeInspectorCommandsView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
+            .background(Color.primary.opacity(isDark ? 0.03 : 0.025))
 
             Divider()
 
@@ -899,6 +902,8 @@ struct PCodeInspectorCommandsView: View {
                     commandID: item.id,
                     text: item.output,
                     font: resolvedCodeFont,
+                    textColor: foregroundColor
+                        ?? (isDark ? NSColor(white: 0.90, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0)),
                     isRunning: item.isRunning,
                     isFollowingTail: $isFollowingTail,
                     scrollToBottomToken: scrollToBottomToken
@@ -975,6 +980,7 @@ private struct PCodeCommandOutputTailView: NSViewRepresentable {
     let commandID: String
     let text: String
     let font: NSFont
+    let textColor: NSColor
     let isRunning: Bool
     @Binding var isFollowingTail: Bool
     let scrollToBottomToken: Int
@@ -989,8 +995,8 @@ private struct PCodeCommandOutputTailView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
 
         let textView = NSTextView()
         textView.isEditable = false
@@ -1000,7 +1006,7 @@ private struct PCodeCommandOutputTailView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 10, height: 8)
         textView.font = font
-        textView.textColor = .labelColor
+        textView.textColor = textColor
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = true
         textView.autoresizingMask = [.width]
@@ -1051,6 +1057,9 @@ private struct PCodeCommandOutputTailView: NSViewRepresentable {
 
         if fontChanged {
             textView.font = font
+        }
+        if textView.textColor != textColor {
+            textView.textColor = textColor
         }
 
         if commandChanged || textChanged {

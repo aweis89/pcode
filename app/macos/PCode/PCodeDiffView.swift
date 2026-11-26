@@ -164,6 +164,8 @@ struct PCodeChangesInspectorView: View {
     let isLoading: Bool
     let emptyMessage: String?
     let codeFont: NSFont?
+    let surfaceBackground: Color
+    let foregroundColor: NSColor?
     let onScopeChange: ((PCodeDiffScope) -> Void)?
     let onRefresh: (() -> Void)?
 
@@ -193,6 +195,8 @@ struct PCodeChangesInspectorView: View {
         emptyMessage: String? = nil,
         highlighter: any PCodeSyntaxHighlighter = PCodePrismSyntaxHighlighter.shared,
         codeFont: NSFont? = nil,
+        surfaceBackground: Color = Color(nsColor: .textBackgroundColor),
+        foregroundColor: NSColor? = nil,
         onScopeChange: ((PCodeDiffScope) -> Void)? = nil,
         onRefresh: (() -> Void)? = nil
     ) {
@@ -203,6 +207,8 @@ struct PCodeChangesInspectorView: View {
         self.isLoading = isLoading
         self.emptyMessage = emptyMessage
         self.codeFont = codeFont
+        self.surfaceBackground = surfaceBackground
+        self.foregroundColor = foregroundColor
         self.onScopeChange = onScopeChange
         self.onRefresh = onRefresh
         self._syntaxStore = StateObject(wrappedValue: PCodeDiffSyntaxStore(highlighter: highlighter))
@@ -219,7 +225,12 @@ struct PCodeChangesInspectorView: View {
     }
 
     private var syntaxPalette: PCodeSyntaxPalette {
-        PCodeSyntaxPalette.make(isDark: isDark, foreground: isDark ? .labelColor : .textColor)
+        // Avoid dynamic `.labelColor`/`.textColor`: when Ghostty uses a dark theme while macOS
+        // is in Light Mode, `AttributedString(NSAttributedString)` resolves catalog colors against
+        // the system appearance (turning plain/punctuation tokens black on a dark background).
+        let concreteForeground = foregroundColor
+            ?? (isDark ? NSColor(white: 0.90, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0))
+        return PCodeSyntaxPalette.make(isDark: isDark, foreground: concreteForeground)
     }
 
     private var canUseSideBySide: Bool {
@@ -253,7 +264,7 @@ struct PCodeChangesInspectorView: View {
                 containerWidth = newWidth
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(surfaceBackground)
     }
 
     // MARK: - Top Toolbar
@@ -285,7 +296,7 @@ struct PCodeChangesInspectorView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+        .background(Color.primary.opacity(isDark ? 0.04 : 0.035))
     }
 
     @ViewBuilder
@@ -671,7 +682,8 @@ struct PCodeChangesInspectorView: View {
         .padding(.vertical, 6)
         .background(
             ZStack {
-                Color(nsColor: .controlBackgroundColor)
+                surfaceBackground
+                Color.primary.opacity(isDark ? 0.06 : 0.045)
                 if isFocused {
                     Color.accentColor.opacity(isDark ? 0.10 : 0.06)
                 } else if diff.isStreaming {

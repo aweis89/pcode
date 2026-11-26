@@ -3340,8 +3340,10 @@ struct PCodeWorkspaceView: View {
 
     private var sidebarBackground: Color {
         // Solid, a shade off the terminal's background: no vibrancy behind it.
-        Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.06, of: .white) ?? .windowBackgroundColor)
+        let base = NSColor(ghostty.config.backgroundColor)
+        let tint: NSColor = base.isLightColor ? .black : .white
+        let fraction: CGFloat = base.isLightColor ? 0.035 : 0.06
+        return Color(nsColor: base.blended(withFraction: fraction, of: tint) ?? base)
     }
 
     private var sidebarHeader: some View {
@@ -3672,9 +3674,6 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
                     isSelectedPane: isSelected,
                     onSelectFile: { path in
                         workspace.openInspectorFile(path, in: pane)
-                    },
-                    onSelectOverflow: {
-                        workspace.openInspectorChanges(in: pane)
                     }
                 )
             }

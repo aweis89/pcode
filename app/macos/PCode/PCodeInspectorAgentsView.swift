@@ -758,7 +758,7 @@ struct PCodeInspectorAgentsView: View {
             Divider()
             contentArea
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color.clear)
         .onAppear {
             reconcileSelection(for: store.agents.map(\.id))
         }
@@ -858,7 +858,7 @@ struct PCodeInspectorAgentsView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+        .background(Color.primary.opacity(isDark ? 0.04 : 0.035))
     }
 
     // MARK: - Content
@@ -950,7 +950,7 @@ struct PCodeInspectorAgentsView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(isDark ? 0.55 : 0.7))
+                .fill(Color.primary.opacity(isDark ? 0.05 : 0.035))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1324,7 +1324,7 @@ struct PCodeInspectorAgentsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
+                        .fill(Color.primary.opacity(isDark ? 0.04 : 0.025))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)

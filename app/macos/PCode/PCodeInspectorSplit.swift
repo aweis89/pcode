@@ -218,10 +218,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
     }
 
     private var inspectorBackground: Color {
-        Color(nsColor: NSColor(ghostty.config.backgroundColor).blended(
-            withFraction: 0.03,
-            of: colorScheme == .dark ? .white : .black
-        ) ?? NSColor(ghostty.config.backgroundColor))
+        ghostty.config.backgroundColor
     }
 
     private func actions(isOverlay: Bool) -> PCodeInspectorActions {
@@ -547,6 +544,8 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 singleEditLabel: singleEditLabel,
                 isLoading: changesStore.isLoadingGit && (inspectorState.diffScope == .workingTree || inspectorState.diffScope == .branch),
                 codeFont: typography.snapshot.codeNSFont(scale: typography.snapshot.codeBlockScale),
+                surfaceBackground: inspectorBackground,
+                foregroundColor: NSColor(ghostty.config.foregroundColor),
                 onScopeChange: { scope in
                     changesStore.setActiveScope(scope, triggerRefresh: true)
                 },
@@ -567,7 +566,9 @@ struct PCodeInspectorSplit<MainContent: View>: View {
             PCodeInspectorCommandsView(
                 state: inspectorState,
                 store: commandsStore,
-                actions: resolvedActions
+                actions: resolvedActions,
+                codeFont: typography.snapshot.codeNSFont(scale: typography.snapshot.codeBlockScale),
+                foregroundColor: NSColor(ghostty.config.foregroundColor)
             )
         }
     }
@@ -674,9 +675,11 @@ struct PCodeSidebarFileChangesList: View {
     @ObservedObject var inspectorState: PCodeInspectorState
     let isSelectedPane: Bool
     let onSelectFile: (String) -> Void
-    let onSelectOverflow: () -> Void
 
-    static let maxVisibleFiles = 5
+    static let initialVisibleFiles = 5
+    static let pageSize = 15
+
+    @State private var visibleLimit: Int = Self.initialVisibleFiles
 
     private var activeFilePath: String? {
         guard isSelectedPane, inspectorState.isOpen, inspectorState.activeTab == .changes else {
@@ -686,27 +689,43 @@ struct PCodeSidebarFileChangesList: View {
     }
 
     var body: some View {
-        let slice = changesStore.sidebarFiles(limit: Self.maxVisibleFiles)
+        let slice = changesStore.sidebarFiles(limit: visibleLimit)
+        let isExpanded = visibleLimit > Self.initialVisibleFiles && changesStore.sessionFiles.count > Self.initialVisibleFiles
         if !slice.visible.isEmpty {
             let duplicateBasenames = Self.duplicateBasenames(in: slice.visible)
             VStack(alignment: .leading, spacing: 1) {
                 ForEach(slice.visible) { file in
                     fileRow(file, showParent: duplicateBasenames.contains(file.basename))
                 }
-                if slice.overflowCount > 0 {
-                    Button(action: onSelectOverflow) {
-                        HStack(spacing: 4) {
-                            Text("+ \(slice.overflowCount) more…")
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 4)
+                if slice.overflowCount > 0 || isExpanded {
+                    HStack(spacing: 10) {
+                        if slice.overflowCount > 0 {
+                            let remaining = slice.overflowCount
+                            let next = min(remaining, Self.pageSize)
+                            Button {
+                                visibleLimit += Self.pageSize
+                            } label: {
+                                Text(next == remaining ? "Show \(remaining) more…" : "Show \(next) more of \(remaining)…")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .padding(.leading, 28)
-                        .padding(.trailing, 8)
-                        .padding(.vertical, 2)
-                        .contentShape(Rectangle())
+                        if isExpanded {
+                            Button {
+                                visibleLimit = Self.initialVisibleFiles
+                            } label: {
+                                Text("Show less")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Spacer(minLength: 4)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.leading, 26)
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 2.5)
                 }
             }
             .padding(.bottom, 3)
