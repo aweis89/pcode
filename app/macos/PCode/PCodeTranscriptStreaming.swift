@@ -373,6 +373,18 @@ struct PCodeSmoothScrollGlide: Equatable {
         }
     }
 
+    /// Clamp `remainingOffset` downward when the user manually scrolls further toward the bottom
+    /// during an active glide, so the next tick never snaps backward against their scroll.
+    mutating func clampToRemaining(_ maxRemaining: CGFloat) {
+        guard isActive, maxRemaining.isFinite else { return }
+        let clamped = max(0, maxRemaining)
+        if clamped <= 0.25 {
+            reset()
+        } else if clamped < remainingOffset {
+            remainingOffset = clamped
+        }
+    }
+
     /// Advance the conveyor glide by `dt` seconds and return the new `remainingOffset`.
     @discardableResult
     mutating func step(dt: TimeInterval, speedMultiplier: CGFloat = 1.0) -> CGFloat {

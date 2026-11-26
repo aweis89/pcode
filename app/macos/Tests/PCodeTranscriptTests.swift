@@ -2668,6 +2668,7 @@ struct PCodeTranscriptTests {
         #expect(doc.stickyBottom.mode == .resumingDwell)
         doc.handleWillStartLiveScroll()
         #expect(doc.stickyBottom.mode == .userScrolledUp)
+        doc.handleDidEndLiveScroll()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         #expect(doc.stickyBottom.mode == .userScrolledUp)
 
@@ -2738,5 +2739,92 @@ struct PCodeTranscriptTests {
         #expect(doc.isResumeGlideActive)
         #expect(!scrollView.isJumpToBottomVisible)
         window.contentView = nil
+    }
+
+    @Test @MainActor func pauseAwayRegressionEdgeCases() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 300)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        let clip = scrollView.contentView
+
+        // 1. Reloading history while inactive still settles to true bottom, so returning doesn't dwell.
+        doc.setPaneActive(false)
+        doc.reloadHistory {
+            for i in 0..<25 {
+                let item = PCodeTranscriptItem(
+                    id: "hist-\(i)",
+                    payload: .prose(
+                        markdown: "Historical paragraph \(i) with enough wrapped text to exceed estimated height cleanly across multiple lines.",
+                        referenceDefinitions: "",
+                        copyMarkdown: nil),
+                    spacingAfter: 8)
+                doc.upsertItem(item, reveal: false)
+            }
+        }
+        #expect(doc.stickyBottom.mode == .pausedAway)
+        let distAfterReload = PCodeStickyBottomState.distanceFromBottom(
+            clipOriginY: clip.bounds.origin.y,
+            documentHeight: doc.frame.height,
+            clipHeight: clip.bounds.height)
+        #expect(distAfterReload <= 1.0)
+        doc.setPaneActive(true)
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+        #expect(!scrollView.isJumpToBottomVisible)
+
+        // 2. Viewport shrink while paused with no new content snaps back cleanly without dwelling.
+        doc.setPaneActive(false)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 180)
+        scrollView.layoutSubtreeIfNeeded()
+        doc.setPaneActive(true)
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+        #expect(!scrollView.isJumpToBottomVisible)
+
+        // 3. In-place item growth (e.g. streaming tool output) while paused surfaces the pill.
+        let tool = PCodePeekToolCall(
+            id: 1, name: "shell", detail: "echo hi", failed: false,
+            elapsedSeconds: nil, command: "echo hi", output: "line 0", isRunning: true)
+        doc.upsertItem(PCodeTranscriptItem(id: "tool-grow", payload: .tool(tool, isExpanded: true), spacingAfter: 6), reveal: false)
+        doc.setPaneActive(false)
+        let bigOutput = (0..<40).map { "output line \($0)" }.joined(separator: "\n")
+        let grownTool = PCodePeekToolCall(
+            id: 1, name: "shell", detail: "echo hi", failed: false,
+            elapsedSeconds: nil, command: "echo hi", output: bigOutput, isRunning: true)
+        doc.upsertItem(PCodeTranscriptItem(id: "tool-grow", payload: .tool(grownTool, isExpanded: true), spacingAfter: 6, revision: 1), reveal: false)
+        #expect(scrollView.isJumpToBottomVisible)
+
+        // 4. Scrolling to the bottom of an unfocused split clears the pill while staying `.pausedAway`.
+        let bottomY = PCodeStickyBottomState.bottomOriginY(
+            documentHeight: doc.frame.height,
+            clipHeight: clip.bounds.height)
+        doc.handleWillStartLiveScroll()
+        clip.scroll(to: CGPoint(x: 0, y: bottomY))
+        doc.handleBoundsDidChange()
+        doc.handleDidEndLiveScroll()
+        #expect(doc.stickyBottom.mode == .pausedAway)
+        #expect(!scrollView.isJumpToBottomVisible)
+
+        // 5. ScrollView observer wiring (`isPaneActiveProvider` + `viewDidHide`/`viewDidUnhide` + window attach).
+        var providerActive = true
+        scrollView.isPaneActiveProvider = { providerActive }
+        scrollView.refreshPaneActiveState()
+        #expect(doc.isPaneActive)
+        providerActive = false
+        scrollView.viewDidHide()
+        #expect(!doc.isPaneActive)
+        #expect(doc.stickyBottom.mode == .pausedAway)
+        providerActive = true
+        scrollView.viewDidUnhide()
+        #expect(doc.isPaneActive)
+        #expect(doc.stickyBottom.mode == .pinnedToBottom)
+
+        // 6. Clamping smooth glide downward on legacy wheel scroll never rubber-bands.
+        var glide = PCodeSmoothScrollGlide()
+        glide.startResumeGlide(offset: 1000)
+        glide.clampToRemaining(400)
+        #expect(glide.remainingOffset == 400)
+        glide.clampToRemaining(0)
+        #expect(!glide.isActive)
     }
 }

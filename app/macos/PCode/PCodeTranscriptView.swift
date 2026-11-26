@@ -514,6 +514,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             stopDisplayLink()
             stopLiveRunningTimer()
             cancelResumingDwellTimer()
+            if stickyBottom.mode == .resumingDwell {
+                stickyBottom.didLeavePane()
+                refreshJumpToBottomVisibility()
+            }
         }
     }
 
@@ -666,16 +670,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         let width = max(1, enclosingScrollView?.contentSize.width ?? bounds.width)
         lastContentWidth = width
-        applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: pinToBottom, allowSmoothGlide: false)
-        if !pinToBottom, let scrollView = enclosingScrollView {
-            let topOrigin = CGPoint(x: 0, y: -scrollView.contentInsets.top)
-            isApplyingDocumentHeight = true
-            scrollView.contentView.scroll(to: topOrigin)
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-            lastClipOriginY = topOrigin.y
-            isApplyingDocumentHeight = false
+        if pinToBottom {
+            settlingAtTrueBottom {
+                applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+                mountViews(in: visibleRect)
+            }
+        } else {
+            applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: false, allowSmoothGlide: false)
+            if let scrollView = enclosingScrollView {
+                let topOrigin = CGPoint(x: 0, y: -scrollView.contentInsets.top)
+                isApplyingDocumentHeight = true
+                scrollView.contentView.scroll(to: topOrigin)
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+                lastClipOriginY = topOrigin.y
+                isApplyingDocumentHeight = false
+            }
+            mountViews(in: visibleRect)
         }
-        mountViews(in: visibleRect)
         runningToolIDs.removeAll(keepingCapacity: true)
         for item in items {
             if case .tool(let call, _) = item.payload, call.isRunning && call.startedAt != nil {
@@ -949,6 +960,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
             invalidateSearchIndex()
             mountViews(in: visibleRect)
+            markUnreadIfOverflowedWhilePaused()
             trackRunningState(for: item)
             return existingIdx
         }
@@ -1182,9 +1194,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
 
         mountViews(in: visibleRect)
-        if !revealNewIDs.isEmpty {
-            markUnreadIfOverflowedWhilePaused()
-        }
+        markUnreadIfOverflowedWhilePaused()
 
         // CoreAnimation polish (GPU-only, never mutates layout). Motion is measured on screen:
         // pinned to the bottom, a fold also moves the scroll origin, so document-space deltas
@@ -1519,6 +1529,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     private func enqueueRevealIfNeeded(for item: PCodeTranscriptItem, estimatedHeight: CGFloat) {
         guard window != nil,
+              isPaneActive,
               paceMode != .off,
               stickyBottom.mode != .pausedAway,
               stickyBottom.mode != .resumingDwell
@@ -1594,10 +1605,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             cancelResumingDwellTimer()
             let wasFollowing = (stickyBottom.mode == .pinnedToBottom || stickyBottom.mode == .resumingDwell)
             stickyBottom.didLeavePane()
+            completeAllReveals()
+            stopDisplayLink()
             if wasFollowing {
                 resetSmoothGlide()
-                completeAllReveals()
-                stopDisplayLink()
                 markUnreadIfOverflowedWhilePaused()
                 refreshJumpToBottomVisibility()
             }
@@ -1606,7 +1617,24 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         guard stickyBottom.mode == .pausedAway else { return }
         completeAllReveals()
+        if isDraggingSelection || stickyBottom.isLiveScrolling || (selection.map { !$0.isEmpty } ?? false) {
+            unpinFromBottom()
+            return
+        }
         let dist = enclosingScrollView.map { distanceFromBottom(in: $0) } ?? 0
+        if !hasUnreadStreamingContent {
+            // Nothing new arrived while away; any gap from bottom is purely a viewport resize
+            // or rewrap (e.g. opening ⌘J shell or a split), so snap cleanly back without dwelling.
+            _ = stickyBottom.didReturnToPane(distanceFromBottom: 0)
+            refreshJumpToBottomVisibility()
+            if dist > 0.5 {
+                settlingAtTrueBottom {
+                    applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+                    mountViews(in: visibleRect)
+                }
+            }
+            return
+        }
         let newMode = stickyBottom.didReturnToPane(distanceFromBottom: dist)
         switch newMode {
         case .pinnedToBottom:
@@ -1623,9 +1651,29 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     func completeResumingDwellIfNeeded() {
         cancelResumingDwellTimer()
         guard isPaneActive, stickyBottom.mode == .resumingDwell else { return }
+        if isDraggingSelection || stickyBottom.isLiveScrolling || (selection.map { !$0.isEmpty } ?? false) {
+            unpinFromBottom()
+            return
+        }
         stickyBottom.didFinishResumingDwell()
         setHasUnreadStreamingContent(false)
         guard let scrollView = enclosingScrollView else { return }
+        // Trim any stale blank slack below the real content before measuring the catch-up distance
+        // so the resume glide lands on the last line rather than scrolling into empty space.
+        if bottomSlack > 0 {
+            let clipView = scrollView.contentView
+            let contentHeight = layoutEngine.totalHeight
+            let reachedSlack = max(
+                0, clipView.bounds.origin.y + clipView.bounds.height - scrollView.contentInsets.bottom - contentHeight)
+            if reachedSlack < bottomSlack - 0.5 {
+                bottomSlack = reachedSlack
+                let targetHeight = max(contentHeight + bottomSlack, unobstructedViewportHeight(in: scrollView))
+                isApplyingDocumentHeight = true
+                frame.size = CGSize(width: frame.width, height: targetHeight)
+                lastClipOriginY = clipView.bounds.origin.y
+                isApplyingDocumentHeight = false
+            }
+        }
         let dist = distanceFromBottom(in: scrollView)
         if dist > 0.5 {
             if window != nil {
@@ -1633,8 +1681,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 ensureDisplayLinkRunning()
                 notifyGlideActiveIfNeeded()
             } else {
-                applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
-                mountViews(in: visibleRect)
+                settlingAtTrueBottom {
+                    applyDocumentHeight(layoutEngine.totalHeight, scrollOriginDelta: 0, pinIfNeeded: true, allowSmoothGlide: false)
+                    mountViews(in: visibleRect)
+                }
             }
         }
     }
@@ -1795,10 +1845,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     func handleDidEndLiveScroll() {
         guard let scrollView = enclosingScrollView else { return }
+        let dist = distanceFromBottom(in: scrollView)
         stickyBottom.didEndLiveScroll(
-            distanceFromBottom: distanceFromBottom(in: scrollView),
+            distanceFromBottom: dist,
             isPaneActive: isPaneActive)
-        if stickyBottom.mode == .pinnedToBottom {
+        if stickyBottom.mode == .pinnedToBottom
+            || (stickyBottom.mode == .pausedAway && dist <= stickyBottom.bottomThreshold)
+        {
             setHasUnreadStreamingContent(false)
         } else {
             refreshJumpToBottomVisibility()
@@ -1831,7 +1884,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     distanceFromBottom: dist,
                     movedUpward: movedUp,
                     isPaneActive: isPaneActive)
-                if stickyBottom.mode == .pinnedToBottom {
+                if !movedUp && smoothGlide.isActive {
+                    smoothGlide.clampToRemaining(dist)
+                    notifyGlideActiveIfNeeded()
+                }
+                if stickyBottom.mode == .pinnedToBottom
+                    || (stickyBottom.mode == .pausedAway && dist <= stickyBottom.bottomThreshold)
+                {
                     setHasUnreadStreamingContent(false)
                 } else {
                     refreshJumpToBottomVisibility()
@@ -1938,7 +1997,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 let measured = applyRowView(rowView, item: item, index: idx, width: effectiveWidth)
                 appliedStates[item.id] = targetState
 
-                let pinned = stickyBottom.shouldProgrammaticallyPin
+                let pinned = stickyBottom.shouldProgrammaticallyPin || isSettlingBottom
                 let before = layoutEngine.entries[idx]
                 let delta = layoutEngine.updateHeight(
                     at: idx,
@@ -1997,11 +2056,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         let unobstructedH = unobstructedViewportHeight(in: enclosingScrollView)
         let targetHeight = max(layoutEngine.totalHeight + bottomSlack, unobstructedH)
-        if abs(bounds.height - targetHeight) > 0.5 || abs(accumulatedScrollDelta) > 0.5 {
+        let slackNeedsConsume = bottomSlack > 0
+            && (stickyBottom.mode == .pausedAway || stickyBottom.mode == .resumingDwell)
+            && layoutEngine.totalHeight > lastAppliedContentHeight + 0.5
+        if abs(bounds.height - targetHeight) > 0.5 || abs(accumulatedScrollDelta) > 0.5 || slackNeedsConsume {
+            let pinOnApply = stickyBottom.shouldProgrammaticallyPin || isSettlingBottom
             applyDocumentHeight(
                 layoutEngine.totalHeight,
                 scrollOriginDelta: accumulatedScrollDelta,
-                pinIfNeeded: stickyBottom.shouldProgrammaticallyPin,
+                pinIfNeeded: pinOnApply,
+                allowSmoothGlide: !isSettlingBottom,
                 pinnedShiftAbove: pinnedShiftAbove)
             if pass < 4, layoutEngine.visibleRange(in: visibleRect) != range {
                 mountViews(in: visibleRect, pass: pass + 1)
@@ -2318,6 +2382,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             bottomSlack = newHeight < lastAppliedContentHeight - 0.5 && !isSettlingBottom
                 ? holdingSlack
                 : min(bottomSlack, holdingSlack)
+        } else if bottomSlack > 0 && (stickyBottom.mode == .pausedAway || stickyBottom.mode == .resumingDwell) {
+            let growth = max(0, newHeight - lastAppliedContentHeight)
+            bottomSlack = max(0, bottomSlack - growth)
         }
         lastAppliedContentHeight = newHeight
         let targetHeight = max(newHeight + bottomSlack, unobstructedH)
@@ -2590,7 +2657,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     override func mouseDragged(with event: NSEvent) {
         guard isDraggingSelection, var current = selection else { return }
         dragMoved = true
-        if stickyBottom.mode == .resumingDwell {
+        if stickyBottom.mode == .resumingDwell || stickyBottom.mode == .pausedAway {
             unpinFromBottom()
         }
         if autoscroll(with: event) {
@@ -3409,6 +3476,13 @@ final class PCodeTranscriptScrollView: NSScrollView {
         teardownWindowObservers()
     }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window {
+            teardownWindowObservers()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         teardownWindowObservers()
@@ -3430,6 +3504,14 @@ final class PCodeTranscriptScrollView: NSScrollView {
                     self?.refreshPaneActiveState()
                 })
             }
+            windowObservers.append(nc.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.teardownWindowObservers()
+                self?.refreshPaneActiveState()
+            })
             firstResponderObservation = window.observe(\.firstResponder, options: [.new]) { [weak self] _, _ in
                 self?.scheduleRefreshPaneActiveState()
             }
