@@ -2903,4 +2903,69 @@ struct PCodeTranscriptTests {
         glide.clampToRemaining(0)
         #expect(!glide.isActive)
     }
+
+    @Test @MainActor func hostNotesRenderWithMutedTypographyAndToneColors() {
+        let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+        let typography = PCodeTypographySnapshot(
+            style: .sansAndMono,
+            size: 17,
+            weight: .regular,
+            codeFamilyAvailable: false)
+
+        let infoAttr = PCodeNoteRowView.attributedText(
+            for: "Loaded repository instructions: AGENTS.md",
+            tone: .info,
+            typography: typography,
+            theme: theme)
+        let warnAttr = PCodeNoteRowView.attributedText(
+            for: "Heads up",
+            tone: .warning,
+            typography: typography,
+            theme: theme)
+        let errAttr = PCodeNoteRowView.attributedText(
+            for: "Something failed",
+            tone: .error,
+            typography: typography,
+            theme: theme)
+
+        let infoFont = infoAttr.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        let proseFont = typography.proseNSFont()
+        #expect(infoFont != nil)
+        #expect(infoFont!.pointSize < proseFont.pointSize)
+        #expect(abs(infoFont!.pointSize - proseFont.pointSize * PCodeNoteRowView.fontScale) < 0.25)
+
+        let infoColor = infoAttr.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        let warnColor = warnAttr.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        let errColor = errAttr.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        #expect(infoColor == theme.secondaryForeground)
+        #expect(warnColor == .systemOrange)
+        #expect(errColor == .systemRed)
+
+        let doc = PCodeTranscriptDocumentView(typography: typography, theme: theme)
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+        reducer.apply(.note("Loaded repository instructions: AGENTS.md"), reveal: false)
+        reducer.apply(.warning("Heads up"), reveal: false)
+        reducer.apply(.error("Something failed"), reveal: false)
+
+        #expect(doc.items.count == 3)
+        if case .note(let text, let tone) = doc.items[0].payload {
+            #expect(text == "Loaded repository instructions: AGENTS.md")
+            #expect(tone == .info)
+        } else {
+            Issue.record("expected .note(.info) payload for host note")
+        }
+        if case .note(let text, let tone) = doc.items[1].payload {
+            #expect(text == "Heads up")
+            #expect(tone == .warning)
+        } else {
+            Issue.record("expected .note(.warning) payload for host warning")
+        }
+        if case .note(let text, let tone) = doc.items[2].payload {
+            #expect(text == "Something failed")
+            #expect(tone == .error)
+        } else {
+            Issue.record("expected .note(.error) payload for host error")
+        }
+        #expect(doc.plainTextForCopy(at: 0) == "Loaded repository instructions: AGENTS.md")
+    }
 }

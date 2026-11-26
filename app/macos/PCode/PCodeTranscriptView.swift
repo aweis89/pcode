@@ -59,6 +59,7 @@ struct PCodeTranscriptItem: Identifiable {
         case toolGroup
         case diff
         case thinking
+        case note
         case status
     }
 
@@ -71,6 +72,7 @@ struct PCodeTranscriptItem: Identifiable {
         case toolGroup(PCodeToolGroupPayload)
         case diff(PCodeDiffPayload, isExpanded: Bool)
         case thinking(PCodeThinkingPayload)
+        case note(text: String, tone: PCodeNoteTone)
         case status(PCodePeekTurn.Status)
     }
 
@@ -92,6 +94,7 @@ struct PCodeTranscriptItem: Identifiable {
         case .toolGroup: return .toolGroup
         case .diff: return .diff
         case .thinking: return .thinking
+        case .note: return .note
         case .status: return .status
         }
     }
@@ -124,6 +127,8 @@ struct PCodeTranscriptItem: Identifiable {
             return isExpanded ? "\(diff.path)\n\(diff.patch)" : PCodeDiffCardView.summaryLine(for: diff)
         case .thinking(let thinking):
             return thinking.text
+        case .note(let text, _):
+            return text
         case .status(let status):
             return PCodeStatusRowView.displayLabel(for: status)
         }
@@ -202,6 +207,8 @@ struct PCodeTranscriptItem: Identifiable {
                 depth: 0), isExpanded: false)
         case .thinking:
             self.payload = .thinking(PCodeThinkingPayload(text: plainText))
+        case .note:
+            self.payload = .note(text: plainText, tone: isFailed ? .error : .info)
         case .status:
             let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
             self.payload = .status(status)
@@ -2309,6 +2316,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 theme: theme,
                 selectedRange: localSel)
 
+        case (let view as PCodeNoteRowView, .note(let text, let tone)):
+            let attr = cachedNoteAttributedString(for: item.id, text: text, tone: tone)
+            let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            return view.configure(
+                attributedText: attr,
+                width: width,
+                selectedRange: localSel)
+
         case (let view as PCodeStatusRowView, .status(let status)):
             let attr = cachedStatusAttributedString(for: item.id, status: status)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
@@ -2462,6 +2477,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .toolGroup: return PCodeToolGroupCardView()
         case .diff: return PCodeDiffCardView()
         case .thinking: return PCodeThinkingCardView()
+        case .note: return PCodeNoteRowView()
         case .status: return PCodeStatusRowView()
         }
     }
@@ -3128,6 +3144,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 : PCodeDiffCardView.summaryLine(for: payload)
         case .thinking(let thinking):
             return cachedThinkingAttributedString(for: item.id, thinking: thinking).string
+        case .note(let text, let tone):
+            return cachedNoteAttributedString(for: item.id, text: text, tone: tone).string
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
         }
@@ -3199,6 +3217,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let rows = payload.windowEntries.count
             guard rows > 0 else { return PCodeToolGroupCardView.rowHeight }
             return PCodeToolGroupCardView.windowHeight(rowCount: rows, lineHeight: PCodeToolGroupCardView.lineHeight(typography))
+        case .note(let text, _):
+            let lines = max(1, min(12, text.count / 84 + 1))
+            return 2 + CGFloat(lines) * typography.lineHeight(scale: PCodeNoteRowView.fontScale)
         case .status: return 24
         case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))
@@ -3317,6 +3338,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         let built = PCodeToolGroupCardView.attributedText(
             for: payload,
+            typography: typography,
+            theme: theme)
+        storeAttributedCache(built, for: id)
+        return built
+    }
+
+    private func cachedNoteAttributedString(
+        for id: String,
+        text: String,
+        tone: PCodeNoteTone
+    ) -> NSAttributedString {
+        if let cached = attributedCache[id] {
+            return cached
+        }
+        let built = PCodeNoteRowView.attributedText(
+            for: text,
+            tone: tone,
             typography: typography,
             theme: theme)
         storeAttributedCache(built, for: id)

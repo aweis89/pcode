@@ -41,7 +41,8 @@ struct PCodeHostStateTests {
 
     @Test func decodesRetainedNotesAndWarningsAsNotes() {
         #expect(PCodeHostEventDecoder.decodeRPCCall(method: "retained_note", args: ["context"], kwargs: [:]) == .note("context"))
-        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "warning", args: ["heads up"], kwargs: [:]) == .note("heads up"))
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "warning", args: ["heads up"], kwargs: [:]) == .warning("heads up"))
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "error", args: ["boom"], kwargs: [:]) == .error("boom"))
         // Nothing to show: no event.
         #expect(PCodeHostEventDecoder.decodeRPCCall(method: "warning", args: [""], kwargs: [:]) == nil)
         #expect(PCodeHostEventDecoder.decodeRPCCall(method: "retained_note", args: [], kwargs: [:]) == nil)

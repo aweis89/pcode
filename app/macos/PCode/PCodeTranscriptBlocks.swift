@@ -2258,6 +2258,86 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     }
 }
 
+// MARK: - System / Housekeeping Note Row
+
+/// Visual severity for system and housekeeping notes emitted by the host
+/// (e.g. loaded repo instructions, skill commands, warnings, errors).
+enum PCodeNoteTone: String, Equatable {
+    case info
+    case warning
+    case error
+}
+
+final class PCodeNoteRowView: NSView, PCodeTranscriptRowHosting {
+    static let fontScale: CGFloat = 0.84
+
+    let itemKind: PCodeTranscriptItem.Kind = .note
+    let textView = PCodeTextKit2BlockView()
+
+    var primaryTextView: PCodeTextKit2BlockView? { textView }
+    var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        addSubview(textView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setSelectedRange(_ range: NSRange?) {
+        textView.selectedRange = range
+    }
+
+    func resetForTranscriptReuse() {
+        setSelectedRange(nil)
+    }
+
+    static func attributedText(
+        for text: String,
+        tone: PCodeNoteTone,
+        typography: PCodeTypographySnapshot,
+        theme: PCodeTranscriptTheme
+    ) -> NSAttributedString {
+        let color: NSColor
+        switch tone {
+        case .info:
+            color = theme.secondaryForeground
+        case .warning:
+            color = .systemOrange
+        case .error:
+            color = .systemRed
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = typography.lineHeight(scale: Self.fontScale)
+        paragraph.lineBreakMode = .byWordWrapping
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                .font: typography.proseNSFont(scale: Self.fontScale),
+                .foregroundColor: color,
+                .paragraphStyle: paragraph,
+            ])
+    }
+
+    func configure(
+        attributedText: NSAttributedString,
+        width: CGFloat,
+        selectedRange: NSRange?
+    ) -> CGFloat {
+        let insets = NSEdgeInsets(top: 1, left: 4, bottom: 1, right: 4)
+        let textW = max(1, width - insets.left - insets.right)
+        let textH = textView.configure(attributedText: attributedText, width: textW)
+        textView.selectedRange = selectedRange
+        textView.frame = CGRect(x: insets.left, y: insets.top, width: textW, height: textH)
+        return textH + insets.top + insets.bottom
+    }
+}
+
 // MARK: - Status Badge Row
 
 final class PCodeStatusRowView: NSView, PCodeTranscriptRowHosting {

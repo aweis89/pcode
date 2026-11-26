@@ -114,6 +114,7 @@ enum PCodeHostEvent: Equatable {
     case shellResult(command: String, output: String, failed: Bool, elapsedSeconds: Double?)
     case dropOutput(callID: String)
     case note(String)
+    case warning(String)
     case error(String)
     case conversationReset
     /// The whole settled conversation, replacing what is shown (`history`: the host loaded a
@@ -250,9 +251,14 @@ enum PCodeHostEventDecoder {
                 return .dropOutput(callID: callID)
             }
             return nil
-        case "note", "retained_note", "warning":
+        case "note", "retained_note":
             if let text = args.first as? String, !text.isEmpty {
                 return .note(text)
+            }
+            return nil
+        case "warning":
+            if let text = args.first as? String, !text.isEmpty {
+                return .warning(text)
             }
             return nil
         case "error":
@@ -805,11 +811,27 @@ final class PCodeTranscriptEventReducer {
                 depth: toolDepthByID[callID] ?? 0)
             doc.upsertItem(item, reveal: false)
 
-        case .note(let text), .error(let text):
+        case .note(let text):
             noteCounter += 1
             let item = PCodeTranscriptItem(
                 id: "host-note-\(noteCounter)",
-                payload: .prose(markdown: text, referenceDefinitions: "", copyMarkdown: nil),
+                payload: .note(text: text, tone: .info),
+                spacingAfter: 4)
+            doc.upsertItem(item, reveal: reveal)
+
+        case .warning(let text):
+            noteCounter += 1
+            let item = PCodeTranscriptItem(
+                id: "host-note-\(noteCounter)",
+                payload: .note(text: text, tone: .warning),
+                spacingAfter: 4)
+            doc.upsertItem(item, reveal: reveal)
+
+        case .error(let text):
+            noteCounter += 1
+            let item = PCodeTranscriptItem(
+                id: "host-note-\(noteCounter)",
+                payload: .note(text: text, tone: .error),
                 spacingAfter: 6)
             doc.upsertItem(item, reveal: reveal)
 

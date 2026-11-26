@@ -377,6 +377,14 @@ extension PCodeTranscriptDocumentView {
             return (.group, "Diff", "\(payload.displayToolName) \(payload.path) (\(state))", !payload.patch.isEmpty)
         case .thinking(let thinking):
             return (.group, "Thinking", PCodeThinkingCardView.accessibilityTitle(for: thinking), false)
+        case .note(let text, let tone):
+            let desc: String
+            switch tone {
+            case .info: desc = "Note"
+            case .warning: desc = "Warning"
+            case .error: desc = "Error"
+            }
+            return (.staticText, desc, text, false)
         case .status(let status):
             return (.staticText, "Status", PCodeStatusRowView.displayLabel(for: status), false)
         }
