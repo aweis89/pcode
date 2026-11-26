@@ -509,8 +509,11 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// The session host's entry while one holds this pane's session.
     @Published private(set) var hostStatus: PCodeHostStatus?
     private var resolver = PCodePaneStateResolver()
+    static let surfaceKeyPressed = Notification.Name("PCodeSessionPaneSurfaceKeyPressed")
+
     private var titleSubscription: AnyCancellable?
     private var hostSubscription: AnyCancellable?
+    private var keySubscription: AnyCancellable?
     private var dockSubscription: AnyCancellable?
     private var dockReadySubscription: AnyCancellable?
     private var progressSubscription: AnyCancellable?
@@ -570,6 +573,13 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             .sink { [weak self] activity in
                 guard let self else { return }
                 self.resolver.setOSCActivity(activity)
+                self.resolve()
+            }
+        keySubscription = NotificationCenter.default.publisher(for: Self.surfaceKeyPressed, object: surface)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.resolver.dismissFailure()
                 self.resolve()
             }
         dockSubscription = surface.pcodeDock.$surface

@@ -118,8 +118,8 @@ enum PCodeHostEvent: Equatable {
     case conversationReset
     /// A `state` notify: the session fields that changed since the last one.
     case sessionState(PCodeHostSessionDelta)
-    /// The conversation's identity or settings changed (`session_changed`); carries nothing.
-    case sessionChanged
+    /// The conversation's identity or settings changed (`session_changed`); carries the host's current session id.
+    case sessionChanged(String)
 }
 
 /// The `SESSION_FIELDS` (`pcode.controller`) a `state` notify carries that the app tracks.
@@ -148,6 +148,7 @@ struct PCodeHostSessionState: Equatable {
     init(welcome: PCodeHostSocketClient.Welcome) {
         sessionID = welcome.sessionID
         busy = welcome.hostState == "working"
+        if busy { promptState = "running" }
     }
 
     /// Fold one host event in; returns whether anything changed.
@@ -159,6 +160,8 @@ struct PCodeHostSessionState: Equatable {
             if let busy = delta.busy { self.busy = busy }
             if let promptState = delta.promptState { self.promptState = promptState }
             if let turnOutcome = delta.turnOutcome { self.turnOutcome = turnOutcome }
+        case .sessionChanged(let id):
+            if !id.isEmpty { sessionID = id }
         case .conversationReset:
             sessionID = ""
             turnOutcome = ""
@@ -259,7 +262,7 @@ enum PCodeHostEventDecoder {
             // Deltas of only untracked fields (queue, notice, status) are dropped here.
             return delta.isEmpty ? nil : .sessionState(delta)
         case "session_changed":
-            return .sessionChanged
+            return .sessionChanged((args.first as? String) ?? "")
         default:
             // Terminal-only or unknown notifications are ignored safely.
             return nil

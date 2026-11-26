@@ -134,7 +134,9 @@ final class PCodeHostWatcher {
     }
 
     private func scan() {
-        let map = PCodeHostStatus.bySession(readEntries().filter(isAlive))
+        let alive = readEntries().filter(isAlive)
+        verifiedPIDs.formIntersection(alive.map(\.pid))
+        let map = PCodeHostStatus.bySession(alive)
         DispatchQueue.main.async { [weak self] in
             guard let self, self.statuses != map else { return }
             self.statuses = map
@@ -183,6 +185,10 @@ final class PCodeHostWatcher {
 struct PCodePaneStateResolver: Equatable {
     var oscTitle = ""
     private(set) var oscActivity: PCodeSessionPane.Activity = .idle
+    /// True only when `oscActivity == .running` started while the host was idle
+    /// (a `!command` at the prompt), so a finished hosted turn never waits for
+    /// `TabProgress`'s next 1s tick to leave `.running`.
+    private(set) var oscStartedWhileHostIdle = false
     private(set) var host: PCodeHostStatus?
     /// The host's `turns` when the failed mark was dismissed; it stays down until another turn ends.
     private(set) var dismissedTurns: Int?
@@ -191,12 +197,30 @@ struct PCodePaneStateResolver: Equatable {
         if oscActivity == .failed, activity == .idle, let host {
             dismissedTurns = host.turns
         }
+        if activity == .running {
+            if oscActivity != .running {
+                oscStartedWhileHostIdle = (host?.isWorking != true)
+            }
+        } else {
+            oscStartedWhileHostIdle = false
+        }
         oscActivity = activity
     }
 
     mutating func setHost(_ status: PCodeHostStatus?) {
         if status?.hostID != host?.hostID { dismissedTurns = nil }
+        if status?.isWorking == true || status?.turns != host?.turns {
+            oscStartedWhileHostIdle = false
+        }
         host = status
+    }
+
+    /// Dismiss a failed turn's mark immediately (for example on a key press in
+    /// the pane's editor before `TabProgress`'s next 1s tick, or with `terminal_progress` off).
+    mutating func dismissFailure() {
+        if let host, !host.isWorking, host.outcome == "failed" {
+            dismissedTurns = host.turns
+        }
     }
 
     var title: String {
@@ -206,7 +230,7 @@ struct PCodePaneStateResolver: Equatable {
 
     var activity: PCodeSessionPane.Activity {
         guard let host else { return oscActivity }
-        if host.isWorking || oscActivity == .running { return .running }
+        if host.isWorking || (oscActivity == .running && oscStartedWhileHostIdle) { return .running }
         if host.outcome == "failed", dismissedTurns != host.turns { return .failed }
         return .idle
     }

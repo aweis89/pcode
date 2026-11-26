@@ -147,24 +147,41 @@ class AppearanceWatch:
                 # A switch while the other program had the terminal went unseen.
                 self.refresh()
 
+    def _ask(self) -> None:
+        from pcode import dock
+
+        docked = dock.active()
+        if docked is not None and docked.owns_tty and docked._sent_tint is not None:
+            # EditorOnly tints its own terminal with OSC 11; reset it first so
+            # the query reports the terminal's config background, not the tint.
+            docked._sent_tint = None
+            _write_all(self.fd, b"\x1b]111\x1b\\" + QUERY_BACKGROUND)
+        else:
+            _write_all(self.fd, QUERY_BACKGROUND)
+
     def refresh(self) -> None:
         """Ask for the background now; the answer arrives as input like any other."""
         if self.enabled and not self.suspended:
-            _write_all(self.fd, QUERY_BACKGROUND)
+            self._ask()
 
     async def query(self) -> None:
         for delay in QUERY_DELAYS:
             await asyncio.sleep(delay)
             if not self.suspended:
-                _write_all(self.fd, QUERY_BACKGROUND)
+                self._ask()
 
     async def run(self) -> None:
         if self.fd is None or not _isatty(self.fd) or os.environ.get("TERM") == "dumb":
             return
         self.enabled = _write_all(self.fd, ENABLE_REPORTS)
+        from pcode import dock, theme
+
+        docked = dock.active()
         # The startup probe is skipped when input is already waiting, leaving a
         # guess from COLORFGBG that only a later switch would otherwise correct.
-        self.refresh()
+        # Skip when EditorOnly already tinted a terminal the startup probe measured.
+        if not (docked is not None and docked.owns_tty and theme.terminal_background() is not None):
+            self.refresh()
         reader = self.reader if self.reader is not None else desktop_reader()
         pending = None
         try:

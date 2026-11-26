@@ -35,7 +35,8 @@ struct PCodeHostStateTests {
     }
 
     @Test func decodesSessionChanged() {
-        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "session_changed", args: [], kwargs: [:]) == .sessionChanged)
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "session_changed", args: [], kwargs: [:]) == .sessionChanged(""))
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "session_changed", args: ["s2"], kwargs: [:]) == .sessionChanged("s2"))
     }
 
     @Test func foldsDeltasAndKeepsUnchangedFields() {
@@ -54,10 +55,13 @@ struct PCodeHostStateTests {
             return s
         }())
         // Repeating a value is not a change; transcript events leave the state alone.
-        for event in [PCodeHostEvent.sessionState(PCodeHostSessionDelta(busy: false)), .textDelta("hi"), .sessionChanged] {
+        for event in [PCodeHostEvent.sessionState(PCodeHostSessionDelta(busy: false)), .textDelta("hi"), .sessionChanged(""), .sessionChanged("abc")] {
             changed = state.apply(event)
             #expect(!changed)
         }
+        changed = state.apply(.sessionChanged("def"))
+        #expect(changed)
+        #expect(state.sessionID == "def")
     }
 
     @Test func conversationResetClearsSessionAndOutcome() {
@@ -78,9 +82,10 @@ struct PCodeHostStateTests {
         ])
         #expect(welcome.hostState == "working")
         var state = PCodeHostSessionState(welcome: welcome)
-        #expect(state.sessionID == "s1" && state.busy)
+        #expect(state.sessionID == "s1" && state.busy && state.promptState == "running")
         for event in welcome.catchUpCalls { state.apply(event) }
         #expect(state.turnOutcome == "done")
-        #expect(!PCodeHostSessionState(welcome: PCodeHostSocketClient.decodeWelcome(["state": "idle"])).busy)
+        let idle = PCodeHostSessionState(welcome: PCodeHostSocketClient.decodeWelcome(["state": "idle"]))
+        #expect(!idle.busy && idle.promptState == "")
     }
 }

@@ -178,3 +178,30 @@ def test_tool_rows_still_show_in_the_editor(monkeypatch, tty):
     monkeypatch.setattr(layout, "size", lambda: Size(rows=40, columns=100))
     with ui_surface.override_ui_surface(ui_surface.UISurface.TERMINAL):
         assert len(layout.tool_rows()) == 1
+
+
+def test_editor_only_tint_does_not_feed_back_into_appearance(monkeypatch, tty):
+    """Echoing the dock's OSC 11 tint back on the shared tty never compounds frame_shade."""
+    from pcode import appearance, theme, ui
+    from pcode.ui import Transcript
+
+    monkeypatch.setattr(theme, "_background", ("#1e1e2e", "dark"))
+    monkeypatch.setattr(ui, "true_color", lambda: True)
+    editor = dock.open_editor_only()
+    transcript = Transcript(Console(force_terminal=True))
+    first = transcript.frame_shades()
+    assert first is not None and editor.tint == first[0]
+    editor._sent_tint = editor.tint
+    # An OSC 11 reply echoing the dock's own tint is ignored rather than
+    # recorded as the base background.
+    r, g, b = editor.tint[1:3], editor.tint[3:5], editor.tint[5:7]
+    assert theme.background_theme(f"\x1b]11;rgb:{r}/{g}/{b}\x1b\\".encode()) is None
+    assert theme.terminal_background() == ("#1e1e2e", "dark")
+    assert transcript.frame_shades() == first
+
+    # When AppearanceWatch asks the terminal again, it resets OSC 11 first.
+    watch = appearance.AppearanceWatch(tty.slave)
+    watch.enabled = True
+    watch.refresh()
+    assert editor._sent_tint is None
+    assert drain(tty.master) == b"\x1b]111\x1b\\" + appearance.QUERY_BACKGROUND

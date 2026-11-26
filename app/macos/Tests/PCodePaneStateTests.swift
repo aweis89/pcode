@@ -98,6 +98,24 @@ struct PCodePaneStateTests {
         #expect(r.activity == .idle)
     }
 
+    @Test func finishedHostTurnDoesNotWaitForStaleOSCRunningTick() {
+        var r = PCodePaneStateResolver()
+        r.setHost(Self.status(state: "working", turns: 3))
+        r.setOSCActivity(.running)
+        #expect(r.activity == .running)
+        // The host finishes the turn up to 1s before TabProgress's next tick clears OSC 9;4.
+        r.setHost(Self.status(state: "idle", outcome: "done", turns: 4))
+        #expect(r.activity == .idle)
+        // A failed turn also shows `.failed` immediately and can be dismissed before the OSC tick.
+        r.setHost(Self.status(state: "working", turns: 4))
+        r.setOSCActivity(.running)
+        r.setHost(Self.status(state: "idle", outcome: "failed", turns: 5))
+        #expect(r.activity == .failed)
+        r.dismissFailure()
+        #expect(r.activity == .idle)
+        #expect(r.dismissedTurns == 5)
+    }
+
     @Test func hostFailedShowsUntilDismissedThenNextFailureShowsAgain() {
         var r = PCodePaneStateResolver()
         r.setHost(Self.status(state: "idle", outcome: "failed", turns: 4))
