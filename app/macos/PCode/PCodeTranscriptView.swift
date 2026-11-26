@@ -630,6 +630,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         if linkURL(at: point) != nil {
             NSCursor.pointingHand.set()
+        } else if let idx = layoutEngine.itemIndex(atY: point.y),
+                  items.indices.contains(idx),
+                  items[idx].kind == .answerActions
+        {
+            NSCursor.arrow.set()
         } else {
             NSCursor.iBeam.set()
         }
@@ -1513,6 +1518,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 layoutEngine.updateSpacingAfter(at: idx, spacingAfter: tightGap)
             }
 
+            notifySearchContentWillChange()
             let actionsItem = PCodeTranscriptItem(
                 id: "\(finalStream.id)-actions",
                 payload: .answerActions(copyMarkdown: fullMarkdown),
@@ -1532,9 +1538,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if reveal {
                 enqueueRevealIfNeeded(for: actionsItem, estimatedHeight: estHeight)
             }
+            invalidateSearchIndex()
+            if stickyBottom.mode == .userScrolledUp {
+                setHasUnreadStreamingContent(true)
+            }
         }
         activeStream = nil
         mountViews(in: visibleRect)
+        markUnreadIfOverflowedWhilePaused()
     }
 
     private static func streamingItemID(messageID: String, blockIndex: Int) -> String {
@@ -3054,6 +3065,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             toggleToolGroupExpansion(id: id)
         case .diff:
             toggleDiffExpansion(id: id)
+        case .answerActions(let copyMarkdown):
+            guard !copyMarkdown.isEmpty else { return }
+            pasteboard.clearContents()
+            pasteboard.setString(copyMarkdown, forType: .string)
+            if let actionRow = mountedViews[id] as? PCodeAnswerActionsRowView {
+                actionRow.copyButton.flashCopied()
+            }
         default:
             break
         }

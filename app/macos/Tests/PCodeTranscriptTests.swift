@@ -1669,10 +1669,25 @@ struct PCodeTranscriptTests {
         #expect(!actionRow.copyButton.isHidden)
         #expect(actionRow.copyButton.frame.minX <= 8)
         #expect(actionRow.copyButton.alphaValue < 0.9)
+        // Row-wide hover does not light up the icon; hovering the button itself does.
         actionRow.setHovered(true)
+        #expect(actionRow.copyButton.alphaValue < 0.9)
+        actionRow.setButtonHovered(true)
         #expect(actionRow.copyButton.alphaValue == 1.0)
         pasteboard.clearContents()
         actionRow.copyButton.performClick(nil)
+        #expect(pasteboard.string(forType: .string) == markdown)
+
+        // Repeated configure calls during the "Copied" flash do not drift button width.
+        let flashedWidth = actionRow.copyButton.frame.width
+        _ = actionRow.configure(copyMarkdown: markdown, width: 640, theme: theme)
+        _ = actionRow.configure(copyMarkdown: markdown, width: 640, theme: theme)
+        #expect(actionRow.copyButton.frame.width == flashedWidth)
+
+        // VoiceOver press on the footer row also copies the answer Markdown.
+        pasteboard.clearContents()
+        let actionID = try #require(doc.items.first { $0.kind == .answerActions }?.id)
+        doc.toggleExpansionForAccessibility(id: actionID)
         #expect(pasteboard.string(forType: .string) == markdown)
 
         // Saved turns flattened for Peek emit the same footer row and prose payloads.

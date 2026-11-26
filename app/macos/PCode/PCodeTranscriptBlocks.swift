@@ -579,7 +579,8 @@ final class PCodeAnswerActionsRowView: NSView, PCodeTranscriptRowHosting {
     /// Where the button puts the answer; the document view passes its own.
     var pasteboard: NSPasteboard = .general
     private var lastTheme: PCodeTranscriptTheme?
-    private var isHovered = false
+    private var isButtonHovered = false
+    private var buttonTrackingArea: NSTrackingArea?
 
     var primaryTextView: PCodeTextKit2BlockView? { nil }
     var selectableTextLength: Int { 0 }
@@ -606,14 +607,34 @@ final class PCodeAnswerActionsRowView: NSView, PCodeTranscriptRowHosting {
 
     func setSelectedRange(_ range: NSRange?) {}
 
-    func setHovered(_ hovered: Bool) {
-        guard isHovered != hovered else { return }
-        isHovered = hovered
+    func setButtonHovered(_ hovered: Bool) {
+        guard isButtonHovered != hovered else { return }
+        isButtonHovered = hovered
         applyButtonAppearance()
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let buttonTrackingArea { removeTrackingArea(buttonTrackingArea) }
+        let area = NSTrackingArea(
+            rect: copyButton.frame,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        buttonTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        setButtonHovered(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setButtonHovered(false)
+    }
+
     func resetForTranscriptReuse() {
-        isHovered = false
+        isButtonHovered = false
         setCurtainRevealProgress(nil)
         layer?.removeAllAnimations()
         copyPayload = ""
@@ -640,16 +661,20 @@ final class PCodeAnswerActionsRowView: NSView, PCodeTranscriptRowHosting {
 
     private func layoutCopyButton() {
         let btnW: CGFloat = copyButton.isFlashingCopied
-            ? max(Self.idleButtonWidth, ceil(copyButton.frame.width) + 10)
+            ? max(Self.idleButtonWidth, ceil(copyButton.fittingSize.width) + 10)
             : Self.idleButtonWidth
-        copyButton.frame = CGRect(x: 2, y: 1, width: btnW, height: Self.buttonHeight)
+        let nextFrame = CGRect(x: 2, y: 1, width: btnW, height: Self.buttonHeight)
+        if copyButton.frame != nextFrame {
+            copyButton.frame = nextFrame
+            updateTrackingAreas()
+        }
     }
 
     private func applyButtonAppearance() {
         guard let theme = lastTheme else { return }
-        let active = isHovered || copyButton.isFlashingCopied
+        let active = isButtonHovered || copyButton.isFlashingCopied
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            let bg: NSColor = isHovered
+            let bg: NSColor = isButtonHovered
                 ? theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.06)
                 : .clear
             copyButton.applyTheme(foreground: theme.secondaryForeground, background: bg)
