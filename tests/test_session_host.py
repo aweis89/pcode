@@ -3634,7 +3634,10 @@ def test_host_client_navigate_tree_rpc():
         return "edited prompt" if edit else ""
 
     host = SimpleNamespace(
-        controller=SimpleNamespace(navigate_tree=fake_navigate),
+        controller=SimpleNamespace(
+            navigate_tree=fake_navigate,
+            runtime=SimpleNamespace(navigate=lambda *a, **kw: None),
+        ),
         push_state=lambda: pushed.append(True),
     )
     client = _Client.__new__(_Client)
@@ -3655,5 +3658,9 @@ def test_host_client_navigate_tree_rpc():
         assert res_err["ok"] is False
         assert "unavailable" in str(res_err["message"])
         assert len(pushed) == 2
+
+        host.controller.runtime = None
+        res_boot = await client.navigate_tree("t1", False)
+        assert res_boot == {"ok": False, "message": "Session is still starting."}
 
     asyncio.run(run())

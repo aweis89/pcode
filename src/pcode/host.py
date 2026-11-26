@@ -372,6 +372,9 @@ class _Client:
     async def navigate_tree(
         self, identity: str | None = None, edit: bool = False
     ) -> dict[str, object]:
+        runtime = getattr(self.host.controller, "runtime", None)
+        if runtime is None or not hasattr(runtime, "navigate"):
+            return {"ok": False, "message": "Session is still starting."}
         try:
             draft = await self.host.controller.navigate_tree(identity, edit=bool(edit))
         except ValueError as exc:

@@ -103,7 +103,8 @@ enum PCodeHostControlRPC {
                 socketPath: socketPath,
                 method: "navigate_tree",
                 args: [nodeID as Any, edit],
-                timeoutSeconds: 5.0
+                timeoutSeconds: 5.0,
+                maxReplyBytes: 1_048_576
             )
             Task { @MainActor in
                 switch outcome {
@@ -151,7 +152,8 @@ enum PCodeHostControlRPC {
         method: String,
         args: [Any],
         kwargs: [String: Any] = [:],
-        timeoutSeconds: Double = 2.0
+        timeoutSeconds: Double = 2.0,
+        maxReplyBytes: Int = 65_536
     ) -> Result<Any?, Error> {
         let clampedTimeout = max(0.2, timeoutSeconds)
         let deadline = CFAbsoluteTimeGetCurrent() + clampedTimeout
@@ -235,7 +237,12 @@ enum PCodeHostControlRPC {
         }
 
         // Wait for reply and verify the host accepted the intent.
-        guard let replyLine = readLine(fd: fd, buffer: &readBuffer, deadline: deadline),
+        guard let replyLine = readLine(
+                fd: fd,
+                buffer: &readBuffer,
+                deadline: deadline,
+                maxBytes: maxReplyBytes
+              ),
               let replyObj = try? JSONSerialization.jsonObject(with: replyLine) as? [String: Any],
               replyObj["type"] as? String == "reply",
               (replyObj["id"] as? Int) == 1

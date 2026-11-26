@@ -40,7 +40,7 @@ struct PCodeConversationTurnNode: Identifiable, Equatable, Sendable {
     let order: Int
 
     var isSyntheticLive: Bool {
-        id.hasPrefix("__live_turn_")
+        id.hasPrefix("__live_turn_") || id.hasPrefix("history-turn-")
     }
 
     var promptExcerpt: String {
@@ -122,6 +122,8 @@ struct PCodeConversationTree: Equatable, Sendable {
     private(set) var activeID: String?
     /// Legacy fallback for journal records that omit `run_id`.
     private var recordingID: String?
+    /// Top-level `ToolStarted` call IDs already counted per turn, preventing duplicate counts.
+    private var seenToolCallIDsByTurn: [String: Set<String>] = [:]
 
     var isEmpty: Bool { nodesByID.isEmpty }
     var turnCount: Int { nodesByID.count }
@@ -200,6 +202,7 @@ struct PCodeConversationTree: Equatable, Sendable {
             let parent: String? = record.keys.contains("parent_id")
                 ? (record["parent_id"] as? String)
                 : activeID
+            if let parent, nodesByID[parent] == nil { return }
             let prompt = (record["prompt"] as? String) ?? ""
             let isAside = (record["aside"] as? Bool) == true
             let continuation = (record["continuation"] as? Bool) == true
@@ -230,6 +233,7 @@ struct PCodeConversationTree: Equatable, Sendable {
         case "compaction_checkpoint":
             guard let id = record["node_id"] as? String, !id.isEmpty else { return }
             let parent = record["parent_id"] as? String
+            if let parent, nodesByID[parent] == nil { return }
             let focus = (record["focus"] as? String) ?? ""
             let before = (record["before"] as? NSNumber)?.intValue
             let after = (record["after"] as? NSNumber)?.intValue
@@ -266,7 +270,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                 if nodesByID[id] != nil {
                     activeID = id
                 }
-            } else {
+            } else if record["node_id"] == nil || record["node_id"] is NSNull {
                 // `node_id: null` selects Conversation Start (empty context).
                 activeID = nil
             }
@@ -288,7 +292,10 @@ struct PCodeConversationTree: Equatable, Sendable {
             case "ToolStarted":
                 let parentCall = (record["parent_call_id"] as? String) ?? ""
                 if parentCall.isEmpty {
-                    node.toolCount += 1
+                    let callID = (record["call_id"] as? String) ?? ""
+                    if callID.isEmpty || seenToolCallIDsByTurn[targetID, default: []].insert(callID).inserted {
+                        node.toolCount += 1
+                    }
                 }
             case "ToolSummary":
                 let parentCall = (record["parent_call_id"] as? String) ?? ""
@@ -470,34 +477,44 @@ struct PCodeConversationTree: Equatable, Sendable {
         let allChildren = childrenByParent()
         let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
-        // Count total descendants under any node (for collapsed branch badges).
+        func isVisible(_ node: PCodeConversationTurnNode) -> Bool {
+            if activeBranchOnly && !activeSet.contains(node.id) { return false }
+            if !includeAsides && node.kind == .aside { return false }
+            if !includeCompactions && node.kind == .compaction { return false }
+            return true
+        }
+
+        // Collect nearest visible descendants under `parentID`, splicing through hidden nodes
+        // (so hiding Compactions or /btw never prunes turns that come after them).
+        func visibleChildren(of parentID: String?) -> [PCodeConversationTurnNode] {
+            var result: [PCodeConversationTurnNode] = []
+            var seen: Set<String> = []
+            func collect(from pid: String?) {
+                for child in allChildren[pid] ?? [] {
+                    guard seen.insert(child.id).inserted else { continue }
+                    if isVisible(child) {
+                        result.append(child)
+                    } else if !activeBranchOnly || activeSet.contains(child.id) {
+                        collect(from: child.id)
+                    }
+                }
+            }
+            collect(from: parentID)
+            return result
+        }
+
+        // Count visible descendants under any node (for collapsed branch badges).
         var descendantCountCache: [String: Int] = [:]
         func countDescendants(of nodeID: String, visited: inout Set<String>) -> Int {
             if let cached = descendantCountCache[nodeID] { return cached }
             guard !visited.contains(nodeID) else { return 0 }
             visited.insert(nodeID)
             var total = 0
-            for child in allChildren[nodeID] ?? [] {
-                if !includeAsides && child.kind == .aside { continue }
-                if !includeCompactions && child.kind == .compaction { continue }
+            for child in visibleChildren(of: nodeID) {
                 total += 1 + countDescendants(of: child.id, visited: &visited)
             }
             descendantCountCache[nodeID] = total
             return total
-        }
-
-        func visibleChildren(of parentID: String?) -> [PCodeConversationTurnNode] {
-            let kids = allChildren[parentID] ?? []
-            let filtered = kids.filter { child in
-                if activeBranchOnly && !activeSet.contains(child.id) { return false }
-                if !includeAsides && child.kind == .aside { return false }
-                if !includeCompactions && child.kind == .compaction { return false }
-                return true
-            }
-            // Keep active-branch child last at a fork so inactive side branches appear above/beside
-            // and the main trunk continues cleanly downward (like `git log --graph`), unless
-            // preserving chronological order makes more sense: keep chronological order.
-            return filtered
         }
 
         func forks(_ siblings: [PCodeConversationTurnNode], parent: PCodeConversationTurnNode?) -> Bool {
@@ -515,6 +532,7 @@ struct PCodeConversationTree: Equatable, Sendable {
             ancestorRails: [PCodeConversationTreeRow.RailSegment],
             isForkChild: Bool,
             isLastSibling: Bool,
+            hasActiveFollowingSibling: Bool,
             parentOnActivePath: Bool
         ) {
             guard !visited.contains(node.id) else { return }
@@ -555,11 +573,12 @@ struct PCodeConversationTree: Equatable, Sendable {
             let childForks = forks(kids, parent: node)
             var nextAncestorRails = ancestorRails
             if isForkChild {
-                nextAncestorRails.append(isLastSibling ? .empty : .vertical(active: false))
+                nextAncestorRails.append(isLastSibling ? .empty : .vertical(active: hasActiveFollowingSibling))
             }
             let nextIndent = indentLevel + (childForks ? 1 : 0)
 
             for (index, child) in kids.enumerated() {
+                let activeFollows = kids[(index + 1)...].contains { activeSet.contains($0.id) }
                 walk(
                     node: child,
                     turnDepth: turnDepth + 1,
@@ -567,6 +586,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                     ancestorRails: nextAncestorRails,
                     isForkChild: childForks,
                     isLastSibling: index == kids.count - 1,
+                    hasActiveFollowingSibling: activeFollows,
                     parentOnActivePath: onActive
                 )
             }
@@ -575,6 +595,7 @@ struct PCodeConversationTree: Equatable, Sendable {
         let roots = visibleChildren(of: nil)
         let rootForks = forks(roots, parent: nil)
         for (index, root) in roots.enumerated() {
+            let activeFollows = roots[(index + 1)...].contains { activeSet.contains($0.id) }
             walk(
                 node: root,
                 turnDepth: 1,
@@ -582,6 +603,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                 ancestorRails: [],
                 isForkChild: rootForks,
                 isLastSibling: index == roots.count - 1,
+                hasActiveFollowingSibling: activeFollows,
                 parentOnActivePath: true
             )
         }
@@ -609,7 +631,11 @@ final class PCodeConversationTreeStore: ObservableObject {
     /// True while the host reports an active/running turn (mutating tree actions are disabled).
     @Published private(set) var isBusy: Bool = false
 
-    private(set) var sessionID: String?
+    /// Called whenever the active branch's non-compaction turn IDs update, so the native
+    /// transcript can backfill `turnID` on live-streamed prompt rows.
+    var onActivePromptTurnIDsChanged: (([String]) -> Void)?
+
+    @Published private(set) var sessionID: String?
     private var reloadGeneration: UInt64 = 0
     private var liveTurnCounter: Int = 0
     private var activeLiveTurnID: String?
@@ -625,17 +651,33 @@ final class PCodeConversationTreeStore: ObservableObject {
     func setSessionID(_ newID: String?) {
         let normalized = (newID?.isEmpty == false) ? newID : nil
         guard normalized != sessionID else { return }
-        sessionID = normalized
-        if let normalized {
-            reloadFromDisk(sessionID: normalized)
+        guard let normalized else {
+            reset()
+            return
         }
+        sessionID = normalized
+        tree = PCodeConversationTree()
+        visibleTurnID = nil
+        reloadFromDisk(sessionID: normalized)
     }
 
     func reset() {
         reloadGeneration &+= 1
+        sessionID = nil
         activeLiveTurnID = nil
         tree = PCodeConversationTree()
         visibleTurnID = nil
+    }
+
+    private func notifyActivePromptTurnIDs() {
+        guard let onActivePromptTurnIDsChanged else { return }
+        let ids = tree.activePath().filter { id in
+            guard let node = tree.nodesByID[id] else { return false }
+            return node.kind != .compaction && !node.isSyntheticLive
+        }
+        if !ids.isEmpty {
+            onActivePromptTurnIDsChanged(ids)
+        }
     }
 
     func reloadFromDisk(sessionID overrideID: String? = nil) {
@@ -649,27 +691,41 @@ final class PCodeConversationTreeStore: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.reloadGeneration == gen else { return }
                 var next = parsed
-                // If a live turn is currently mid-flight and not yet flushed to disk, preserve it.
+                // Reconcile an in-flight synthetic live turn against what Python already synced to disk:
+                // if disk already has the real UUID for this running turn, adopt it instead of duplicating.
                 if let liveID = self.activeLiveTurnID,
                    let liveNode = self.tree.nodesByID[liveID],
-                   liveNode.isSyntheticLive,
-                   next.nodesByID[liveID] == nil
+                   liveNode.isSyntheticLive
                 {
-                    next.upsertLiveTurn(
-                        id: liveID,
-                        parentID: next.activeID,
-                        prompt: liveNode.prompt,
-                        isSide: liveNode.isSide
-                    )
-                    next.updateLiveTurn(
-                        id: liveID,
-                        response: liveNode.response.isEmpty ? nil : liveNode.response,
-                        status: .running
-                    )
+                    if let diskActiveID = next.activeID,
+                       let diskNode = next.nodesByID[diskActiveID],
+                       !liveNode.isSide,
+                       (diskNode.prompt == liveNode.prompt || (self.isBusy && diskNode.status == .interrupted))
+                    {
+                        self.activeLiveTurnID = diskActiveID
+                        next.updateLiveTurn(
+                            id: diskActiveID,
+                            response: liveNode.response.isEmpty ? nil : liveNode.response,
+                            status: self.isBusy ? .running : diskNode.status
+                        )
+                    } else if next.nodesByID[liveID] == nil {
+                        next.upsertLiveTurn(
+                            id: liveID,
+                            parentID: next.activeID,
+                            prompt: liveNode.prompt,
+                            isSide: liveNode.isSide
+                        )
+                        next.updateLiveTurn(
+                            id: liveID,
+                            response: liveNode.response.isEmpty ? nil : liveNode.response,
+                            status: .running
+                        )
+                    }
                 }
                 if next != self.tree {
                     self.tree = next
                 }
+                self.notifyActivePromptTurnIDs()
             }
         }
     }
@@ -682,7 +738,12 @@ final class PCodeConversationTreeStore: ObservableObject {
 
         case .sessionChanged(let newID):
             if !newID.isEmpty {
-                setSessionID(newID)
+                if newID != sessionID {
+                    setSessionID(newID)
+                } else {
+                    // `/compact` emits `session_changed` with the same ID after writing a checkpoint.
+                    reloadFromDisk(sessionID: newID)
+                }
             }
 
         case .sessionState(let delta):

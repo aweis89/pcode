@@ -72,6 +72,12 @@ struct PCodeInspectorTreeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: store.sessionID) { _ in
+            searchText = ""
+            selectedNodeID = nil
+            collapsedBranchRoots.removeAll()
+            statusBanner = nil
+        }
     }
 
     // MARK: - Toolbar
@@ -261,7 +267,11 @@ struct PCodeInspectorTreeView: View {
                 .padding(.vertical, 6)
             }
             .onChange(of: store.visibleTurnID) { newID in
-                guard let newID, searchText.isEmpty else { return }
+                guard let newID,
+                      searchText.isEmpty,
+                      hoveredRowID == nil,
+                      selectedInactiveNode == nil
+                else { return }
                 withAnimation(.easeInOut(duration: 0.16)) {
                     proxy.scrollTo(newID, anchor: .center)
                 }
@@ -460,8 +470,8 @@ struct PCodeInspectorTreeView: View {
                     .padding(.top, 1)
                 }
 
-                // Inline quick-action strip when hovered or selected.
-                if (isHovered || isSelected) && !row.node.isSyntheticLive {
+                // Inline quick-action strip when selected (never on hover, preventing vertical jitter).
+                if isSelected && !row.node.isSyntheticLive {
                     HStack(spacing: 6) {
                         if row.isOnActivePath {
                             rowActionButton("Jump", icon: "arrow.up.and.down.text.horizontal") {
@@ -542,7 +552,7 @@ struct PCodeInspectorTreeView: View {
     // MARK: - Inactive Branch Preview Card
 
     private func inactivePreviewCard(_ node: PCodeConversationTurnNode) -> some View {
-        let canMutate = !store.isBusy && !isNavigating && actions.navigateTree != nil
+        let canMutate = !store.isBusy && !isNavigating && !node.isSyntheticLive && actions.navigateTree != nil
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.branch")

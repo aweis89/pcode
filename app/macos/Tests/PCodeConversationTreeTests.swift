@@ -168,4 +168,37 @@ struct PCodeConversationTreeTests {
         #expect(doc.currentVisibleTurnID() == "turn-5")
         #expect(!doc.scrollToTurn("nonexistent"))
     }
+
+    @Test func hidingCompactionPreservesSubsequentTurns() {
+        let data = Self.jsonl([
+            ["kind": "turn_started", "run_id": "t1", "parent_id": NSNull(), "prompt": "Before compaction"],
+            ["kind": "turn_completed", "run_id": "t1"],
+            ["kind": "compaction_checkpoint", "node_id": "cmp1", "parent_id": "t1", "focus": "", "before": 40000, "after": 6000],
+            ["kind": "turn_started", "run_id": "t2", "parent_id": "cmp1", "prompt": "After compaction"],
+            ["kind": "turn_completed", "run_id": "t2"],
+        ])
+        let tree = PCodeConversationTree.parse(journalData: data)
+        #expect(tree.activePath() == ["t1", "cmp1", "t2"])
+
+        let withoutCompactions = tree.flattenedRows(includeCompactions: false)
+        #expect(withoutCompactions.map(\.id) == ["t1", "t2"])
+        #expect(withoutCompactions.last?.isActiveHead == true)
+    }
+
+    @Test @MainActor func reconcilePromptTurnIDsBackfillsLivePrompts() {
+        let typography = PCodeTypography.shared
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 640, height: 320)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let doc = scrollView.transcriptDocumentView
+        doc.beginStreamingTurn(prompt: "Turn 1", isSide: false, turnID: nil, forcePin: false, reveal: false)
+        doc.beginStreamingTurn(prompt: "Turn 2", isSide: false, turnID: nil, forcePin: false, reveal: false)
+        #expect(!doc.scrollToTurn("uuid-2"))
+
+        doc.reconcilePromptTurnIDs(["uuid-1", "uuid-2"])
+        #expect(doc.scrollToTurn("uuid-2"))
+        #expect(doc.currentVisibleTurnID() == "uuid-2")
+    }
 }
