@@ -1027,11 +1027,13 @@ struct PCodeTranscriptTests {
         // Child tool arrives BEFORE parent (orphan buffering), then parent arrives
         reducer.apply(.toolStarted(callID: "child-1", parentCallID: "parent-1", name: "read_file", detail: "a.py", command: "", purpose: ""), reveal: false)
         reducer.apply(.toolStarted(callID: "parent-1", parentCallID: "", name: "delegate", detail: "worker", command: "", purpose: ""), reveal: false)
+        // Nesting is a raw-item property; grouped display folds the child into a window.
         let parentIdx = doc.indexOfItem(id: "call-parent-1")
-        let childIdx = doc.indexOfItem(id: "call-child-1")
-        #expect(parentIdx != nil && childIdx != nil)
-        #expect(childIdx == (parentIdx ?? -1) + 1)
-        #expect(doc.items[childIdx!].depth == 1)
+        let rawParentIdx = doc.indexOfRawItem(id: "call-parent-1")
+        let rawChildIdx = doc.indexOfRawItem(id: "call-child-1")
+        #expect(parentIdx != nil && rawParentIdx != nil && rawChildIdx != nil)
+        #expect(rawChildIdx == (rawParentIdx ?? -1) + 1)
+        #expect(doc.rawItems[rawChildIdx!].depth == 1)
 
         // CommandOutput caps tail lines and upserts onto existing tool call
         let totalLines = PCodeTranscriptEventReducer.maxCommandOutputLines + 20
@@ -1867,6 +1869,59 @@ struct PCodeTranscriptTests {
         #expect(doc.items[1].depth == 0)
         #expect(doc.items[2].depth == 1)
         #expect(doc.items[3].depth == 0)
+    }
+
+    @Test @MainActor func subAgentCallsStreamIntoAWindowThatNeverShrinks() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        doc.minimumLiveCardSeconds = 0
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Delegate", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "d1", parentCallID: "", name: "delegate_task", detail: "audit", command: "", purpose: ""), reveal: true)
+        reducer.apply(.message(markdown: "Waiting on the worker."), reveal: true)
+
+        func window() -> PCodeToolGroupPayload? {
+            guard let idx = doc.indexOfItem(id: "call-d1"), doc.items.indices.contains(idx + 1),
+                  case .toolGroup(let payload) = doc.items[idx + 1].payload
+            else { return nil }
+            return payload
+        }
+
+        var shownRows = 0
+        for n in 1...7 {
+            reducer.apply(.toolStarted(callID: "c\(n)", parentCallID: "d1", name: "read_file", detail: "f\(n).py", command: "", purpose: ""), reveal: true)
+            for settle in [false, true] {
+                if settle {
+                    reducer.apply(.toolSummary(callID: "c\(n)", parentCallID: "d1", name: "read_file", detail: "f\(n).py", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: true)
+                }
+                guard let payload = window() else {
+                    Issue.record("Expected a window right below the delegate after call \(n)")
+                    return
+                }
+                #expect(payload.windowRows == PCodeToolGrouper.nestedWindowRows)
+                #expect(payload.totalCount == n)
+                #expect(payload.runningCount == (settle ? 0 : 1))
+                // Rows only ever grow to the cap; the prose below never moves back up.
+                #expect(payload.windowEntries.count >= shownRows)
+                #expect(payload.windowEntries.count == min(n, PCodeToolGrouper.nestedWindowRows))
+                #expect(payload.windowEntries.last?.id == "call-c\(n)")
+                shownRows = payload.windowEntries.count
+                // prompt + delegate + window + prose, whatever state the calls are in.
+                #expect(doc.items.count == 4)
+            }
+        }
+
+        // Expanding is the user's call, and lists every call below the summary.
+        let windowID = doc.items[2].id
+        doc.toggleExpansionForAccessibility(id: windowID)
+        #expect(doc.items.count == 4 + 7)
+        #expect(doc.items[3].id == "call-c1")
+        #expect(doc.items[3].depth == 2)
+        #expect(window()?.windowEntries.isEmpty == true)
+        doc.toggleExpansionForAccessibility(id: windowID)
+        #expect(doc.items.count == 4)
     }
 
     @Test @MainActor func toolGroupExpandCollapseAndLivePreferenceToggle() {

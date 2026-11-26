@@ -1891,6 +1891,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 payload: payload,
                 attributedText: attr,
                 width: width,
+                lineHeight: typography.lineHeight(scale: 0.84),
                 theme: theme,
                 selectedRange: localSel,
                 onToggle: { [weak self] in
@@ -2792,7 +2793,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private func estimatedHeight(for item: PCodeTranscriptItem) -> CGFloat {
         switch item.payload {
         case .tool: return 28
-        case .toolGroup: return PCodeToolGroupCardView.rowHeight
+        case .toolGroup(let payload):
+            let rows = payload.windowEntries.count
+            guard rows > 0 else { return PCodeToolGroupCardView.rowHeight }
+            return PCodeToolGroupCardView.windowHeight(rowCount: rows, lineHeight: typography.lineHeight(scale: 0.84))
         case .status: return 24
         case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))

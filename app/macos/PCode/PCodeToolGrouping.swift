@@ -107,6 +107,13 @@ struct PCodeToolGroupEntry: Equatable {
         case .diff(let diff): return diff.elapsedSeconds
         }
     }
+
+    var isRunning: Bool {
+        switch content {
+        case .tool(let call): return call.isRunning
+        case .diff(let diff): return diff.isPreview
+        }
+    }
 }
 
 /// Aggregated payload for one collapsed/expanded run of consecutive settled tools & edits.
@@ -127,21 +134,37 @@ struct PCodeToolGroupPayload: Equatable {
     let isExpanded: Bool
     /// Incremented when a newly finished tool folds into this group live, driving the absorb pulse.
     let absorbPulse: UInt64
+    /// Set for a nested-call window (a sub-agent's or workflow's calls under their parent):
+    /// collapsed, it shows its newest calls in at most this many one-line rows below the
+    /// summary. Entries are only ever added, so its height grows to the cap and then holds,
+    /// and rows below it never get pulled back up.
+    let windowRows: Int?
 
-    init(entries: [PCodeToolGroupEntry], isExpanded: Bool, absorbPulse: UInt64 = 0) {
+    init(entries: [PCodeToolGroupEntry], isExpanded: Bool, absorbPulse: UInt64 = 0, windowRows: Int? = nil) {
         self.entries = entries
         self.isExpanded = isExpanded
         self.absorbPulse = absorbPulse
+        self.windowRows = windowRows
     }
 
     var totalCount: Int { entries.count }
+
+    var runningCount: Int {
+        entries.reduce(0) { $0 + ($1.isRunning ? 1 : 0) }
+    }
+
+    /// The newest entries a collapsed window shows, oldest first; empty for other groups.
+    var windowEntries: ArraySlice<PCodeToolGroupEntry> {
+        guard let rows = windowRows, !isExpanded else { return [] }
+        return entries.suffix(rows)
+    }
 
     var failedCount: Int {
         entries.reduce(0) { $0 + ($1.failed ? 1 : 0) }
     }
 
     var succeededCount: Int {
-        totalCount - failedCount
+        totalCount - failedCount - runningCount
     }
 
     var totalElapsedSeconds: Double? {
@@ -205,14 +228,17 @@ struct PCodeToolGroupPayload: Equatable {
         } else {
             head = "\(succeededCount) ok · \(failedCount) failed"
         }
+        var lead = [head]
+        if runningCount > 0 {
+            lead.append("\(runningCount) running")
+        }
         let parts = categoryCounts.map { cat -> String in
             if cat.failedCount > 0 {
                 return "\(cat.count) \(cat.label) (\(cat.failedCount) failed)"
             }
             return "\(cat.count) \(cat.label)"
         }
-        if parts.isEmpty { return head }
-        return "\(head) · " + parts.joined(separator: " · ")
+        return (lead + parts).joined(separator: " · ")
     }
 }
 
@@ -224,6 +250,10 @@ enum PCodeToolGrouper {
         /// Maps each folded raw item ID (e.g. `"call-123"`) to its owning `.toolGroup` item ID.
         let groupIDByRawItemID: [String: String]
     }
+
+    /// Rows a collapsed nested-call window shows (the terminal's tool panel gives a
+    /// delegate a similarly small fixed window).
+    static let nestedWindowRows = 4
 
     static func isDelegateTool(_ name: String) -> Bool {
         switch name.lowercased() {
@@ -337,6 +367,25 @@ enum PCodeToolGrouper {
         var i = 0
         while i < rawItems.count {
             let item = rawItems[i]
+            // A parent's nested calls (a sub-agent's, a workflow's) stream into one fixed
+            // window below it. Folding them like a top-level run would add a card as each
+            // call starts and drop it as the call settles; this high in the transcript
+            // that bounces everything below up and down while the sub-agent works.
+            if i + 1 < rawItems.count && rawItems[i + 1].depth > item.depth {
+                out.append(item)
+                i += 1
+                let childStart = i
+                while i < rawItems.count && rawItems[i].depth > item.depth {
+                    i += 1
+                }
+                appendNestedWindow(
+                    children: rawItems[childStart..<i],
+                    depth: item.depth + 1,
+                    expandedGroupIDs: expandedGroupIDs,
+                    into: &out,
+                    groupMap: &groupMap)
+                continue
+            }
             guard canGroup(at: i) else {
                 out.append(item)
                 i += 1
@@ -435,5 +484,59 @@ enum PCodeToolGrouper {
         }
 
         return Projection(items: out, groupIDByRawItemID: groupMap)
+    }
+
+    /// Emit one window group for a parent's nested `children`, followed by the children
+    /// themselves while the user has it expanded.
+    private static func appendNestedWindow(
+        children: ArraySlice<PCodeTranscriptItem>,
+        depth: Int,
+        expandedGroupIDs: Set<String>,
+        into out: inout [PCodeTranscriptItem],
+        groupMap: inout [String: String]
+    ) {
+        guard let first = children.first else { return }
+        // Keyed by the first child, which never changes: later children insert after it.
+        let groupID = "tool-group-\(first.id)"
+        var entries: [PCodeToolGroupEntry] = []
+        var others: [PCodeTranscriptItem] = []
+        for child in children {
+            switch child.payload {
+            case .tool(let call, _):
+                entries.append(PCodeToolGroupEntry(id: child.id, content: .tool(call), depth: child.depth))
+            case .diff(let diff, _):
+                entries.append(PCodeToolGroupEntry(id: child.id, content: .diff(diff), depth: child.depth))
+            default:
+                // Only calls nest today; anything else keeps its own row after the window.
+                others.append(child)
+                continue
+            }
+            groupMap[child.id] = groupID
+        }
+        let trailingSpacing = children.last?.spacingAfter ?? 5
+        let isExpanded = expandedGroupIDs.contains(groupID)
+        if !entries.isEmpty {
+            out.append(PCodeTranscriptItem(
+                id: groupID,
+                payload: .toolGroup(PCodeToolGroupPayload(
+                    entries: entries,
+                    isExpanded: isExpanded,
+                    windowRows: nestedWindowRows)),
+                spacingAfter: isExpanded ? 4 : trailingSpacing,
+                revision: 0,
+                depth: depth))
+        }
+        if isExpanded {
+            let lastID = entries.last?.id
+            for child in children where groupMap[child.id] != nil {
+                out.append(PCodeTranscriptItem(
+                    id: child.id,
+                    payload: child.payload,
+                    spacingAfter: child.id == lastID ? trailingSpacing : 4,
+                    revision: child.revision,
+                    depth: child.depth + 1))
+            }
+        }
+        out.append(contentsOf: others)
     }
 }
