@@ -2941,10 +2941,10 @@ struct PCodeTranscriptTests {
         #expect(warnColor == .systemOrange)
         #expect(errColor == .systemRed)
 
-        let scrollView = PCodeTranscriptScrollView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
-        let doc = PCodeTranscriptDocumentView(typography: typography, theme: theme)
-        scrollView.documentView = doc
-        doc.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let doc = scrollView.transcriptDocumentView
+        doc.updateAppearance(typography: typography, theme: theme)
 
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
         reducer.apply(.note("Loaded repository instructions: AGENTS.md"), reveal: false)
