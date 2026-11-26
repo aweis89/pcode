@@ -39,8 +39,11 @@ struct PCodeInspectorModelsTests {
         #expect(!PCodeInspectorState.shouldUseOverlay(containerWidth: 940))
 
         let state = PCodeInspectorState()
-        #expect(!state.isOpen)
+        #expect(state.isOpen)
         #expect(state.diffScope == .session)
+
+        state.close()
+        #expect(!state.isOpen)
 
         state.toggleCollapsed(filePath: "a.swift")
         #expect(state.collapsedFiles.contains("a.swift"))

@@ -462,7 +462,7 @@ final class PCodeInspectorState: ObservableObject {
 
     static let sessionDiffViewModeKey = "PCodeInspectorSessionDiffViewMode"
 
-    @Published var isOpen: Bool = false
+    @Published var isOpen: Bool = true
     @Published var activeTab: PCodeInspectorTab = .changes
     @Published var diffScope: PCodeDiffScope = .session
     @Published var sessionDiffViewMode: PCodeSessionDiffViewMode = {
