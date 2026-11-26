@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Ghostty
@@ -220,6 +221,60 @@ struct PCodeBtwDrawerTests {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         #expect(events.all.first == .note("Session deadbeef is not running."))
+    }
+
+    @MainActor
+    @Test func drawerSwallowsQToReturnFocusWithoutForwardingToComposer() throws {
+        let typo = PCodeTypographySnapshot(style: .sansAndMono, size: 13, weight: .regular, codeFamilyAvailable: false)
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: typo, theme: theme)
+        doc.frame = NSRect(x: 0, y: 0, width: 360, height: 240)
+        doc.setItems(PCodeBtwThread.items(for: [Self.aside("a")], docked: true), pinToBottom: true)
+
+        final class SpyView: NSView {
+            var forwarded: [String] = []
+            override var acceptsFirstResponder: Bool { true }
+            override func keyDown(with event: NSEvent) {
+                forwarded.append(event.charactersIgnoringModifiers ?? "")
+            }
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 240),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        let spy = SpyView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 240))
+        root.addSubview(doc)
+        root.addSubview(spy)
+        window.contentView = root
+
+        var returnedFocus = 0
+        doc.swallowsQToReturnFocus = true
+        doc.onReturnFocusToComposer = {
+            returnedFocus += 1
+            window.makeFirstResponder(spy)
+        }
+
+        _ = window.makeFirstResponder(doc)
+        doc.selectAll(nil)
+        #expect(doc.selection != nil)
+        let qEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil,
+            characters: "q", charactersIgnoringModifiers: "q", isARepeat: false, keyCode: 12))
+        doc.keyDown(with: qEvent)
+        #expect(returnedFocus == 1)
+        #expect(doc.selection == nil)
+        #expect(spy.forwarded.isEmpty)
+
+        // Any other plain character still returns focus and forwards to the composer.
+        _ = window.makeFirstResponder(doc)
+        let aEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil,
+            characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+        doc.keyDown(with: aEvent)
+        #expect(returnedFocus == 2)
+        #expect(spy.forwarded == ["a"])
     }
 }
 
