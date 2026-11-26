@@ -672,4 +672,39 @@ struct PCodeSessionChangesStoreTests {
         let nativeDiff = try #require(store.sessionFiles.first { $0.path == "src/Native.swift" })
         #expect(nativeDiff.editCount == 1)
     }
+
+    @Test @MainActor
+    func sessionStreamEditsAreAppendOnlyChronologicalWhileSidebarRemainsCombined() throws {
+        let store = PCodeSessionChangesStore(sessionDirectory: "/repo")
+        let t1 = Date(timeIntervalSince1970: 1_700_000_001)
+        let t2 = Date(timeIntervalSince1970: 1_700_000_002)
+        let t3 = Date(timeIntervalSince1970: 1_700_000_003)
+
+        store.apply(
+            .editCompleted(callID: "c1", parentCallID: "", path: "src/A.swift", operation: "edit", patch: "@@ -1,1 +1,1 @@\n-a1\n+a2", added: 1, removed: 1, truncated: false),
+            now: t1
+        )
+        store.apply(
+            .editCompleted(callID: "c2", parentCallID: "", path: "src/B.swift", operation: "edit", patch: "@@ -1,1 +1,1 @@\n-b1\n+b2", added: 1, removed: 1, truncated: false),
+            now: t2
+        )
+        store.apply(
+            .editCompleted(callID: "c3", parentCallID: "", path: "src/A.swift", operation: "edit", patch: "@@ -5,1 +5,1 @@\n-a3\n+a4", added: 1, removed: 1, truncated: false),
+            now: t3
+        )
+
+        // Stream view: append-only chronological (oldest → newest), distinct IDs even for repeated file
+        #expect(store.sessionStreamEdits.map(\.path) == ["src/A.swift", "src/B.swift", "src/A.swift"])
+        #expect(Set(store.sessionStreamEdits.map(\.id)).count == 3)
+
+        // Combined Files / sidebar view: deduplicated newest-first
+        #expect(store.sessionFiles.map(\.path) == ["src/A.swift", "src/B.swift"])
+
+        // Selecting a file from the left sidebar switches This Session to Files mode
+        let state = PCodeInspectorState()
+        state.sessionDiffViewMode = .stream
+        state.openChanges(filePath: "src/A.swift", scope: .session)
+        #expect(state.sessionDiffViewMode == .files)
+        #expect(state.focusedFilePath == "src/A.swift")
+    }
 }

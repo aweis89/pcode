@@ -529,7 +529,17 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         let resolvedActions = actions(isOverlay: isOverlay)
         switch inspectorState.activeTab {
         case .changes:
-            let diffs = changesStore.files(for: inspectorState.diffScope)
+            let diffs: [PCodeFileDiff] = {
+                if inspectorState.diffScope == .session {
+                    switch inspectorState.sessionDiffViewMode {
+                    case .stream:
+                        return changesStore.sessionStreamEdits
+                    case .files:
+                        return Array(changesStore.sessionFiles.reversed())
+                    }
+                }
+                return changesStore.files(for: inspectorState.diffScope)
+            }()
             let singleEditLabel: String? = {
                 if case .singleEdit(let callID) = inspectorState.diffScope,
                    let single = changesStore.singleEdit(for: callID) {

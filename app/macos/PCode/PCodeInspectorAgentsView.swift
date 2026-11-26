@@ -736,6 +736,8 @@ struct PCodeInspectorAgentsView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var expandedAgentIDs: Set<String> = []
+    @State private var expandedToolListAgentIDs: Set<String> = []
+    @State private var expandedNestedCallKeys: Set<String> = []
     @State private var selectedAgentID: String?
     @State private var draftMessages: [String: String] = [:]
     @State private var copiedReportID: String?
@@ -933,7 +935,7 @@ struct PCodeInspectorAgentsView: View {
                     }
 
                     if !agent.nestedCalls.isEmpty {
-                        nestedCallsSection(agent.nestedCalls)
+                        nestedCallsSection(agentID: agent.id, calls: agent.nestedCalls)
                     }
 
                     if !agent.reportMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1220,47 +1222,192 @@ struct PCodeInspectorAgentsView: View {
 
     // MARK: - Nested Tool Calls
 
-    private func nestedCallsSection(_ calls: [PCodePeekToolCall]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Tool Calls (\(calls.count))")
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.secondary)
+    private func nestedCallsSection(agentID: String, calls: [PCodePeekToolCall]) -> some View {
+        let settledCalls = calls.filter { !$0.isRunning }
+        let runningCalls = calls.filter(\.isRunning)
+        let shouldFoldSettled = settledCalls.count >= 2
+        let isSettledExpanded = !shouldFoldSettled || expandedToolListAgentIDs.contains(agentID)
+        let failedCount = settledCalls.filter(\.failed).count
 
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(calls) { call in
+        return VStack(alignment: .leading, spacing: 4) {
+            if shouldFoldSettled {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        if expandedToolListAgentIDs.contains(agentID) {
+                            expandedToolListAgentIDs.remove(agentID)
+                        } else {
+                            expandedToolListAgentIDs.insert(agentID)
+                        }
+                    }
+                } label: {
                     HStack(spacing: 6) {
-                        nestedCallIcon(for: call)
+                        Image(systemName: isSettledExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 10)
 
-                        Text(call.displayName)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        Text("\(settledCalls.count) tool calls")
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.primary)
-                            .lineLimit(1)
 
-                        if !call.summaryText.isEmpty {
-                            Text(call.summaryText)
-                                .font(.system(size: 11))
+                        let breakdown = Self.toolCallBreakdown(settledCalls)
+                        if !breakdown.isEmpty {
+                            Text("· \(breakdown)")
+                                .font(.system(size: 10.5))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
-                                .truncationMode(.middle)
+                                .truncationMode(.tail)
                         }
 
                         Spacer(minLength: 4)
 
-                        if let elapsed = call.formattedElapsed {
-                            Text(elapsed)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.tertiary)
+                        if failedCount > 0 {
+                            Text("\(failedCount) failed")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.red)
                         }
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color.primary.opacity(isDark ? 0.05 : 0.035))
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.primary.opacity(isDark ? 0.06 : 0.04))
                     )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("Tool Calls (\(calls.count))")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if isSettledExpanded && !settledCalls.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(settledCalls) { call in
+                        nestedCallRow(agentID: agentID, call: call)
+                    }
+                }
+                .padding(.leading, shouldFoldSettled ? 8 : 0)
+            }
+
+            if !runningCalls.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(runningCalls) { call in
+                        nestedCallRow(agentID: agentID, call: call)
+                    }
                 }
             }
         }
+    }
+
+    private func nestedCallRow(agentID: String, call: PCodePeekToolCall) -> some View {
+        let key = "\(agentID)::\(call.id)"
+        let trimmedOutput = call.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCommand = call.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasDetails = !trimmedOutput.isEmpty || !trimmedCommand.isEmpty
+        let isExpanded = expandedNestedCallKeys.contains(key)
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard hasDetails else { return }
+                withAnimation(.easeInOut(duration: 0.14)) {
+                    if expandedNestedCallKeys.contains(key) {
+                        expandedNestedCallKeys.remove(key)
+                    } else {
+                        expandedNestedCallKeys.insert(key)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    nestedCallIcon(for: call)
+
+                    Text(call.displayName)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if !call.summaryText.isEmpty {
+                        Text(call.summaryText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    if let elapsed = call.formattedElapsed {
+                        Text(elapsed)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if hasDetails {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded && hasDetails {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !trimmedCommand.isEmpty {
+                        Text("$ \(trimmedCommand)")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(4)
+                    }
+                    if !trimmedOutput.isEmpty {
+                        Text(Self.truncatedCallOutput(trimmedOutput))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.primary.opacity(0.85))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(isDark ? 0.04 : 0.025))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.primary.opacity(isDark ? 0.05 : 0.035))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+
+    private static func toolCallBreakdown(_ calls: [PCodePeekToolCall]) -> String {
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for call in calls {
+            let label = call.displayName
+            if counts[label] == nil {
+                order.append(label)
+            }
+            counts[label, default: 0] += 1
+        }
+        let sorted = order.sorted { (counts[$0] ?? 0) > (counts[$1] ?? 0) }
+        return sorted.prefix(3).map { "\($0) ×\(counts[$0] ?? 0)" }.joined(separator: " · ")
+    }
+
+    private static func truncatedCallOutput(_ text: String, maxLines: Int = 18, maxChars: Int = 1200) -> String {
+        var result = text
+        let lines = result.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.count > maxLines {
+            result = lines.prefix(maxLines).joined(separator: "\n") + "\n… (\(lines.count - maxLines) more lines)"
+        }
+        if result.count > maxChars {
+            result = String(result.prefix(maxChars)) + "…"
+        }
+        return result
     }
 
     @ViewBuilder

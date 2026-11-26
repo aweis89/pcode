@@ -181,10 +181,12 @@ struct PCodeChangesInspectorView: View {
     @State private var lastModifiedByPath: [String: Date] = [:]
     @State private var copiedPath: String?
     @State private var containerWidth: CGFloat = 460
+    @State private var scrollToBottomToken: Int = 0
     @FocusState private var isDiffListFocused: Bool
 
     /// Minimum pane width before Side-by-Side layout is enabled without expanding the Inspector.
     static let sideBySideMinWidth: CGFloat = 640
+    private static let bottomAnchorID = "diff-bottom-anchor"
 
     init(
         state: PCodeInspectorState,
@@ -272,6 +274,10 @@ struct PCodeChangesInspectorView: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             scopeControl
+
+            if state.diffScope == .session {
+                sessionViewModeControl
+            }
 
             fileJumpMenu
 
@@ -378,14 +384,53 @@ struct PCodeChangesInspectorView: View {
         lastModifiedByPath.removeAll()
     }
 
+    private var sessionViewModeControl: some View {
+        HStack(spacing: 2) {
+            ForEach(PCodeSessionDiffViewMode.allCases, id: \.self) { mode in
+                let selected = state.sessionDiffViewMode == mode
+                Button {
+                    guard state.sessionDiffViewMode != mode else { return }
+                    state.sessionDiffViewMode = mode
+                    state.focusedFilePath = nil
+                    resetTransientDiffState()
+                    if state.followAgent {
+                        scrollToBottomToken += 1
+                    }
+                } label: {
+                    Text(mode.title)
+                        .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? .primary : .secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(selected ? Color.primary.opacity(isDark ? 0.14 : 0.10) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.primary.opacity(isDark ? 0.06 : 0.04))
+        )
+        .help(
+            state.sessionDiffViewMode == .stream
+                ? "Stream: chronological edits as they arrive (switch to Files to combine per file)"
+                : "Files: combined per-file session changes (switch to Stream for live chronological edits)"
+        )
+    }
+
     private var fileJumpMenu: some View {
-        Menu {
+        let isStream = state.diffScope == .session && state.sessionDiffViewMode == .stream
+        return Menu {
             if diffs.isEmpty {
-                Text("No changed files")
+                Text(isStream ? "No edits yet" : "No changed files")
             } else {
                 ForEach(diffs) { diff in
                     Button {
-                        jumpToFile(diff.path)
+                        jumpToDiff(diff)
                     } label: {
                         let title = collidingBasenames.contains(diff.basename) && !diff.parentDirectory.isEmpty
                             ? "\(diff.basename) — \(diff.parentDirectory)"
@@ -394,16 +439,16 @@ struct PCodeChangesInspectorView: View {
                     }
                 }
                 Divider()
-                Button("Expand All Files") {
+                Button(isStream ? "Expand All Edits" : "Expand All Files") {
                     state.collapsedFiles.removeAll()
                 }
-                Button("Collapse All Files") {
-                    state.collapsedFiles = Set(diffs.map(\.path))
+                Button(isStream ? "Collapse All Edits" : "Collapse All Files") {
+                    state.collapsedFiles = Set(diffs.map(\.id))
                 }
             }
         } label: {
             HStack(spacing: 4) {
-                Text("All files (\(diffs.count))")
+                Text(isStream ? "All edits (\(diffs.count))" : "All files (\(diffs.count))")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(diffs.isEmpty ? .secondary : .primary)
                 Image(systemName: "chevron.down")
@@ -425,9 +470,13 @@ struct PCodeChangesInspectorView: View {
     private var followAgentButton: some View {
         Button {
             state.followAgent.toggle()
-            if state.followAgent, let latest = diffs.first {
+            if state.followAgent {
                 updatedUnseenFiles.removeAll()
-                state.focusedFilePath = latest.path
+                if state.diffScope == .session {
+                    scrollToBottomToken += 1
+                } else if let latest = diffs.first {
+                    state.focusedFilePath = latest.path
+                }
             }
         } label: {
             HStack(spacing: 3) {
@@ -491,14 +540,18 @@ struct PCodeChangesInspectorView: View {
                             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                                 ForEach(diffs) { diff in
                                     Section {
-                                        if !state.collapsedFiles.contains(diff.path) {
+                                        if !state.collapsedFiles.contains(diff.id) {
                                             fileDiffBody(for: diff)
                                         }
                                     } header: {
                                         fileHeader(for: diff)
                                     }
-                                    .id(fileAnchorID(diff.path))
+                                    .id(fileAnchorID(diff.id))
                                 }
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(Self.bottomAnchorID)
                             }
                             .padding(.bottom, selection != nil ? 56 : 16)
                         }
@@ -524,10 +577,17 @@ struct PCodeChangesInspectorView: View {
                             }
                         ))
                         .onAppear {
-                            scrollToFocusedFile(state.focusedFilePath, proxy: proxy, animated: false)
+                            if let focused = state.focusedFilePath {
+                                scrollToFocusedFile(focused, proxy: proxy, animated: false)
+                            } else if state.diffScope == .session && state.followAgent {
+                                scrollToBottom(proxy: proxy)
+                            }
                         }
                         .onChange(of: state.focusedFilePath) { targetPath in
                             scrollToFocusedFile(targetPath, proxy: proxy, animated: true)
+                        }
+                        .onChange(of: scrollToBottomToken) { _ in
+                            scrollToBottom(proxy: proxy)
                         }
 
                         if let selection {
@@ -589,13 +649,13 @@ struct PCodeChangesInspectorView: View {
     // MARK: - Sticky File Header
 
     private func fileHeader(for diff: PCodeFileDiff) -> some View {
-        let isCollapsed = state.collapsedFiles.contains(diff.path)
-        let isFocused = state.focusedFilePath == diff.path
+        let isCollapsed = state.collapsedFiles.contains(diff.id)
+        let isFocused = state.focusedFilePath == diff.path || state.focusedFilePath == diff.id
         let hasUnseenUpdate = updatedUnseenFiles.contains(diff.path)
 
         return HStack(spacing: 6) {
             Button {
-                state.toggleCollapsed(filePath: diff.path)
+                state.toggleCollapsed(filePath: diff.id)
                 updatedUnseenFiles.remove(diff.path)
             } label: {
                 HStack(spacing: 6) {
@@ -1302,12 +1362,20 @@ struct PCodeChangesInspectorView: View {
         "\(diff.id)::\(hunk.id)"
     }
 
+    private func scrollToBottom(proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+        }
+    }
+
     private func scrollToFocusedFile(_ targetPath: String?, proxy: ScrollViewProxy, animated: Bool) {
-        guard let targetPath, diffs.contains(where: { $0.path == targetPath }) else { return }
-        updatedUnseenFiles.remove(targetPath)
-        let anchorID = fileAnchorID(targetPath)
+        guard let targetPath,
+              let match = diffs.last(where: { $0.id == targetPath || $0.path == targetPath })
+        else { return }
+        updatedUnseenFiles.remove(match.path)
+        let anchorID = fileAnchorID(match.id)
         if animated {
-            withAnimation(.easeInOut(duration: 0.22)) {
+            withAnimation(.easeInOut(duration: 0.18)) {
                 proxy.scrollTo(anchorID, anchor: .top)
             }
         } else {
@@ -1317,20 +1385,22 @@ struct PCodeChangesInspectorView: View {
         }
     }
 
-    private func jumpToFile(_ path: String) {
-        state.collapsedFiles.remove(path)
-        state.focusedFilePath = path
-        updatedUnseenFiles.remove(path)
+    private func jumpToDiff(_ diff: PCodeFileDiff) {
+        state.collapsedFiles.remove(diff.id)
+        state.focusedFilePath = diff.id
+        updatedUnseenFiles.remove(diff.path)
     }
 
     private func navigateFile(direction: Int, proxy: ScrollViewProxy) {
         let next: String? = direction >= 0
             ? PCodeDiffNavigation.selectNextFile(in: diffs, state: state)
             : PCodeDiffNavigation.selectPreviousFile(in: diffs, state: state)
-        guard let next else { return }
-        updatedUnseenFiles.remove(next)
-        withAnimation(.easeInOut(duration: 0.2)) {
-            proxy.scrollTo(fileAnchorID(next), anchor: .top)
+        guard let next,
+              let match = diffs.last(where: { $0.id == next || $0.path == next })
+        else { return }
+        updatedUnseenFiles.remove(match.path)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            proxy.scrollTo(fileAnchorID(match.id), anchor: .top)
         }
     }
 
@@ -1347,7 +1417,7 @@ struct PCodeChangesInspectorView: View {
         var initialHunks: Set<String> = []
         var initialDates: [String: Date] = [:]
         for diff in diffs {
-            initialDates[diff.path] = diff.lastModifiedAt
+            initialDates[diff.id] = diff.lastModifiedAt
             for hunk in diff.hunks {
                 initialHunks.insert(scopedHunkID(hunk, in: diff))
             }
@@ -1357,32 +1427,18 @@ struct PCodeChangesInspectorView: View {
     }
 
     private func handleDiffUpdates(proxy: ScrollViewProxy) {
-        var newlyArrivedHunks: [String] = []
         var touchedFiles: [PCodeFileDiff] = []
 
         for diff in diffs {
-            let prevDate = lastModifiedByPath[diff.path]
+            let prevDate = lastModifiedByPath[diff.id]
             let fileUpdated = prevDate == nil || (prevDate != nil && diff.lastModifiedAt > prevDate!)
             if fileUpdated || diff.isStreaming {
                 touchedFiles.append(diff)
             }
-            lastModifiedByPath[diff.path] = diff.lastModifiedAt
+            lastModifiedByPath[diff.id] = diff.lastModifiedAt
 
             for hunk in diff.hunks {
-                let scopedID = scopedHunkID(hunk, in: diff)
-                if !seenHunkIDs.contains(scopedID) {
-                    seenHunkIDs.insert(scopedID)
-                    newlyArrivedHunks.append(scopedID)
-                }
-            }
-        }
-
-        // Trigger a brief streaming reveal pulse on newly arrived hunks.
-        if !newlyArrivedHunks.isEmpty {
-            pulsingHunkIDs.formUnion(newlyArrivedHunks)
-            let batch = Set(newlyArrivedHunks)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
-                pulsingHunkIDs.subtract(batch)
+                seenHunkIDs.insert(scopedHunkID(hunk, in: diff))
             }
         }
 
@@ -1391,12 +1447,15 @@ struct PCodeChangesInspectorView: View {
         }
 
         if state.followAgent {
-            // Auto-scroll to incoming edit when Follow is pinned.
-            state.collapsedFiles.remove(latest.path)
-            state.focusedFilePath = latest.path
+            // Keep live session diffs scrolling strictly downward (bottom-pinned like the transcript),
+            // without animated yanking back to the top of the card.
+            state.collapsedFiles.remove(latest.id)
             updatedUnseenFiles.remove(latest.path)
-            withAnimation(.easeInOut(duration: 0.25)) {
-                proxy.scrollTo(fileAnchorID(latest.path), anchor: .top)
+            if state.diffScope == .session {
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
+            } else {
+                state.focusedFilePath = latest.path
+                proxy.scrollTo(fileAnchorID(latest.id), anchor: .top)
             }
         } else {
             // Do NOT yank scroll when Follow is off — mark updated files with a subtle indicator dot.

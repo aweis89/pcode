@@ -7,6 +7,8 @@ final class PCodeSessionChangesStore: ObservableObject {
     typealias HunkParser = @Sendable (String) -> [PCodeDiffHunk]
 
     @Published private(set) var sessionFiles: [PCodeFileDiff] = []
+    /// Append-only chronological stream of individual edits (oldest → newest) for live `Stream` mode.
+    @Published private(set) var sessionStreamEdits: [PCodeFileDiff] = []
     @Published private(set) var workingTreeFiles: [PCodeFileDiff] = []
     @Published private(set) var branchFiles: [PCodeFileDiff] = []
     @Published private(set) var isLoadingGit: Bool = false
@@ -767,6 +769,51 @@ final class PCodeSessionChangesStore: ObservableObject {
             return lhs.lastSequence > rhs.lastSequence
         }
         sessionFiles = sortedBuckets.map(buildFileDiff(from:))
+
+        var streamEntries: [(sequence: Int, diff: PCodeFileDiff)] = []
+        for bucket in bucketsByPath.values {
+            for edit in bucket.completedEdits {
+                let id = "stream-edit:\(edit.sequence):\(edit.callID)"
+                let diff = PCodeFileDiff(
+                    id: id,
+                    path: edit.path,
+                    absolutePath: edit.absolutePath,
+                    kind: edit.kind,
+                    added: edit.added,
+                    removed: edit.removed,
+                    hunks: uniquifyHunks(edit.hunks, prefix: "s\(edit.sequence)"),
+                    rawPatch: edit.patch,
+                    lastModifiedAt: edit.completedAt,
+                    editCount: 1,
+                    isStreaming: false,
+                    truncated: edit.truncated,
+                    callIDs: [edit.callID]
+                )
+                streamEntries.append((edit.sequence, diff))
+            }
+            for preview in bucket.activePreviews.values {
+                let previewHunks = PCodeFallbackPatchParser.parsePreviewHunks(preview.text, using: parseHunks)
+                let stats = PCodeFallbackPatchParser.countLineStats(in: previewHunks)
+                let diff = PCodeFileDiff(
+                    id: "stream-preview:\(preview.callID)",
+                    path: preview.path,
+                    absolutePath: preview.absolutePath,
+                    kind: .modified,
+                    added: stats.added,
+                    removed: stats.removed,
+                    hunks: uniquifyHunks(previewHunks, prefix: "sp\(preview.sequence)"),
+                    rawPatch: preview.text,
+                    lastModifiedAt: preview.receivedAt,
+                    editCount: 0,
+                    isStreaming: true,
+                    truncated: false,
+                    callIDs: [preview.callID]
+                )
+                streamEntries.append((preview.sequence, diff))
+            }
+        }
+        streamEntries.sort { $0.sequence < $1.sequence }
+        sessionStreamEdits = streamEntries.map(\.diff)
     }
 
     private func buildFileDiff(from bucket: FileBucket) -> PCodeFileDiff {

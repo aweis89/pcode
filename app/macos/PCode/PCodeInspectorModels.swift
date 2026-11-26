@@ -54,6 +54,21 @@ enum PCodeDiffLayout: String, CaseIterable, Equatable, Hashable, Sendable {
     case sideBySide
 }
 
+/// How `This Session` diffs are grouped in the Inspector Changes tab.
+enum PCodeSessionDiffViewMode: String, CaseIterable, Equatable, Hashable, Sendable {
+    /// Append-only chronological stream of edits, oldest to newest (bottom-pinned).
+    case stream
+    /// Combined per-file view for reviewing everything this session touched.
+    case files
+
+    var title: String {
+        switch self {
+        case .stream: return "Stream"
+        case .files: return "Files"
+        }
+    }
+}
+
 /// File-level change status shown in diff headers and sidebar rows.
 enum PCodeFileChangeKind: String, Equatable, Hashable, Sendable {
     case added
@@ -429,9 +444,22 @@ final class PCodeInspectorState: ObservableObject {
     static let minSplitFraction: CGFloat = 0.25
     static let maxSplitFraction: CGFloat = 0.72
 
+    static let sessionDiffViewModeKey = "PCodeInspectorSessionDiffViewMode"
+
     @Published var isOpen: Bool = false
     @Published var activeTab: PCodeInspectorTab = .changes
     @Published var diffScope: PCodeDiffScope = .session
+    @Published var sessionDiffViewMode: PCodeSessionDiffViewMode = {
+        if let raw = UserDefaults.standard.string(forKey: PCodeInspectorState.sessionDiffViewModeKey),
+           let mode = PCodeSessionDiffViewMode(rawValue: raw) {
+            return mode
+        }
+        return .stream
+    }() {
+        didSet {
+            UserDefaults.standard.set(sessionDiffViewMode.rawValue, forKey: Self.sessionDiffViewModeKey)
+        }
+    }
     @Published var diffLayout: PCodeDiffLayout = .unified
     @Published var isExpanded: Bool = false
     @Published var followAgent: Bool = true
@@ -470,6 +498,9 @@ final class PCodeInspectorState: ObservableObject {
     func openChanges(filePath: String? = nil, scope: PCodeDiffScope? = nil) {
         if let scope { diffScope = scope }
         if let filePath {
+            if diffScope == .session {
+                sessionDiffViewMode = .files
+            }
             focusedFilePath = filePath
             collapsedFiles.remove(filePath)
         }
