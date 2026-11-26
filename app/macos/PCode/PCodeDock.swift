@@ -57,6 +57,65 @@ final class PCodeDock: NSObject, ObservableObject, PCodeOverlayOwner {
         cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows) + topMargin + bottomMargin
     }
 
+    struct CardLayout: Equatable {
+        /// The docked terminal surface's frame in the pane (top-left origin).
+        let editorRect: CGRect
+        /// Distance from the pane's bottom edge to the top of the visible card.
+        let cardTopFromBottom: CGFloat
+    }
+
+    /// Where a shown dock card's terminal surface sits inside a pane of `size`
+    /// (top-left origin), including when narrowed into the `/btw` drawer.
+    static func cardLayout(
+        in size: CGSize,
+        rows: Int,
+        cell: CGFloat,
+        surfaceRows: Int? = nil,
+        editorHeight: CGFloat? = nil,
+        drawerOpen: Bool = false,
+        drawerFraction: CGFloat = 0.45
+    ) -> CardLayout {
+        let outerWidth = drawerOpen
+            ? max(0, PCodeDrawer.width(in: size.width, fraction: drawerFraction, minWidth: PCodeDrawer.dockedMinWidth) - 1)
+            : size.width
+        let minX = max(0, min(size.width - outerWidth + bottomMargin, size.width))
+        let width = max(0, min(outerWidth - 2 * bottomMargin, size.width - minX))
+        let height: CGFloat
+        if let editorHeight, editorHeight > 0 {
+            height = editorHeight
+        } else if cell > 0 {
+            height = cardHeight(rows: gridRows, cell: cell)
+        } else {
+            height = 0
+        }
+        let maxY = size.height - bottomMargin
+        let minY = maxY - height
+        let cardTop = cell > 0
+            ? bottomMargin + cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows)
+            : 0
+        return CardLayout(
+            editorRect: CGRect(x: minX, y: minY, width: width, height: height),
+            cardTopFromBottom: cardTop
+        )
+    }
+
+    /// Where the active dock card sits inside `size`, or nil when not shown.
+    func cardLayout(in size: CGSize, drawer: PCodeDrawer?) -> CardLayout? {
+        guard ready, let editor = surface else { return nil }
+        let fallbackCell = surfaceView?.cellSize.height ?? 0
+        let cell = editor.cellSize.height > 0 ? editor.cellSize.height : fallbackCell
+        let surfaceRows = editor.surfaceSize.map { Int($0.rows) }
+        return Self.cardLayout(
+            in: size,
+            rows: rows,
+            cell: cell,
+            surfaceRows: surfaceRows,
+            editorHeight: editor.bounds.height,
+            drawerOpen: drawer?.isOpen == true,
+            drawerFraction: drawer?.fraction ?? 0.45
+        )
+    }
+
     weak var surfaceView: Ghostty.SurfaceView?
     private var closeObserver: NSObjectProtocol?
 

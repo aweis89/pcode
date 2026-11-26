@@ -82,22 +82,15 @@ final class PCodeToast: ObservableObject {
         guard let surfaceView else {
             return Placement(cursor: nil, minX: 0, width: size.width, minBottomGap: 0)
         }
-        guard let dock = surfaceView.existingPCodeDock, dock.ready, let editor = dock.surface,
-              editor.window != nil, editor.window === surfaceView.window
+        guard let dock = surfaceView.existingPCodeDock,
+              let editor = dock.surface,
+              let layout = dock.cardLayout(in: size, drawer: surfaceView.existingPCodeDrawer)
         else {
             return Placement(cursor: surfaceView.pcodeCursorCell, minX: 0, width: size.width, minBottomGap: 0)
         }
-        let docked = editor.convert(editor.bounds, to: nil)
-        let pane = surfaceView.convert(surfaceView.bounds, to: nil)
-        let cursor = editor.pcodeCursorCell?.offsetBy(dx: docked.minX - pane.minX, dy: pane.maxY - docked.maxY)
-        let cell = editor.cellSize.height > 0 ? editor.cellSize.height : surfaceView.cellSize.height
-        let surfaceRows = editor.surfaceSize.map { Int($0.rows) }
-        let cardTop = cell > 0
-            ? PCodeDock.bottomMargin + PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows)
-            : 0
-        let x = max(0, min(docked.minX - pane.minX, size.width))
-        let width = max(0, min(docked.width, size.width - x))
-        return Placement(cursor: cursor, minX: x, width: width > 0 ? width : size.width, minBottomGap: cardTop)
+        let cursor = editor.pcodeCursorCell?.offsetBy(dx: layout.editorRect.minX, dy: layout.editorRect.minY)
+        let width = layout.editorRect.width > 0 ? layout.editorRect.width : size.width
+        return Placement(cursor: cursor, minX: layout.editorRect.minX, width: width, minBottomGap: layout.cardTopFromBottom)
     }
 }
 
@@ -115,10 +108,7 @@ struct PCodeToastLayer: View {
 
     var body: some View {
         GeometryReader { geometry in
-            // The terminal's own size: with the inspector open, the layer is wider.
-            let bounds = toast.surfaceView?.bounds.size ?? geometry.size
-            let size = CGSize(
-                width: min(geometry.size.width, bounds.width), height: min(geometry.size.height, bounds.height))
+            let size = PCodeCompletionLayer.layerSize(geometry.size, surface: toast.surfaceView)
             let place = toast.placement(in: size)
             VStack(spacing: 0) {
                 Spacer(minLength: 0)

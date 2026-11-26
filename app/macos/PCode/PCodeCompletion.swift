@@ -133,14 +133,21 @@ final class PCodeCompletion: ObservableObject {
         return theme
     }
 
-    /// The cursor's cell in the terminal view, top-left origin, in points.
+    /// The cursor's cell in the pane view, top-left origin, in points.
     ///
-    /// SPIKE: with a dock shown, the dock's cursor, in this terminal's
-    /// coordinates (below its bottom edge): the list layer spans both.
-    func cursorCell() -> CGRect? {
+    /// SPIKE: with a dock shown, offsets the dock's cursor into the pane's
+    /// coordinate space (`size`) so the pane-level list layer hangs from the
+    /// docked card even when the underlying terminal is not full-pane.
+    func cursorCell(in size: CGSize? = nil) -> CGRect? {
         guard let surfaceView else { return nil }
         guard let editor = editorSurface, editor !== surfaceView else { return surfaceView.pcodeCursorCell }
         guard let cell = editor.pcodeCursorCell else { return nil }
+        if let size,
+           let dock = surfaceView.existingPCodeDock,
+           let layout = dock.cardLayout(in: size, drawer: surfaceView.existingPCodeDrawer)
+        {
+            return cell.offsetBy(dx: layout.editorRect.minX, dy: layout.editorRect.minY)
+        }
         let docked = editor.convert(editor.bounds, to: nil)
         let pane = surfaceView.convert(surfaceView.bounds, to: nil)
         // Window coordinates have a bottom-left origin; the cell's is top-left.
@@ -164,15 +171,23 @@ struct PCodeCompletionLayer: View {
     static let maxTextColumns = 48
     static let maxMetaColumns = 56
 
+    /// The layer's coordinate size: the full pane unless the Ghostty inspector
+    /// splits the surface view horizontally inside `InspectableSurface`.
+    static func layerSize(_ geometry: CGSize, surface: Ghostty.SurfaceView?) -> CGSize {
+        guard let surface, surface.inspectorVisible,
+              surface.bounds.width > 0, surface.bounds.height > 0
+        else { return geometry }
+        return CGSize(
+            width: min(geometry.width, surface.bounds.width),
+            height: min(geometry.height, surface.bounds.height))
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            if let menu = completion.menu, !menu.items.isEmpty, let cursor = completion.cursorCell() {
+            let size = Self.layerSize(geometry.size, surface: completion.surfaceView)
+            if let menu = completion.menu, !menu.items.isEmpty, let cursor = completion.cursorCell(in: size) {
                 let fonts = PCodePickFonts.of(completion.surfaceView?.surface)
                 let theme = completion.theme(config: ghostty.config, fonts: fonts)
-                // The terminal's own size: with the inspector open, the layer is wider.
-                let bounds = completion.surfaceView?.bounds.size ?? geometry.size
-                let size = CGSize(
-                    width: min(geometry.size.width, bounds.width), height: min(geometry.size.height, bounds.height))
                 let frame = Self.frame(menu, cursor: cursor, fonts: fonts, in: size)
                 list(menu, theme: theme, rowHeight: Self.rowHeight(cursor: cursor))
                     .frame(width: frame.width, height: frame.height)

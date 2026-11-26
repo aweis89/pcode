@@ -53,4 +53,23 @@ struct PCodeCompletionTests {
         #expect(frame.minX >= PCodeCompletionLayer.margin && frame.maxX <= size.width - PCodeCompletionLayer.margin)
         #expect(frame.minY >= PCodeCompletionLayer.margin && frame.maxY <= size.height)
     }
+
+    @Test func dockCardLayoutPositionsEditorInPaneAndInDrawer() {
+        let size = CGSize(width: 1000, height: 600)
+        let full = PCodeDock.cardLayout(in: size, rows: 4, cell: 20, drawerOpen: false)
+        // Full-width card inset by `bottomMargin` on left, right and bottom;
+        // the 40-row editor grid sits bottom-aligned at `size.height - bottomMargin`.
+        #expect(full.editorRect.minX == PCodeDock.bottomMargin)
+        #expect(full.editorRect.width == size.width - 2 * PCodeDock.bottomMargin)
+        #expect(full.editorRect.maxY == size.height - PCodeDock.bottomMargin)
+        #expect(full.editorRect.height == PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: 20))
+        #expect(full.cardTopFromBottom == PCodeDock.bottomMargin + PCodeDock.cardHeight(rows: 4, cell: 20))
+
+        // With the /btw drawer open on the trailing side, the card narrows into the drawer.
+        let inDrawer = PCodeDock.cardLayout(
+            in: size, rows: 4, cell: 20, drawerOpen: true, drawerFraction: 0.45)
+        let expectedOuter = PCodeDrawer.width(in: size.width, fraction: 0.45, minWidth: PCodeDrawer.dockedMinWidth) - 1
+        #expect(inDrawer.editorRect.minX == size.width - expectedOuter + PCodeDock.bottomMargin)
+        #expect(inDrawer.editorRect.width == expectedOuter - 2 * PCodeDock.bottomMargin)
+    }
 }
