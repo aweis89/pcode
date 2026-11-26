@@ -68,7 +68,7 @@ Every class in `src/pcode` that derives from
 | `_ACPBridged` | `ext.py` | `WrapperCapability` | — | Extension (`bridge_to_acp = True`, defined inside `_wrap_acp_bridge`) | Mark an extension capability for Antigravity's ACP MCP bridge so opt-in survives `for_run`, `CombinedCapability`, and frozen/slotted capabilities. |
 
 Harness capabilities pcode uses unchanged (`LocalWorkspace`, `StepPersistence`,
-code mode, `RepairToolArguments`, `PrepareTools` for strict mode) are not listed. Two
+`RepairToolArguments`, `PrepareTools` for strict mode) are not listed. Two
 bundled extensions, `web_research.py` and `session_history.py`, register plain
 `WebSearch`/`WebFetch`/`Capability` instances rather than subclasses.
 

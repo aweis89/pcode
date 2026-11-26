@@ -318,8 +318,6 @@ def setup(iterm: bool) -> tuple[Look, dict]:
         "terminal_progress": "on",
         # A still of `arc` catches a broken circle; every braille frame reads whole.
         "spinner": "dots",
-        # Scripted scenes call read_file/grep directly rather than via code_mode.
-        "code_mode": "off",
     }
     if iterm:
         look = profile_look()
