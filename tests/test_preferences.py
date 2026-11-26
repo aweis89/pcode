@@ -217,3 +217,16 @@ def test_config_dir_override_moves_every_config_file(monkeypatch, tmp_path):
 def test_config_dir_falls_back_to_xdg_when_override_is_blank(monkeypatch, tmp_path):
     monkeypatch.setenv("PCODE_CONFIG_DIR", "  ")
     assert preferences_path() == tmp_path / "config" / "pcode" / "preferences.json"
+
+
+def test_a_saved_builtin_syntax_style_validates_without_listing_plugin_styles():
+    from pcode.preferences import TERMINAL_SYNTAX, Setting, _SyntaxThemes
+
+    themes = _SyntaxThemes()
+    setting = Setting(TERMINAL_SYNTAX, themes)
+    setting.validate("syntax_dark", "monokai")
+    setting.validate("syntax_dark", TERMINAL_SYNTAX)
+    assert "_names" not in vars(themes)  # No scan of installed packages.
+    with pytest.raises(ValueError, match="must be one of"):
+        setting.validate("syntax_dark", "no-such-style")
+    assert themes[0] == TERMINAL_SYNTAX and "monokai" in list(themes)

@@ -45,6 +45,9 @@ class _SyntaxThemes(Sequence[str]):
 
         return name == TERMINAL_SYNTAX or name in STYLE_MAP or name in self._names
 
+    def __bool__(self) -> bool:
+        return True  # `terminal` at least; without this, `bool()` lists them.
+
     def __getitem__(self, index):
         return self._names[index]
 
