@@ -695,10 +695,14 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         return dir != projectPath ? (dir as NSString).lastPathComponent : nil
     }
 
+    func clearLastResponseDate() { lastResponseDate = nil }
+
     /// Timestamp of the last completed response for this pane (nil for brand-new 0-turn panes).
     func lastResponseDate(saved: PCodeSessionInfo?) -> Date? {
         let savedDate = (saved?.turns ?? 0) > 0 ? saved?.updatedDate : nil
-        switch (lastResponseDate, savedDate) {
+        // No session yet means no assistant turn has run (e.g. a `!command` at a fresh prompt).
+        let live = sessionID == nil ? nil : lastResponseDate
+        switch (live, savedDate) {
         case (let live?, let disk?): return max(live, disk)
         case (let live?, nil): return live
         case (nil, let disk?): return disk
@@ -925,6 +929,8 @@ final class PCodeWorkspace: ObservableObject {
                   let pane = self.panes.first(where: { $0.surface === view }) else { return }
             let old = pane.sessionID
             pane.sessionID = view.pcodeSession
+            // `/new` or `/resume` swapped sessions: the previous one's response time no longer applies.
+            if let old, old != view.pcodeSession { pane.clearLastResponseDate() }
             pane.hostID = view.pcodeHost
             if let host = view.pcodeHost { pane.lastHostID = host }
             pane.noteSessionReported()
@@ -1219,6 +1225,8 @@ final class PCodeWorkspace: ObservableObject {
 
     func toggleStar(_ sessionID: String) {
         guard !sessionID.isEmpty else { return }
+        // The row moves between ForEach blocks, so SwiftUI may never send it hover(false).
+        peek.clearHover(sessionID: sessionID)
         if starredSessionIDs.contains(sessionID) {
             starredSessionIDs.remove(sessionID)
         } else {
@@ -2609,7 +2617,8 @@ struct PCodeWorkspaceView: View {
         Divider()
         Button("Reveal in Finder") { PCodeWorkspace.reveal(group.path) }
         Button("Copy Path") { PCodeWorkspace.copy(group.path) }
-        if group.openPanes.isEmpty && group.hostedSessions.isEmpty {
+        // Starred sessions keep a folder listed, so removing it would do nothing.
+        if group.openPanes.isEmpty && group.hostedSessions.isEmpty && group.starredRecentSessions.isEmpty {
             Divider()
             Button("Remove from Sidebar") { workspace.removeFolder(group.path) }
         }
@@ -2795,6 +2804,8 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
                 .buttonStyle(.plain)
             }
         }
+        // Stay leading-aligned once a dragged section switches into a ScrollView.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
     }
 
@@ -2881,14 +2892,16 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
                 onHover: { handleHovered = $0 },
                 onDoubleClick: { workspace.resetFolderHeight(for: group.path) },
                 onDragStart: {
-                    dragStartHeight = max(PCodeSidebarLayout.minFolderHeight, currentHeight)
+                    dragStartHeight = PCodeSidebarLayout.clampedFolderHeight(currentHeight)
+                    workspace.isResizingSidebar = true
                 },
                 onDragChanged: { delta in
-                    let start = dragStartHeight ?? max(PCodeSidebarLayout.minFolderHeight, currentHeight)
+                    let start = dragStartHeight ?? PCodeSidebarLayout.clampedFolderHeight(currentHeight)
                     workspace.setFolderHeight(start + delta, for: group.path)
                 },
                 onDragEnded: {
                     dragStartHeight = nil
+                    workspace.isResizingSidebar = false
                 }
             )
         }
@@ -2951,11 +2964,18 @@ private struct PCodeResizeHandle: NSViewRepresentable {
         view.onDragStart = onDragStart
         view.onDragChanged = onDragChanged
         view.onDragEnded = onDragEnded
-        view.window?.invalidateCursorRects(for: view)
+    }
+
+    static func dismantleNSView(_ view: HandleView, coordinator: ()) {
+        view.reset()
     }
 
     final class HandleView: NSView {
-        var orientation: Orientation = .horizontal
+        var orientation: Orientation = .horizontal {
+            didSet {
+                if orientation != oldValue { window?.invalidateCursorRects(for: self) }
+            }
+        }
         var onHover: ((Bool) -> Void)?
         var onDoubleClick: (() -> Void)?
         var onDragStart: (() -> Void)?
@@ -2964,6 +2984,56 @@ private struct PCodeResizeHandle: NSViewRepresentable {
 
         private var trackingArea: NSTrackingArea?
         private var dragOrigin: NSPoint?
+        private var isHovered = false
+        private var resignObserver: NSObjectProtocol?
+
+        deinit {
+            if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        }
+
+        /// Ends any in-flight hover or drag. Called when the view leaves its window, is dismantled,
+        /// or the window resigns key mid-drag (so `mouseUp` never arrives), so callers' drag guards
+        /// and highlight state never get stuck.
+        func reset() {
+            if dragOrigin != nil {
+                dragOrigin = nil
+                onDragEnded?()
+            }
+            if isHovered {
+                isHovered = false
+                onHover?(false)
+                NSCursor.arrow.set()
+            }
+        }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow !== window {
+                reset()
+                if let resignObserver {
+                    NotificationCenter.default.removeObserver(resignObserver)
+                    self.resignObserver = nil
+                }
+            }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window, resignObserver == nil else { return }
+            resignObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.reset() }
+            }
+        }
+
+        private func setHovered(_ hovered: Bool) {
+            guard hovered != isHovered else { return }
+            isHovered = hovered
+            onHover?(hovered)
+        }
 
         private var cursor: NSCursor {
             orientation == .horizontal ? .resizeLeftRight : .resizeUpDown
@@ -2993,12 +3063,13 @@ private struct PCodeResizeHandle: NSViewRepresentable {
 
         override func mouseEntered(with event: NSEvent) {
             cursor.set()
-            onHover?(true)
+            setHovered(true)
         }
 
         override func mouseExited(with event: NSEvent) {
             if dragOrigin == nil {
-                onHover?(false)
+                setHovered(false)
+                NSCursor.arrow.set()
             }
         }
 
@@ -3028,7 +3099,8 @@ private struct PCodeResizeHandle: NSViewRepresentable {
             onDragEnded?()
             let local = convert(event.locationInWindow, from: nil)
             if !bounds.contains(local) {
-                onHover?(false)
+                setHovered(false)
+                NSCursor.arrow.set()
             }
         }
     }
@@ -3664,7 +3736,7 @@ private struct PCodeProjectLauncher: View {
               !workspace.peek.isShowing
         else { return event }
         // In inline mode, only intercept while the launcher search field has focus
-        // (so keyboard navigation in the sidebar List stays untouched).
+        // (so keys typed into a session's terminal stay untouched).
         if mode == .inline && (workspace.showingDirectoryPicker || workspace.selectedPane != nil || !searchFocused) {
             return event
         }

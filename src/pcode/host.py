@@ -26,6 +26,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from pcode import remote_profile
@@ -565,7 +566,8 @@ class SessionHost:
         path.unlink(missing_ok=True)
         self.server = await asyncio.start_unix_server(self._accept, path=path, limit=LINE_LIMIT)
         os.chmod(path, 0o600)
-        self.update(state="idle")
+        # Not activity: a resumed session keeps the age `main` gave it from its last turn.
+        self.update(state="idle", touch=False)
         if self.entry.session_id:
             # Running again, so /attach lists the host instead of the stopped one.
             forget_stopped(self.entry.session_id, self.directory)
@@ -1070,7 +1072,13 @@ class SessionHost:
                 client.peer.notify("session_state", state)
         session = getattr(self.controller.runtime, "session", None)
         if session is not None and session.info.id != self.entry.session_id:
-            self.update(session_id=session.info.id, forked_from=session.info.forked_from or "")
+            # A /resume ages from the resumed session's last turn, not from now.
+            self.update(
+                session_id=session.info.id,
+                forked_from=session.info.forked_from or "",
+                updated=_activity_time(session.info.updated),
+                touch=False,
+            )
             forget_stopped(session.info.id, self.directory)
             self.own_jobs()
         # /attach lists the session by its name once it has one, not its first prompt.
@@ -1363,6 +1371,14 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _activity_time(stamp: str) -> float:
+    """A session's ISO `updated` as epoch seconds, or now if it doesn't parse."""
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except TypeError, ValueError:
+        return time.time()
+
+
 def read_carry(path: Path | None) -> dict | None:
     """The hand-over `--carry` names, removing the file; None without one (or unreadable)."""
     if path is None:
@@ -1478,6 +1494,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         prompt = first_prompt(saved.info, saved.directory.parent)
         first = "" if prompt.startswith("(") else prompt
         entry.title = saved.info.name or saved.info.title or first
+        entry.updated = _activity_time(saved.info.updated)
     elif profile is not None:
         # Never the shared checkout, even from inside a linked worktree.
         workspace, session_id = _enter_worktree(
@@ -1488,7 +1505,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         workspace, session_id = _enter_worktree(workspace, args.worktree)
         workspace = workspace.resolve()
     entry.workspace = str(workspace)
-    write_entry(entry)
+    write_entry(entry, touch=saved is None)
 
     host = SessionHost(entry)
     host.carried = read_carry(args.carry)
