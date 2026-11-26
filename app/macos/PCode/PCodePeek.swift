@@ -84,9 +84,17 @@ struct PCodePeekToolCall: Identifiable, Equatable {
     }
 
     /// Short inline tag identifying an async job wait (e.g. `"async · j2"`, `"async · j2 · exit 2"`).
+    /// Sanitized to a single bounded line so multi-line errors cannot break a collapsed pill
+    /// or overflow the expanded header's tap area.
     var asyncBadgeText: String? {
         guard isJobWait else { return nil }
-        return detail.isEmpty ? "async" : "async · \(detail)"
+        let firstLine = detail
+            .components(separatedBy: .newlines)
+            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        guard !firstLine.isEmpty else { return "async" }
+        let capped = firstLine.count > 48 ? String(firstLine.prefix(48)) + "…" : firstLine
+        return "async · \(capped)"
     }
 
     /// Purpose and command for a job wait, mirroring foreground `shell` rows (`"<purpose> · <command>"`).

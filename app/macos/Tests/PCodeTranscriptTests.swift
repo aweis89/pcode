@@ -1192,6 +1192,26 @@ struct PCodeTranscriptTests {
         } else {
             Issue.record("Expected streaming wait_for_job item")
         }
+        reducer.apply(.toolSummary(
+            callID: "w1", parentCallID: "", name: "wait_for_job",
+            detail: "j4 · exit 2", command: "", failed: true, elapsedSeconds: 3.0,
+            error: "", result: "1 failed", isBackgroundJob: false, exitCode: 2), reveal: true)
+        if let idx = doc.indexOfItem(id: "call-w1"), case .tool(let settled, _) = doc.items[idx].payload {
+            #expect(!settled.isRunning)
+            #expect(settled.purpose == "run suite")
+            #expect(settled.command == "pytest")
+            #expect(settled.summaryText == "async · j4 · exit 2 · run suite · pytest")
+        } else {
+            Issue.record("Expected settled wait_for_job item")
+        }
+
+        // Multi-line or very long error details stay single-line and bounded in the inline badge.
+        let multilineErr = PCodePeekToolCall(
+            id: 3, name: "wait_for_job",
+            detail: "j5 → Failed · " + String(repeating: "x", count: 60) + "\nsecond line",
+            failed: true, elapsedSeconds: 1.0, command: "make test")
+        #expect(multilineErr.asyncBadgeText?.contains("\n") == false)
+        #expect((multilineErr.asyncBadgeText?.count ?? 0) <= "async · ".count + 49)
 
         // A job the runtime could not name still says which one is waited on.
         let unknown = PCodePeekToolCall(

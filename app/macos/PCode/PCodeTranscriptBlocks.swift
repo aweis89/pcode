@@ -1475,8 +1475,9 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
                     // the stream is visible without expanding the card.
                     let liveStyle = (style.mutableCopy() as? NSMutableParagraphStyle) ?? style
                     liveStyle.paragraphSpacingBefore = 2
+                    out.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: style]))
                     out.append(NSAttributedString(
-                        string: "\nlive · \(lines)  ",
+                        string: "live · \(lines)  ",
                         attributes: [
                             .font: typography.codeNSFont(scale: 0.78),
                             .foregroundColor: theme.accent.withAlphaComponent(0.85),

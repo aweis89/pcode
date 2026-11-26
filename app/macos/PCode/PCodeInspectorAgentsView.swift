@@ -153,8 +153,9 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 let child = makeStartedChildCall(
                     callID: callID,
                     name: name,
-                    detail: detail.isEmpty ? purpose : detail,
+                    detail: (detail.isEmpty && name != "wait_for_job") ? purpose : detail,
                     command: command,
+                    purpose: purpose,
                     now: now,
                     replayingHistory: replayingHistory
                 )
@@ -481,6 +482,7 @@ final class PCodeInspectorAgentsStore: ObservableObject {
         name: String,
         detail: String,
         command: String,
+        purpose: String,
         now: Date,
         replayingHistory: Bool
     ) -> NestedCallRecord {
@@ -497,7 +499,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             isRunning: true,
             startedAt: existing?.startedAt ?? (replayingHistory ? nil : now),
             isBackgroundJob: existing?.isBackgroundJob ?? false,
-            exitCode: existing?.exitCode
+            exitCode: existing?.exitCode,
+            purpose: purpose.isEmpty ? (existing?.purpose ?? "") : purpose
         )
         return NestedCallRecord(callID: callID, call: call)
     }
@@ -535,7 +538,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             isRunning: false,
             startedAt: nil,
             isBackgroundJob: isBackgroundJob || (existing?.isBackgroundJob ?? false),
-            exitCode: exitCode ?? existing?.exitCode
+            exitCode: exitCode ?? existing?.exitCode,
+            purpose: existing?.purpose ?? ""
         )
         return NestedCallRecord(callID: callID, call: call)
     }
@@ -575,7 +579,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
                 isRunning: existing.isRunning,
                 startedAt: existing.startedAt,
                 isBackgroundJob: existing.isBackgroundJob,
-                exitCode: existing.exitCode
+                exitCode: existing.exitCode,
+                purpose: existing.purpose
             )
             return true
         }
@@ -668,7 +673,8 @@ final class PCodeInspectorAgentsStore: ObservableObject {
             isRunning: false,
             startedAt: nil,
             isBackgroundJob: call.isBackgroundJob,
-            exitCode: call.exitCode
+            exitCode: call.exitCode,
+            purpose: call.purpose
         )
     }
 
