@@ -925,9 +925,9 @@ struct PCodeTranscriptTests {
         #expect(PCodeHostEventDecoder.decodeRuntimeEvent(kind: "PlanPreview", fields: planFields) == nil)
     }
 
-    @Test func thinkingHeaderTitleFormatsDuration() {
+    @Test func thinkingAccessibilityTitleFormatsDuration() {
         func title(_ streaming: Bool, _ seconds: Double?) -> String {
-            PCodeThinkingCardView.headerTitle(for: PCodeThinkingPayload(text: "x", isStreaming: streaming, elapsedSeconds: seconds))
+            PCodeThinkingCardView.accessibilityTitle(for: PCodeThinkingPayload(text: "x", isStreaming: streaming, elapsedSeconds: seconds))
         }
         #expect(title(true, nil) == "Thinking")
         #expect(title(false, nil) == "Thought")
