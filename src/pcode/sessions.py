@@ -205,6 +205,7 @@ class ToolCall:
     failed: bool = False
     elapsed_seconds: float | None = None
     command: str = ""
+    exit_code: int | None = None
 
 
 @dataclass
@@ -308,6 +309,7 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
                     turn.blocks.append(markdown)
             elif kind == "ToolSummary":
                 elapsed = record.get("elapsed_seconds")
+                code = record.get("exit_code")
                 turn.blocks.append(
                     ToolCall(
                         str(record.get("name") or ""),
@@ -315,6 +317,7 @@ def session_turns(info: SessionInfo, root: Path | None = None) -> list[Turn] | N
                         bool(record.get("failed")),
                         elapsed if isinstance(elapsed, (int, float)) else None,
                         str(record.get("command") or ""),
+                        code if type(code) is int else None,
                     )
                 )
             elif kind == "turn_completed":

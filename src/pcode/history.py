@@ -351,9 +351,13 @@ class TurnReader:
                 line = "Tool: " + " ".join(
                     str(record.get(k) or "") for k in ("name", "detail", "command")
                 )
-                if record.get("failed"):
+                # So is a non-zero exit's: "why did the tests fail" asks for it too.
+                code = record.get("exit_code")
+                code = code if type(code) is int else None
+                if record.get("failed") or code:
                     error = " ".join(str(record.get("error") or "").split())[:ERROR_CHARS]
-                    line += f" [failed: {error}]" if error else " [failed]"
+                    tag = "failed" if record.get("failed") else f"exit {code}"
+                    line += f" [{tag}: {error}]" if error else f" [{tag}]"
                 turn.blocks.append(line)
             elif kind == "auto_compacted":
                 turn.compacted = True

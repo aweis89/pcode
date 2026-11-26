@@ -125,7 +125,9 @@ def test_command_errors_reach_live_events_and_saved_transcript(tmp_path, mode):
         try:
             events = [event async for event in runtime.stream("Run tests")]
             event = next(e for e in events if isinstance(e, ToolSummary))
-            assert event.failed == (mode != "success")
+            # A non-zero exit ran: it keeps its diagnostic but is not a failure.
+            assert event.failed == (mode in {"retry", "timeout"})
+            assert event.exit_code == (1 if mode == "exit" else None)
             expected = {
                 "exit": "ModuleNotFoundError: example",
                 "retry": "Execution blocked: pytest is not allowed",

@@ -98,7 +98,7 @@ from pcode.theme import (
     take_initial_cursor_row,
     terminal_background,
 )
-from pcode.tool_display import plain
+from pcode.tool_display import plain, recorded_exit_code
 from pcode.ui import (
     WATCHED_PREFIX,
     Activity,
@@ -3082,6 +3082,7 @@ class PreviewApp:
                             parent_call_id=record.get("parent_call_id", ""),
                             purpose=strip_controls(record.get("purpose", "")),
                             execution=record.get("execution", ""),
+                            exit_code=recorded_exit_code(record.get("exit_code")),
                         )
                     )
                 elif kind in ("Message", "partial"):

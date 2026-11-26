@@ -72,6 +72,7 @@ from pcode.tool_display import (
     SPILL_READERS,
     assignment,
     command_error,
+    command_exit_code,
     delegation_detail,
     execution_mode,
     invocation,
@@ -556,6 +557,7 @@ class EventTranslator:
             outcome = "not_started"
             detail = target(name, args) + " → Not started"
             failed = True
+        exit_code = command_exit_code(name, event.part.content) if outcome == "success" else None
         # Read the store after every settled tool: covers granular,
         # batched, and future plan mutations without parsing results.
         items = [item.model_dump(mode="json") for item in await self.context.plan_store.get_items()]
@@ -582,7 +584,12 @@ class EventTranslator:
             elapsed_seconds=max(0, monotonic() - started),
             command=invocation(name, args),
             purpose=stated_purpose(args),
-            error=command_error(event.part.content) if failed and name in COMMAND_TOOLS else "",
+            error=(
+                command_error(event.part.content)
+                if (failed or exit_code) and name in COMMAND_TOOLS
+                else ""
+            ),
+            exit_code=exit_code,
         )
         yield self.activity()
 

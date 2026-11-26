@@ -59,6 +59,7 @@ from pcode.tool_display import (
     COMMAND_TOOLS,
     assignment,
     command_error,
+    command_exit_code,
     execution_mode,
     invocation,
     native_result_detail,
@@ -471,6 +472,9 @@ async def stream_child_activity(_ctx, events):
             detail, failed = result_detail(
                 name, args, event.part.content, outcome, stored_source(args, called)
             )
+            exit_code = (
+                command_exit_code(name, event.part.content) if outcome == "success" else None
+            )
             child = ToolSummary(
                 name,
                 detail,
@@ -479,7 +483,12 @@ async def stream_child_activity(_ctx, events):
                 elapsed_seconds=max(0, monotonic() - started),
                 command=invocation(name, args),
                 purpose=stated_purpose(args),
-                error=command_error(event.part.content) if failed and name in COMMAND_TOOLS else "",
+                error=(
+                    command_error(event.part.content)
+                    if (failed or exit_code) and name in COMMAND_TOOLS
+                    else ""
+                ),
+                exit_code=exit_code,
                 result=capture(event.part.content),
                 run_id=parent.run_id or "",
                 outcome=outcome,

@@ -151,7 +151,7 @@ enum PCodeTranscriptItemSync {
     static func signature(_ item: PCodeTranscriptItem) -> String {
         var parts = [item.kind.rawValue, "\(item.spacingAfter)", item.plainText]
         if case .tool(let call, _) = item.payload {
-            parts += ["\(call.isRunning)", "\(call.failed)", "\(call.elapsedSeconds ?? -1)",
+            parts += ["\(call.isRunning)", "\(call.failed)", "\(call.exitCode ?? 0)", "\(call.elapsedSeconds ?? -1)",
                       "\(call.startedAt?.timeIntervalSinceReferenceDate ?? -1)"]
         }
         return parts.joined(separator: "\u{1F}")

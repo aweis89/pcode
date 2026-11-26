@@ -3,6 +3,7 @@
 import ast
 import json
 import re
+import signal
 from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -141,6 +142,7 @@ def tool_summary_lines(
     elapsed_seconds: float | None = None,
     command: str = "",
     width: int | None = None,
+    exit_code: int | None = None,
 ) -> list[Text]:
     """The settled-tool line, including any command preview, as scrollback draws it.
 
@@ -151,7 +153,7 @@ def tool_summary_lines(
     elapsed = f" · {elapsed_seconds:.1f}s" if elapsed_seconds is not None else ""
     # The marker alone reports failure: a summary line keeps one style so a
     # failed call does not shout louder than the diagnostic that follows it.
-    marker = glyphs.icon("fail") if failed else glyphs.icon("ok")
+    marker = outcome_icon(failed, exit_code)
     preview = " · " + command_preview(command) if command else ""
     lines = [Text(f"{marker} {label(name)}{detail}{elapsed}{preview}", style="pcode.thinking")]
     for line in lines:
@@ -686,7 +688,7 @@ def result_detail(
             where = ""
     elif name in {"run_command", "start_command", "check_command", "stop_command"}:
         # Foreground nonzero exits and completed background processes carry this marker.
-        match = re.search(r"\[exit code: (-?\d+)\]\s*$", text)
+        match = re.search(_EXIT_TRAILER, text)
         if text.startswith("[Error:"):
             failed = True
             result = failure_reason(text)
@@ -694,11 +696,7 @@ def result_detail(
             failed = True
             result = "Timed out"
         elif match:
-            code = int(match[1])
-            failed = code != 0
-            result = f"exit {code}" if failed else ""
-            if code == 127:
-                result += " · Executable not found"
+            result, failed = shell_status(int(match[1]))
         elif text == "(no output)" or text.startswith(("[stdout]\n", "[stderr]\n")):
             result = ""
         else:
@@ -913,12 +911,84 @@ COMMAND_TOOLS = frozenset(
 EDIT_TOOLS = frozenset({"write_file", "edit_file"})
 
 
+# Harness's `[exit code: N]` trailer, which a `max_file_bytes` note may follow.
+_EXIT_TRAILER = re.compile(r"\[exit code: (-?\d+)\](?:\n\[[^\]\n]*\])?\s*\Z")
+
+
+def exit_signal(exit_code: int) -> int | None:
+    """The signal that ended a command, if its exit status says one did.
+
+    `subprocess` reports a death by signal N as -N, while a shell that
+    outlives the command reports 128+N; which one arrives depends on whether
+    `sh` exec'd the command, so both count. Only 130-159 (and ksh93's 256+N)
+    is read as a signal, so an ordinary large status (`ssh`'s 255, git's 129)
+    stays an ordinary exit.
+    """
+    if exit_code < 0:
+        return -exit_code
+    # 129 is left out: it is git's usage error far more often than a SIGHUP.
+    if 129 < exit_code < 160:
+        return exit_code - 128
+    # ksh93 reports a signal death as 256+N.
+    if 256 < exit_code < 288:
+        return exit_code - 256
+    return None
+
+
 def shell_status(exit_code: int | None) -> tuple[str, bool]:
+    """Describe a command's exit status, and whether it means the command failed.
+
+    A non-zero exit is usually a command answering "no" (`grep` matched
+    nothing, `diff` found differences, tests failed), so only the statuses that
+    say it could not run or did not finish count as failures: not found (127),
+    not executable (126), or killed by a signal. An interrupt or termination
+    (a stop, Ctrl+C) and `SIGPIPE` (`yes | head`) are ordinary endings too.
+    """
     if exit_code is None:
         return "Running", False
     if exit_code == 0:
         return "", False
-    return f"exit {exit_code}" + (" · Executable not found" if exit_code == 127 else ""), True
+    if exit_code == 127:
+        return "exit 127 · Executable not found", True
+    if exit_code == 126:
+        return "exit 126 · Not executable", True
+    number = exit_signal(exit_code)
+    if number is None or number == signal.SIGPIPE:
+        return f"exit {exit_code}", False
+    if number in (signal.SIGINT, signal.SIGTERM):
+        return f"exit {exit_code} · Interrupted", False
+    try:
+        name = signal.Signals(number).name
+    except ValueError:
+        name = f"signal {number}"
+    return f"exit {exit_code} · Killed by {name}", True
+
+
+def job_verdict(exit_code: int | None, stopped: bool) -> tuple[int | None, str, bool]:
+    """A finished job's exit status, its description, and whether it failed.
+
+    A stop is the user's or model's choice, never a failure. The registry
+    stops reading a job's status once it is stopped, so a stopped job usually
+    has none; it is reported as the SIGTERM a stop sends first.
+    """
+    if exit_code is None and stopped:
+        exit_code = -signal.SIGTERM
+    status, failed = shell_status(exit_code)
+    return exit_code, status, failed and not stopped
+
+
+def recorded_exit_code(value: object) -> int | None:
+    """A journaled `exit_code`, trusted only as a plain int (older records lack one)."""
+    return value if type(value) is int else None
+
+
+def outcome_icon(failed: bool, exit_code: int | None = None, *, ok: str = "ok") -> str:
+    """The mark for a settled call: failed, ran but exited non-zero, or ok."""
+    if failed:
+        return glyphs.icon("fail")
+    if exit_code:
+        return glyphs.icon("nonzero")
+    return glyphs.icon(ok)
 
 
 # `pcode.shell_tools` ends every job result with this marker, so one parser
@@ -944,11 +1014,29 @@ def split_outcome(output: str) -> tuple[str, str]:
     return output[: marker.start()], marker[1]
 
 
-def job_status(text: str) -> tuple[str, bool]:
-    """Summarize a job result: its id, and what became of the command."""
+def _last_job_marker(text: str) -> re.Match[str] | None:
     match = None
     for match in _JOB_MARKER.finditer(text):
         pass  # The last marker is this call's own outcome.
+    return match
+
+
+def command_exit_code(name: str, content: object) -> int | None:
+    """The exit status a command tool's result reports, if it reports one."""
+    if not isinstance(content, str):
+        return None
+    if name in JOB_TOOLS:
+        match = _last_job_marker(content)
+        return int(match[3]) if match is not None and match[3] is not None else None
+    if name in COMMAND_TOOLS:
+        match = re.search(_EXIT_TRAILER, content)
+        return int(match[1]) if match else None
+    return None
+
+
+def job_status(text: str) -> tuple[str, bool]:
+    """Summarize a job result: its id, and what became of the command."""
+    match = _last_job_marker(text)
     if match is None:
         return "", False
     identity, outcome, code = match[1], match[2], match[3]

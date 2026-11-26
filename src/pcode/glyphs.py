@@ -38,6 +38,9 @@ ICONS: dict[str, str] = {
     "blocked": "!",
     "ok": "✓",
     "fail": "✗",
+    # Ran and exited non-zero in the ordinary way (grep found nothing, tests
+    # failed): settled, but neither a success nor a failure to run.
+    "nonzero": "•",
     "tool_done": "√",
     "turn_cancelled": "⊘",
 }
@@ -55,6 +58,7 @@ NERD_ICONS: dict[str, str] = {
     "blocked": "\uea6c",  # cod-warning
     "ok": "\ueab2",  # cod-check
     "fail": "\uea76",  # cod-close
+    "nonzero": "\uea71",  # cod-circle-filled
     "tool_done": "\ueab2",  # cod-check
     "turn_cancelled": "\uf4b7",  # oct-skip
 }
@@ -114,6 +118,7 @@ _SYMBOLS = {
     "\uea6c": "!",
     "\ueab2": "v",
     "\uea76": "x",
+    "\uea71": "*",
 }
 _SYMBOLS.update(dict.fromkeys(NERD_SPINNERS["spinner"], "o"))
 _SYMBOLS.update(dict.fromkeys(NERD_SPINNERS["tool_spinner"], "*"))

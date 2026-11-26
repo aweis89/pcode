@@ -53,6 +53,16 @@ class ToolSummary:
     # delegate's result) that lands whenever it finishes, not where the model
     # is; such notices share the normal command-result rendering.
     execution: str = ""
+    # A command's exit status, when its result reports one. `failed` stays the
+    # verdict (could not run, or was killed); a non-zero status without it is a
+    # command that ran and answered "no", which the UI marks apart from both.
+    exit_code: int | None = None
+
+    def __post_init__(self) -> None:
+        # Events also arrive decoded from a host or a journal; a bool or a
+        # string there must not read as an exit status.
+        if type(self.exit_code) is not int:
+            object.__setattr__(self, "exit_code", None)
 
 
 @dataclass(frozen=True)

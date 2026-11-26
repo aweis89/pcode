@@ -60,7 +60,7 @@ from pcode.preferences import (
 from pcode.rpc import transportable
 from pcode.runtime import CommandOutput, JobFinished, Message, ToolSummary
 from pcode.shell_mode import execute, shell_command
-from pcode.tool_display import command_text
+from pcode.tool_display import command_text, job_verdict
 
 # What the terminal handles itself. A skill or extension command may not take
 # one of these names (nor a session command's): built-ins win.
@@ -1063,10 +1063,13 @@ class SessionController:
             if truncated:
                 output = REDUCED_SHELL_OUTPUT + "\n" + output
             result = output + f"\n[{job.id} · {job.outcome()} · {format_duration(job.elapsed)}]"
+            exit_code, status, failed = job_verdict(job.exit_code, job.stopped)
             event = JobFinished(
                 "shell",
-                f"{command_text(job.label())} → {job.id} · {job.outcome()}",
-                failed=job.stopped or job.exit_code != 0,
+                f"{command_text(job.label())} → {job.id} · "
+                + (job.outcome() if job.stopped else status or job.outcome()),
+                failed=failed,
+                exit_code=exit_code,
                 elapsed_seconds=job.elapsed,
                 command=command_text(job.command),
                 result=command_text(result),

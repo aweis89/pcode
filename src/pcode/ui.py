@@ -116,6 +116,7 @@ from pcode.tool_display import (
     command_preview,
     command_text,
     label,
+    outcome_icon,
     plain,
     split_outcome,
     tool_summary_lines,
@@ -844,7 +845,7 @@ def _row_key(call: ToolCall) -> tuple:
     Its state is part of it: a failure, or a call still running, never hides
     behind a lookalike's mark.
     """
-    return (*call_parts(call), call.change, call.failed, call.settled is None)
+    return (*call_parts(call), call.change, call.failed, call.exit_code, call.settled is None)
 
 
 def head_rows(text: str, width: int, rows: int) -> list[str]:
@@ -1624,6 +1625,8 @@ class Activity:
             mark = spinner if isinstance(spinner, tuple) else ("class:activity.tool", spinner)
         elif call.failed:
             mark = ("class:activity.tool.failed", glyphs.icon("fail"))
+        elif call.exit_code:
+            mark = ("class:activity.tool.done", glyphs.icon("nonzero"))
         else:
             mark = ("class:activity.tool.done", glyphs.icon("tool_done"))
         # A wide spinner (`dots12`) would push running rows' text past
@@ -5412,18 +5415,27 @@ def create_prompt(
     return session
 
 
-def tally(succeeded: int, failed: int) -> str:
-    """`✓ 2 ✗ 1`, dropping a zero side, so each mark only ever counts its own outcome."""
+def tally(succeeded: int, failed: int, nonzero: int = 0) -> str:
+    """`✓ 2 • 1 ✗ 1`, dropping zeros, so each mark only ever counts its own outcome."""
     return " ".join(
         f"{mark} {count}"
-        for mark, count in ((glyphs.icon("ok"), succeeded), (glyphs.icon("fail"), failed))
+        for mark, count in (
+            (glyphs.icon("ok"), succeeded),
+            (glyphs.icon("nonzero"), nonzero),
+            (glyphs.icon("fail"), failed),
+        )
         if count
     )
 
 
-def tool_count(name: str, count: int, failed: int) -> str:
+def tool_count(name: str, count: int, failed: int, nonzero: int = 0) -> str:
     """One tool's part of a group line: `Read file ✓ 3`, `Search code ✓ 2 ✗ 1`."""
-    return f"{name} {tally(count - failed, failed)}"
+    return f"{name} {tally(count - failed - nonzero, failed, nonzero)}"
+
+
+def exited_nonzero(event: ToolSummary) -> bool:
+    """A command that ran and exited non-zero without failing (`grep` found nothing)."""
+    return not event.failed and bool(event.exit_code)
 
 
 class Transcript:
@@ -5671,9 +5683,13 @@ class Transcript:
         """
         counts = Counter(label(event.name) for event in events)
         failures = Counter(label(event.name) for event in events if event.failed)
-        failed = failures.total()
-        parts = [tool_count(name, count, failures[name]) for name, count in counts.most_common()]
-        head = tally(len(events) - failed, failed)
+        nonzeros = Counter(label(event.name) for event in events if exited_nonzero(event))
+        failed, nonzero = failures.total(), nonzeros.total()
+        parts = [
+            tool_count(name, count, failures[name], nonzeros[name])
+            for name, count in counts.most_common()
+        ]
+        head = tally(len(events) - failed - nonzero, failed, nonzero)
         line = Text(f"{head} tools · " + " · ".join(parts), style="pcode.thinking")
         line.no_wrap = True
         line.overflow = "ellipsis"
@@ -5712,8 +5728,9 @@ class Transcript:
         if not self._group:
             return ""
         failed = sum(event.failed for event in self._group)
+        nonzero = sum(exited_nonzero(event) for event in self._group)
         noun = "tool" if len(self._group) == 1 else "tools"
-        return f"{tally(len(self._group) - failed, failed)} {noun}"
+        return f"{tally(len(self._group) - failed - nonzero, failed, nonzero)} {noun}"
 
     def settle_orphans(self) -> None:
         """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
@@ -6031,7 +6048,7 @@ class Transcript:
         if not isinstance(event, ToolSummary):
             return False
         # Inspecting/waiting on a job is not another command completion. A
-        # nonzero job exit sets `failed`, but the helper call itself succeeded;
+        # job's exit status is the job's; the helper call itself succeeded;
         # only actual helper errors/retries need their own scrollback entry.
         if event.name in {"wait_for_job", "job_output"} and event.outcome == "success":
             return False
@@ -6077,6 +6094,7 @@ class Transcript:
                 # line is syntax-highlighted as shell and should stay runnable.
                 title=f"{title} · {event.purpose}" if event.purpose else title,
                 failed=event.failed,
+                exit_code=event.exit_code,
                 elapsed_seconds=event.elapsed_seconds,
                 max_lines=self.command_scrollback_lines,
                 code_theme=self.code_theme,
@@ -6121,7 +6139,7 @@ class Transcript:
     def summary_lines(self, event: ToolSummary, *, indent: int = 0) -> list[Text]:
         """The compact rows a settled call leaves in scrollback."""
         if event.name not in COMMAND_TOOLS and not event.command:
-            mark = glyphs.icon("fail") if event.failed else glyphs.icon("ok")
+            mark = outcome_icon(event.failed, event.exit_code)
             return [
                 Text.assemble(
                     (f"{mark} {label(event.name)}  ", "pcode.thinking"),
@@ -6139,13 +6157,16 @@ class Transcript:
         # panel, passes the whole detail to the same renderer.
         result = (
             " · " + plain(event.detail.rsplit(" → ", 1)[-1], limit=60)
-            if event.failed or (event.name != "run_command" and " → " in event.detail)
+            if event.failed
+            or event.exit_code
+            or (event.name != "run_command" and " → " in event.detail)
             else ""
         )
         return tool_summary_lines(
             event.name,
             result,
             failed=event.failed,
+            exit_code=event.exit_code,
             elapsed_seconds=event.elapsed_seconds,
             command=event.command,
             width=max(1, self.console.width - indent),

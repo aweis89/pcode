@@ -307,7 +307,7 @@ def test_real_tool_capture_survives_resume_and_later_model_failure(tmp_path):
             archive = ToolArchive.load(path)
             assert len(archive.calls) == 1
             entry = archive.calls[0]
-            assert entry.state == "failed"
+            assert entry.state == "exit 2"
             assert "printf detail" in entry.arguments.read()
             assert "detail" in entry.result.read() and "· exit 2 ·" in entry.result.read()
             assert entry.run_id != "unavailable"
@@ -624,7 +624,8 @@ def test_background_command_failure_classification():
             "[stderr]\nfailed\n[status: finished]\n[exit code: 3]",
             "success",
         )
-        assert failed and "exit 3" in detail
+        # Ran and exited non-zero: reported, but not a failure to run.
+        assert not failed and "exit 3" in detail
         _, failed = result_detail(name, {}, "[Error: unknown command ID 'example']", "success")
         assert failed
     _, failed = result_detail("check_command", {}, "(no output yet)\n[status: running]", "success")

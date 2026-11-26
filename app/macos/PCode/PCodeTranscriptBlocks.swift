@@ -1239,6 +1239,14 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         return 0
     }
 
+    /// The settled row's mark: a check, a red cross for a hard failure, or a small dot for a
+    /// command that ran and exited non-zero in the ordinary way (mirrors pcode's `nonzero` icon).
+    static func settledMark(for call: PCodePeekToolCall) -> (symbol: String, label: String, pointSize: CGFloat) {
+        if call.failed { return ("xmark.circle.fill", "Failed", 10) }
+        if call.exitedNonZero { return ("circle.fill", "Exited \(call.exitCode ?? 0)", 5) }
+        return ("checkmark.circle.fill", "Succeeded", 10)
+    }
+
     /// Single source of truth for rendered tool card text (shared by drawing and copy).
     static func attributedText(
         for call: PCodePeekToolCall,
@@ -1379,9 +1387,9 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             spinnerView.stopAnimating()
             spinnerView.isHidden = true
             iconView.isHidden = false
-            let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
-            let symbolName = call.failed ? "xmark.circle.fill" : "checkmark.circle.fill"
-            iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: call.failed ? "Failed" : "Succeeded")?
+            let mark = Self.settledMark(for: call)
+            let cfg = NSImage.SymbolConfiguration(pointSize: mark.pointSize, weight: .medium)
+            iconView.image = NSImage(systemSymbolName: mark.symbol, accessibilityDescription: mark.label)?
                 .withSymbolConfiguration(cfg)
             iconView.contentTintColor = call.failed ? .systemRed : theme.secondaryForeground.withAlphaComponent(0.8)
         }
