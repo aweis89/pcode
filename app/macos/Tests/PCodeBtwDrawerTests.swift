@@ -110,8 +110,8 @@ struct PCodeBtwDrawerTests {
 
     @Test func runningAsideShowsActivityWithSpinnerUnlessDocked() throws {
         let running = Self.aside("a", status: "running", answer: "Part", activity: "Searching…")
-        let now = Date(timeIntervalSinceReferenceDate: 1000)
-        let items = PCodeBtwThread.items(for: [running], docked: false, uptime: 130, now: now)
+        let boot = Date(timeIntervalSinceReferenceDate: 870)
+        let items = PCodeBtwThread.items(for: [running], docked: false, bootDate: boot)
         #expect(items.map(\.id) == ["btw-a-prompt", "btw-a-md-0-0", "btw-a-status"])
         guard case .tool(let call, _) = try #require(items.last).payload else {
             Issue.record("not a tool row")
@@ -119,7 +119,10 @@ struct PCodeBtwDrawerTests {
         }
         #expect(call.isRunning)
         #expect(call.name == "Searching…")
-        #expect(call.startedAt == now.addingTimeInterval(-30))
+        #expect(call.startedAt == Date(timeIntervalSinceReferenceDate: 970))
+        // The same input renders the same row: no rewrite on every update.
+        let again = { PCodeBtwThread.items(for: [running], docked: false) }
+        #expect(PCodeTranscriptItemSync.plan(from: again(), to: again()).isEmpty)
         let docked = PCodeBtwThread.items(for: [running], docked: true)
         #expect(docked.map(\.id) == ["btw-a-prompt", "btw-a-md-0-0"])
     }
@@ -154,7 +157,7 @@ struct PCodeBtwDrawerTests {
         settled.status = "answered"
         settled.answer = "Partial answer."
         settled.finished = 104
-        let old = PCodeBtwThread.items(for: [running], docked: false, uptime: 101, now: Date())
+        let old = PCodeBtwThread.items(for: [running], docked: false)
         let new = PCodeBtwThread.items(for: [settled, Self.aside("b")], docked: false)
         let steps = PCodeTranscriptItemSync.plan(from: old, to: new)
         #expect(steps == [

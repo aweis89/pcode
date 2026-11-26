@@ -10,6 +10,10 @@ import SwiftUI
 // MARK: - Thread → transcript items
 
 enum PCodeBtwThread {
+    /// When the monotonic clock read zero, fixed once so a running row's start
+    /// time doesn't jitter between renders (and so rewrite the row each time).
+    static let bootDate = Date(timeIntervalSinceNow: -ProcessInfo.processInfo.systemUptime)
+
     /// `thread`'s questions as transcript rows, with ids stable across updates
     /// (`btw-<aside id>-…`): each question as a /btw prompt, its answer as
     /// Markdown, then a running row while it runs (left out when `docked`:
@@ -17,8 +21,7 @@ enum PCodeBtwThread {
     static func items(
         for thread: [PCodeAsideState],
         docked: Bool,
-        uptime: TimeInterval = ProcessInfo.processInfo.systemUptime,
-        now: Date = Date()
+        bootDate: Date = PCodeBtwThread.bootDate
     ) -> [PCodeTranscriptItem] {
         var result: [PCodeTranscriptItem] = []
         for (number, aside) in thread.enumerated() {
@@ -40,7 +43,7 @@ enum PCodeBtwThread {
                 return PCodeTranscriptItem(
                     id: id, payload: payload, spacingAfter: item.spacingAfter, revision: item.revision, depth: item.depth)
             }
-            if let call = statusCall(aside, docked: docked, uptime: uptime, now: now) {
+            if let call = statusCall(aside, docked: docked, bootDate: bootDate) {
                 if let last = rows.popLast() { rows.append(last.withSpacingAfter(8)) }
                 rows.append(PCodeTranscriptItem(id: prefix + "status", payload: .tool(call, isExpanded: false), spacingAfter: 18))
             }
@@ -62,13 +65,13 @@ enum PCodeBtwThread {
     static func statusCall(
         _ aside: PCodeAsideState,
         docked: Bool,
-        uptime: TimeInterval,
-        now: Date
+        bootDate: Date
     ) -> PCodePeekToolCall? {
         if aside.isRunning {
             if docked { return nil }
             let activity = aside.activity.trimmingCharacters(in: CharacterSet(charactersIn: "…. "))
-            let startedAt = aside.started.map { now.addingTimeInterval(-max(0, uptime - $0)) }
+            // Python's `time.monotonic` and `systemUptime` share a clock on macOS.
+            let startedAt = aside.started.map { min(Date(), bootDate.addingTimeInterval($0)) }
             return PCodePeekToolCall(
                 id: 0, name: "\(activity.isEmpty ? "Answering" : activity)…", detail: "", failed: false,
                 elapsedSeconds: nil, command: "", isRunning: true, startedAt: startedAt)
@@ -132,7 +135,14 @@ enum PCodeTranscriptItemSync {
             case .remove(let id):
                 document.removeItem(id: id)
             case .upsert(let id, let index):
-                if let item = byID[id] { document.upsertItem(item, insertAt: index) }
+                guard var item = byID[id] else { continue }
+                // A row the user expanded stays expanded as it changes.
+                if case .tool(let call, false) = item.payload, document.isItemExpanded(id: id) {
+                    item = PCodeTranscriptItem(
+                        id: id, payload: .tool(call, isExpanded: true), spacingAfter: item.spacingAfter,
+                        revision: item.revision, depth: item.depth)
+                }
+                document.upsertItem(item, insertAt: index)
             }
         }
     }
@@ -207,6 +217,8 @@ final class PCodeBtwThreadModel: ObservableObject {
     @Published private(set) var note = ""
     @Published private(set) var nextThreadKey = PCodeBtwHints.defaultNextThreadKey
     private var observer: PCodeAsideObserver?
+    /// Only the newest `refreshHints` may set the keycap.
+    private var hintsGeneration = 0
 
     init(host: String, thread: String) {
         self.host = host
@@ -227,8 +239,11 @@ final class PCodeBtwThreadModel: ObservableObject {
 
     /// Read the user's prefix again: it may have changed since the drawer opened.
     func refreshHints() {
+        hintsGeneration += 1
+        let generation = hintsGeneration
         PCodeBtwHints.loadNextThreadKey(host: host) { [weak self] key in
-            if self?.nextThreadKey != key { self?.nextThreadKey = key }
+            guard let self, self.hintsGeneration == generation, self.nextThreadKey != key else { return }
+            self.nextThreadKey = key
         }
     }
 
