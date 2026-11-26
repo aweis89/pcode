@@ -688,7 +688,7 @@ def result_detail(
             where = ""
     elif name in {"run_command", "start_command", "check_command", "stop_command"}:
         # Foreground nonzero exits and completed background processes carry this marker.
-        match = re.search(r"\[exit code: (-?\d+)\]\s*$", text)
+        match = re.search(_EXIT_TRAILER, text)
         if text.startswith("[Error:"):
             failed = True
             result = failure_reason(text)
@@ -911,18 +911,27 @@ COMMAND_TOOLS = frozenset(
 EDIT_TOOLS = frozenset({"write_file", "edit_file"})
 
 
+# Harness's `[exit code: N]` trailer, which a `max_file_bytes` note may follow.
+_EXIT_TRAILER = re.compile(r"\[exit code: (-?\d+)\](?:\n\[[^\]\n]*\])?\s*\Z")
+
+
 def exit_signal(exit_code: int) -> int | None:
     """The signal that ended a command, if its exit status says one did.
 
     `subprocess` reports a death by signal N as -N, while a shell that
     outlives the command reports 128+N; which one arrives depends on whether
-    `sh` exec'd the command, so both count. Only 129-159 is read as a signal,
-    so an ordinary large status (`ssh`'s 255) stays an ordinary exit.
+    `sh` exec'd the command, so both count. Only 130-159 (and ksh93's 256+N)
+    is read as a signal, so an ordinary large status (`ssh`'s 255, git's 129)
+    stays an ordinary exit.
     """
     if exit_code < 0:
         return -exit_code
-    if 128 < exit_code < 160:
+    # 129 is left out: it is git's usage error far more often than a SIGHUP.
+    if 129 < exit_code < 160:
         return exit_code - 128
+    # ksh93 reports a signal death as 256+N.
+    if 256 < exit_code < 288:
+        return exit_code - 256
     return None
 
 
@@ -953,6 +962,19 @@ def shell_status(exit_code: int | None) -> tuple[str, bool]:
     except ValueError:
         name = f"signal {number}"
     return f"exit {exit_code} · Killed by {name}", True
+
+
+def job_verdict(exit_code: int | None, stopped: bool) -> tuple[int | None, str, bool]:
+    """A finished job's exit status, its description, and whether it failed.
+
+    A stop is the user's or model's choice, never a failure. The registry
+    stops reading a job's status once it is stopped, so a stopped job usually
+    has none; it is reported as the SIGTERM a stop sends first.
+    """
+    if exit_code is None and stopped:
+        exit_code = -signal.SIGTERM
+    status, failed = shell_status(exit_code)
+    return exit_code, status, failed and not stopped
 
 
 def recorded_exit_code(value: object) -> int | None:
@@ -1007,7 +1029,7 @@ def command_exit_code(name: str, content: object) -> int | None:
         match = _last_job_marker(content)
         return int(match[3]) if match is not None and match[3] is not None else None
     if name in COMMAND_TOOLS:
-        match = re.search(r"\[exit code: (-?\d+)\]\s*$", content)
+        match = re.search(_EXIT_TRAILER, content)
         return int(match[1]) if match else None
     return None
 

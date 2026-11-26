@@ -227,7 +227,15 @@ class ToolArchive:
                 if (type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0)
                 else None
             )
-            call.state = "failed" if record.get("failed") else "succeeded"
+            code = record.get("exit_code")
+            call.state = (
+                "failed"
+                if record.get("failed")
+                # Ran, and exited non-zero: neither a failure nor a success.
+                else f"exit {code}"
+                if type(code) is int and code
+                else "succeeded"
+            )
             call.outcome = record.get("outcome", "")
             self._running.pop(key, None)
 

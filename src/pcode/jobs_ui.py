@@ -15,7 +15,6 @@ from prompt_toolkit.widgets import Label
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode import glyphs
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.inspector_ui import code_block, format_command
 from pcode.jobs import Job, JobRegistry, format_duration
@@ -31,7 +30,7 @@ from pcode.popup_ui import (
 from pcode.prefix_keys import PrefixKeys
 from pcode.shell import preview_text
 from pcode.text_selection import copy_drags
-from pcode.tool_display import command_text
+from pcode.tool_display import command_text, job_verdict, outcome_icon
 
 REFRESH_SECONDS = 0.5
 
@@ -43,7 +42,8 @@ LOG_BYTES = 128 * 1024
 def icon(job: Job) -> str:
     if job.running:
         return "⟳"
-    return glyphs.icon("fail") if job.stopped or job.exit_code != 0 else glyphs.icon("ok")
+    code, _, failed = job_verdict(job.exit_code, job.stopped)
+    return outcome_icon(failed, code)
 
 
 def ordered(registry: JobRegistry) -> list[Job]:

@@ -5415,18 +5415,27 @@ def create_prompt(
     return session
 
 
-def tally(succeeded: int, failed: int) -> str:
-    """`✓ 2 ✗ 1`, dropping a zero side, so each mark only ever counts its own outcome."""
+def tally(succeeded: int, failed: int, nonzero: int = 0) -> str:
+    """`✓ 2 • 1 ✗ 1`, dropping zeros, so each mark only ever counts its own outcome."""
     return " ".join(
         f"{mark} {count}"
-        for mark, count in ((glyphs.icon("ok"), succeeded), (glyphs.icon("fail"), failed))
+        for mark, count in (
+            (glyphs.icon("ok"), succeeded),
+            (glyphs.icon("nonzero"), nonzero),
+            (glyphs.icon("fail"), failed),
+        )
         if count
     )
 
 
-def tool_count(name: str, count: int, failed: int) -> str:
+def tool_count(name: str, count: int, failed: int, nonzero: int = 0) -> str:
     """One tool's part of a group line: `Read file ✓ 3`, `Search code ✓ 2 ✗ 1`."""
-    return f"{name} {tally(count - failed, failed)}"
+    return f"{name} {tally(count - failed - nonzero, failed, nonzero)}"
+
+
+def exited_nonzero(event: ToolSummary) -> bool:
+    """A command that ran and exited non-zero without failing (`grep` found nothing)."""
+    return not event.failed and bool(event.exit_code)
 
 
 class Transcript:
@@ -5674,9 +5683,13 @@ class Transcript:
         """
         counts = Counter(label(event.name) for event in events)
         failures = Counter(label(event.name) for event in events if event.failed)
-        failed = failures.total()
-        parts = [tool_count(name, count, failures[name]) for name, count in counts.most_common()]
-        head = tally(len(events) - failed, failed)
+        nonzeros = Counter(label(event.name) for event in events if exited_nonzero(event))
+        failed, nonzero = failures.total(), nonzeros.total()
+        parts = [
+            tool_count(name, count, failures[name], nonzeros[name])
+            for name, count in counts.most_common()
+        ]
+        head = tally(len(events) - failed - nonzero, failed, nonzero)
         line = Text(f"{head} tools · " + " · ".join(parts), style="pcode.thinking")
         line.no_wrap = True
         line.overflow = "ellipsis"
@@ -5715,8 +5728,9 @@ class Transcript:
         if not self._group:
             return ""
         failed = sum(event.failed for event in self._group)
+        nonzero = sum(exited_nonzero(event) for event in self._group)
         noun = "tool" if len(self._group) == 1 else "tools"
-        return f"{tally(len(self._group) - failed, failed)} {noun}"
+        return f"{tally(len(self._group) - failed - nonzero, failed, nonzero)} {noun}"
 
     def settle_orphans(self) -> None:
         """Write sub-agent calls whose delegate never settled, e.g. a cancelled turn.
@@ -6034,7 +6048,7 @@ class Transcript:
         if not isinstance(event, ToolSummary):
             return False
         # Inspecting/waiting on a job is not another command completion. A
-        # nonzero job exit sets `failed`, but the helper call itself succeeded;
+        # job's exit status is the job's; the helper call itself succeeded;
         # only actual helper errors/retries need their own scrollback entry.
         if event.name in {"wait_for_job", "job_output"} and event.outcome == "success":
             return False

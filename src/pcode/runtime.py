@@ -58,6 +58,12 @@ class ToolSummary:
     # command that ran and answered "no", which the UI marks apart from both.
     exit_code: int | None = None
 
+    def __post_init__(self) -> None:
+        # Events also arrive decoded from a host or a journal; a bool or a
+        # string there must not read as an exit status.
+        if type(self.exit_code) is not int:
+            object.__setattr__(self, "exit_code", None)
+
 
 @dataclass(frozen=True)
 class JobFinished(ToolSummary):

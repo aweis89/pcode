@@ -69,7 +69,7 @@ def test_browser_lists_running_first_follows_the_log_and_stops_and_watches(tmp_p
         assert app.controller.report_finished_jobs() == []
 
         # Stopped, it sorts after the older finished job; the selection follows it.
-        assert browser.list.text.splitlines()[1].startswith(f"✗ {live.id} · stopped")
+        assert browser.list.text.splitlines()[1].startswith(f"• {live.id} · stopped")
         assert browser.selected == live.id
         browser.list.buffer.cursor_up()
         assert browser.selected == done.id

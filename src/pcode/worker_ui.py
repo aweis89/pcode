@@ -19,7 +19,6 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from rich.theme import Theme
 
-from pcode import glyphs
 from pcode.frame import Frame, ScrollingTextArea
 from pcode.markdown import Markdown
 from pcode.popup_hints import popup_bar
@@ -35,7 +34,7 @@ from pcode.prefix_keys import PrefixKeys
 from pcode.runtime import ToolSummary
 from pcode.task_prompt import TaskPrompt
 from pcode.text_selection import copy_drags
-from pcode.tool_display import label, literal, plain
+from pcode.tool_display import label, literal, outcome_icon, plain
 from pcode.tool_panel import ACTIVE_TASK_ICON, plan_row
 from pcode.workers import Worker, Workers
 
@@ -101,7 +100,7 @@ def report_index(blocks: list) -> int | None:
 
 def tool_line(event) -> Text:
     if isinstance(event, ToolSummary):
-        icon, style = (glyphs.icon("fail"), "red") if event.failed else (glyphs.icon("ok"), "dim")
+        icon, style = outcome_icon(event.failed, event.exit_code), "red" if event.failed else "dim"
         elapsed = f" · {event.elapsed_seconds:.1f}s" if event.elapsed_seconds is not None else ""
     else:
         icon, style, elapsed = "⟳", "bold", ""

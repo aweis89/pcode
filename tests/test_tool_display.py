@@ -931,3 +931,38 @@ def test_targets_survive_a_deleted_working_directory(monkeypatch):
 
     monkeypatch.setattr("pcode.tool_display.Path.cwd", staticmethod(gone))
     assert target("read_file", {"path": "/some/where/file.py"}) == "/some/where/file.py"
+
+
+@pytest.mark.parametrize(
+    ("code", "failed"), [(129, False), (130, False), (137, True), (281, True), (300, False)]
+)
+def test_signal_reading_spares_gits_129_and_reads_ksh93(code, failed):
+    from pcode.tool_display import shell_status
+
+    assert shell_status(code)[1] is failed
+
+
+def test_exit_trailer_is_found_before_a_file_limit_note():
+    from pcode.tool_display import command_exit_code
+
+    text = "x\n[exit code: 1]\n[Command failed with max_file_bytes=10; file writes may...]"
+    assert command_exit_code("run_command", text) == 1
+    assert result_detail("run_command", {"command": "x"}, text, "success")[0] == "x → exit 1"
+
+
+def test_stopped_job_is_an_interruption_not_a_kill():
+    import signal
+
+    from pcode.tool_display import job_verdict
+
+    assert job_verdict(None, True) == (-signal.SIGTERM, "exit -15 · Interrupted", False)
+    assert job_verdict(-11, True)[2] is False
+    assert job_verdict(-11, False)[2] is True
+    assert job_verdict(1, False) == (1, "exit 1", False)
+
+
+@pytest.mark.parametrize("value", [True, "1", 1.0])
+def test_tool_summary_rejects_a_non_int_exit_code(value):
+    from pcode.runtime import ToolSummary
+
+    assert ToolSummary("shell", "x", exit_code=value).exit_code is None

@@ -240,3 +240,13 @@ def test_without_a_status_row_the_run_is_counted_flush_left():
     lines = render_panel(running=False)
     (row,) = [line for line in lines if "tools" in line]
     assert row == "✓ 3 tools · Edit file ✓ 2 · Run shell ✓ 1"
+
+
+def test_group_line_counts_a_nonzero_exit_apart_from_success_and_failure():
+    events = [
+        ToolSummary("shell", "grep x", exit_code=1),
+        ToolSummary("shell", "ls", exit_code=0),
+        ToolSummary("shell", "nope", failed=True, exit_code=127),
+    ]
+    line = Transcript.group_line(events, width=200).plain
+    assert line == "✓ 1 • 1 ✗ 1 tools · Run shell ✓ 1 • 1 ✗ 1"
