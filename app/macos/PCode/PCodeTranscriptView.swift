@@ -1437,15 +1437,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         lastClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
     }
 
-    func handleDidLiveScroll() {
-        guard let scrollView = enclosingScrollView else { return }
-        let originY = scrollView.contentView.bounds.origin.y
-        let movedUp = originY < lastClipOriginY - 0.5
-        lastClipOriginY = originY
-        let dist = distanceFromBottom(in: scrollView)
-        stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
-    }
-
     func handleDidEndLiveScroll() {
         guard let scrollView = enclosingScrollView else { return }
         stickyBottom.didEndLiveScroll(distanceFromBottom: distanceFromBottom(in: scrollView))
@@ -1454,6 +1445,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    /// Tracks user scroll movement for both live (trackpad) and legacy wheel scrolls.
+    /// This is the only place that reads movement: AppKit posts `boundsDidChange` before
+    /// `didLiveScroll`, so a separate live-scroll handler would always see a zero delta
+    /// and never unpin, letting the next streamed chunk yank the reader back down.
     func handleBoundsDidChange() {
         guard let scrollView = enclosingScrollView else { return }
         let originY = scrollView.contentView.bounds.origin.y
@@ -1461,18 +1456,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             lastClipOriginY = originY
             return
         }
-        if !stickyBottom.isLiveScrolling {
-            let movedUp = originY < lastClipOriginY - 0.5
+        let delta = originY - lastClipOriginY
+        if abs(delta) > 0.5 {
+            let movedUp = delta < 0
             let dist = distanceFromBottom(in: scrollView)
-            stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
+            if stickyBottom.isLiveScrolling {
+                stickyBottom.didLiveScroll(distanceFromBottom: dist, movedUpward: movedUp)
+            } else {
+                stickyBottom.didLegacyWheelScroll(distanceFromBottom: dist, movedUpward: movedUp)
+                if stickyBottom.mode == .pinnedToBottom {
+                    setHasUnreadStreamingContent(false)
+                }
+            }
             if movedUp && stickyBottom.mode == .userScrolledUp {
                 resetSmoothGlide()
             }
-            if stickyBottom.mode == .pinnedToBottom {
-                setHasUnreadStreamingContent(false)
-            }
+            lastClipOriginY = originY
         }
-        lastClipOriginY = originY
         mountViews(in: visibleRect)
         if !revealQueue.isEmpty, window != nil {
             ensureDisplayLinkRunning()
@@ -2940,13 +2940,6 @@ final class PCodeTranscriptScrollView: NSScrollView {
             queue: .main
         ) { [weak self] _ in
             self?.transcriptDocumentView.handleWillStartLiveScroll()
-        })
-        observers.append(nc.addObserver(
-            forName: NSScrollView.didLiveScrollNotification,
-            object: self,
-            queue: .main
-        ) { [weak self] _ in
-            self?.transcriptDocumentView.handleDidLiveScroll()
         })
         observers.append(nc.addObserver(
             forName: NSScrollView.didEndLiveScrollNotification,

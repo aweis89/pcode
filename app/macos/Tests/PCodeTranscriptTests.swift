@@ -123,6 +123,63 @@ struct PCodeTranscriptTests {
         #expect(state.shouldProgrammaticallyPin)
     }
 
+    @Test func stickyBottomUnpinsOnSmallUpwardScrollAndOnlyRepinsMovingDown() {
+        var state = PCodeStickyBottomState()
+
+        // A short trackpad nudge inside the re-pin band still unpins and stays unpinned.
+        state.didStartLiveScroll()
+        state.didLiveScroll(distanceFromBottom: 4, movedUpward: true)
+        #expect(state.mode == .userScrolledUp)
+        state.didEndLiveScroll(distanceFromBottom: 4)
+        #expect(state.mode == .userScrolledUp)
+
+        // Scrolling back down into the band re-pins at gesture end.
+        state.didStartLiveScroll()
+        state.didLiveScroll(distanceFromBottom: 3, movedUpward: false)
+        state.didEndLiveScroll(distanceFromBottom: 3)
+        #expect(state.mode == .pinnedToBottom)
+
+        // Same for small legacy wheel steps.
+        state.didLegacyWheelScroll(distanceFromBottom: 3, movedUpward: true)
+        #expect(state.mode == .userScrolledUp)
+        state.didLegacyWheelScroll(distanceFromBottom: 6, movedUpward: true)
+        #expect(state.mode == .userScrolledUp)
+        state.didLegacyWheelScroll(distanceFromBottom: 0, movedUpward: false)
+        #expect(state.mode == .pinnedToBottom)
+    }
+
+    @Test @MainActor func userScrollUpIsNotPulledBackByStreaming() {
+        for isLive in [true, false] {
+            let theme = PCodeTranscriptTheme.make(background: .white, foreground: .black)
+            let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+            scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 300)
+            scrollView.layoutSubtreeIfNeeded()
+            let doc = scrollView.transcriptDocumentView
+            let clip = scrollView.contentView
+
+            doc.beginStreamingTurn(prompt: "Stream a long answer")
+            doc.beginStreamingMessage(id: "msg-1")
+            for i in 0..<40 {
+                doc.appendStreamingDelta("Paragraph \(i) with enough words to wrap a little.\n\n")
+            }
+            #expect(doc.stickyBottom.mode == .pinnedToBottom)
+
+            // Scroll up a few points, as a slow trackpad drag or a smooth mouse wheel would.
+            if isLive { doc.handleWillStartLiveScroll() }
+            clip.scroll(to: CGPoint(x: 0, y: clip.bounds.origin.y - 4))
+            doc.handleBoundsDidChange()
+            if isLive { doc.handleDidEndLiveScroll() }
+            #expect(doc.stickyBottom.mode == .userScrolledUp)
+
+            let readingY = clip.bounds.origin.y
+            for i in 0..<10 {
+                doc.appendStreamingDelta("More streamed text \(i).\n\n")
+            }
+            #expect(abs(clip.bounds.origin.y - readingY) < 0.5)
+            #expect(doc.stickyBottom.mode == .userScrolledUp)
+        }
+    }
+
     @Test func stickyBottomHandlesLegacyWheelAndUserActions() {
         var state = PCodeStickyBottomState()
         state.didLegacyWheelScroll(distanceFromBottom: 24, movedUpward: true)
