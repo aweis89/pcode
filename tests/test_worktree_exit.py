@@ -440,18 +440,19 @@ def test_restore_recreates_a_session_worktree_on_its_surviving_branch(repo):
     created = worktree.create(repo, "pcode-abc")
     commit(created.path, "kept.txt")
     worktree.remove(created, force=True)
-    restored = worktree.restore(created.path, "owner-id")
-    assert restored is not None and restored.path == created.path
+    note = worktree.restore(created.path, ("owner-id", "", "original-id"))
+    assert note and "recreated it on branch pcode-abc" in note and "fresh" not in note
     assert (created.path / "kept.txt").exists()
-    assert worktree.owners_of(restored) == {"owner-id"}
+    assert worktree.owners_of(worktree.describe(created.path)) == {"owner-id", "original-id"}
+    assert worktree.restore(created.path) is None  # There already.
 
 
 def test_restore_starts_a_fresh_branch_when_the_old_one_is_gone(repo):
     created = worktree.create(repo, "pcode-abc")
     worktree.remove(created, force=True)
     git(repo, "branch", "-D", "pcode-abc")
-    restored = worktree.restore(created.path)
-    assert restored is not None and restored.branch == "pcode-abc"
+    note = worktree.restore(created.path)
+    assert note and "started fresh from main" in note
     assert git(created.path, "rev-parse", "HEAD") == git(repo, "rev-parse", "main")
 
 
@@ -461,6 +462,16 @@ def test_restore_leaves_anything_but_a_session_worktree_alone(repo, tmp_path):
     assert worktree.restore(hand.path) is None
     assert worktree.restore(tmp_path / ".worktrees" / "pcode-x") is None  # No repository.
     assert not hand.path.exists()
+
+
+def test_restore_waits_while_a_removal_holds_the_lock(repo):
+    from pcode.task_worktrees import parent_operation
+
+    created = worktree.create(repo, "pcode-abc")
+    worktree.remove(created, force=True)
+    with parent_operation(created.path, repo):
+        assert worktree.restore(created.path) is None
+    assert not created.path.exists()
 
 
 def test_a_turn_recreates_a_workspace_deleted_from_elsewhere(repo, tmp_path):
@@ -473,7 +484,24 @@ def test_a_turn_recreates_a_workspace_deleted_from_elsewhere(repo, tmp_path):
     try:
         assert created.path.is_dir()
         assert any("recreated it on branch pcode-abc" in note for note in notes)
-        assert worktree.owners_of(worktree.describe(created.path)) == {"owner-id"}
+        owners = worktree.owners_of(worktree.describe(created.path))
+        assert owners == {"owner-id", session.info.id}
+    finally:
+        session.close()
+
+
+def test_a_turn_leaves_a_workspace_removed_on_purpose(repo, tmp_path):
+    """`/worktree remove` repoints the session and flags it; neither is undone."""
+    created, session, app = make(repo, tmp_path)
+    worktree.remove(created, force=True)
+    app.controller.workspace_removed = True
+    asyncio.run(app.controller.restore_workspace())
+    assert not created.path.exists()
+    app.controller.workspace_removed = False
+    session.info.workspace = str(repo)  # As `_leave_worktree` repoints it.
+    asyncio.run(app.controller.restore_workspace())
+    try:
+        assert not created.path.exists()
     finally:
         session.close()
 

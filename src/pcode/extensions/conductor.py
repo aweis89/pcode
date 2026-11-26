@@ -218,7 +218,7 @@ async def _resume_session_host(
             from pcode.worktree import restore
 
             # A session worktree deleted from elsewhere comes back at its path.
-            await asyncio.to_thread(restore, workspace, info.id)
+            await asyncio.to_thread(restore, workspace, (info.id, info.forked_from or ""))
         if not workspace.is_dir():
             raise ToolFailed(
                 f"Session {info.id}'s workspace ({workspace}) no longer exists; "
