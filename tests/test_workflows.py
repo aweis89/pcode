@@ -248,11 +248,57 @@ def test_a_delegate_task_worker_gets_neither_the_tool_nor_its_guidance(tmp_path)
 
 
 def test_the_script_is_displayed_like_run_code(tmp_path):
+    from pydantic_ai.messages import (
+        FunctionToolCallEvent,
+        PartDeltaEvent,
+        PartEndEvent,
+        ToolCallPartDelta,
+    )
+
+    from pcode.runtime import EditPreview
+
     assert LABELS["run_workflow"] == "Run workflow"
     assert target("run_workflow", {"code": SCRIPT}) == target("run_code", {"code": SCRIPT})
+
+    snippet = (
+        "hits = await grep(pattern='TODO')\n"
+        "await read_file(path='a.py')\n"
+        "await read_file(path='b.py')\n"
+        "# read_file('comment')"
+    )
+    assert target("run_workflow", {"code": snippet}) == "grep · read_file ×2 · 4 lines"
+    assert target("run_workflow", {"code": "1 + 1"}) == "1 line"
+    assert target("run_workflow", {"code": "read_file(path="}) == "1 line"
+    assert target("run_workflow", {}) == "code unavailable"
 
     def preview(name):
         part = ToolCallPart(name, {"code": SCRIPT})
         return StreamingEditPreview(tmp_path).update(PartStartEvent(index=0, part=part))
 
     assert preview("run_workflow") and preview("run_workflow") == preview("run_code")
+
+    stream = StreamingEditPreview(tmp_path)
+    start = PartStartEvent(
+        index=0, part=ToolCallPart("run_workflow", '{"code":"', tool_call_id="a")
+    )
+    assert stream.update(start) == []
+    stream.updated[0] = 0
+    delta = PartDeltaEvent(
+        index=0,
+        delta=ToolCallPartDelta(args_delta="await grep(pattern='TODO')\\nlen(hits)"),
+    )
+    assert stream.update(delta) == [
+        EditPreview("edit-preview:0", "run_code", "await grep(pattern='TODO')\n", kind="code")
+    ]
+    end_part = ToolCallPart(
+        "run_workflow", {"code": "await grep(pattern='TODO')\nlen(hits)"}, tool_call_id="a"
+    )
+    assert stream.update(PartEndEvent(index=0, part=end_part)) == [
+        EditPreview(
+            "edit-preview:0",
+            "run_code",
+            "await grep(pattern='TODO')\nlen(hits)",
+            kind="code",
+        )
+    ]
+    assert stream.update(FunctionToolCallEvent(part=end_part)) == [EditPreview("edit-preview:0")]
