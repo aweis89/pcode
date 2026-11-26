@@ -220,6 +220,34 @@ struct PCodeLaunchTests {
         #expect(fish.command.contains("; else; exec pcode; end"))
     }
 
+    /// The env-cache probe must parse in every login shell: under fish a POSIX
+    /// `p=$(…)` failed outright, so every pane took the slow fallback.
+    @Test func loginShellProbeRunsInPOSIXShellsAndFish() throws {
+        var shells = ["/bin/zsh", "/bin/bash", "/bin/sh"]
+        for fish in ["/opt/homebrew/bin/fish", "/usr/local/bin/fish"]
+        where FileManager.default.isExecutableFile(atPath: fish) {
+            shells.append(fish)
+        }
+        for shell in shells {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: shell)
+            let noConfig = shell.hasSuffix("fish") ? ["--no-config"] : []
+            proc.arguments = noConfig + ["-c", PCodeWorkspaceMode.loginShellProbe(shell: shell, command: "sh")]
+            proc.environment = ["PATH": "/usr/bin:/bin", "PROBE_MARK": "1"]
+            let out = Pipe()
+            proc.standardOutput = out
+            proc.standardError = FileHandle.nullDevice
+            try proc.run()
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            #expect(proc.terminationStatus == 0, "\(shell)")
+            let fields = data.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+            #expect(fields.contains("__PCODE_ENV_START__"), "\(shell)")
+            #expect(fields.contains("/bin/sh"), "\(shell)")
+            #expect(fields.contains("PROBE_MARK=1"), "\(shell)")
+        }
+    }
+
     @Test func recognisesPCodeAndHostCommandLines() {
         let framework = "/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python"
         #expect(PCodeProcess.isPCode(arguments: ["/Users/me/.local/bin/pcode", "--host"]))

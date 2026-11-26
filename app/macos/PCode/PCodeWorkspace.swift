@@ -160,6 +160,15 @@ enum PCodeWorkspaceMode {
             || key.hasPrefix("__XCODE_")
     }
 
+    /// The `-c` script that prints the sentinel, `command`'s resolved path and
+    /// the login shell's environment. It is POSIX sh; fish can't parse it, so
+    /// under fish it runs in `/bin/sh`, which inherits fish's exported setup.
+    static func loginShellProbe(shell: String, command: String) -> String {
+        let probe = "p=$(command -v \(PCode.shellQuoted(command)) 2>/dev/null) || exit 1; printf '\\0%s\\0%s\\0' \(PCode.shellQuoted(envSentinel)) \"$p\"; /usr/bin/env -0"
+        guard URL(fileURLWithPath: shell).lastPathComponent == "fish" else { return probe }
+        return "exec /bin/sh -c \(fishQuoted(probe))"
+    }
+
     /// Warm the login-shell cache once in the background. Safe to call repeatedly.
     static func warmLoginShellCache() {
         cacheLock.lock()
@@ -168,14 +177,19 @@ enum PCodeWorkspaceMode {
             return
         }
         cacheStarted = true
+        // Entered under the lock, so `awaitLoginShellCache` never sees the
+        // warm-up started but the group still empty.
+        cacheWarming.enter()
         cacheLock.unlock()
 
         let shell = loginShell
         let cmd = command
         let baseEnv = ProcessInfo.processInfo.environment.filter { !isSkippedEnvKey($0.key) }
+        PCodeStartupTrace.mark("login-shell env warm start")
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let probe = "p=$(command -v \(PCode.shellQuoted(cmd)) 2>/dev/null) || exit 1; printf '\\0%s\\0%s\\0' \(PCode.shellQuoted(envSentinel)) \"$p\"; /usr/bin/env -0"
+            defer { cacheWarming.leave() }
+            let probe = loginShellProbe(shell: shell, command: cmd)
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: shell)
             proc.arguments = ["-l", "-c", probe]
@@ -238,7 +252,19 @@ enum PCodeWorkspaceMode {
             cacheLock.lock()
             cachedEnv = CachedShellEnv(commandPath: resolvedPath, direnvPath: direnvPath, env: env)
             cacheLock.unlock()
+            PCodeStartupTrace.mark("login-shell env cached")
         }
+    }
+
+    /// Settles when the warm-up started by `warmLoginShellCache` ends, ready or failed.
+    private static let cacheWarming = DispatchGroup()
+
+    /// Block (off the main thread) up to `timeout` for the login-shell cache,
+    /// so panes made right after launch take the direct command rather than
+    /// each paying for its own login shell. Starts the warm-up if needed.
+    static func awaitLoginShellCache(timeout: TimeInterval) {
+        warmLoginShellCache()
+        _ = cacheWarming.wait(timeout: .now() + timeout)
     }
 
     /// Direct command + cached login-shell env once ready, else the login-shell fallback.
@@ -686,17 +712,17 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             .filter { $0 }
             .first()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.markReady() }
+            .sink { [weak self] _ in self?.markReady(via: "dock") }
         // pcode asks the user something before its editor starts: show it now.
         inputSubscription = surface.pcodeDock.$needsInput
             .filter { $0 }
             .first()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.markReady() }
+            .sink { [weak self] _ in self?.markReady(via: "input") }
 
         // Safety escape hatch: if pcode errors out or never enables the dock,
         // drop the boot overlay so the terminal output is always visible.
-        let safety = DispatchWorkItem { [weak self] in self?.markReady() }
+        let safety = DispatchWorkItem { [weak self] in self?.markReady(via: "safety timeout") }
         readySafetyWork = safety
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: safety)
     }
@@ -722,8 +748,9 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     }
 
     /// Dismiss the startup overlay once pcode is live.
-    func markReady() {
+    func markReady(via reason: String = "direct") {
         guard !isReady else { return }
+        PCodeStartupTrace.paneReady(via: reason)
         readyFallbackWork?.cancel()
         readyFallbackWork = nil
         readySafetyWork?.cancel()
@@ -736,7 +763,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     func noteSessionReported() {
         guard !isReady, readyFallbackWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            self?.markReady()
+            self?.markReady(via: "session fallback")
         }
         readyFallbackWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
@@ -942,6 +969,7 @@ final class PCodeWorkspace: ObservableObject {
 
     init(ghostty: Ghostty.App) {
         self.ghostty = ghostty
+        PCodeStartupTrace.mark("workspace init")
         PCodeWorkspaceMode.warmLoginShellCache()
         peek.onTargetChange = { [weak self] in
             guard let self else { return }
@@ -1160,21 +1188,57 @@ final class PCodeWorkspace: ObservableObject {
         guard !restarting, !restoring else { return }
         restoring = true
         hasRestored = true
+        PCodeStartupTrace.mark("restore start")
         let saved = UserDefaults.standard.stringArray(forKey: Self.openKey) ?? []
         let marked = Self.restartMarker()
         let selectedID = UserDefaults.standard.string(forKey: Self.selectedKey)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Two things run at once: the history load (which fills the sidebar
+        // as soon as it lands) and, off the main thread, the waits below.
+        // The panes reopen when both are done.
+        let steps = DispatchGroup()
+        var loaded: [PCodeSessionInfo] = []
+        steps.enter()
+        reloadHistory { all in
+            loaded = all
+            steps.leave()
+        }
+        var ready: Set<String> = []
+        var hosted: Set<String> = []
+        var openElsewhere: Set<String> = []
+        steps.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
             // Sessions a Restart Pcode just moved may still be on their way
             // into their hosts.
-            let ready = PCodeSessionInfo.awaitRestarted(marked)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.restoring = false
-                Self.clearRestartMarker()
-                self.reloadHistory { [weak self] all in
-                    guard let self, self.panes.isEmpty else { return }
-                    self.reopen(saved: saved, marked: Set(marked), ready: ready, all: all, selectedID: selectedID)
-                }
+            ready = PCodeSessionInfo.awaitRestarted(marked)
+            PCodeStartupTrace.mark("restarted sessions awaited (\(marked.count))")
+            // The panes launch next: without the login shell's env each runs
+            // its own login shell to start pcode. Bounded; a slow shell
+            // config falls back to that as before.
+            PCodeWorkspaceMode.awaitLoginShellCache(timeout: 2)
+            PCodeStartupTrace.mark("login-shell env awaited")
+            // What `reopen` checks, read here rather than on the main thread.
+            hosted = PCodeSessionInfo.hosted()
+            openElsewhere = Set(saved.filter { !hosted.contains($0) && PCodeSessionInfo.isOpen($0) })
+            steps.leave()
+        }
+        steps.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.restoring = false
+            Self.clearRestartMarker()
+            let reopen: ([PCodeSessionInfo]) -> Void = { [weak self] all in
+                PCodeStartupTrace.mark("history loaded (\(all.count) sessions)")
+                guard let self, self.panes.isEmpty else { return }
+                self.reopen(
+                    saved: saved, marked: Set(marked), ready: ready, all: all, selectedID: selectedID,
+                    hosted: hosted, openElsewhere: openElsewhere)
+                PCodeStartupTrace.mark("reopen done (\(self.panes.count) panes)")
+            }
+            // Restarted sessions' hosts registered during the wait: reload
+            // to list them. Otherwise the load above is current enough.
+            if marked.isEmpty {
+                reopen(loaded)
+            } else {
+                self.reloadHistory(then: reopen)
             }
         }
     }
@@ -1185,12 +1249,12 @@ final class PCodeWorkspace: ObservableObject {
 
     private func reopen(
         saved: [String], marked: Set<String>, ready: Set<String>,
-        all: [PCodeSessionInfo], selectedID: String?
+        all: [PCodeSessionInfo], selectedID: String?,
+        hosted: Set<String>, openElsewhere: Set<String>
     ) {
         let infos = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        // Any session a host holds, even one a terminal is attached to as
-        // well: `pcode -c` attaches to the host, and the window shows them all.
-        let hosted = PCodeSessionInfo.hosted()
+        // Any session a host holds (`hosted`), even one a terminal is attached
+        // to as well: `pcode -c` attaches to the host, and the window shows them all.
         let extra = all.map(\.id).filter { hosted.contains($0) && !saved.contains($0) }
         for id in saved + extra {
             guard let info = infos[id] else { continue }
@@ -1198,7 +1262,7 @@ final class PCodeWorkspace: ObservableObject {
             // without a host: that would start a copy of it here instead.
             // A restarted one may have been seen ready before its host
             // registered.
-            let openable = hosted.contains(id) || (marked.contains(id) ? ready.contains(id) : !PCodeSessionInfo.isOpen(id))
+            let openable = hosted.contains(id) || (marked.contains(id) ? ready.contains(id) : !openElsewhere.contains(id))
             if openable { open(info, select: false) }
         }
         if !panes.isEmpty {
@@ -1238,6 +1302,7 @@ final class PCodeWorkspace: ObservableObject {
                 }
                 // Unchanged (the usual periodic reload): don't redraw the sidebar.
                 if trimmed != self.history { self.history = trimmed }
+                PCodeStartupTrace.mark("sidebar history set", once: true)
                 let callbacks = self.pendingHistoryCallbacks
                 self.pendingHistoryCallbacks.removeAll()
                 callbacks.forEach { $0(all) }
@@ -2408,6 +2473,7 @@ final class PCodeWorkspace: ObservableObject {
         // pcode keeps its own startup errors on screen until Enter (`hold_failed_start`).
         config.waitAfterCommand = false
         let view = Ghostty.SurfaceView(app, baseConfig: config)
+        PCodeStartupTrace.paneCreated(launch.command.hasPrefix("/usr/bin/env") ? "direct" : "login-shell fallback")
         view.pcodeSession = sessionID
         PCode.applyColorScheme(to: view)
         let pane = PCodeSessionPane(
@@ -4279,6 +4345,9 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
 
     /// Show the window, restoring sessions once on first open.
     static func show(_ ghostty: Ghostty.App) {
+        PCodeStartupTrace.mark("show workspace", once: true)
+        // First show: start the login shell now, beside building the window.
+        if instance == nil { PCodeWorkspaceMode.warmLoginShellCache() }
         let controller = shared(ghostty)
         if !controller.workspace.hasRestored {
             controller.workspace.restore()
@@ -4289,6 +4358,7 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        PCodeStartupTrace.mark("window shown", once: true)
     }
 
     private init(ghostty: Ghostty.App) {
