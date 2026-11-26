@@ -4526,7 +4526,13 @@ class PromptLayout:
                 lambda: panel_fragments(self.queue_rows(), self.size().columns - 1),
                 lambda: len(self.queue_rows()),
             ),
-            filter=Condition(lambda: bool(self.activity.queued_prompts) and not self.btw_docked()),
+            filter=Condition(
+                lambda: (
+                    bool(self.activity.queued_prompts)
+                    and not self.btw_docked()
+                    and not isinstance(dock.active(), dock.EditorOnly)
+                )
+            ),
         )
 
     def glide_reserve(self) -> ConditionalContainer:

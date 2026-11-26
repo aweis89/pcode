@@ -2050,6 +2050,15 @@ class AntigravityStream(StreamedResponse):
                     self._stage_pending_steers()
                 self.step_open = True
                 self.step_emitted = True
+            elif (
+                kind == "tool_call"
+                and self.pending_steer_commits
+                and not self.step_open
+                and not self._has_running_tools()
+                and flush_deadline is None
+            ):
+                # Step 2 started directly with a tool call (no text/thinking preamble).
+                self._stage_pending_steers()
             substantive_wake = _is_wake_update(
                 update, buffering=reply_open, daemon_tools=session.daemon_tools
             )
@@ -2059,22 +2068,18 @@ class AntigravityStream(StreamedResponse):
                 self.events_seen = True
                 yield event
             if kind == "usage_update":
-                used = update.get("used")
-                if self.step_emitted or (type(used) is int and used > 0):
+                if self.step_emitted:
                     self.step_open = False
                     self.step_emitted = False
-                    if (
-                        self.pending_steer_commits
-                        and not self._has_running_tools()
-                        and self.part_kind not in {"text", "thinking"}
-                    ):
+                    if self.pending_steer_commits and not self._has_running_tools():
                         # Brief grace window in case a tool_call from this step follows immediately.
                         flush_deadline = loop.time() + 0.05
             elif kind in {"tool_call", "tool_call_update"}:
+                self.step_open = False
                 self.step_emitted = True
                 if self._has_running_tools():
                     flush_deadline = None
-                elif self.pending_steer_commits and not self.step_open:
+                elif self.pending_steer_commits:
                     flush_deadline = None
                     self._stage_pending_steers()
             if self.holding:

@@ -1772,6 +1772,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         body()
     }
 
+    /// Run an AppKit `contentInsets` change without its bounds clamping being mistaken for a user scroll.
+    func withInsetAdjustmentSuppressed(_ body: () -> Void) {
+        let wasApplying = isApplyingDocumentHeight
+        isApplyingDocumentHeight = true
+        defer { isApplyingDocumentHeight = wasApplying }
+        body()
+    }
+
     /// Re-pin to bottom without smooth glide when the bottom dock inset changes.
     func repinToBottomForInsetChange() {
         guard stickyBottom.shouldProgrammaticallyPin else { return }
@@ -3529,6 +3537,7 @@ final class PCodeTranscriptScrollView: NSScrollView {
     private var preferencesCancellable: AnyCancellable?
     private var promptStyleCancellable: AnyCancellable?
     private var bottomContentInsetValue: CGFloat = 0
+    private var extraBottomScrollPaddingValue: CGFloat = 0
     private var lastClipHeight: CGFloat = 0
     /// Optional predicate gating `⌘F`/`⌘G`/`⌘⇧G` so the scroll view never steals shortcuts
     /// from overlays, `/btw` drawer, or the `⌘J` bottom shell.
@@ -3548,13 +3557,33 @@ final class PCodeTranscriptScrollView: NSScrollView {
             let clamped = max(0, newValue)
             guard abs(clamped - bottomContentInsetValue) > 0.5 else { return }
             bottomContentInsetValue = clamped
-            automaticallyAdjustsContentInsets = false
-            contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: clamped, right: 0)
-            scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: clamped, right: 0)
-            needsLayout = true
-            if transcriptDocumentView.stickyBottom.shouldProgrammaticallyPin {
-                transcriptDocumentView.repinToBottomForInsetChange()
-            }
+            applyBottomInsets()
+        }
+    }
+
+    /// Additional bottom scrollback clearance for transient floating overlays (e.g. pending
+    /// steering/queued bubbles). Unlike `bottomContentInset`, this only pads `contentInsets.bottom`
+    /// so `Jump to bottom`, the dissolve fade, and the scrollbar stay anchored to the dock.
+    var extraBottomScrollPadding: CGFloat {
+        get { extraBottomScrollPaddingValue }
+        set {
+            let clamped = max(0, newValue)
+            guard abs(clamped - extraBottomScrollPaddingValue) > 0.5 else { return }
+            extraBottomScrollPaddingValue = clamped
+            applyBottomInsets()
+        }
+    }
+
+    private func applyBottomInsets() {
+        let totalBottom = bottomContentInsetValue + extraBottomScrollPaddingValue
+        automaticallyAdjustsContentInsets = false
+        transcriptDocumentView.withInsetAdjustmentSuppressed {
+            contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: totalBottom, right: 0)
+            scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottomContentInsetValue, right: 0)
+        }
+        needsLayout = true
+        if transcriptDocumentView.stickyBottom.shouldProgrammaticallyPin {
+            transcriptDocumentView.repinToBottomForInsetChange()
         }
     }
 

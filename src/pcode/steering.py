@@ -68,7 +68,12 @@ class Steering(AbstractCapability):
         """
         if self.commit_messages is None:
             return await self.take(remind=remind), _noop
-        raw = self.take_messages(defer_commit=True)
+        try:
+            raw = self.take_messages(defer_commit=True)
+        except TypeError:
+            # Fallback for callers whose `take_messages` does not support defer_commit:
+            # `take()` already committed/journaled eagerly, so return a no-op commit.
+            return await self.take(remind=remind), _noop
         committed = False
 
         def commit() -> None:
@@ -80,7 +85,11 @@ class Steering(AbstractCapability):
 
         messages = [str(m) for m in raw]
         if self.prepare is not None:
-            messages = [await self.prepare(message) for message in messages]
+            try:
+                messages = [await self.prepare(message) for message in messages]
+            except BaseException:
+                commit()
+                raise
         if messages and self.reminder and remind:
             messages = [*messages, self.reminder]
         return messages, commit

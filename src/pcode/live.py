@@ -1482,14 +1482,16 @@ class AgentRuntime:
             yield
 
     def _consume_steering(self, run_id: str, *, defer_commit: bool = False) -> list:
-        try:
-            messages = self.take_steering(defer_commit=defer_commit)
-        except TypeError:
-            messages = self.take_steering()
-            defer_commit = False
         if defer_commit:
+            # Let TypeError propagate when `take_steering` doesn't accept `defer_commit`,
+            # so `Steering.take_deferred` falls back to eager `take()` with a no-op commit.
+            messages = self.take_steering(defer_commit=True)
             # Keep `Steer` objects intact so `_commit_steering` records `sent_at`.
             return list(messages)
+        try:
+            messages = self.take_steering(defer_commit=False)
+        except TypeError:
+            messages = self.take_steering()
         self._journal_steering(run_id, messages)
         # Plain text onward: the stamp is for the journal, not the model request.
         return [str(text) for text in messages]

@@ -181,7 +181,7 @@ struct PCodeHostSessionState: Equatable {
             switch rawMode {
             case "steering":
                 mode = .steering
-            case "queue", "interrupt":
+            case "queue", "interrupt", "shell":
                 mode = .queued
             default:
                 continue
