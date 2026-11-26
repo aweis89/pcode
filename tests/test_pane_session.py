@@ -47,6 +47,20 @@ def test_pane_session_sends_changes_and_clears_on_close():
     )
 
 
+def test_pane_session_sends_nothing_before_a_session_exists():
+    """A resuming client ticks before it attaches: an empty marker would wipe the pane's session."""
+    current = [None]
+    read, write = os.pipe()
+    pane = drawer.PaneSession(lambda: current[0], write)
+    pane.tick()
+    current[0] = "one"
+    pane.tick()
+    current[0] = None  # /new before its first turn: clear the old one
+    pane.tick()
+    os.close(write)
+    assert os.read(read, 1024) == b"\x1b_pcode;session;one\x1b\\\x1b_pcode;session;\x1b\\"
+
+
 def test_reconciler_ticks_every_item_and_closes_them():
     import asyncio
 

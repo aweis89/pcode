@@ -132,6 +132,11 @@ class PaneSession:
             identity = self.source() or ""
         except Exception:  # noqa: BLE001 - never worth an error.
             return
+        # Nothing sent yet and nothing to say: a resuming client ticks before it
+        # attaches, and an empty marker then would make the app forget the session
+        # it opened this pane for (and its title) until the host comes up.
+        if not identity and self.sent is None:
+            return
         if identity != self.sent and _write_all(self.fd, self.marker(identity).encode()):
             self.sent = identity
 

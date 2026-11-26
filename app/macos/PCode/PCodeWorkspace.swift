@@ -522,6 +522,10 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     let resuming: Bool
     /// The session pcode reports (`pcode;session;<id>`), once it has.
     @Published var sessionID: String?
+    /// The saved label of the session this pane was opened to resume, so the
+    /// sidebar names it straight away rather than as a new session until pcode
+    /// boots and reports a title or the saved-session list catches up.
+    var openedLabel: String?
     /// The session host pcode attaches to (`pcode;host;<id>`), even before turn 1 creates a session id.
     @Published var hostID: String?
     /// Last non-empty host id seen for this pane, kept across client teardown so closing stops the host.
@@ -694,6 +698,11 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     }
 
     func clearLastResponseDate() { lastResponseDate = nil }
+
+    /// The saved label to fall back on while the terminal has no title yet.
+    func savedLabel(saved: PCodeSessionInfo?) -> String? {
+        saved?.label ?? openedLabel
+    }
 
     /// Timestamp of the last completed response for this pane (nil for brand-new 0-turn panes).
     func lastResponseDate(saved: PCodeSessionInfo?) -> Date? {
@@ -927,8 +936,11 @@ final class PCodeWorkspace: ObservableObject {
                   let pane = self.panes.first(where: { $0.surface === view }) else { return }
             let old = pane.sessionID
             pane.sessionID = view.pcodeSession
-            // `/new` or `/resume` swapped sessions: the previous one's response time no longer applies.
-            if let old, old != view.pcodeSession { pane.clearLastResponseDate() }
+            // `/new` or `/resume` swapped sessions: the previous one's response time and label no longer apply.
+            if let old, old != view.pcodeSession {
+                pane.clearLastResponseDate()
+                pane.openedLabel = nil
+            }
             pane.hostID = view.pcodeHost
             if let host = view.pcodeHost { pane.lastHostID = host }
             pane.noteSessionReported()
@@ -953,6 +965,11 @@ final class PCodeWorkspace: ObservableObject {
 
     private var reconcileTimer: Timer?
     private static let reconcileInterval: TimeInterval = 5
+    /// How often the reconcile tick rereads saved sessions. History otherwise
+    /// reloads only on this window's own events, so sessions updated elsewhere
+    /// (a terminal, another window, a worker) went missing or kept a stale age.
+    private static let historyReconcileInterval: TimeInterval = 30
+    private var lastHistoryReload = Date.distantPast
     /// How long a new pane's pcode gets to start before its terminal is judged.
     private static let reconcileGrace: TimeInterval = 10
 
@@ -969,6 +986,9 @@ final class PCodeWorkspace: ObservableObject {
             now.timeIntervalSince(pane.createdAt) > Self.reconcileGrace && Self.processGone(pane.surface)
         }
         dead.forEach(close)
+        if now.timeIntervalSince(lastHistoryReload) >= Self.historyReconcileInterval {
+            reloadHistory()
+        }
     }
 
     /// Whether `view`'s command has exited: Ghostty saw it exit, or no process
@@ -1126,6 +1146,7 @@ final class PCodeWorkspace: ObservableObject {
     /// and any callbacks queued by superseded loads still run once it completes.
     func reloadHistory(then done: (([PCodeSessionInfo]) -> Void)? = nil) {
         if let done { pendingHistoryCallbacks.append(done) }
+        lastHistoryReload = Date()
         historyGeneration += 1
         let generation = historyGeneration
         let unseen = unseenIDs
@@ -1148,7 +1169,8 @@ final class PCodeWorkspace: ObservableObject {
                     self.unseenIDs.subtract(gone)
                     self.starredSessionIDs.subtract(gone)
                 }
-                self.history = trimmed
+                // Unchanged (the usual periodic reload): don't redraw the sidebar.
+                if trimmed != self.history { self.history = trimmed }
                 let callbacks = self.pendingHistoryCallbacks
                 self.pendingHistoryCallbacks.removeAll()
                 callbacks.forEach { $0(all) }
@@ -1742,7 +1764,7 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     func displayTitle(for pane: PCodeSessionPane) -> String {
-        Self.displayTitle(paneTitle: pane.title, savedLabel: info(for: pane)?.label)
+        Self.displayTitle(paneTitle: pane.title, savedLabel: pane.savedLabel(saved: info(for: pane)))
     }
 
     func projectName(for pane: PCodeSessionPane) -> String {
@@ -1754,7 +1776,7 @@ final class PCodeWorkspace: ObservableObject {
 
     func peekTarget(for pane: PCodeSessionPane) -> PCodePeekTarget {
         let saved = info(for: pane)
-        let title = Self.displayTitle(paneTitle: pane.title, savedLabel: saved?.label)
+        let title = Self.displayTitle(paneTitle: pane.title, savedLabel: pane.savedLabel(saved: saved))
         let responseDate = pane.lastResponseDate(saved: saved)
         return PCodePeekTarget(
             sessionID: pane.sessionID,
@@ -1870,6 +1892,7 @@ final class PCodeWorkspace: ObservableObject {
             projectPath: project,
             sessionID: info.id
         ) else { return }
+        pane.openedLabel = info.label
         adopt(pane)
         panes.append(pane)
         schedulePresize()
@@ -3273,7 +3296,7 @@ private struct PCodePaneRow<Actions: View>: View {
     @ViewBuilder var actions: () -> Actions
 
     var body: some View {
-        let title = PCodeWorkspace.displayTitle(paneTitle: pane.title, savedLabel: info?.label)
+        let title = PCodeWorkspace.displayTitle(paneTitle: pane.title, savedLabel: pane.savedLabel(saved: info))
         let worktree = info?.worktreeName ?? pane.worktreeName
         let responseDate = pane.lastResponseDate(saved: info)
         PCodeSessionRow(
