@@ -92,7 +92,10 @@ struct PCodeBtwDrawerTests {
 
     @Test func answeredAsideIsSidePromptThenProse() {
         let items = PCodeBtwThread.items(for: [Self.aside("a"), Self.aside("b")], docked: false)
-        #expect(items.map(\.id) == ["btw-a-prompt", "btw-a-md-0-0", "btw-b-prompt", "btw-b-md-0-0"])
+        #expect(items.map(\.id) == [
+            "btw-a-prompt", "btw-a-md-0-0", "btw-a-md-0-actions",
+            "btw-b-prompt", "btw-b-md-0-0", "btw-b-md-0-actions",
+        ])
         guard case .prompt(let label, let text, let isSide) = items[0].payload else {
             Issue.record("not a prompt")
             return
@@ -101,7 +104,7 @@ struct PCodeBtwDrawerTests {
         #expect(text == "Question a?")
         #expect(isSide)
         // Only a thread's first question says where it runs.
-        if case .prompt(let followUp, _, _) = items[2].payload { #expect(followUp == "/btw") }
+        if case .prompt(let followUp, _, _) = items[3].payload { #expect(followUp == "/btw") }
         guard case .prose(let markdown, _, _) = items[1].payload else {
             Issue.record("not prose")
             return
@@ -164,8 +167,10 @@ struct PCodeBtwDrawerTests {
         #expect(steps == [
             .remove("btw-a-status"),
             .upsert("btw-a-md-0-0", at: 1),
-            .upsert("btw-b-prompt", at: 2),
-            .upsert("btw-b-md-0-0", at: 3),
+            .upsert("btw-a-md-0-actions", at: 2),
+            .upsert("btw-b-prompt", at: 3),
+            .upsert("btw-b-md-0-0", at: 4),
+            .upsert("btw-b-md-0-actions", at: 5),
         ])
         #expect(PCodeTranscriptItemSync.plan(from: new, to: new).isEmpty)
         #expect(PCodeTranscriptItemSync.plan(from: [], to: new) == [.reset])
