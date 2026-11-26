@@ -613,35 +613,20 @@ private struct PCodePeekScrollShield: NSViewRepresentable {
         weak var targetSurface: Ghostty.SurfaceView?
 
         override func scrollWheel(with event: NSEvent) {
-            if let transcript = findTranscriptScrollView() {
+            if let transcript = peekedTranscript {
                 transcript.scrollWheel(with: event)
             } else {
                 targetSurface?.scrollWheel(with: event)
             }
         }
 
-        private func findTranscriptScrollView() -> PCodeTranscriptScrollView? {
-            var ancestor: NSView? = superview
-            for _ in 0..<4 {
-                guard let root = ancestor else { break }
-                if let found = Self.firstTranscriptScrollView(in: root) {
-                    return found
-                }
-                ancestor = root.superview
-            }
-            return nil
-        }
-
-        private static func firstTranscriptScrollView(in view: NSView) -> PCodeTranscriptScrollView? {
-            if let scroll = view as? PCodeTranscriptScrollView, !scroll.isHiddenOrHasHiddenAncestor {
-                return scroll
-            }
-            for subview in view.subviews {
-                if let found = firstTranscriptScrollView(in: subview) {
-                    return found
-                }
-            }
-            return nil
+        /// The peeked pane's own transcript, the one its view mounted under this
+        /// shield; never another pane's, which a search of the view tree could find.
+        private var peekedTranscript: PCodeTranscriptScrollView? {
+            guard let transcript = targetSurface?.pcodeTranscriptScrollView,
+                  transcript.window === window,
+                  !transcript.isHiddenOrHasHiddenAncestor else { return nil }
+            return transcript
         }
 
         override func mouseDown(with event: NSEvent) {}

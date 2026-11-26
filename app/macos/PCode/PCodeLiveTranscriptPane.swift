@@ -340,6 +340,8 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> PCodeTranscriptScrollView {
         let scrollView = PCodeTranscriptScrollView(typography: typography, theme: theme)
         scrollView.bottomContentInset = bottomContentInset
+        // So a live peek of this pane scrolls this transcript, not another pane's.
+        composerSurface?.pcodeTranscriptScrollView = scrollView
         wireFocusHandlers(on: scrollView)
         context.coordinator.lastTheme = theme
         context.coordinator.lastTypographySnapshot = typography.snapshot

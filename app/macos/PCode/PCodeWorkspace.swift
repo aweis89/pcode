@@ -148,6 +148,7 @@ enum PCodeWorkspaceMode {
         "TERM_PROGRAM_VERSION", "COLORTERM", "TERM_SESSION_ID",
         "TERMINFO", "XDG_DATA_DIRS", "MANPATH", "VTE_VERSION", "LANGUAGE",
         "PCODE_DOCK", "PCODE_EDITOR_ONLY", "PCODE_NATIVE_TRANSCRIPT", "PCODE_HUSH_LOGIN",
+        "PCODE_HOST_ID",
     ]
 
     private static let envSentinel = "__PCODE_ENV_START__"
@@ -525,6 +526,9 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     @Published var hostID: String?
     /// Last non-empty host id seen for this pane, kept across client teardown so closing stops the host.
     var lastHostID: String?
+    /// The id the app asked pcode to start this pane's host with (`PCODE_HOST_ID`),
+    /// so closing the pane stops that host even before it has reported itself.
+    var launchHostID: String?
     /// True once pcode has painted its ready UI (dock ready, or fallback timeout).
     @Published private(set) var isReady = false
     @Published private(set) var shell: Ghostty.SurfaceView?
@@ -1969,7 +1973,7 @@ final class PCodeWorkspace: ObservableObject {
         guard let index = panes.firstIndex(where: { $0 === pane }) else { return }
         panes.remove(at: index)
         let shouldStopHost = !restarting
-        let hostID = pane.hostID ?? pane.lastHostID ?? pane.hostStatus?.hostID
+        let hostID = pane.hostID ?? pane.lastHostID ?? pane.hostStatus?.hostID ?? pane.launchHostID
         let sessionID = pane.sessionID
         if let shell = pane.shell { PCode.retire(shell) }
         PCode.retire(pane.surface)
@@ -2044,15 +2048,27 @@ final class PCodeWorkspace: ObservableObject {
         config.environmentVariables["PCODE_NATIVE_TRANSCRIPT"] = "1"
         // Suppress macOS `login(1)` "Last login:" banner in pcode session panes.
         config.environmentVariables["PCODE_HUSH_LOGIN"] = "1"
+        // The id of the host pcode starts, known here before the host boots and
+        // reports it, so closing the pane early still stops it.
+        let launchHostID = Self.newHostID()
+        config.environmentVariables["PCODE_HOST_ID"] = launchHostID
+        // pcode keeps its own startup errors on screen until Enter (`hold_failed_start`).
         config.waitAfterCommand = false
         let view = Ghostty.SurfaceView(app, baseConfig: config)
         view.pcodeSession = sessionID
         PCode.applyColorScheme(to: view)
-        return PCodeSessionPane(
+        let pane = PCodeSessionPane(
             surface: view,
             directory: resolvedDir,
             projectPath: resolvedProject,
             sessionID: sessionID)
+        pane.launchHostID = launchHostID
+        return pane
+    }
+
+    /// A fresh host id in pcode's format (`new_host_id`: 8 lowercase hex digits).
+    static func newHostID() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
     }
 
     private func surfaceClosed(_ view: Ghostty.SurfaceView, processAlive: Bool) {

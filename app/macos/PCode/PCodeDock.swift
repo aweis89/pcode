@@ -8,7 +8,11 @@ import SwiftUI
 /// directly on the pane's single `Ghostty.SurfaceView`, which is laid out as
 /// `PCodeDockCard` below the native transcript (`PCodeMainWindowTranscriptView`).
 ///
-/// - `pcode;ready`: show the card and give it the keyboard.
+/// Until pcode's editor is ready the surface fills the pane instead, unclipped,
+/// so whatever pcode prints before then (the trust prompt, startup errors) is
+/// seen and answered at full height.
+///
+/// - `pcode;ready`: switch to the card and give it the keyboard.
 /// - `pcode;dock-rows;<n>`: the rows its layout needs.
 final class PCodeDock: NSObject, ObservableObject {
     @Published private(set) var ready = false
@@ -40,6 +44,20 @@ final class PCodeDock: NSObject, ObservableObject {
             padding = cardPadding
         }
         return CGFloat(rows) * cell + padding
+    }
+
+    /// The height of the editor terminal that takes clicks, from its bottom
+    /// edge: the card's while shown (the rest of the grid is clipped off), or
+    /// nil, the whole terminal, before pcode is ready and it fills the pane.
+    static func visibleHeight(ready: Bool, rows: Int, cell: CGFloat, surfaceRows: Int? = nil) -> CGFloat? {
+        guard ready, cell > 0 else { return nil }
+        return cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows)
+    }
+
+    /// The editor terminal's frame height in a pane of `paneHeight`: a fixed
+    /// `gridRows` grid once ready, or the whole pane inside the card's margins before.
+    static func editorHeight(ready: Bool, cell: CGFloat, paneHeight: CGFloat) -> CGFloat {
+        ready ? cardHeight(rows: gridRows, cell: cell) : max(0, paneHeight - topMargin - bottomMargin)
     }
 
     /// Everything the card covers at the bottom of pcode's pane for `rows`
@@ -124,9 +142,6 @@ final class PCodeDock: NSObject, ObservableObject {
             guard let wanted = Int(parts[1]) else { return }
             let clamped = min(Self.maxRows, max(1, wanted))
             if clamped != rows { rows = clamped }
-        case "dock-close":
-            ready = false
-            rows = 3
         default:
             break
         }
@@ -134,7 +149,8 @@ final class PCodeDock: NSObject, ObservableObject {
 }
 
 /// A session pane's content: the native AppKit transcript, the `/btw` drawer,
-/// and pcode's single terminal surface laid out as the docked editor card.
+/// and pcode's single terminal surface laid out as the docked editor card,
+/// in a split as anywhere else.
 ///
 /// While the `/btw` drawer is open, the drawer spans the full height on the right
 /// and reserves the card's live footprint at its bottom; the card narrows into
@@ -163,7 +179,7 @@ struct PCodeDockedSurface: View {
     var body: some View {
         let drawerOpen = drawer.isOpen
         GeometryReader { geometry in
-            if isSplit || !surfaceView.pcodeIsSessionPane {
+            if !surfaceView.pcodeIsSessionPane {
                 PCodeDrawerSurface(
                     surfaceView: surfaceView,
                     drawer: drawer,
@@ -199,10 +215,15 @@ struct PCodeDockedSurface: View {
                     // it at the same structural spot preserves its surface and focus;
                     // width snaps once instead of animating so the PTY doesn't reflow
                     // on every frame.
-                    PCodeDockCard(docked: surfaceView, dock: dock, fallbackCell: paneCell, inDrawer: drawerOpen)
+                    PCodeDockCard(
+                        docked: surfaceView,
+                        dock: dock,
+                        fallbackCell: paneCell,
+                        inDrawer: drawerOpen,
+                        paneHeight: geometry.size.height,
+                        isSplit: isSplit)
                         .frame(width: cardWidth)
                 }
-                .animation(.spring(response: 0.28, dampingFraction: 0.86), value: dock.ready)
                 .onReceive(NotificationCenter.default.publisher(for: PCodeWorkspace.sessionChanged, object: surfaceView)) { _ in
                     sessionID = surfaceView.pcodeSession
                     hostID = surfaceView.pcodeHost
@@ -279,12 +300,17 @@ private struct PCodeDockedDrawerLayer: View {
 /// Its own view so it observes the dock's terminal: the card's height is in
 /// that terminal's cells, and pcode reckons the pane rows the card covers from
 /// them, so a font change there must resize the card at once.
+///
+/// Before `pcode;ready` the same card fills the pane, unclipped: the view
+/// tree stays put, so the terminal keeps its focus when it shrinks to the card.
 private struct PCodeDockCard: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var docked: Ghostty.SurfaceView
     @ObservedObject var dock: PCodeDock
     var fallbackCell: CGFloat
     var inDrawer: Bool
+    var paneHeight: CGFloat
+    var isSplit: Bool
 
     private static let cornerRadius: CGFloat = 12
 
@@ -318,12 +344,18 @@ private struct PCodeDockCard: View {
         // The terminal keeps a fixed `gridRows` height, bottom-aligned in the
         // card and clipped: pcode draws its layout at the bottom of it, so a
         // taller layout is already drawn when the card grows to show it.
+        // Before pcode is ready it fills the pane and nothing is clipped. The
+        // switch is not animated: each frame of it would resize the grid.
+        let editorHeight = PCodeDock.editorHeight(ready: dock.ready, cell: cell, paneHeight: paneHeight)
+        let shownHeight = dock.ready
+            ? PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows)
+            : editorHeight
         return ZStack(alignment: .bottom) {
-            Ghostty.SurfaceWrapper(surfaceView: docked, isSplit: false)
+            Ghostty.SurfaceWrapper(surfaceView: docked, isSplit: isSplit)
                 .id(ObjectIdentifier(docked))
-                .frame(height: PCodeDock.cardHeight(rows: PCodeDock.gridRows, cell: cell))
+                .frame(height: editorHeight)
         }
-            .frame(height: PCodeDock.cardHeight(rows: dock.rows, cell: cell, surfaceRows: surfaceRows), alignment: .bottom)
+            .frame(height: shownHeight, alignment: .bottom)
             .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: Self.cornerRadius)
@@ -342,7 +374,5 @@ private struct PCodeDockCard: View {
             .padding(.horizontal, PCodeDock.bottomMargin)
             .padding(.top, PCodeDock.topMargin)
             .padding(.bottom, PCodeDock.bottomMargin)
-            .opacity(dock.ready ? 1 : 0)
-            .allowsHitTesting(dock.ready)
     }
 }

@@ -180,11 +180,19 @@ client.
 Decisions for the "always hosted" piece:
 
 - Closing a pane stops its host (owner, 2026-11-25), as closing ends the
-  session today; it does not detach.
+  session today; it does not detach. The app picks the host's id up front
+  (`PCODE_HOST_ID`), so a pane closed before its host reports itself still
+  stops it.
 - No model configured: `pcode --host` starts a host in preview mode with no
   model (`PreviewRuntime`) until `/model` activates an agent (owner, 2026-11-25),
   so every app pane runs hosted on a single editor-only surface and the app's
-  two-surface dock handoff is removed.
+  two-surface dock handoff is removed. Only an explicit `--host` does this: in a terminal,
+  `session_host=on` with no model still runs the canned preview in-process
+  (owner).
+- Startup output: until `pcode;ready` the pane's surface fills the pane
+  unclipped, so the trust prompt and startup errors show at full height; a
+  pcode that exits non-zero before its editor started waits for Enter
+  (`dock.hold_failed_start`) instead of the pane vanishing.
 
 #### 3a sequence
 

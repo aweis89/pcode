@@ -2,12 +2,12 @@ import AppKit
 import GhosttyKit
 
 /// What pcode's drawer, popup and dock share: checks on what pcode sends,
-/// the overlay terminals the popup and dock run, and how APCs are routed.
+/// the overlay terminals the popup runs, and how APCs are routed.
 ///
 /// pcode talks to us with APCs (`ESC _ pcode;<payload> ESC \`), which reach us
 /// as `GHOSTTY_ACTION_PCODE_EVENT`. A terminal of the window speaks to its own
-/// drawer and popup (`PCodeDrawer`, `PCodePopup`); an overlay terminal the
-/// popup or dock runs speaks only to its owner. Neither can use the other's
+/// drawer, popup and dock card (`PCodeDrawer`, `PCodePopup`, `PCodeDock`); an
+/// overlay terminal the popup runs speaks only to its owner. Neither can use the other's
 /// verbs. The drawer is native and runs no terminal.
 enum PCode {
     /// True if `value` is plain: ASCII letters, digits, `-` and `_`, or
@@ -136,7 +136,7 @@ enum PCode {
     }
 }
 
-/// A popup or dock that runs overlay terminals over a terminal of the window.
+/// A popup that runs overlay terminals over a terminal of the window.
 protocol PCodeOverlayOwner: AnyObject {
     /// The terminal of the window the overlay is laid over.
     var surfaceView: Ghostty.SurfaceView? { get }
@@ -155,6 +155,13 @@ private var pcodeOwnerKey: UInt8 = 0
 private var pcodeSessionKey: UInt8 = 0
 private var pcodeHostKey: UInt8 = 0
 private var pcodeSessionPaneKey: UInt8 = 0
+private var pcodeTranscriptKey: UInt8 = 0
+
+/// Holds an associated object without keeping it alive.
+private final class PCodeWeakBox {
+    weak var value: AnyObject?
+    init(_ value: AnyObject?) { self.value = value }
+}
 
 /// Holds the owner weakly: the owner holds its overlay's surface, not the other way round.
 private final class WeakOwner: NSObject {
@@ -205,7 +212,7 @@ extension Ghostty.SurfaceView {
         return toast
     }
 
-    /// SPIKE: this surface's docked pcode editor, made the first time it is asked for.
+    /// This surface's editor card layout state, made the first time it is asked for.
     var pcodeDock: PCodeDock {
         if let dock = objc_getAssociatedObject(self, &pcodeDockKey) as? PCodeDock {
             return dock
@@ -277,7 +284,7 @@ extension Ghostty.SurfaceView {
         return CGRect(x: x - cell.width / 2, y: y - cell.height, width: cell.width, height: cell.height)
     }
 
-    /// True if this surface is a pcode popup's or dock's overlay terminal, even a dropped one.
+    /// True if this surface is a pcode popup's overlay terminal, even a dropped one.
     var isPCodeOverlay: Bool { pcodeOwnerBox != nil }
 
     /// True for a `PCodeSessionPane`'s primary surface, whose popup, completion
@@ -287,7 +294,7 @@ extension Ghostty.SurfaceView {
         set { objc_setAssociatedObject(self, &pcodeSessionPaneKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
     }
 
-    /// The popup or dock this surface is the overlay terminal of, while it is still there.
+    /// The popup this surface is the overlay terminal of, while it is still there.
     var pcodeOwner: PCodeOverlayOwner? { pcodeOwnerBox?.owner }
 
     /// The surface this one stands for in its window: for a pcode overlay, the
@@ -317,7 +324,7 @@ extension Ghostty.SurfaceView {
             pcodeCompletion.handle(payload)
         case "toast":
             pcodeToast.handle(payload)
-        case "dock", "dock-close", "ready", "dock-rows":
+        case "ready", "dock-rows":
             pcodeDock.handle(payload)
         default:
             pcodeDrawer.handle(payload)
@@ -325,11 +332,22 @@ extension Ghostty.SurfaceView {
     }
 
     /// For a session pane's editor terminal, the height the card shows from its
-    /// bottom edge; the rest of the 40-row grid is clipped off and must not take clicks.
+    /// bottom edge; the rest of the 40-row grid is clipped off and must not take
+    /// clicks. Nil (all of it) before pcode is ready, while it fills the pane.
     var pcodeDockVisibleHeight: CGFloat? {
-        guard pcodeIsSessionPane, let dock = existingPCodeDock, cellSize.height > 0 else { return nil }
-        let surfaceRows = surfaceSize.map { Int($0.rows) }
-        return PCodeDock.cardHeight(rows: dock.rows, cell: cellSize.height, surfaceRows: surfaceRows)
+        guard pcodeIsSessionPane, let dock = existingPCodeDock else { return nil }
+        return PCodeDock.visibleHeight(
+            ready: dock.ready,
+            rows: dock.rows,
+            cell: cellSize.height,
+            surfaceRows: surfaceSize.map { Int($0.rows) })
+    }
+
+    /// The native transcript a session pane's editor terminal sits under, most
+    /// recently mounted (a live peek mounts its own). Weak: the view owns it.
+    var pcodeTranscriptScrollView: PCodeTranscriptScrollView? {
+        get { (objc_getAssociatedObject(self, &pcodeTranscriptKey) as? PCodeWeakBox)?.value as? PCodeTranscriptScrollView }
+        set { objc_setAssociatedObject(self, &pcodeTranscriptKey, PCodeWeakBox(newValue), .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
     }
 
     func pcodeWillKeyDown(_ event: NSEvent) {

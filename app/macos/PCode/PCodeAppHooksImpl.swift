@@ -76,6 +76,8 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         view.pcodeDockVisibleHeight
     }
 
+    // No-op since panes run on one surface (no dock handoff); removing the
+    // hook from the fork's seam is pending, `dev/native-app-plan.md` step 7.
     func clicksThroughOnFocus(_ view: Ghostty.SurfaceView) -> Bool {
         false
     }
@@ -86,6 +88,7 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
 
     func didBecomeFirstResponder(_ view: Ghostty.SurfaceView) { view.pcodeDidFocus() }
 
+    // No-op for the same reason as `clicksThroughOnFocus` (plan step 7).
     func didMouseUp(_ view: Ghostty.SurfaceView) {}
 
     func willKeyDown(_ view: Ghostty.SurfaceView, _ event: NSEvent) { view.pcodeWillKeyDown(event) }
