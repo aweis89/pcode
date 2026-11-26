@@ -421,7 +421,9 @@ struct PCodeInspectorActions {
 @MainActor
 final class PCodeInspectorState: ObservableObject {
     /// Windows narrower than this degrade from a side-by-side split to a slide-over drawer.
-    static let splitMinContainerWidth: CGFloat = 1150
+    /// Minimum detail-pane width (excluding sidebar) before the Inspector degrades to a slide-over drawer.
+    /// Corresponds to ~1110pt total window width with a default 250pt sidebar.
+    static let splitMinContainerWidth: CGFloat = 860
     static let minSplitWidth: CGFloat = 320
     static let defaultSplitFraction: CGFloat = 0.42
     static let minSplitFraction: CGFloat = 0.25

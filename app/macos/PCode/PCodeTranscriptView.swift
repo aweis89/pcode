@@ -342,6 +342,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     var accessibilityRowProxies: [String: PCodeTranscriptAccessibilityRowElement] = [:]
     /// Called on plain click or non-navigation typing to hand keyboard focus back to `PCodeDockCard`.
     var onReturnFocusToComposer: (() -> Void)?
+    var onInspectDiff: ((_ callID: String, _ path: String) -> Void)?
+    var onInspectAgent: ((_ callID: String) -> Void)?
+    var onInspectCommand: ((_ callID: String) -> Void)?
     /// In the `/btw` drawer, `q` hands focus back to the composer without forwarding `q` (`btw_tail`).
     var swallowsQToReturnFocus = false
     /// When `true` (default), consecutive settled tools/edits fold into an expandable summary pill
@@ -2236,6 +2239,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case (let view as PCodeToolCardView, .tool(let call, let isExpanded)):
             let attr = cachedToolAttributedString(for: item.id, call: call, isExpanded: isExpanded)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
+            let rawCallID = item.id.hasPrefix("call-") ? String(item.id.dropFirst(5)) : item.id
+            let inspectAction: (() -> Void)?
+            if call.isDelegate, let onInspectAgent {
+                inspectAction = { onInspectAgent(rawCallID) }
+            } else if call.isShellLike && !call.isDelegate, let onInspectCommand {
+                inspectAction = { onInspectCommand(rawCallID) }
+            } else {
+                inspectAction = nil
+            }
             return view.configure(
                 call: call,
                 isExpanded: isExpanded,
@@ -2246,7 +2258,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 stackPosition: stackPosition,
                 onToggle: { [weak self] in
                     self?.toggleToolExpansion(id: item.id)
-                })
+                },
+                onInspect: inspectAction)
 
         case (let view as PCodeToolGroupCardView, .toolGroup(let payload)):
             let attr = cachedToolGroupAttributedString(for: item.id, payload: payload)
@@ -2268,6 +2281,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 ? cachedDiffAttributedString(for: item.id, payload: payload)
                 : NSAttributedString()
             let localSel = isExpanded ? selection?.localRange(forItem: index, utf16Length: attr.length) : nil
+            let inspectAction: (() -> Void)? = onInspectDiff.map { handler in
+                { handler(payload.callID, payload.path) }
+            }
             return view.configure(
                 payload: payload,
                 isExpanded: isExpanded,
@@ -2279,7 +2295,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 selectedRange: localSel,
                 onToggle: { [weak self] in
                     self?.toggleDiffExpansion(id: item.id)
-                })
+                },
+                onInspect: inspectAction)
 
         case (let view as PCodeThinkingCardView, .thinking(let thinking)):
             let attr = cachedThinkingAttributedString(for: item.id, thinking: thinking)

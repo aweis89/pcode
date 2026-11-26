@@ -744,7 +744,7 @@ struct PCodePeekOverlay: View {
 
     private func livePeekView(target: PCodePeekTarget, pane: PCodeSessionPane) -> some View {
         ZStack(alignment: .topTrailing) {
-            PCodeSessionPaneView(pane: pane)
+            PCodeSessionPaneView(pane: pane, showInspector: false)
                 .id(pane.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(ghostty.config.backgroundColor)

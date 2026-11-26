@@ -57,6 +57,9 @@ final class PCodeLiveTranscriptController: ObservableObject {
     var onRequestRelaunch: ((_ isManual: Bool, _ unavailableDuration: TimeInterval) -> RelaunchOutcome)?
     /// Called once connected so the workspace can reset retry counters for this pane.
     var onConnected: (() -> Void)?
+    /// Forwarded every decoded host event (including initial history and catch-up calls)
+    /// so the pane's Session Inspector stores stay in sync with the transcript.
+    var onHostEvent: ((PCodeHostEvent) -> Void)?
     /// Non-zero when this pane was just created by an automatic host relaunch.
     var initialRelaunchAttempt: Int = 0
     var maxRelaunchAttempts: Int = 2
@@ -258,11 +261,13 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     }
                     reducer.loadHistory(welcome.history)
                 }
+                self.onHostEvent?(.history(welcome.history))
                 self.shownHistory = welcome.catchUpCalls.isEmpty ? welcome.history : nil
                 var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
                     state.apply(event)
                     reducer.apply(event, reveal: false, isLive: true)
+                    self.onHostEvent?(event)
                 }
                 if (self.attachedSessionID ?? "").isEmpty, !state.sessionID.isEmpty {
                     self.attachedSessionID = state.sessionID
@@ -279,6 +284,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 self.shownHistory = nil
                 self.applySessionEvent(event)
                 reducer.apply(event, reveal: true)
+                self.onHostEvent?(event)
             },
             onError: { [weak self, weak documentView] message in
                 guard let self, let documentView, self.attachGeneration == generation else { return }
@@ -329,6 +335,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
                 guard let self, self.attachGeneration == generation, !self.hostHistoryDrawn else { return }
                 reducer.loadHistory(initial.events)
                 self.shownHistory = initial.events
+                self.onHostEvent?(.history(initial.events))
             }
         }
     }
@@ -638,6 +645,22 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
             guard let composer else { return }
             PCodeWorkspaceController.existing?.workspace.noteHostConnected(for: composer)
         }
+        controller.onHostEvent = { event in
+            guard let composer,
+                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+            else { return }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    pane.applyInspectorEvent(event)
+                }
+            } else {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        pane.applyInspectorEvent(event)
+                    }
+                }
+            }
+        }
     }
 
     private func wireFocusHandlers(on scrollView: PCodeTranscriptScrollView) {
@@ -645,6 +668,34 @@ struct PCodeLiveTranscriptRepresentable: NSViewRepresentable {
         scrollView.transcriptDocumentView.onReturnFocusToComposer = {
             guard let composer else { return }
             Ghostty.moveFocus(to: composer)
+        }
+        scrollView.transcriptDocumentView.onInspectDiff = { callID, path in
+            guard let composer,
+                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+            else { return }
+            MainActor.assumeIsolated {
+                if !callID.isEmpty, pane.changesStore.singleEdit(for: callID) != nil {
+                    pane.inspectorState.openChanges(filePath: path, scope: .singleEdit(callID: callID))
+                } else {
+                    pane.inspectorState.openChanges(filePath: path, scope: .session)
+                }
+            }
+        }
+        scrollView.transcriptDocumentView.onInspectAgent = { callID in
+            guard let composer,
+                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+            else { return }
+            MainActor.assumeIsolated {
+                pane.inspectorState.openAgent(callID: callID)
+            }
+        }
+        scrollView.transcriptDocumentView.onInspectCommand = { callID in
+            guard let composer,
+                  let pane = PCodeWorkspaceController.existing?.workspace.pane(for: composer)
+            else { return }
+            MainActor.assumeIsolated {
+                pane.inspectorState.openCommand(callID: callID)
+            }
         }
         scrollView.composerHasSelection = {
             composer?.surface.map(ghostty_surface_has_selection) ?? false

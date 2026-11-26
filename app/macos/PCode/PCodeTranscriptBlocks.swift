@@ -1233,10 +1233,12 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
     private let headerTapButton = NSButton()
     private let elapsedLabel = NSTextField(labelWithString: "")
     private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
+    private let inspectButton = NSButton()
     private let toggleButton = NSButton()
     private let bottomCollapseButton = NSButton()
     private let bottomDivider = CALayer()
     private var onToggle: (() -> Void)?
+    private var onInspect: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsRunning = false
     private var lastIsFailed = false
@@ -1280,6 +1282,14 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         copyButton.action = #selector(copyPressed)
         copyButton.isHidden = true
         addSubview(copyButton)
+
+        inspectButton.isBordered = false
+        inspectButton.title = ""
+        inspectButton.target = self
+        inspectButton.action = #selector(inspectPressed)
+        inspectButton.toolTip = "Open in Inspector"
+        inspectButton.isHidden = true
+        addSubview(inspectButton)
 
         toggleButton.isBordered = false
         toggleButton.title = ""
@@ -1329,7 +1339,9 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         elapsedLabel.stringValue = ""
         copyButton.cancelCopiedFlash()
         copyButton.isHidden = true
+        inspectButton.isHidden = true
         onToggle = nil
+        onInspect = nil
         currentCall = nil
         lastIsRunning = false
         lastIsExpanded = false
@@ -1547,9 +1559,11 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         theme: PCodeTranscriptTheme,
         selectedRange: NSRange?,
         stackPosition: PCodeToolStackPosition = .standalone,
-        onToggle: @escaping () -> Void
+        onToggle: @escaping () -> Void,
+        onInspect: (() -> Void)? = nil
     ) -> CGFloat {
         self.onToggle = onToggle
+        self.onInspect = onInspect
         self.lastTheme = theme
         self.lastIsRunning = call.isRunning
         self.lastIsFailed = call.failed
@@ -1560,6 +1574,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
         let canExpand = call.canExpand
         let showCopy = isExpanded && !textToCopy.isEmpty
+        let showInspect = onInspect != nil
 
         if call.isRunning {
             iconView.isHidden = true
@@ -1578,8 +1593,12 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
         let elapsedWidth: CGFloat = (call.isRunning && call.startedAt != nil) ? 54 : 0
         let copyWidth: CGFloat = showCopy ? max(64, ceil(copyButton.frame.width)) : 0
+        let inspectWidth: CGFloat = showInspect ? 20 : 0
         let chevronWidth: CGFloat = canExpand ? 26 : 10
-        let rightControlsWidth = chevronWidth + (showCopy ? copyWidth + 4 : 0) + (elapsedWidth > 0 ? elapsedWidth + 4 : 0)
+        let rightControlsWidth = chevronWidth
+            + (showInspect ? inspectWidth + 2 : 0)
+            + (showCopy ? copyWidth + 4 : 0)
+            + (elapsedWidth > 0 ? elapsedWidth + 4 : 0)
 
         let leftPad: CGFloat = 26
         let rightPad: CGFloat = rightControlsWidth
@@ -1616,6 +1635,16 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         }
 
         var cursorX = width - chevronWidth
+        inspectButton.isHidden = !showInspect
+        if showInspect {
+            let symCfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            inspectButton.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "Open in Inspector")?
+                .withSymbolConfiguration(symCfg)
+            inspectButton.contentTintColor = theme.secondaryForeground
+            cursorX -= inspectWidth
+            inspectButton.frame = CGRect(x: max(leftPad, cursorX), y: 3, width: inspectWidth, height: 20)
+            cursorX -= 2
+        }
         copyButton.isHidden = !showCopy
         if showCopy {
             effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -1718,6 +1747,10 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
             bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
             CATransaction.commit()
         }
+    }
+
+    @objc private func inspectPressed() {
+        onInspect?()
     }
 
     @objc private func togglePressed() {
@@ -2305,6 +2338,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
     private let pathLabel = NSTextField(labelWithString: "")
     private let statsLabel = NSTextField(labelWithString: "")
     private let copyButton = PCodeBlockActionButton(title: "Copy", symbol: "doc.on.doc")
+    private let inspectButton = NSButton()
     private let toggleButton = NSButton()
     private let headerTapButton = NSButton()
     private let bottomCollapseButton = NSButton()
@@ -2313,6 +2347,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
 
     private var patchToCopy: String = ""
     private var onToggle: (() -> Void)?
+    private var onInspect: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsExpanded: Bool = false
 
@@ -2346,6 +2381,13 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         copyButton.target = self
         copyButton.action = #selector(copyPatchPressed)
 
+        inspectButton.isBordered = false
+        inspectButton.title = ""
+        inspectButton.target = self
+        inspectButton.action = #selector(inspectPressed)
+        inspectButton.toolTip = "Open diff in Inspector"
+        inspectButton.isHidden = true
+
         toggleButton.isBordered = false
         toggleButton.title = ""
         toggleButton.target = self
@@ -2359,6 +2401,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         headerView.addSubview(pathLabel)
         headerView.addSubview(statsLabel)
         headerView.addSubview(copyButton)
+        headerView.addSubview(inspectButton)
         headerView.addSubview(toggleButton)
         addSubview(headerView)
 
@@ -2394,10 +2437,12 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         layer?.removeAllAnimations()
         scrollView.resetScrollOrigin()
         copyButton.cancelCopiedFlash()
+        inspectButton.isHidden = true
         spinnerView.stopAnimating()
         spinnerView.isHidden = true
         iconView.isHidden = false
         onToggle = nil
+        onInspect = nil
         bottomCollapseButton.isHidden = true
         bottomDivider.isHidden = true
     }
@@ -2482,11 +2527,13 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         theme: PCodeTranscriptTheme,
         documentView: PCodeTranscriptDocumentView?,
         selectedRange: NSRange?,
-        onToggle: @escaping () -> Void
+        onToggle: @escaping () -> Void,
+        onInspect: (() -> Void)? = nil
     ) -> CGFloat {
         scrollView.transcriptDocumentView = documentView
         patchToCopy = payload.patch
         self.onToggle = onToggle
+        self.onInspect = onInspect
         lastTheme = theme
 
         let canExpand = !payload.patch.isEmpty
@@ -2559,6 +2606,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         }
 
         let showBody = canExpand && isExpanded
+        let showInspect = onInspect != nil
         copyButton.isHidden = !showBody
         if showBody {
             effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -2566,10 +2614,24 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
             }
         }
         let toggleReserve: CGFloat = canExpand ? 26 : 10
+        let inspectW: CGFloat = showInspect ? 20 : 0
+        inspectButton.isHidden = !showInspect
+        if showInspect {
+            let symCfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            inspectButton.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "Open diff in Inspector")?
+                .withSymbolConfiguration(symCfg)
+            inspectButton.contentTintColor = theme.secondaryForeground
+            inspectButton.frame = CGRect(
+                x: max(padX, width - toggleReserve - inspectW - 2),
+                y: floor((Self.headerHeight - 20) * 0.5),
+                width: inspectW,
+                height: 20)
+        }
+        let inspectReserve: CGFloat = showInspect ? inspectW + 4 : 0
         let copyW: CGFloat = showBody ? max(54, copyButton.frame.width + 8) : 0
         if showBody {
             copyButton.frame = CGRect(
-                x: max(padX, width - toggleReserve - copyW - 4),
+                x: max(padX, width - toggleReserve - inspectReserve - copyW - 4),
                 y: floor((Self.headerHeight - 20) * 0.5),
                 width: copyW,
                 height: 20)
@@ -2584,7 +2646,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
             height: toolLabel.frame.height)
 
         let statsW = statsLabel.frame.width
-        let rightReserve = toggleReserve + (showBody ? copyW + 8 : 0)
+        let rightReserve = toggleReserve + inspectReserve + (showBody ? copyW + 8 : 0)
         let pathX = toolLabel.frame.maxX + 8
         let pathMaxW = max(40, width - pathX - statsW - rightReserve - 12)
         pathLabel.frame = CGRect(
@@ -2662,6 +2724,10 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
             dividerLayer.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.10).cgColor
             bottomDivider.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.10 : 0.12).cgColor
         }
+    }
+
+    @objc private func inspectPressed() {
+        onInspect?()
     }
 
     @objc private func togglePressed() {

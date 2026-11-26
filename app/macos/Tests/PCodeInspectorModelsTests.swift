@@ -34,8 +34,8 @@ struct PCodeInspectorModelsTests {
     }
 
     @Test @MainActor func inspectorStateResponsiveAndNavigationHelpers() {
-        #expect(PCodeInspectorState.shouldUseOverlay(containerWidth: 1000))
-        #expect(!PCodeInspectorState.shouldUseOverlay(containerWidth: 1200))
+        #expect(PCodeInspectorState.shouldUseOverlay(containerWidth: 700))
+        #expect(!PCodeInspectorState.shouldUseOverlay(containerWidth: 940))
 
         let state = PCodeInspectorState()
         #expect(!state.isOpen)

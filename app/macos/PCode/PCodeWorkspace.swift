@@ -909,6 +909,18 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     let createdAt: Date = Date()
     /// When the most recent turn finished in this pane during this app session.
     @Published private(set) var lastResponseDate: Date?
+    /// Per-session right-hand Inspector state and live stores.
+    let inspectorState: PCodeInspectorState
+    let changesStore: PCodeSessionChangesStore
+    let agentsStore: PCodeInspectorAgentsStore
+    let commandsStore: PCodeInspectorCommandsStore
+
+    @MainActor
+    func applyInspectorEvent(_ event: PCodeHostEvent) {
+        changesStore.apply(event)
+        agentsStore.apply(event)
+        commandsStore.apply(event)
+    }
 
     init(surface: Ghostty.SurfaceView, directory: String, projectPath: String? = nil, sessionID: String?) {
         self.surface = surface
@@ -917,6 +929,18 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         self.projectPath = PCodeWorkspace.normalizePath(projectPath ?? directory)
         self.resuming = sessionID != nil
         self.sessionID = sessionID
+        let inspectorBundle = MainActor.assumeIsolated {
+            (
+                PCodeInspectorState(),
+                PCodeSessionChangesStore(sessionDirectory: directory),
+                PCodeInspectorAgentsStore(),
+                PCodeInspectorCommandsStore()
+            )
+        }
+        self.inspectorState = inspectorBundle.0
+        self.changesStore = inspectorBundle.1
+        self.agentsStore = inspectorBundle.2
+        self.commandsStore = inspectorBundle.3
         titleSubscription = surface.$title.removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] title in
@@ -1753,6 +1777,16 @@ final class PCodeWorkspace: ObservableObject {
         }
     }
 
+    /// When true, open sessions in the sidebar show nested file changes from `This Session`.
+    @Published var showSidebarFileChanges: Bool = {
+        if let stored = UserDefaults.standard.object(forKey: PCodeWorkspace.showSidebarFileChangesKey) as? Bool {
+            return stored
+        }
+        return true
+    }() {
+        didSet { UserDefaults.standard.set(showSidebarFileChanges, forKey: Self.showSidebarFileChangesKey) }
+    }
+
     /// Whether the auto-hiding sidebar is currently slid open.
     @Published var sidebarRevealed = false
 
@@ -1789,6 +1823,7 @@ final class PCodeWorkspace: ObservableObject {
     private static let folderHeightsKey = "PCodeWorkspaceFolderHeights"
     private static let sidebarWidthKey = "PCodeWorkspaceSidebarWidth"
     private static let sidebarAutoHideKey = "PCodeWorkspaceSidebarAutoHide"
+    private static let showSidebarFileChangesKey = "PCodeWorkspaceShowSidebarFileChanges"
 
     func isStarred(_ sessionID: String?) -> Bool {
         guard let sessionID, !sessionID.isEmpty else { return false }
@@ -2814,6 +2849,15 @@ final class PCodeWorkspace: ObservableObject {
         fresh.unseen = pane.unseen
         fresh.hostRelaunchAttempts = attempt
         fresh.surface.pcodeHostRelaunchAttempt = attempt
+        MainActor.assumeIsolated {
+            fresh.inspectorState.isOpen = pane.inspectorState.isOpen
+            fresh.inspectorState.activeTab = pane.inspectorState.activeTab
+            fresh.inspectorState.diffScope = pane.inspectorState.diffScope
+            fresh.inspectorState.splitFraction = pane.inspectorState.splitFraction
+            fresh.inspectorState.isExpanded = pane.inspectorState.isExpanded
+            fresh.inspectorState.focusedFilePath = pane.inspectorState.focusedFilePath
+            fresh.inspectorState.followAgent = pane.inspectorState.followAgent
+        }
         if let shell = pane.shell {
             fresh.setShell(shell)
             fresh.shellVisible = pane.shellVisible
@@ -2895,6 +2939,55 @@ final class PCodeWorkspace: ObservableObject {
             } else {
                 select(panes[min(index, panes.count - 1)])
             }
+        }
+    }
+
+    func pane(for surface: Ghostty.SurfaceView) -> PCodeSessionPane? {
+        panes.first { $0.surface === surface }
+    }
+
+    func toggleSidebarFileChanges() {
+        showSidebarFileChanges.toggle()
+    }
+
+    func toggleInspector() {
+        guard let pane = selectedPane else { return }
+        MainActor.assumeIsolated {
+            pane.inspectorState.toggle()
+        }
+    }
+
+    func selectInspectorTab(_ tab: PCodeInspectorTab) {
+        guard let pane = selectedPane else { return }
+        MainActor.assumeIsolated {
+            pane.inspectorState.activeTab = tab
+            pane.inspectorState.isOpen = true
+        }
+    }
+
+    func toggleInspectorExpanded() {
+        guard let pane = selectedPane else { return }
+        MainActor.assumeIsolated {
+            if !pane.inspectorState.isOpen {
+                pane.inspectorState.isOpen = true
+                pane.inspectorState.isExpanded = true
+            } else {
+                pane.inspectorState.toggleExpanded()
+            }
+        }
+    }
+
+    func openInspectorFile(_ path: String, in pane: PCodeSessionPane) {
+        select(pane)
+        MainActor.assumeIsolated {
+            pane.inspectorState.openChanges(filePath: path)
+        }
+    }
+
+    func openInspectorChanges(in pane: PCodeSessionPane) {
+        select(pane)
+        MainActor.assumeIsolated {
+            pane.inspectorState.openChanges()
         }
     }
 
@@ -3190,6 +3283,16 @@ struct PCodeWorkspaceView: View {
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("") { workspace.toggleSidebarAutoHide() }
                     .keyboardShortcut("s", modifiers: [.command, .option])
+                Button("") { workspace.toggleInspector() }
+                    .keyboardShortcut("i", modifiers: .command)
+                Button("") { workspace.selectInspectorTab(.changes) }
+                    .keyboardShortcut("1", modifiers: [.command, .option])
+                Button("") { workspace.selectInspectorTab(.agents) }
+                    .keyboardShortcut("2", modifiers: [.command, .option])
+                Button("") { workspace.selectInspectorTab(.commands) }
+                    .keyboardShortcut("3", modifiers: [.command, .option])
+                Button("") { workspace.toggleInspectorExpanded() }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
             }
             .opacity(0)
             .allowsHitTesting(false)
@@ -3248,6 +3351,13 @@ struct PCodeWorkspaceView: View {
                 .font(.headline)
                 .lineLimit(1)
             Spacer(minLength: 4)
+            Button { workspace.toggleInspector() } label: { Image(systemName: "sidebar.right") }
+                .help("Toggle Session Inspector (⌘I)")
+            Button { workspace.toggleSidebarFileChanges() } label: {
+                Image(systemName: "list.bullet.indent")
+                    .foregroundStyle(workspace.showSidebarFileChanges ? Color.accentColor : Color.primary)
+            }
+            .help(workspace.showSidebarFileChanges ? "Hide changed files in sidebar" : "Show changed files in sidebar")
             Button { workspace.toggleShell() } label: { Image(systemName: "terminal") }
                 .help("Toggle the shell under this session (⌘J)")
             Button { workspace.openDirectoryPicker() } label: { Image(systemName: "folder.badge.plus") }
@@ -3539,20 +3649,37 @@ private struct PCodeFolderSectionView<FolderMenu: View, OpenMenu: View, HostedMe
     @ViewBuilder
     private func openPaneRow(_ pane: PCodeSessionPane) -> some View {
         let sessionID = pane.sessionID
-        PCodePaneRow(
-            pane: pane,
-            info: workspace.info(for: pane),
-            now: now,
-            isSelected: pane.id == workspace.selected,
-            isStarred: workspace.isStarred(sessionID),
-            onSelect: { workspace.select(pane) },
-            onToggleStar: sessionID.map { id in { workspace.toggleStar(id) } },
-            onHoverChange: { hovering in
-                guard pane.id != workspace.selected else { return }
-                workspace.peek.rowHoverChanged(workspace.peekTarget(for: pane), hovering: hovering)
+        let isSelected = pane.id == workspace.selected
+        VStack(alignment: .leading, spacing: 0) {
+            PCodePaneRow(
+                pane: pane,
+                info: workspace.info(for: pane),
+                now: now,
+                isSelected: isSelected,
+                isStarred: workspace.isStarred(sessionID),
+                onSelect: { workspace.select(pane) },
+                onToggleStar: sessionID.map { id in { workspace.toggleStar(id) } },
+                onHoverChange: { hovering in
+                    guard pane.id != workspace.selected else { return }
+                    workspace.peek.rowHoverChanged(workspace.peekTarget(for: pane), hovering: hovering)
+                }
+            ) { openMenu(pane) }
+                .contextMenu { openMenu(pane) }
+
+            if workspace.showSidebarFileChanges {
+                PCodeSidebarFileChangesList(
+                    changesStore: pane.changesStore,
+                    inspectorState: pane.inspectorState,
+                    isSelectedPane: isSelected,
+                    onSelectFile: { path in
+                        workspace.openInspectorFile(path, in: pane)
+                    },
+                    onSelectOverflow: {
+                        workspace.openInspectorChanges(in: pane)
+                    }
+                )
             }
-        ) { openMenu(pane) }
-            .contextMenu { openMenu(pane) }
+        }
     }
 
     @ViewBuilder
@@ -3715,7 +3842,7 @@ private struct PCodeRunningDot: View {
 
 /// AppKit-backed resize handle with reliable cursor tracking (`resetCursorRects` + `cursorUpdate`)
 /// and screen-space dragging so sibling `NSView`s (like Ghostty's terminal) never steal the cursor.
-private struct PCodeResizeHandle: NSViewRepresentable {
+struct PCodeResizeHandle: NSViewRepresentable {
     enum Orientation {
         case horizontal
         case vertical
@@ -3976,6 +4103,7 @@ private struct PCodePaneRow<Actions: View>: View {
             unseen: pane.unseen,
             isSelected: isSelected,
             isStarred: isStarred,
+            changesStore: pane.changesStore,
             onSelect: onSelect,
             onToggleStar: onToggleStar,
             onHoverChange: onHoverChange,
@@ -3993,6 +4121,7 @@ private struct PCodeSessionRow<Actions: View>: View {
     var unseen = false
     var isSelected = false
     var isStarred = false
+    var changesStore: PCodeSessionChangesStore? = nil
     var onSelect: () -> Void
     var onToggleStar: (() -> Void)? = nil
     var onHoverChange: ((Bool) -> Void)? = nil
@@ -4010,6 +4139,9 @@ private struct PCodeSessionRow<Actions: View>: View {
                 }
             }
             Spacer(minLength: 4)
+            if let changesStore, !hovering {
+                PCodeSidebarSessionChangeStats(changesStore: changesStore)
+            }
             if let onToggleStar, isStarred || hovering {
                 Button(action: onToggleStar) {
                     Image(systemName: isStarred ? "star.fill" : "star")
@@ -4631,6 +4763,7 @@ private struct PCodePaneStartupOverlay: View {
 /// A session: pcode's terminal with everything pcode lays over it, and the bottom shell.
 struct PCodeSessionPaneView: View {
     @ObservedObject var pane: PCodeSessionPane
+    var showInspector = true
     @EnvironmentObject var ghostty: Ghostty.App
     /// The shell's height, set by dragging its top edge; shared by every session.
     @AppStorage("PCodeWorkspaceShellHeight") private var shellHeight: Double = 200
@@ -4640,6 +4773,16 @@ struct PCodeSessionPaneView: View {
     private static let minSession: CGFloat = 200
 
     var body: some View {
+        if showInspector {
+            PCodeInspectorSplit(pane: pane) {
+                paneContent
+            }
+        } else {
+            paneContent
+        }
+    }
+
+    private var paneContent: some View {
         GeometryReader { geometry in
             let maxShell = max(Self.minShell, geometry.size.height - Self.minSession)
             VStack(spacing: 0) {
