@@ -396,7 +396,7 @@ struct PCodeGitDiffProvider: Sendable {
     let gitExecutablePath: String
 
     init(
-        parseHunks: @escaping HunkParser = { PCodeFallbackPatchParser.parseHunks($0) },
+        parseHunks: @escaping HunkParser = { PCodeDiffParser.parseHunks($0) },
         maxUntrackedFileBytes: Int = PCodeGitDiffProvider.defaultMaxUntrackedFileBytes,
         maxUntrackedFiles: Int = PCodeGitDiffProvider.defaultMaxUntrackedFiles,
         gitExecutablePath: String = "/usr/bin/git"
@@ -1093,6 +1093,12 @@ struct PCodeGitDiffProvider: Sendable {
             return true
         }
 
+        func detach() {
+            lock.lock()
+            process = nil
+            lock.unlock()
+        }
+
         func cancel() {
             lock.lock()
             cancelled = true
@@ -1131,6 +1137,7 @@ struct PCodeGitDiffProvider: Sendable {
 
                     var env = ProcessInfo.processInfo.environment
                     env["GIT_TERMINAL_PROMPT"] = "0"
+                    env["GIT_OPTIONAL_LOCKS"] = "0"
                     process.environment = env
 
                     let stdoutPipe = Pipe()
@@ -1147,8 +1154,13 @@ struct PCodeGitDiffProvider: Sendable {
                     do {
                         try process.run()
                     } catch {
+                        box.detach()
                         continuation.resume(throwing: error)
                         return
+                    }
+
+                    if box.isCancelled {
+                        process.terminate()
                     }
 
                     // Drain stdout and stderr concurrently off-thread to prevent pipe-buffer deadlocks.
@@ -1174,6 +1186,7 @@ struct PCodeGitDiffProvider: Sendable {
                     }
 
                     process.waitUntilExit()
+                    box.detach()
                     group.wait()
 
                     if box.isCancelled {

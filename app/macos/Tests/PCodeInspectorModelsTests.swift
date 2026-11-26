@@ -33,7 +33,7 @@ struct PCodeInspectorModelsTests {
         #expect(diff.firstChangedLine == 11)
     }
 
-    @Test func inspectorStateResponsiveAndNavigationHelpers() {
+    @Test @MainActor func inspectorStateResponsiveAndNavigationHelpers() {
         #expect(PCodeInspectorState.shouldUseOverlay(containerWidth: 1000))
         #expect(!PCodeInspectorState.shouldUseOverlay(containerWidth: 1200))
 

@@ -169,6 +169,10 @@ final class PCodeInspectorCommandsStore: ObservableObject {
             let key: String
             if !callID.isEmpty {
                 key = callID
+            } else if isBackgroundJob,
+                      let matchedID = matchingRunningBackgroundJobID(command: command, detail: detail)
+            {
+                key = matchedID
             } else {
                 syntheticCounter += 1
                 key = "cmd-\(syntheticCounter)"
@@ -226,7 +230,9 @@ final class PCodeInspectorCommandsStore: ObservableObject {
                 detail: resolvedDetail,
                 output: resolvedOutput,
                 status: resolvedStatus,
-                isBackgroundJob: isBackgroundJob || (existing?.isBackgroundJob ?? false),
+                isBackgroundJob: isBackgroundJob
+                    || (existing?.isBackgroundJob ?? false)
+                    || Self.looksLikeBackgroundJob(name: name, callID: key),
                 exitCode: resolvedExitCode,
                 startedAt: existing?.startedAt,
                 elapsedSeconds: resolvedElapsed,
@@ -274,6 +280,11 @@ final class PCodeInspectorCommandsStore: ObservableObject {
 
         case .dropOutput(let callID):
             guard var record = recordsByID[callID], record.status == .running else { return }
+            if callID.hasPrefix(Self.watchedJobPrefix) || record.isBackgroundJob {
+                // Unwatching a still-running background job also emits `drop_output`;
+                // leave its status untouched until `JobFinished` / `toolSummary` settles it.
+                return
+            }
             record.status = .succeeded
             if record.elapsedSeconds == nil, let startedAt = record.startedAt, !replayingHistory {
                 record.elapsedSeconds = max(0, now.timeIntervalSince(startedAt))
@@ -377,12 +388,75 @@ final class PCodeInspectorCommandsStore: ObservableObject {
         }
     }
 
+    /// Host `WATCHED_PREFIX` prepended to watched background job `CommandOutput` call IDs (e.g. `"job:j3"`).
+    nonisolated static let watchedJobPrefix = "job:"
+
+    /// Strips the host's `"job:"` watched-job prefix so `stop_jobs` receives the bare registry ID (e.g. `"job:j3"` -> `"j3"`).
+    nonisolated static func registryJobID(for callID: String) -> String {
+        if callID.hasPrefix(watchedJobPrefix) {
+            return String(callID.dropFirst(watchedJobPrefix.count))
+        }
+        return callID
+    }
+
     static func looksLikeBackgroundJob(name: String, callID: String) -> Bool {
         let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if lower == "start_command" {
             return true
         }
-        return callID.hasPrefix("job_") || callID.hasPrefix("bg_")
+        return callID.hasPrefix(watchedJobPrefix)
+            || callID.hasPrefix("job_")
+            || callID.hasPrefix("bg_")
+    }
+
+    private func matchingRunningBackgroundJobID(command: String, detail: String) -> String? {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty else { return nil }
+
+        let commandMatches = recordsByID.values.filter { record in
+            record.status == .running
+                && record.isBackgroundJob
+                && record.command.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedCommand
+        }
+        guard !commandMatches.isEmpty else { return nil }
+
+        if let exactJobMatch = commandMatches.first(where: { record in
+            let bareID = Self.registryJobID(for: record.id)
+            return record.id.hasPrefix(Self.watchedJobPrefix)
+                && !bareID.isEmpty
+                && Self.detail(detail, referencesJobID: bareID)
+        }) {
+            return exactJobMatch.id
+        }
+
+        return commandMatches.sorted { lhs, rhs in
+            if lhs.lastActivityAt != rhs.lastActivityAt {
+                return lhs.lastActivityAt > rhs.lastActivityAt
+            }
+            return lhs.sequence > rhs.sequence
+        }.first?.id
+    }
+
+    private static func detail(_ detail: String, referencesJobID jobID: String) -> Bool {
+        guard !detail.isEmpty, !jobID.isEmpty else { return false }
+        var searchStart = detail.startIndex
+        while let range = detail.range(of: jobID, range: searchStart..<detail.endIndex) {
+            let beforeOK: Bool = {
+                guard range.lowerBound > detail.startIndex else { return true }
+                let prev = detail[detail.index(before: range.lowerBound)]
+                return !(prev.isLetter || prev.isNumber || prev == "_")
+            }()
+            let afterOK: Bool = {
+                guard range.upperBound < detail.endIndex else { return true }
+                let next = detail[range.upperBound]
+                return !(next.isLetter || next.isNumber || next == "_")
+            }()
+            if beforeOK && afterOK {
+                return true
+            }
+            searchStart = range.upperBound
+        }
+        return false
     }
 
     static func settledStatus(failed: Bool, exitCode: Int?) -> PCodeInspectorCommandItem.Status {
@@ -399,7 +473,7 @@ final class PCodeInspectorCommandsStore: ObservableObject {
 // MARK: - Commands Inspector View
 
 /// Right-hand Inspector "Commands" tab pairing a compact command list with a live monospace
-/// output tailer and Kill / Copy / Reference (`⌘L`) controls.
+/// output tailer and Kill / Copy / Reference controls.
 struct PCodeInspectorCommandsView: View {
     @ObservedObject var state: PCodeInspectorState
     @ObservedObject var store: PCodeInspectorCommandsStore
@@ -448,7 +522,6 @@ struct PCodeInspectorCommandsView: View {
             contentArea
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .background(keyboardShortcutHooks)
         .onAppear {
             syncSelection(preferredID: state.focusedCommandID)
         }
@@ -605,18 +678,32 @@ struct PCodeInspectorCommandsView: View {
                 }
                 .padding(6)
             }
-            .onChange(of: state.focusedCommandID) { targetID in
-                guard let targetID, store.commands.contains(where: { $0.id == targetID }) else { return }
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    proxy.scrollTo(targetID, anchor: .center)
-                }
+            .onAppear {
+                scrollToCommand(state.focusedCommandID, with: proxy, animated: false)
             }
+            .onChange(of: state.focusedCommandID) { targetID in
+                scrollToCommand(targetID, with: proxy, animated: true)
+            }
+        }
+    }
+
+    private func scrollToCommand(_ targetID: String?, with proxy: ScrollViewProxy, animated: Bool) {
+        guard let targetID, store.commands.contains(where: { $0.id == targetID }) else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                proxy.scrollTo(targetID, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(targetID, anchor: .center)
         }
     }
 
     private func commandRow(_ item: PCodeInspectorCommandItem, isSelected: Bool) -> some View {
         Button {
             selectedCommandID = item.id
+            if state.focusedCommandID != item.id {
+                state.focusedCommandID = item.id
+            }
             isFollowingTail = item.isRunning
             if item.isRunning {
                 scrollToBottomToken &+= 1
@@ -746,7 +833,7 @@ struct PCodeInspectorCommandsView: View {
 
                     if item.isRunning && item.isBackgroundJob {
                         Button(role: .destructive) {
-                            actions.stopJob(item.id)
+                            actions.stopJob(PCodeInspectorCommandsStore.registryJobID(for: item.id))
                         } label: {
                             Label("Kill", systemImage: "stop.circle.fill")
                                 .font(.system(size: 10.5, weight: .medium))
@@ -782,7 +869,7 @@ struct PCodeInspectorCommandsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
-                    .help("Reference command and output in prompt (⌘L)")
+                    .help("Reference command and output in prompt")
                 }
             }
             .padding(.horizontal, 10)
@@ -857,21 +944,6 @@ struct PCodeInspectorCommandsView: View {
             )
     }
 
-    // MARK: - Keyboard Shortcuts
-
-    private var keyboardShortcutHooks: some View {
-        Group {
-            Button("") {
-                guard let selected = selectedCommand else { return }
-                actions.insertIntoComposer(Self.promptReference(for: selected))
-            }
-            .keyboardShortcut("l", modifiers: .command)
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0.001)
-        .allowsHitTesting(false)
-    }
-
     private func syncSelection(preferredID: String?) {
         if let preferredID, store.commands.contains(where: { $0.id == preferredID }) {
             selectedCommandID = preferredID
@@ -885,7 +957,11 @@ struct PCodeInspectorCommandsView: View {
         if let current = selectedCommandID, store.commands.contains(where: { $0.id == current }) {
             return
         }
-        selectedCommandID = store.commands.first?.id
+        if let focused = state.focusedCommandID, store.commands.contains(where: { $0.id == focused }) {
+            selectedCommandID = focused
+        } else {
+            selectedCommandID = store.commands.first?.id
+        }
         isFollowingTail = selectedCommand?.isRunning ?? true
     }
 }
@@ -988,7 +1064,9 @@ private struct PCodeCommandOutputTailView: NSViewRepresentable {
             coordinator.lastText = text
 
             if shouldTail {
-                textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+                if let textContainer = textView.textContainer {
+                    textView.layoutManager?.ensureLayout(for: textContainer)
+                }
                 textView.scrollToEndOfDocument(nil)
             } else if !commandChanged {
                 scrollView.contentView.scroll(to: previousOrigin)
@@ -1032,7 +1110,7 @@ private struct PCodeCommandOutputTailView: NSViewRepresentable {
             observer = NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification,
                 object: scrollView.contentView,
-                queue: .main
+                queue: nil
             ) { [weak self] _ in
                 self?.handleBoundsDidChange()
             }

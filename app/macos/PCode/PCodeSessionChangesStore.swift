@@ -98,7 +98,7 @@ final class PCodeSessionChangesStore: ObservableObject {
 
     init(
         sessionDirectory: String? = nil,
-        parseHunks: @escaping HunkParser = { PCodeFallbackPatchParser.parseHunks($0) },
+        parseHunks: @escaping HunkParser = { PCodeDiffParser.parseHunks($0) },
         gitProvider: PCodeGitDiffProvider? = nil,
         gitDebounceNanoseconds: UInt64 = 300_000_000
     ) {
@@ -117,6 +117,14 @@ final class PCodeSessionChangesStore: ObservableObject {
     func setSessionDirectory(_ directory: String?) {
         guard sessionDirectory != directory else { return }
         sessionDirectory = directory
+        tasks.cancelAll()
+        gitRefreshGeneration += 1
+        isLoadingGit = false
+        hasGitRepo = false
+        workingTreeFiles = []
+        branchFiles = []
+        baseBranchName = nil
+        gitError = nil
         if activeScope == .workingTree || activeScope == .branch {
             scheduleGitRefresh(for: activeScope)
         }
@@ -254,6 +262,7 @@ final class PCodeSessionChangesStore: ObservableObject {
     // MARK: - Async Git Refresh
 
     func cancelPendingGitRefresh() {
+        gitRefreshGeneration += 1
         tasks.cancelAll()
         isLoadingGit = false
     }
@@ -276,6 +285,7 @@ final class PCodeSessionChangesStore: ObservableObject {
     func refreshGit(for scope: PCodeDiffScope? = nil) async {
         let targetScope = scope ?? activeScope
         guard targetScope == .workingTree || targetScope == .branch else { return }
+        guard !Task.isCancelled else { return }
 
         guard let directory = sessionDirectory, !directory.isEmpty else {
             hasGitRepo = false
@@ -292,25 +302,36 @@ final class PCodeSessionChangesStore: ObservableObject {
         isLoadingGit = true
 
         let provider = gitProvider
-        let work = Task<PCodeGitDiffResult, Never> {
+        let work = Task<PCodeGitDiffResult?, Never> {
+            let result: PCodeGitDiffResult
             switch targetScope {
             case .workingTree:
-                return await provider.fetchWorkingTree(in: directory)
+                result = await provider.fetchWorkingTree(in: directory)
             case .branch:
-                return await provider.fetchBranchDiff(in: directory)
+                result = await provider.fetchBranchDiff(in: directory)
             case .session, .singleEdit:
                 return .notAGitRepo
             }
+            return Task.isCancelled ? nil : result
         }
         tasks.replaceRefresh { work.cancel() }
 
-        let result = await work.value
+        let result = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
 
-        guard !Task.isCancelled, generation == gitRefreshGeneration else {
+        guard generation == gitRefreshGeneration else {
             return
         }
 
         isLoadingGit = false
+
+        guard !Task.isCancelled, let result else {
+            return
+        }
+
         hasGitRepo = result.hasGitRepo
         gitError = result.error
 
@@ -365,6 +386,13 @@ final class PCodeSessionChangesStore: ObservableObject {
 
         if let previousPath = previewPathByCallID[callID], previousPath != normalized.displayPath {
             removePreview(callID: callID)
+        }
+
+        // Avoid creating an empty preview-only entry before the first diff line arrives.
+        if text.isEmpty {
+            guard let existing = bucketsByPath[normalized.displayPath], !existing.completedEdits.isEmpty else {
+                return
+            }
         }
 
         sequence += 1
@@ -546,7 +574,6 @@ final class PCodeSessionChangesStore: ObservableObject {
         var patches: [String] = []
         var combinedHunks: [PCodeDiffHunk] = []
 
-        let multipleEdits = bucket.completedEdits.count > 1 || isStreaming
         for (editIndex, edit) in bucket.completedEdits.enumerated() {
             totalAdded += edit.added
             totalRemoved += edit.removed
@@ -555,11 +582,7 @@ final class PCodeSessionChangesStore: ObservableObject {
             if !edit.patch.isEmpty {
                 patches.append(edit.patch)
             }
-            if multipleEdits {
-                combinedHunks.append(contentsOf: uniquifyHunks(edit.hunks, prefix: "e\(editIndex)"))
-            } else {
-                combinedHunks.append(contentsOf: edit.hunks)
-            }
+            combinedHunks.append(contentsOf: uniquifyHunks(edit.hunks, prefix: "e\(editIndex)"))
         }
 
         if let latestPreview = orderedPreviews.last {

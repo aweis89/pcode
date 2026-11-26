@@ -185,7 +185,7 @@ enum PCodeExternalEditor {
         guard !command.isEmpty else { return nil }
         if command.contains("/") {
             let expanded = (command as NSString).expandingTildeInPath
-            return fileManager.isExecutableFile(atPath: expanded) ? expanded : nil
+            return isExecutableRegularFile(atPath: expanded, fileManager: fileManager) ? expanded : nil
         }
 
         var searchDirs: [String] = []
@@ -199,11 +199,19 @@ enum PCodeExternalEditor {
             let dir = (rawDir as NSString).expandingTildeInPath
             guard !dir.isEmpty, seen.insert(dir).inserted else { continue }
             let candidate = (dir as NSString).appendingPathComponent(command)
-            if fileManager.isExecutableFile(atPath: candidate) {
+            if isExecutableRegularFile(atPath: candidate, fileManager: fileManager) {
                 return candidate
             }
         }
         return nil
+    }
+
+    private static func isExecutableRegularFile(atPath path: String, fileManager: FileManager) -> Bool {
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else {
+            return false
+        }
+        return fileManager.isExecutableFile(atPath: path)
     }
 
     /// Builds a `LaunchSpec` for opening `path` (optionally at 1-based `line`) with the given
@@ -349,9 +357,16 @@ enum PCodeComposerInsertion {
     /// firing Enter/submit. Strips any embedded bracketed-paste control sequences to prevent breakout.
     static func bracketedPasteBytes(for text: String) -> Data {
         guard !text.isEmpty else { return Data() }
-        let sanitized = text
-            .replacingOccurrences(of: bracketedPasteEnd, with: "")
-            .replacingOccurrences(of: bracketedPasteStart, with: "")
+        var sanitized = text
+        while true {
+            let next = sanitized
+                .replacingOccurrences(of: bracketedPasteEnd, with: "")
+                .replacingOccurrences(of: bracketedPasteStart, with: "")
+            if next == sanitized {
+                break
+            }
+            sanitized = next
+        }
         return Data("\(bracketedPasteStart)\(sanitized)\(bracketedPasteEnd)".utf8)
     }
 

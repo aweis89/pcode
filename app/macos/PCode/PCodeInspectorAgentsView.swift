@@ -753,19 +753,13 @@ struct PCodeInspectorAgentsView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
-            syncFocusFromState(state.focusedAgentID)
+            reconcileSelection(for: store.agents.map(\.id))
         }
         .onChange(of: state.focusedAgentID) { targetID in
             syncFocusFromState(targetID)
         }
         .onChange(of: store.agents.map(\.id)) { ids in
-            if let focused = state.focusedAgentID, ids.contains(focused) {
-                selectedAgentID = focused
-                expandedAgentIDs.insert(focused)
-            } else if selectedAgentID == nil, let first = ids.first {
-                selectedAgentID = first
-                expandedAgentIDs.insert(first)
-            }
+            reconcileSelection(for: ids)
         }
     }
 
@@ -785,19 +779,26 @@ struct PCodeInspectorAgentsView: View {
     }
 
     static func stopActionPrompt(for agent: PCodeInspectorAgentItem) -> String {
-        "Stop worker \(targetLabel(for: agent))"
+        PCodeComposerInsertion.workerStopPrompt(
+            id: agent.workerID ?? "",
+            role: agent.role
+        )
     }
 
     static func messageActionPrompt(for agent: PCodeInspectorAgentItem, body: String = "") -> String {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix = "Message for \(targetLabel(for: agent)): "
-        return trimmed.isEmpty ? prefix : prefix + trimmed
+        PCodeComposerInsertion.workerMessagePrompt(
+            id: agent.workerID ?? "",
+            role: agent.role,
+            message: body
+        )
     }
 
     static func answerActionPrompt(for agent: PCodeInspectorAgentItem, body: String = "") -> String {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix = "Answer for \(targetLabel(for: agent)): "
-        return trimmed.isEmpty ? prefix : prefix + trimmed
+        PCodeComposerInsertion.workerAnswerPrompt(
+            id: agent.workerID ?? "",
+            role: agent.role,
+            answer: body
+        )
     }
 
     // MARK: - Header
@@ -870,11 +871,11 @@ struct PCodeInspectorAgentsView: View {
                     }
                     .padding(10)
                 }
+                .onAppear {
+                    scrollToAgent(state.focusedAgentID, with: proxy, animated: false)
+                }
                 .onChange(of: state.focusedAgentID) { targetID in
-                    guard let targetID, store.agents.contains(where: { $0.id == targetID }) else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(targetID, anchor: .top)
-                    }
+                    scrollToAgent(targetID, with: proxy, animated: true)
                 }
             }
         }
@@ -959,6 +960,9 @@ struct PCodeInspectorAgentsView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.16)) {
                 selectedAgentID = agent.id
+                if state.focusedAgentID != agent.id {
+                    state.focusedAgentID = agent.id
+                }
                 if expandedAgentIDs.contains(agent.id) {
                     expandedAgentIDs.remove(agent.id)
                 } else {
@@ -1323,9 +1327,46 @@ struct PCodeInspectorAgentsView: View {
     }
 
     private func syncFocusFromState(_ targetID: String?) {
-        guard let targetID else { return }
+        guard let targetID,
+              store.agents.contains(where: { $0.id == targetID }),
+              selectedAgentID != targetID
+        else { return }
         selectedAgentID = targetID
         expandedAgentIDs.insert(targetID)
+    }
+
+    private func reconcileSelection(for ids: [String]) {
+        let validIDs = Set(ids)
+        expandedAgentIDs = expandedAgentIDs.intersection(validIDs)
+        draftMessages = draftMessages.filter { validIDs.contains($0.key) }
+        if let copied = copiedReportID, !validIDs.contains(copied) {
+            copiedReportID = nil
+        }
+
+        if let current = selectedAgentID, !validIDs.contains(current) {
+            selectedAgentID = nil
+        }
+
+        if let focused = state.focusedAgentID, validIDs.contains(focused) {
+            if selectedAgentID != focused {
+                selectedAgentID = focused
+                expandedAgentIDs.insert(focused)
+            }
+        } else if selectedAgentID == nil, let first = ids.first {
+            selectedAgentID = first
+            expandedAgentIDs.insert(first)
+        }
+    }
+
+    private func scrollToAgent(_ targetID: String?, with proxy: ScrollViewProxy, animated: Bool) {
+        guard let targetID, store.agents.contains(where: { $0.id == targetID }) else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(targetID, anchor: .top)
+            }
+        } else {
+            proxy.scrollTo(targetID, anchor: .top)
+        }
     }
 }
 

@@ -356,4 +356,49 @@ struct PCodeDiffParserTests {
         #expect(back == "a.swift")
         #expect(state.focusedFilePath == "a.swift")
     }
+
+    // MARK: - Syntax Store Bounded FIFO Eviction
+
+    private final class CountingSyntaxHighlighter: PCodeSyntaxHighlighter, @unchecked Sendable {
+        var allowSyncHit = true
+        var syncLookupCounts: [String: Int] = [:]
+
+        func cachedTokens(code: String, language: String?) -> [PCodeSyntaxToken]? {
+            syncLookupCounts[code, default: 0] += 1
+            guard allowSyncHit else { return nil }
+            return [PCodeSyntaxToken(content: code, kind: .plain)]
+        }
+
+        func tokenize(code: String, language: String?) async -> [PCodeSyntaxToken] {
+            [PCodeSyntaxToken(content: code, kind: .plain)]
+        }
+    }
+
+    @Test @MainActor func diffSyntaxStoreEvictsOldestEntriesFIFOAtCapacity() {
+        let highlighter = CountingSyntaxHighlighter()
+        let store = PCodeDiffSyntaxStore(highlighter: highlighter)
+        let cap = PCodeDiffSyntaxStore.maxCacheEntries
+
+        // Fill past capacity by 1 entry (0...cap).
+        for idx in 0...cap {
+            let result = store.lineTokens(for: ["let v\(idx) = \(idx)"], language: "swift")
+            #expect(result?.count == 1)
+        }
+
+        // Disable highlighter sync hits so only store-cached entries return non-nil.
+        highlighter.allowSyncHit = false
+
+        // Entries 1...cap must still be cached (not wiped by a full removeAll()).
+        for idx in 1...cap {
+            let code = "let v\(idx) = \(idx)"
+            let before = highlighter.syncLookupCounts[code, default: 0]
+            let cached = store.lineTokens(for: [code], language: "swift")
+            #expect(cached?.count == 1)
+            #expect(highlighter.syncLookupCounts[code, default: 0] == before)
+        }
+
+        // Oldest entry (0) must have been evicted by FIFO.
+        let evicted = store.lineTokens(for: ["let v0 = 0"], language: "swift")
+        #expect(evicted == nil)
+    }
 }

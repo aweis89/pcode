@@ -194,6 +194,50 @@ struct PCodeExternalEditorTests {
         #expect(empty == nil)
     }
 
+    @Test func resolveExecutableRejectsDirectoriesAndResolvesExecutableFiles() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("pcode-editor-resolve-\(UUID().uuidString)")
+        let dirWithSameName = root.appendingPathComponent("pcode-test-editor")
+        let binDir = root.appendingPathComponent("bin")
+        let realExec = binDir.appendingPathComponent("pcode-test-editor")
+        let nonExec = binDir.appendingPathComponent("pcode-nonexec-editor")
+
+        try fm.createDirectory(at: dirWithSameName, withIntermediateDirectories: true)
+        try fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try "#!/bin/sh\nexit 0\n".write(to: realExec, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: realExec.path)
+
+        try "not executable\n".write(to: nonExec, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: nonExec.path)
+
+        // Direct path to a directory (which has +x) must be rejected.
+        #expect(PCodeExternalEditor.resolveExecutable(dirWithSameName.path, fileManager: fm) == nil)
+
+        // Bare command lookup must skip a matching directory on PATH.
+        #expect(
+            PCodeExternalEditor.resolveExecutable(
+                "pcode-test-editor",
+                environment: ["PATH": root.path],
+                fileManager: fm
+            ) == nil
+        )
+
+        // When a directory precedes the real executable on PATH, skip the directory and resolve the file.
+        #expect(
+            PCodeExternalEditor.resolveExecutable(
+                "pcode-test-editor",
+                environment: ["PATH": "\(root.path):\(binDir.path)"],
+                fileManager: fm
+            ) == realExec.path
+        )
+
+        // Direct path to a real executable succeeds, while a non-executable regular file is rejected.
+        #expect(PCodeExternalEditor.resolveExecutable(realExec.path, fileManager: fm) == realExec.path)
+        #expect(PCodeExternalEditor.resolveExecutable(nonExec.path, fileManager: fm) == nil)
+    }
+
     // MARK: - Fallback behavior
 
     @Test func openLaunchesGUIEditorAndFallsBackForTerminalMissingOrError() {
@@ -298,6 +342,21 @@ struct PCodeExternalEditorTests {
         let hostile = "hello\u{1b}[201~\nrm -rf /\u{1b}[200~world"
         let safe = PCodeComposerInsertion.bracketedPasteBytes(for: hostile)
         #expect(String(data: safe, encoding: .utf8) == "\u{1b}[200~hello\nrm -rf /world\u{1b}[201~")
+    }
+
+    @Test func bracketedPasteBytesPreventsNestedBreakoutSequences() {
+        // Nested sequence where a single-pass strip would reconstruct ESC[201~ or ESC[200~.
+        let nestedEnd = "\u{1b}[20\u{1b}[201~1~"
+        let encodedEnd = PCodeComposerInsertion.bracketedPasteBytes(for: nestedEnd)
+        #expect(String(data: encodedEnd, encoding: .utf8) == "\u{1b}[200~\u{1b}[201~")
+
+        let nestedWithPayload = "before\u{1b}[20\u{1b}[201~1~after"
+        let encodedPayload = PCodeComposerInsertion.bracketedPasteBytes(for: nestedWithPayload)
+        #expect(String(data: encodedPayload, encoding: .utf8) == "\u{1b}[200~beforeafter\u{1b}[201~")
+
+        let deeplyNested = "a\u{1b}[20\u{1b}[20\u{1b}[201~1~1~b\u{1b}[20\u{1b}[200~0~c"
+        let encodedDeep = PCodeComposerInsertion.bracketedPasteBytes(for: deeplyNested)
+        #expect(String(data: encodedDeep, encoding: .utf8) == "\u{1b}[200~abc\u{1b}[201~")
     }
 
     // MARK: - Worker prefill prompts

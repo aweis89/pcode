@@ -418,6 +418,7 @@ struct PCodeInspectorActions {
 }
 
 /// Per-session UI state for the right-hand Session Inspector.
+@MainActor
 final class PCodeInspectorState: ObservableObject {
     /// Windows narrower than this degrade from a side-by-side split to a slide-over drawer.
     static let splitMinContainerWidth: CGFloat = 1150

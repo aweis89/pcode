@@ -8,8 +8,11 @@ import SwiftUI
 /// and splits token streams cleanly per line so multi-line constructs stay highlighted.
 @MainActor
 final class PCodeDiffSyntaxStore: ObservableObject {
+    static let maxCacheEntries = 256
+
     private let highlighter: any PCodeSyntaxHighlighter
     private var tokensByKey: [String: [[PCodeSyntaxToken]]] = [:]
+    private var keyOrder: [String] = []
     private var inFlight: Set<String> = []
 
     init(highlighter: any PCodeSyntaxHighlighter = PCodePrismSyntaxHighlighter.shared) {
@@ -30,7 +33,7 @@ final class PCodeDiffSyntaxStore: ObservableObject {
 
         if let syncTokens = highlighter.cachedTokens(code: joined, language: lang) {
             let split = Self.splitTokensByLine(syncTokens, lineCount: lines.count)
-            tokensByKey[key] = split
+            storeTokens(split, forKey: key)
             return split
         }
 
@@ -44,16 +47,24 @@ final class PCodeDiffSyntaxStore: ObservableObject {
                 await MainActor.run {
                     guard let self else { return }
                     self.inFlight.remove(key)
-                    self.tokensByKey[key] = split
-                    if self.tokensByKey.count > 256 {
-                        self.tokensByKey.removeAll(keepingCapacity: true)
-                        self.tokensByKey[key] = split
-                    }
+                    self.storeTokens(split, forKey: key)
                     self.objectWillChange.send()
                 }
             }
         }
         return nil
+    }
+
+    private func storeTokens(_ tokens: [[PCodeSyntaxToken]], forKey key: String) {
+        let isNew = tokensByKey[key] == nil
+        tokensByKey[key] = tokens
+        if isNew {
+            keyOrder.append(key)
+        }
+        while tokensByKey.count > Self.maxCacheEntries, !keyOrder.isEmpty {
+            let oldest = keyOrder.removeFirst()
+            tokensByKey.removeValue(forKey: oldest)
+        }
     }
 
     /// Split a flat `[PCodeSyntaxToken]` array (representing `\n`-joined lines) into per-line token arrays.
@@ -342,12 +353,18 @@ struct PCodeChangesInspectorView: View {
     private func setScope(_ scope: PCodeDiffScope) {
         guard state.diffScope != scope else { return }
         state.diffScope = scope
+        resetTransientDiffState()
+        onScopeChange?(scope)
+    }
+
+    private func resetTransientDiffState() {
         selection = nil
         selectionAnchor = nil
         expandedGaps.removeAll()
-        updatedUnseenFiles.removeAll()
+        seenHunkIDs.removeAll()
         pulsingHunkIDs.removeAll()
-        onScopeChange?(scope)
+        updatedUnseenFiles.removeAll()
+        lastModifiedByPath.removeAll()
     }
 
     private var fileJumpMenu: some View {
@@ -452,56 +469,72 @@ struct PCodeChangesInspectorView: View {
 
     // MARK: - Main Scrollable Content
 
-    @ViewBuilder
     private var contentArea: some View {
-        if diffs.isEmpty {
-            emptyStateView
-        } else {
-            ZStack(alignment: .bottomTrailing) {
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical) {
-                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(diffs) { diff in
-                                Section {
-                                    if !state.collapsedFiles.contains(diff.path) {
-                                        fileDiffBody(for: diff)
+        ScrollViewReader { proxy in
+            Group {
+                if diffs.isEmpty {
+                    emptyStateView
+                } else {
+                    ZStack(alignment: .bottomTrailing) {
+                        ScrollView(.vertical) {
+                            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                                ForEach(diffs) { diff in
+                                    Section {
+                                        if !state.collapsedFiles.contains(diff.path) {
+                                            fileDiffBody(for: diff)
+                                        }
+                                    } header: {
+                                        fileHeader(for: diff)
                                     }
-                                } header: {
-                                    fileHeader(for: diff)
+                                    .id(fileAnchorID(diff.path))
                                 }
-                                .id(fileAnchorID(diff.path))
                             }
+                            .padding(.bottom, selection != nil ? 56 : 16)
                         }
-                        .padding(.bottom, selection != nil ? 56 : 16)
-                    }
-                    .focusable(true)
-                    .focused($isDiffListFocused)
-                    .modifier(PCodeDiffKeyHandlerModifier(
-                        onPrevFile: { navigateFile(direction: -1, proxy: proxy) },
-                        onNextFile: { navigateFile(direction: 1, proxy: proxy) },
-                        onEscape: { clearSelection() }
-                    ))
-                    .onChange(of: state.focusedFilePath) { targetPath in
-                        guard let targetPath, diffs.contains(where: { $0.path == targetPath }) else { return }
-                        updatedUnseenFiles.remove(targetPath)
-                        withAnimation(.easeInOut(duration: 0.22)) {
-                            proxy.scrollTo(fileAnchorID(targetPath), anchor: .top)
+                        .focusable(true)
+                        .focused($isDiffListFocused)
+                        .modifier(PCodeDiffKeyHandlerModifier(
+                            onPrevFile: { navigateFile(direction: -1, proxy: proxy) },
+                            onNextFile: { navigateFile(direction: 1, proxy: proxy) },
+                            onEscape: {
+                                guard selection != nil else { return false }
+                                clearSelection()
+                                return true
+                            },
+                            onReferenceSelection: {
+                                guard selection != nil else { return false }
+                                referenceCurrentSelection()
+                                return true
+                            },
+                            onOpenInEditor: {
+                                guard !diffs.isEmpty else { return false }
+                                openFocusedOrSelectedInEditor()
+                                return true
+                            }
+                        ))
+                        .onAppear {
+                            scrollToFocusedFile(state.focusedFilePath, proxy: proxy, animated: false)
                         }
-                    }
-                    .onChange(of: diffTrackingFingerprint) { _ in
-                        handleDiffUpdates(proxy: proxy)
-                    }
-                }
+                        .onChange(of: state.focusedFilePath) { targetPath in
+                            scrollToFocusedFile(targetPath, proxy: proxy, animated: true)
+                        }
 
-                if let selection {
-                    floatingSelectionBar(for: selection)
-                        .padding(.trailing, 14)
-                        .padding(.bottom, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        if let selection {
+                            floatingSelectionBar(for: selection)
+                                .padding(.trailing, 14)
+                                .padding(.bottom, 12)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.16), value: selection)
                 }
             }
-            .animation(.easeOut(duration: 0.16), value: selection)
-            .background(keyboardShortcutHooks)
+            .onChange(of: state.diffScope) { _ in
+                resetTransientDiffState()
+            }
+            .onChange(of: diffTrackingFingerprint) { _ in
+                handleDiffUpdates(proxy: proxy)
+            }
         }
     }
 
@@ -843,7 +876,7 @@ struct PCodeChangesInspectorView: View {
 
     @ViewBuilder
     private func hunkView(_ hunk: PCodeDiffHunk, in diff: PCodeFileDiff) -> some View {
-        let isPulsing = pulsingHunkIDs.contains(hunk.id)
+        let isPulsing = pulsingHunkIDs.contains(scopedHunkID(hunk, in: diff))
         let lineTexts = hunk.lines.map(\.text)
         let perLineTokens = syntaxStore.lineTokens(for: lineTexts, language: diff.language)
 
@@ -1166,7 +1199,9 @@ struct PCodeChangesInspectorView: View {
 
     private func referenceCurrentSelection() {
         guard let selection else { return }
-        actions.insertIntoComposer(selection.promptReference)
+        actions.insertIntoComposer(
+            PCodeComposerInsertion.formattedInsertion(reference: selection.promptReference)
+        )
     }
 
     private func openFocusedOrSelectedInEditor() {
@@ -1245,27 +1280,29 @@ struct PCodeChangesInspectorView: View {
         )
     }
 
-    /// Hidden command-key shortcuts for `⌘L` (reference selection) and `⌘O` (open active file).
-    private var keyboardShortcutHooks: some View {
-        Group {
-            if selection != nil {
-                Button("") { referenceCurrentSelection() }
-                    .keyboardShortcut("l", modifiers: .command)
-            }
-            if !diffs.isEmpty {
-                Button("") { openFocusedOrSelectedInEditor() }
-                    .keyboardShortcut("o", modifiers: .command)
-            }
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0)
-        .allowsHitTesting(false)
-    }
-
     // MARK: - Navigation & Streaming Update Tracking
 
     private func fileAnchorID(_ path: String) -> String {
         "diff-file-\(path)"
+    }
+
+    private func scopedHunkID(_ hunk: PCodeDiffHunk, in diff: PCodeFileDiff) -> String {
+        "\(diff.id)::\(hunk.id)"
+    }
+
+    private func scrollToFocusedFile(_ targetPath: String?, proxy: ScrollViewProxy, animated: Bool) {
+        guard let targetPath, diffs.contains(where: { $0.path == targetPath }) else { return }
+        updatedUnseenFiles.remove(targetPath)
+        let anchorID = fileAnchorID(targetPath)
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+        } else {
+            DispatchQueue.main.async {
+                proxy.scrollTo(anchorID, anchor: .top)
+            }
+        }
     }
 
     private func jumpToFile(_ path: String) {
@@ -1300,7 +1337,7 @@ struct PCodeChangesInspectorView: View {
         for diff in diffs {
             initialDates[diff.path] = diff.lastModifiedAt
             for hunk in diff.hunks {
-                initialHunks.insert(hunk.id)
+                initialHunks.insert(scopedHunkID(hunk, in: diff))
             }
         }
         seenHunkIDs = initialHunks
@@ -1320,9 +1357,10 @@ struct PCodeChangesInspectorView: View {
             lastModifiedByPath[diff.path] = diff.lastModifiedAt
 
             for hunk in diff.hunks {
-                if !seenHunkIDs.contains(hunk.id) {
-                    seenHunkIDs.insert(hunk.id)
-                    newlyArrivedHunks.append(hunk.id)
+                let scopedID = scopedHunkID(hunk, in: diff)
+                if !seenHunkIDs.contains(scopedID) {
+                    seenHunkIDs.insert(scopedID)
+                    newlyArrivedHunks.append(scopedID)
                 }
             }
         }
@@ -1381,12 +1419,14 @@ private struct PCodePulsingDotView: View {
     }
 }
 
-// MARK: - Focused `[` / `]` & `Esc` Key Handler
+// MARK: - Focused `[` / `]`, `⌘L` / `⌘O` & `Esc` Key Handler
 
 private struct PCodeDiffKeyHandlerModifier: ViewModifier {
     let onPrevFile: () -> Void
     let onNextFile: () -> Void
-    let onEscape: () -> Void
+    let onEscape: () -> Bool
+    let onReferenceSelection: () -> Bool
+    let onOpenInEditor: () -> Bool
 
     func body(content: Content) -> some View {
         if #available(macOS 14.0, *) {
@@ -1402,9 +1442,19 @@ private struct PCodeDiffKeyHandlerModifier: ViewModifier {
                     }
                     return .ignored
                 }
+                .onKeyPress(characters: CharacterSet(charactersIn: "lLoO"), phases: .down) { press in
+                    guard press.modifiers == .command else { return .ignored }
+                    let lower = press.characters.lowercased()
+                    if lower == "l" {
+                        return onReferenceSelection() ? .handled : .ignored
+                    }
+                    if lower == "o" {
+                        return onOpenInEditor() ? .handled : .ignored
+                    }
+                    return .ignored
+                }
                 .onKeyPress(.escape) {
-                    onEscape()
-                    return .handled
+                    onEscape() ? .handled : .ignored
                 }
         } else {
             content

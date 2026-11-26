@@ -281,17 +281,38 @@ struct PCodeInspectorTabsTests {
     }
 
     @Test @MainActor
-    func agentActionPromptsUseWorkerIDOrRoleFallback() {
+    func agentActionPromptsUseComposerInsertion() {
         let withWorkerID = PCodeInspectorAgentItem(
             id: "call-1",
             workerID: "w3",
             role: "Code Reviewer",
             status: .running
         )
-        #expect(PCodeInspectorAgentsView.stopActionPrompt(for: withWorkerID) == "Stop worker w3")
-        #expect(PCodeInspectorAgentsView.messageActionPrompt(for: withWorkerID) == "Message for w3: ")
-        #expect(PCodeInspectorAgentsView.messageActionPrompt(for: withWorkerID, body: "check edge cases") == "Message for w3: check edge cases")
-        #expect(PCodeInspectorAgentsView.answerActionPrompt(for: withWorkerID, body: "use SQLite") == "Answer for w3: use SQLite")
+        #expect(
+            PCodeInspectorAgentsView.stopActionPrompt(for: withWorkerID)
+                == PCodeComposerInsertion.workerStopPrompt(id: "w3", role: "Code Reviewer")
+        )
+        #expect(PCodeInspectorAgentsView.stopActionPrompt(for: withWorkerID) == "Stop worker w3 (Code Reviewer).")
+        #expect(
+            PCodeInspectorAgentsView.messageActionPrompt(for: withWorkerID)
+                == "Message worker w3 (Code Reviewer): "
+        )
+        #expect(
+            PCodeInspectorAgentsView.messageActionPrompt(for: withWorkerID, body: "check edge cases")
+                == PCodeComposerInsertion.workerMessagePrompt(
+                    id: "w3",
+                    role: "Code Reviewer",
+                    message: "check edge cases"
+                )
+        )
+        #expect(
+            PCodeInspectorAgentsView.answerActionPrompt(for: withWorkerID, body: "use SQLite")
+                == PCodeComposerInsertion.workerAnswerPrompt(
+                    id: "w3",
+                    role: "Code Reviewer",
+                    answer: "use SQLite"
+                )
+        )
 
         let roleOnly = PCodeInspectorAgentItem(
             id: "call-2",
@@ -300,8 +321,31 @@ struct PCodeInspectorTabsTests {
             status: .waiting,
             pendingQuestion: "Proceed with migration?"
         )
-        #expect(PCodeInspectorAgentsView.stopActionPrompt(for: roleOnly) == "Stop worker Database Debugger")
-        #expect(PCodeInspectorAgentsView.answerActionPrompt(for: roleOnly) == "Answer for Database Debugger: ")
+        #expect(
+            PCodeInspectorAgentsView.stopActionPrompt(for: roleOnly)
+                == "Stop worker (Database Debugger)."
+        )
+        #expect(
+            PCodeInspectorAgentsView.answerActionPrompt(for: roleOnly)
+                == "Answer worker (Database Debugger): "
+        )
+
+        let idOnly = PCodeInspectorAgentItem(
+            id: "call-3",
+            workerID: "w4",
+            role: "",
+            status: .running
+        )
+        #expect(PCodeInspectorAgentsView.stopActionPrompt(for: idOnly) == "Stop worker w4.")
+        #expect(PCodeInspectorAgentsView.messageActionPrompt(for: idOnly, body: "status?") == "Message worker w4: status?")
+
+        let unnamed = PCodeInspectorAgentItem(
+            id: "call-4",
+            workerID: nil,
+            role: "",
+            status: .running
+        )
+        #expect(PCodeInspectorAgentsView.stopActionPrompt(for: unnamed) == "Stop the worker.")
     }
 
     // MARK: - PCodeInspectorCommandsStore
@@ -479,6 +523,124 @@ struct PCodeInspectorTabsTests {
         #expect(store.command(for: "job_42")?.status == .succeeded)
         #expect(store.command(for: "job_42")?.isBackgroundJob == true)
         #expect(store.command(for: "job_42")?.output == "Server exited cleanly")
+    }
+
+    @Test @MainActor
+    func watchedBackgroundJobProtocolDropOutputAndEmptyCallIDMatching() {
+        // Host WATCHED_PREFIX ("job:") recognition and registryJobID stripping
+        #expect(PCodeInspectorCommandsStore.looksLikeBackgroundJob(name: "", callID: "job:j3") == true)
+        #expect(PCodeInspectorCommandsStore.looksLikeBackgroundJob(name: "shell", callID: "call-1") == false)
+        #expect(PCodeInspectorCommandsStore.registryJobID(for: "job:j3") == "j3")
+        #expect(PCodeInspectorCommandsStore.registryJobID(for: "j3") == "j3")
+        #expect(PCodeInspectorCommandsStore.registryJobID(for: "job_42") == "job_42")
+
+        let store = PCodeInspectorCommandsStore()
+        let t1 = Date(timeIntervalSince1970: 5_500)
+        let t2 = Date(timeIntervalSince1970: 5_510)
+        let t3 = Date(timeIntervalSince1970: 5_520)
+
+        // Watched background job streams CommandOutput with callID "job:j3"
+        store.apply(
+            .commandOutput(callID: "job:j3", command: "npm run dev", output: "Listening on :3000"),
+            now: t1
+        )
+        #expect(store.commands.count == 1)
+        #expect(store.runningCount == 1)
+        #expect(store.command(for: "job:j3")?.isBackgroundJob == true)
+        #expect(store.command(for: "job:j3")?.status == .running)
+
+        // Unwatching emits dropOutput("job:j3") while the job is still running — must NOT settle it
+        store.apply(.dropOutput(callID: "job:j3"), now: t1)
+        #expect(store.runningCount == 1)
+        #expect(store.command(for: "job:j3")?.status == .running)
+
+        // A start_command background job also ignores dropOutput while running
+        store.apply(
+            .toolStarted(
+                callID: "call-bg-1",
+                parentCallID: "",
+                name: "start_command",
+                detail: "pytest -w",
+                command: "pytest -w",
+                purpose: ""
+            ),
+            now: t1
+        )
+        store.apply(.dropOutput(callID: "call-bg-1"), now: t1)
+        #expect(store.command(for: "call-bg-1")?.status == .running)
+        #expect(store.runningCount == 2)
+
+        // JobFinished arrives as toolSummary with empty callID and isBackgroundJob == true:
+        // must match the existing running "job:j3" row instead of creating a synthetic cmd-N row.
+        store.apply(
+            .toolSummary(
+                callID: "",
+                parentCallID: "",
+                name: "shell",
+                detail: "npm run dev → j3 · exited 0",
+                command: "npm run dev",
+                failed: false,
+                elapsedSeconds: 12.5,
+                error: "",
+                result: "Server exited cleanly\n[j3 · exited 0 · 12.5s]",
+                isBackgroundJob: true,
+                exitCode: 0
+            ),
+            now: t2
+        )
+        #expect(store.commands.count == 2)
+        #expect(store.runningCount == 1)
+        #expect(store.command(for: "job:j3")?.status == .succeeded)
+        #expect(store.command(for: "job:j3")?.isBackgroundJob == true)
+        #expect(store.command(for: "job:j3")?.output == "Server exited cleanly\n[j3 · exited 0 · 12.5s]")
+
+        // Two concurrent watched jobs with the same command disambiguate by bare job ID in detail
+        store.apply(
+            .commandOutput(callID: "job:j1", command: "make watch", output: "watching 1"),
+            now: t2
+        )
+        store.apply(
+            .commandOutput(callID: "job:j10", command: "make watch", output: "watching 10"),
+            now: t2
+        )
+        store.apply(
+            .toolSummary(
+                callID: "",
+                parentCallID: "",
+                name: "shell",
+                detail: "make watch → j10 · exited 0",
+                command: "make watch",
+                failed: false,
+                elapsedSeconds: 4.0,
+                error: "",
+                result: "done 10",
+                isBackgroundJob: true,
+                exitCode: 0
+            ),
+            now: t3
+        )
+        #expect(store.command(for: "job:j10")?.status == .succeeded)
+        #expect(store.command(for: "job:j1")?.status == .running)
+
+        // Empty-callID JobFinished with no matching running job falls back to a synthetic cmd-N row
+        store.apply(
+            .toolSummary(
+                callID: "",
+                parentCallID: "",
+                name: "shell",
+                detail: "sleep 1 → j99 · exited 0",
+                command: "sleep 1",
+                failed: false,
+                elapsedSeconds: 1.0,
+                error: "",
+                result: "[j99 · exited 0 · 1.0s]",
+                isBackgroundJob: true,
+                exitCode: 0
+            ),
+            now: t3
+        )
+        #expect(store.command(for: "cmd-1")?.status == .succeeded)
+        #expect(store.command(for: "cmd-1")?.isBackgroundJob == true)
     }
 
     @Test @MainActor

@@ -131,6 +131,13 @@ struct PCodeSessionChangesStoreTests {
             ),
             now: t1
         )
+
+        // Capture edit 0's hunk and line IDs before a second edit arrives
+        #expect(store.sessionFiles.count == 1)
+        let firstEditHunkIDs = store.sessionFiles[0].hunks.map(\.id)
+        let firstEditLineIDs = store.sessionFiles[0].hunks.flatMap { $0.lines.map(\.id) }
+        #expect(firstEditHunkIDs.count == 1)
+
         store.apply(
             .editCompleted(
                 callID: "c2",
@@ -157,6 +164,9 @@ struct PCodeSessionChangesStoreTests {
         #expect(aggregated.callIDs == ["c1", "c2"])
         #expect(aggregated.lastModifiedAt == t2)
         #expect(aggregated.hunks.count == 2)
+        // Edit 0's hunk and line IDs remain stable when a second edit is added
+        #expect(aggregated.hunks[0].id == firstEditHunkIDs[0])
+        #expect(aggregated.hunks[0].lines.map(\.id) == firstEditLineIDs)
         // Combined hunk IDs remain unique for SwiftUI ForEach
         #expect(Set(aggregated.hunks.map(\.id)).count == 2)
 
@@ -317,7 +327,160 @@ struct PCodeSessionChangesStoreTests {
             )
         )
 
-        #expect(store.sessionFiles.first?.hunks == [sentinelHunk])
+        let sessionHunks = store.sessionFiles.first?.hunks ?? []
+        #expect(sessionHunks.count == 1)
+        #expect(sessionHunks[0].id == "e0-0-custom-hunk")
+        #expect(sessionHunks[0].lines.map(\.text) == ["parsed"])
+        #expect(store.files(for: .singleEdit(callID: "c1")).first?.hunks == [sentinelHunk])
+    }
+
+    @Test @MainActor
+    func defaultParserPopulatesIntralineSpans() async throws {
+        let store = PCodeSessionChangesStore(sessionDirectory: "/tmp/proj")
+        store.apply(
+            .editCompleted(
+                callID: "c1",
+                parentCallID: "",
+                path: "Sample.swift",
+                operation: "edit",
+                patch: """
+                @@ -1,1 +1,1 @@
+                -let greeting = "hello"
+                +let greeting = "world"
+                """,
+                added: 1,
+                removed: 1,
+                truncated: false
+            )
+        )
+
+        let sessionLines = store.sessionFiles.first?.hunks.first?.lines ?? []
+        let deletedSession = try #require(sessionLines.first { $0.kind == .deleted })
+        let addedSession = try #require(sessionLines.first { $0.kind == .added })
+        #expect(!deletedSession.intralineSpans.isEmpty)
+        #expect(!addedSession.intralineSpans.isEmpty)
+
+        // Default PCodeGitDiffProvider also uses PCodeDiffParser and populates intraline spans
+        let repoURL = try makeTempDirectory(prefix: "pcode-intraline")
+        defer { try? FileManager.default.removeItem(at: repoURL) }
+        try runGitSync(["init", "-b", "main"], in: repoURL)
+        try runGitSync(["config", "user.email", "test@example.com"], in: repoURL)
+        try runGitSync(["config", "user.name", "Test User"], in: repoURL)
+        try "let count = 1\n".write(to: repoURL.appendingPathComponent("counter.swift"), atomically: true, encoding: .utf8)
+        try runGitSync(["add", "counter.swift"], in: repoURL)
+        try runGitSync(["commit", "-m", "initial"], in: repoURL)
+        try "let count = 2\n".write(to: repoURL.appendingPathComponent("counter.swift"), atomically: true, encoding: .utf8)
+
+        let provider = PCodeGitDiffProvider()
+        let result = await provider.fetchWorkingTree(in: repoURL.path)
+        let gitLines = result.files.first?.hunks.first?.lines ?? []
+        let deletedGit = try #require(gitLines.first { $0.kind == .deleted })
+        let addedGit = try #require(gitLines.first { $0.kind == .added })
+        #expect(!deletedGit.intralineSpans.isEmpty)
+        #expect(!addedGit.intralineSpans.isEmpty)
+    }
+
+    @Test @MainActor
+    func emptyEditPreviewDoesNotCreateEmptyFileEntry() {
+        let store = PCodeSessionChangesStore(sessionDirectory: "/tmp/proj")
+        let t1 = Date(timeIntervalSince1970: 5_000)
+        let t2 = Date(timeIntervalSince1970: 5_005)
+        let t3 = Date(timeIntervalSince1970: 5_010)
+
+        // Empty preview for a brand-new file should not create an empty streaming entry
+        store.apply(
+            .editPreview(callID: "edit-preview:0", path: "src/New.swift", text: "", kind: "edit"),
+            now: t1
+        )
+        #expect(store.sessionFiles.isEmpty)
+        #expect(store.singleEdit(for: "edit-preview:0") == nil)
+
+        // Once non-empty preview text arrives, the streaming entry appears with hunks
+        store.apply(
+            .editPreview(callID: "edit-preview:0", path: "src/New.swift", text: "+let x = 1", kind: "edit"),
+            now: t2
+        )
+        #expect(store.sessionFiles.count == 1)
+        #expect(store.sessionFiles[0].isStreaming == true)
+        #expect(!store.sessionFiles[0].hunks.isEmpty)
+
+        // Empty preview for a file that already has a completed edit marks it streaming without losing hunks
+        store.apply(
+            .editCompleted(
+                callID: "call-1",
+                parentCallID: "",
+                path: "src/Existing.swift",
+                operation: "edit",
+                patch: "@@ -1,1 +1,1 @@\n-old\n+new",
+                added: 1,
+                removed: 1,
+                truncated: false
+            ),
+            now: t2
+        )
+        store.apply(
+            .editPreview(callID: "edit-preview:1", path: "src/Existing.swift", text: "", kind: "edit"),
+            now: t3
+        )
+        let existing = store.sessionFiles.first { $0.path == "src/Existing.swift" }
+        #expect(existing?.isStreaming == true)
+        #expect(existing?.hunks.isEmpty == false)
+    }
+
+    @Test @MainActor
+    func setSessionDirectoryClearsStaleGitStateInSessionScope() async throws {
+        let repoURL = try makeTempDirectory(prefix: "pcode-dirchange")
+        defer { try? FileManager.default.removeItem(at: repoURL) }
+        try runGitSync(["init", "-b", "main"], in: repoURL)
+        try runGitSync(["config", "user.email", "test@example.com"], in: repoURL)
+        try runGitSync(["config", "user.name", "Test User"], in: repoURL)
+        try "hello\n".write(to: repoURL.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try runGitSync(["add", "a.txt"], in: repoURL)
+        try runGitSync(["commit", "-m", "initial"], in: repoURL)
+        try runGitSync(["checkout", "-b", "feat/test"], in: repoURL)
+        try "hello\nworld\n".write(to: repoURL.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+
+        let store = PCodeSessionChangesStore(sessionDirectory: repoURL.path)
+        await store.refreshGit(for: .workingTree)
+        await store.refreshGit(for: .branch)
+        #expect(store.hasGitRepo == true)
+        #expect(!store.workingTreeFiles.isEmpty)
+        #expect(!store.branchFiles.isEmpty)
+        #expect(store.baseBranchName == "main")
+
+        // Switch back to .session scope, then change directory: stale git state must be cleared
+        store.setActiveScope(.session, triggerRefresh: false)
+        store.setSessionDirectory("/tmp/another-workspace")
+        #expect(store.workingTreeFiles.isEmpty)
+        #expect(store.branchFiles.isEmpty)
+        #expect(store.baseBranchName == nil)
+        #expect(store.gitError == nil)
+        #expect(store.hasGitRepo == false)
+        #expect(store.isLoadingGit == false)
+    }
+
+    @Test @MainActor
+    func cancellingRefreshGitClearsLoadingState() async throws {
+        let tempDir = try makeTempDirectory(prefix: "pcode-cancelgit")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let slowGit = tempDir.appendingPathComponent("slow-git.sh")
+        try "#!/bin/sh\nexec /bin/sleep 10\n".write(to: slowGit, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slowGit.path)
+
+        let provider = PCodeGitDiffProvider(gitExecutablePath: slowGit.path)
+        let store = PCodeSessionChangesStore(sessionDirectory: tempDir.path, gitProvider: provider)
+
+        let refreshTask = Task { @MainActor in
+            await store.refreshGit(for: .workingTree)
+        }
+
+        // Wait briefly for refreshGit to enter loading state, then cancel the caller task
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(store.isLoadingGit == true)
+        refreshTask.cancel()
+        await refreshTask.value
+        #expect(store.isLoadingGit == false)
     }
 
     // MARK: - PCodeGitDiffProvider
