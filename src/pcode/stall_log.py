@@ -63,6 +63,8 @@ def _idle(frame) -> bool:
     suspended. A blocking `subprocess.run` also waits in a selector, but not one
     the loop called, and that is a stall."""
     caller = frame.f_back
+    if caller is not None and caller.f_code.co_name == "_watched_select":
+        caller = caller.f_back
     return (
         frame.f_code.co_filename.endswith("selectors.py")
         and caller is not None
@@ -110,13 +112,27 @@ class StallWatch:
         self._previous_sigcont = None
 
     async def heartbeat(self) -> None:
+        """Time the loop from the task running it, until cancelled.
+
+        A selector loop (asyncio's default) is timed from inside: each pass
+        that leaves the selector is due back in it, and one that stays out
+        for `threshold` or more is a late beat, as a timer task would see.
+        That costs no wakeups, where a 50 ms timer woke an idle terminal 20
+        times a second (most of its idle CPU). Any other loop gets the timer.
+        """
         self._loop_thread = threading.get_ident()
         if self._watcher is None:
             self._catch_sigcont()
             gc.callbacks.append(self._gc)
             self._watcher = threading.Thread(target=self._watch, name="stall-watch", daemon=True)
             self._watcher.start()
+        selector = getattr(asyncio.get_running_loop(), "_selector", None)
+        select = getattr(selector, "select", None)
         try:
+            # Not if already wrapped (another watch on this loop): theirs.
+            if select is not None and "select" not in getattr(selector, "__dict__", ("select",)):
+                await self._time_selector(selector, select)
+                return
             while True:
                 now = time.monotonic()
                 if self._due is not None and now - self._due >= self.threshold:
@@ -126,6 +142,26 @@ class StallWatch:
         finally:
             # Shutdown work after cancellation is not a stall.
             self._due = None
+
+    async def _time_selector(self, selector, select) -> None:
+        def _watched_select(timeout=None):
+            # Back for input: a pass that kept it waiting `threshold` was late.
+            now = time.monotonic()
+            due = self._due
+            if due is not None and now - due >= self.threshold:
+                self._late = (due, now - due)
+            self._due = None  # Waiting for I/O is never late.
+            try:
+                return select(timeout)
+            finally:
+                self._due = time.monotonic()
+
+        selector.select = _watched_select
+        try:
+            await asyncio.get_running_loop().create_future()
+        finally:
+            if selector.__dict__.get("select") is _watched_select:
+                del selector.select
 
     def stop(self) -> None:
         self._stop.set()
@@ -183,11 +219,13 @@ class StallWatch:
         # so it counts as late only from here.
         resumed = float("-inf")
         seen = self._continued  # The last SIGCONT accounted for.
+        timeout = POLL
         while True:
             # Taken just before waiting, so the watcher's own work (a write, a
-            # stack walk) is not mistaken for time spent stopped.
-            waited = (time.monotonic(), time.process_time())
-            if self._stop.wait(POLL):
+            # stack walk) is not mistaken for time spent stopped. Only waking
+            # later than asked counts toward a stop.
+            waited = (time.monotonic() + timeout, time.process_time())
+            if self._stop.wait(timeout):
                 break
             now = time.monotonic()
             continued = self._continued
@@ -231,6 +269,7 @@ class StallWatch:
             # can run before the heartbeat does, with the loop already idle.
             if stalled is None and not overdue:
                 mark = (now, time.process_time(), self._gc_seconds)
+            timeout = self._next_wait(overdue or stalled is not None, settled, resumed)
         if samples:
             # Stopped mid-stall: the loop is late by at least this much, up to
             # the last sample if the process was suspended since.
@@ -240,6 +279,28 @@ class StallWatch:
             )
             ended = sampled if suspended else now
             self._write(ended - stalled, samples, context, mark, ended=ended)
+
+    def _next_wait(self, sampling: bool, settled, resumed: float) -> float:
+        """While the next beat is not yet due, sleep until it could first be overdue.
+
+        The loop is keeping time, so nothing can be sampled before then, and a
+        beat on time moves that moment on: an idle loop wakes the watcher a few
+        times per `BEAT + threshold` instead of every `POLL`. Once a beat is
+        due (or mid-stall, or with a late beat to account for) it polls.
+        """
+        late = self._late
+        if sampling or (late is not None and late[0] != settled):
+            return POLL
+        due = self._due
+        if due is None:
+            # No heartbeat, or the loop waiting for I/O: nothing is due. Any
+            # pass that starts meanwhile is seen before it could be overdue.
+            return self.threshold
+        # Read afresh: writing a stall can itself take a while. A selector loop's
+        # `_due` (when the current pass began) is already past, so it polls.
+        now = time.monotonic()
+        start = max(due, resumed)
+        return start + self.threshold - now if now < start else POLL
 
     def _context(self) -> dict:
         if self.context is None:
