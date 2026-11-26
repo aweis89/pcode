@@ -26,7 +26,8 @@ def workspace_gone(workspace) -> str | None:
     return (
         f"The workspace {workspace} no longer exists, so no tool can run in it. "
         "It was deleted while this session was open, usually by a worktree removed "
-        "from elsewhere. Resume this conversation in another directory with "
+        "from elsewhere. The next turn recreates a session worktree (`.worktrees/pcode-*`) "
+        "at the same path; anything else, resume in another directory with "
         "`pcode -C DIR --continue <session>`."
     )
 

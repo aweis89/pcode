@@ -303,7 +303,7 @@ def test_resume_leaves_unmerged_worktree_with_a_note(repo, tmp_path):
 
 def test_resume_continues_here_when_the_sessions_worktree_was_removed(repo, tmp_path):
     root = tmp_path / "sessions"
-    removed = worktree.create(repo, "pcode-removed")
+    removed = worktree.create(repo, "hand-removed")  # Not pcode's to recreate.
     identity = saved_session_in(removed.path, root)
     worktree.remove(removed, force=True)
     created, session, app = make(repo, tmp_path)
@@ -434,3 +434,59 @@ def test_fork_worktree_is_claimed_for_the_copy(repo, tmp_path, monkeypatch):
     path = fork_worktree(saved, repo)
     assert worktree.owners_of(worktree.describe(path)) == {saved.info.id}
     saved.close()
+
+
+def test_restore_recreates_a_session_worktree_on_its_surviving_branch(repo):
+    created = worktree.create(repo, "pcode-abc")
+    commit(created.path, "kept.txt")
+    worktree.remove(created, force=True)
+    restored = worktree.restore(created.path, "owner-id")
+    assert restored is not None and restored.path == created.path
+    assert (created.path / "kept.txt").exists()
+    assert worktree.owners_of(restored) == {"owner-id"}
+
+
+def test_restore_starts_a_fresh_branch_when_the_old_one_is_gone(repo):
+    created = worktree.create(repo, "pcode-abc")
+    worktree.remove(created, force=True)
+    git(repo, "branch", "-D", "pcode-abc")
+    restored = worktree.restore(created.path)
+    assert restored is not None and restored.branch == "pcode-abc"
+    assert git(created.path, "rev-parse", "HEAD") == git(repo, "rev-parse", "main")
+
+
+def test_restore_leaves_anything_but_a_session_worktree_alone(repo, tmp_path):
+    hand = worktree.create(repo, "hand-made")
+    worktree.remove(hand, force=True)
+    assert worktree.restore(hand.path) is None
+    assert worktree.restore(tmp_path / ".worktrees" / "pcode-x") is None  # No repository.
+    assert not hand.path.exists()
+
+
+def test_a_turn_recreates_a_workspace_deleted_from_elsewhere(repo, tmp_path):
+    created, session, app = make(repo, tmp_path)
+    worktree.remove(created, force=True)
+    notes = []
+    app.transcript.note = lambda text, **_: notes.append(text)
+    app.controller.worktree_owner = "owner-id"
+    asyncio.run(app.controller.restore_workspace())
+    try:
+        assert created.path.is_dir()
+        assert any("recreated it on branch pcode-abc" in note for note in notes)
+        assert worktree.owners_of(worktree.describe(created.path)) == {"owner-id"}
+    finally:
+        session.close()
+
+
+def test_owner_open_elsewhere_keeps_its_worktree(repo, tmp_path):
+    """After `/stop`, the terminal can't open a session resumed elsewhere; it stays."""
+    root = tmp_path / "sessions"
+    created = worktree.create(repo, "pcode-abc")
+    resumed = SavedSession.create("test:local", created.path, root)
+    worktree.claim(created, resumed.info.id)
+    app = PreviewApp(workspace=created.path, session_dir=root)
+    app.runtime = FakeRuntime(None)
+    out = leave(app, owner=resumed.info.id)
+    assert "is still open in" in out and created.path.exists()
+    resumed.close()
+    assert "removed untouched" in leave(app, owner=resumed.info.id)

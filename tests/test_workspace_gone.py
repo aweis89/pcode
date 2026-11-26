@@ -90,6 +90,24 @@ def cli(monkeypatch, *argv: str) -> None:
 
 
 def test_continue_falls_back_to_the_project_checkout(repo, tmp_path, monkeypatch, capsys):
+    """A hand-made worktree (no `pcode-` prefix) is not pcode's to recreate."""
+    from pcode import worktree
+
+    created = worktree.create(repo, "hand-gone")
+    root = tmp_path / "sessions"
+    saved = SavedSession.create("test:local", created.path, root)
+    identity = saved.info.id
+    saved.close()
+    worktree.remove(created, force=True)
+
+    cli(monkeypatch, "--continue", identity, "--session-dir", str(root))
+    with patch("pcode.app.PreviewApp") as app:
+        main()
+    assert app.call_args.kwargs["workspace"] == repo
+    assert "no longer exists" in capsys.readouterr().err
+
+
+def test_continue_recreates_a_deleted_session_worktree(repo, tmp_path, monkeypatch, capsys):
     from pcode import worktree
 
     created = worktree.create(repo, "pcode-gone")
@@ -102,8 +120,10 @@ def test_continue_falls_back_to_the_project_checkout(repo, tmp_path, monkeypatch
     cli(monkeypatch, "--continue", identity, "--session-dir", str(root))
     with patch("pcode.app.PreviewApp") as app:
         main()
-    assert app.call_args.kwargs["workspace"] == repo
-    assert "no longer exists" in capsys.readouterr().err
+    assert app.call_args.kwargs["workspace"] == created.path
+    assert created.path.is_dir()
+    assert worktree.owners_of(worktree.describe(created.path)) == {identity}
+    assert "recreated it on branch pcode-gone" in capsys.readouterr().err
 
 
 def test_continue_without_any_surviving_directory_says_where_to_go(tmp_path, monkeypatch, capsys):
@@ -124,7 +144,7 @@ def test_continue_without_any_surviving_directory_says_where_to_go(tmp_path, mon
 def test_continue_elsewhere_in_the_same_repository_is_allowed(repo, tmp_path, monkeypatch):
     from pcode import worktree
 
-    created = worktree.create(repo, "pcode-explicit")
+    created = worktree.create(repo, "hand-explicit")
     sibling = worktree.create(repo, "pcode-sibling")
     root = tmp_path / "sessions"
     saved = SavedSession.create("test:local", created.path, root)

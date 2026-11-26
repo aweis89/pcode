@@ -215,6 +215,11 @@ async def _resume_session_host(
 
         workspace = Path(info.workspace)
         if not workspace.is_dir():
+            from pcode.worktree import restore
+
+            # A session worktree deleted from elsewhere comes back at its path.
+            await asyncio.to_thread(restore, workspace, info.id)
+        if not workspace.is_dir():
             raise ToolFailed(
                 f"Session {info.id}'s workspace ({workspace}) no longer exists; "
                 f"use read_session(session_id={info.id!r}, scope='all') to inspect its "
