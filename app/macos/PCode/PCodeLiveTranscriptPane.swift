@@ -502,6 +502,24 @@ struct PCodeMainWindowTranscriptView: View {
                 composerSurface: composerSurface)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if bottomContentInset > 0 {
+                // Soft vertical fade right above the floating composer card so scrolling
+                // text melts gently behind the dock instead of hard-clipping at its top edge.
+                VStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [
+                            ghostty.config.backgroundColor.opacity(0),
+                            ghostty.config.backgroundColor.opacity(0.92),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom)
+                        .frame(height: 26)
+                    ghostty.config.backgroundColor.opacity(0.92)
+                        .frame(height: max(0, bottomContentInset - 4))
+                }
+                .allowsHitTesting(false)
+            }
+
             if controller.connectionState != .connected && !(booting && controller.connectionState == .starting) {
                 PCodeHostConnectionCard(state: controller.connectionState)
                     .padding(.horizontal, 18)

@@ -246,9 +246,10 @@ final class PCodeTranscriptAccessibilityRowElement: NSAccessibilityElement {
         else { return .zero }
         let entry = doc.layoutEngine.entries[idx]
         let indent = CGFloat(doc.items[idx].depth) * 16
-        let contentW = max(1, doc.bounds.width - PCodeTranscriptDocumentView.horizontalPadding * 2 - indent)
+        let col = PCodeTranscriptDocumentView.columnMetrics(forAvailableWidth: doc.bounds.width)
+        let contentW = max(1, col.contentWidth - indent)
         var localRect = CGRect(
-            x: PCodeTranscriptDocumentView.horizontalPadding + indent,
+            x: col.originX + indent,
             y: entry.yOffset,
             width: contentW,
             height: entry.height)

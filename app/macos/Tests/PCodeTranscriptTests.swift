@@ -1657,36 +1657,38 @@ struct PCodeTranscriptTests {
         #expect(reloaded.groupTools == false)
     }
 
-    @Test func promptStyleDefaultsToClassicAndPersists() {
+    @Test func promptStyleDefaultsToEditorialAndPersists() {
         let suiteName = "com.pcode.test.prefs.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .classic)
-        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .bar
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .bar)
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .editorial)
+        PCodeTranscriptPreferences(defaults: defaults).promptStyle = .band
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .band)
         defaults.set("bogus", forKey: "PCodeTranscriptPromptStyle")
-        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .classic)
+        #expect(PCodeTranscriptPreferences(defaults: defaults).promptStyle == .editorial)
     }
 
     @Test @MainActor func promptStylesFrameTheRowDifferently() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let text = NSAttributedString(string: "Hello")
-        func height(_ style: PCodePromptStyle) -> (CGFloat, PCodePromptRowView) {
+        func height(_ style: PCodePromptStyle, isFirst: Bool = false) -> (CGFloat, PCodePromptRowView) {
             let row = PCodePromptRowView()
             let h = row.configure(
                 attributedText: text, isSidePrompt: false, style: style,
-                width: 400, theme: theme, selectedRange: nil)
+                width: 400, theme: theme, selectedRange: nil, isFirstItem: isFirst)
             return (h, row)
         }
-        let (classic, classicRow) = height(.classic)
-        let (tinted, tintedRow) = height(.tinted)
+        let (editorial, editorialRow) = height(.editorial, isFirst: false)
+        let (editorialFirst, _) = height(.editorial, isFirst: true)
+        let (band, _) = height(.band)
+        let (pill, _) = height(.pill)
         let (bar, barRow) = height(.bar)
-        // Tighter padding per style: classic 10pt, tinted 8pt, bar 2pt.
-        #expect(classic - tinted == 4)
-        #expect(tinted - bar == 12)
-        #expect(classicRow.layer?.borderWidth == 0)
-        #expect(tintedRow.layer?.borderWidth == 1)
+        // Editorial gives later turns extra top room for the hairline divider; first turn stays compact.
+        #expect(editorial > editorialFirst)
+        #expect(band > pill)
+        #expect(pill > bar)
+        #expect(editorialRow.layer?.backgroundColor == nil)
         #expect(barRow.layer?.backgroundColor == nil)
     }
 

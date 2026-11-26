@@ -225,7 +225,7 @@ struct PCodeTranscriptItem: Identifiable {
                     label: turn.side ? "/btw" : "",
                     text: turn.prompt,
                     isSide: turn.side),
-                spacingAfter: 10))
+                spacingAfter: 12))
 
             for block in turn.blocks {
                 switch block {
@@ -273,7 +273,7 @@ struct PCodeTranscriptItem: Identifiable {
                     result.append(PCodeTranscriptItem(
                         id: "turn-\(turn.id)-tool-\(call.id)",
                         payload: .tool(call, isExpanded: false),
-                        spacingAfter: 5))
+                        spacingAfter: 4))
                 }
             }
 
@@ -281,10 +281,10 @@ struct PCodeTranscriptItem: Identifiable {
                 result.append(PCodeTranscriptItem(
                     id: "turn-\(turn.id)-status",
                     payload: .status(turn.status),
-                    spacingAfter: 14))
+                    spacingAfter: 22))
             } else if !result.isEmpty {
                 let last = result.removeLast()
-                result.append(last.withSpacingAfter(18))
+                result.append(last.withSpacingAfter(28))
             }
         }
         return result
@@ -312,7 +312,17 @@ private final class PCodeDisplayLinkProxy: NSObject {
 /// bare TextKit 2 rendering, rich Markdown blocks, model-owned cross-item selection, and
 /// frame-coalesced streaming.
 final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
-    static let horizontalPadding: CGFloat = 18
+    static let horizontalPadding: CGFloat = 24
+    static let maxContentWidth: CGFloat = 800
+
+    /// Horizontal reading column centered inside `availableWidth`, capped at `maxContentWidth`
+    /// so prose stays at a comfortable measure on wide windows.
+    static func columnMetrics(forAvailableWidth availableWidth: CGFloat) -> (originX: CGFloat, contentWidth: CGFloat) {
+        let usable = max(1, availableWidth - horizontalPadding * 2)
+        let contentWidth = min(usable, maxContentWidth)
+        let originX = max(horizontalPadding, floor((availableWidth - contentWidth) * 0.5))
+        return (originX, contentWidth)
+    }
 
     private struct AppliedRowState: Equatable {
         let itemID: String
@@ -1354,7 +1364,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-prompt",
             payload: .prompt(label: isSide ? "/btw" : "", text: prompt, isSide: isSide),
-            spacingAfter: 10)
+            spacingAfter: 12)
         if forcePin {
             stickyBottom.pinToBottom()
             setHasUnreadStreamingContent(false)
@@ -1522,7 +1532,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-tool-\(call.id)-\(rawItems.count)",
             payload: .tool(call, isExpanded: false),
-            spacingAfter: 5)
+            spacingAfter: 4)
         upsertItem(item, reveal: true)
     }
 
@@ -1533,14 +1543,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let item = PCodeTranscriptItem(
                 id: "stream-turn-\(streamingTurnCounter)-status-\(rawItems.count)",
                 payload: .status(status),
-                spacingAfter: 14)
+                spacingAfter: 22)
             upsertItem(item, reveal: reveal)
         } else if let lastIdx = items.indices.last {
             if let lastRawIdx = rawItems.indices.last {
-                rawItems[lastRawIdx] = rawItems[lastRawIdx].withSpacingAfter(18)
+                rawItems[lastRawIdx] = rawItems[lastRawIdx].withSpacingAfter(28)
             }
-            items[lastIdx] = items[lastIdx].withSpacingAfter(18)
-            layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 18)
+            items[lastIdx] = items[lastIdx].withSpacingAfter(28)
+            layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 28)
             mountViews(in: visibleRect)
         }
     }
@@ -1735,7 +1745,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         let availableWidth = max(bounds.width, enclosingScrollView?.contentView.bounds.width ?? 0)
         guard availableWidth > Self.horizontalPadding * 2 + 1 else { return }
-        let contentWidth = max(1, availableWidth - Self.horizontalPadding * 2)
+        let column = Self.columnMetrics(forAvailableWidth: availableWidth)
+        let contentWidth = column.contentWidth
         let range = layoutEngine.visibleRange(in: rect)
         lastMountedRange = range
 
@@ -1781,7 +1792,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
 
             let indent = CGFloat(item.depth) * 16
-            let effectiveWidth = max(1, contentWidth - indent)
+            let isFullBleedBand = (item.kind == .prompt && promptStyle == .band && item.depth == 0)
+            let effectiveWidth = isFullBleedBand ? availableWidth : max(1, contentWidth - indent)
             let targetState = AppliedRowState(
                 itemID: item.id,
                 revision: item.revision,
@@ -1793,7 +1805,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 || !layoutEngine.entries[idx].isMeasured
 
             if needsConfigure {
-                let measured = applyRowView(rowView, item: item, index: idx, width: effectiveWidth)
+                let measured = applyRowView(
+                    rowView,
+                    item: item,
+                    index: idx,
+                    width: effectiveWidth,
+                    contentInsetX: isFullBleedBand ? column.originX : 0)
                 appliedStates[item.id] = targetState
 
                 let pinned = stickyBottom.shouldProgrammaticallyPin
@@ -1829,7 +1846,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             // Position `rowView.frame` BEFORE applying curtain masks so `bounds` is final.
             let entry = layoutEngine.entries[idx]
             let targetFrame = CGRect(
-                x: Self.horizontalPadding + indent,
+                x: isFullBleedBand ? 0 : (column.originX + indent),
                 y: entry.yOffset,
                 width: effectiveWidth,
                 height: entry.height)
@@ -1871,7 +1888,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         _ rowView: any PCodeTranscriptRowHosting,
         item: PCodeTranscriptItem,
         index: Int,
-        width: CGFloat
+        width: CGFloat,
+        contentInsetX: CGFloat = 0
     ) -> CGFloat {
         switch (rowView, item.payload) {
         case (let view as PCodePromptRowView, .prompt(let label, let text, let isSide)):
@@ -1883,7 +1901,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 style: promptStyle,
                 width: width,
                 theme: theme,
-                selectedRange: localSel)
+                selectedRange: localSel,
+                isFirstItem: index == 0,
+                contentInsetX: contentInsetX,
+                typography: typography)
 
         case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, let copyMarkdown)):
             view.pasteboard = pasteboard
@@ -2621,10 +2642,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             if !out.isEmpty { return out }
         }
         let entry = layoutEngine.entries[index]
+        let col = Self.columnMetrics(forAvailableWidth: bounds.width)
         return [CGRect(
-            x: Self.horizontalPadding,
+            x: col.originX,
             y: entry.yOffset,
-            width: max(1, bounds.width - Self.horizontalPadding * 2),
+            width: col.contentWidth,
             height: entry.height)]
     }
 
@@ -2936,7 +2958,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 out.append(NSAttributedString(string: label + "\n", attributes: labelAttrs))
             }
             let bodyAttrs: [NSAttributedString.Key: Any] = [
-                .font: typography.proseNSFont(),
+                .font: typography.proseNSFont(weight: typography.weight.nsEmphasisWeight),
                 .foregroundColor: theme.foreground,
                 .paragraphStyle: paragraph,
             ]

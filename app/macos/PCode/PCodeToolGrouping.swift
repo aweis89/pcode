@@ -54,24 +54,27 @@ final class PCodeTranscriptPreferences: ObservableObject {
             self.groupTools = defaults.bool(forKey: Keys.groupTools)
         }
         self.promptStyle = defaults.string(forKey: Keys.promptStyle)
-            .flatMap(PCodePromptStyle.init(rawValue:)) ?? .classic
+            .flatMap(PCodePromptStyle.init(rawValue:)) ?? .editorial
     }
 }
 
 /// Framing for prompt rows (`PCodePromptRowView`).
 enum PCodePromptStyle: String, CaseIterable {
-    /// Neutral card plus a left accent bar.
-    case classic
-    /// Accent-tinted card with a hairline border, no bar.
-    case tinted
-    /// Left accent bar only, like the terminal's `▌` rail.
+    /// Quiet top hairline divider, leading `❯` glyph, and emphasized prompt text (no box).
+    case editorial
+    /// Full-bleed edge-to-edge subtle structural band with top/bottom hairlines.
+    case band
+    /// Content-hugging compact pill that shrink-wraps short prompts.
+    case pill
+    /// Slim left accent rail paired with emphasized prompt text.
     case bar
 
     var title: String {
         switch self {
-        case .classic: return "Card with Bar"
-        case .tinted: return "Tinted Card"
-        case .bar: return "Accent Bar Only"
+        case .editorial: return "Editorial Divider"
+        case .band: return "Full-Bleed Band"
+        case .pill: return "Compact Pill"
+        case .bar: return "Accent Bar"
         }
     }
 }
