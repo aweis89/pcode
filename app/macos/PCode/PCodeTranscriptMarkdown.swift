@@ -50,10 +50,23 @@ enum PCodeMarkdownBlock: Equatable {
 /// Security & layout invariants:
 /// - Block directives are disabled (`options: []`).
 /// - Raw HTML blocks and inline HTML are rendered as literal text.
-/// - Only `http` and `https` URLs receive `.link` attributes.
+/// - Only `http`, `https`, and local `file` URLs receive `.link` attributes.
 /// - Fixed line heights keep mixed sans + mono inline code aligned on one baseline.
 enum PCodeTranscriptMarkdown {
     static let maxCodeLinesPerItem = 200
+
+    /// Returns `true` for link schemes permitted in rendered transcripts (`http`, `https`,
+    /// and local `file` URLs without a remote host).
+    static func isAllowedLinkURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        if scheme == "http" || scheme == "https" {
+            return true
+        }
+        if scheme == "file" {
+            return PCodeExternalEditor.fileTarget(for: url, fileExists: { _ in true }) != nil
+        }
+        return false
+    }
 
     /// Split a Markdown string into top-level virtualized blocks.
     ///
@@ -581,8 +594,7 @@ private struct ProseAttributedRenderer: MarkupWalker {
         let previous = activeLinkURL
         if let dest = link.destination,
            let url = URL(string: dest),
-           let scheme = url.scheme?.lowercased(),
-           scheme == "http" || scheme == "https"
+           PCodeTranscriptMarkdown.isAllowedLinkURL(url)
         {
             activeLinkURL = url
         } else {

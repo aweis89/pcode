@@ -519,7 +519,8 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
         return min(max(0, baseOffset), totalLength)
     }
 
-    /// Return an `http`/`https` link URL strictly under `point`, ignoring margins and trailing whitespace.
+    /// Return an allowed link URL (`http`, `https`, or local `file`) strictly under `point`,
+    /// ignoring margins and trailing whitespace.
     func linkURL(at point: CGPoint) -> URL? {
         guard bounds.contains(point),
               let attr = textContentStorage.attributedString,
@@ -554,7 +555,7 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             } else {
                 url = nil
             }
-            guard let url, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            guard let url, PCodeTranscriptMarkdown.isAllowedLinkURL(url) else {
                 return nil
             }
             return url

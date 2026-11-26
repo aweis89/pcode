@@ -1965,13 +1965,30 @@ private struct PCodeInspectorMarkdownView: View {
             }
         }
         .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            guard PCodeTranscriptMarkdown.isAllowedLinkURL(url) else {
+                return .discarded
+            }
+            if url.scheme?.lowercased() == "file" {
+                if !PCodeExternalEditor.open(fileURL: url) {
+                    NSSound.beep()
+                }
+                return .handled
+            }
+            return .systemAction
+        })
     }
 
     private func inlineMarkdownText(_ raw: String) -> Text {
-        if let attributed = try? AttributedString(
+        if var attributed = try? AttributedString(
             markdown: raw,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
+            for run in attributed.runs {
+                if let url = run.link, !PCodeTranscriptMarkdown.isAllowedLinkURL(url) {
+                    attributed[run.range].link = nil
+                }
+            }
             return Text(attributed)
         }
         return Text(raw)

@@ -263,12 +263,18 @@ struct PCodeTranscriptTests {
 
     @Test @MainActor func textKit2BlockMeasuresHeightAndFiltersLinks() {
         let view = PCodeTextKit2BlockView(frame: CGRect(x: 0, y: 0, width: 420, height: 100))
-        let httpsRange = NSRange(location: 6, length: 19)
-        let fileRange = NSRange(location: 29, length: 18)
-        let attr = NSMutableAttributedString(string: "Click https://example.com or file:///etc/passwd")
+        let text = "Click https://example.com or file:///tmp/a.swift or file://evil.example/share or javascript:alert(1)"
+        let nsText = text as NSString
+        let httpsRange = nsText.range(of: "https://example.com")
+        let fileRange = nsText.range(of: "file:///tmp/a.swift")
+        let remoteFileRange = nsText.range(of: "file://evil.example/share")
+        let jsRange = nsText.range(of: "javascript:alert(1)")
+        let attr = NSMutableAttributedString(string: text)
         attr.addAttribute(.font, value: NSFont.systemFont(ofSize: 14), range: NSRange(location: 0, length: attr.length))
         attr.addAttribute(.link, value: URL(string: "https://example.com")!, range: httpsRange)
-        attr.addAttribute(.link, value: URL(string: "file:///etc/passwd")!, range: fileRange)
+        attr.addAttribute(.link, value: URL(string: "file:///tmp/a.swift#L12")!, range: fileRange)
+        attr.addAttribute(.link, value: URL(string: "file://evil.example/share")!, range: remoteFileRange)
+        attr.addAttribute(.link, value: URL(string: "javascript:alert(1)")!, range: jsRange)
 
         let height = view.measureHeight(for: attr, width: 420)
         #expect(height > 14)
@@ -286,12 +292,26 @@ struct PCodeTranscriptTests {
             Issue.record("Expected non-nil bounding rect for https link")
         }
 
-        // Clicking inside the file:// link is rejected (http/https only).
+        // Clicking inside the local file:// link returns it.
         if let fileRect = view.boundingRect(forUTF16: fileRange) {
             let mid = CGPoint(x: fileRect.midX, y: fileRect.midY)
-            #expect(view.linkURL(at: mid) == nil)
+            #expect(view.linkURL(at: mid) == URL(string: "file:///tmp/a.swift#L12"))
         } else {
             Issue.record("Expected non-nil bounding rect for file link")
+        }
+
+        // Remote file:// hosts and javascript: links are rejected.
+        if let remoteRect = view.boundingRect(forUTF16: remoteFileRange) {
+            let mid = CGPoint(x: remoteRect.midX, y: remoteRect.midY)
+            #expect(view.linkURL(at: mid) == nil)
+        } else {
+            Issue.record("Expected non-nil bounding rect for remote file link")
+        }
+        if let jsRect = view.boundingRect(forUTF16: jsRange) {
+            let mid = CGPoint(x: jsRect.midX, y: jsRect.midY)
+            #expect(view.linkURL(at: mid) == nil)
+        } else {
+            Issue.record("Expected non-nil bounding rect for javascript link")
         }
 
         // Clicking past the end of the line (empty trailing margin) returns nil.
@@ -425,7 +445,7 @@ struct PCodeTranscriptTests {
         let md = """
         # Heading `codeInHeading`
 
-        Visit [safe](https://example.com) and [bad](javascript:alert(1)).
+        Visit [safe](https://example.com), [local](file:///repo/app.py#L10-L20), [localhost](file://localhost/repo/b.py#L3), [`submit()`](file:///repo/controller.py#L42), [remote](file://evil.example/share), [rel](file:relative.py), and [bad](javascript:alert(1)).
 
         > Quoted line
 
@@ -446,10 +466,21 @@ struct PCodeTranscriptTests {
         }
         #expect(attr.attribute(.pcodeInlineCodeFill, at: codeRange.location, effectiveRange: nil) != nil)
 
-        // Safe link has .link; javascript: link does not.
+        // Safe https and local file links have .link; remote/relative file and javascript: links do not.
         let safeRange = str.range(of: "safe")
+        let localRange = str.range(of: "local")
+        let localhostRange = str.range(of: "localhost")
+        let codeLinkRange = str.range(of: "submit()")
+        let remoteRange = str.range(of: "remote")
+        let relRange = str.range(of: "rel")
         let badRange = str.range(of: "bad")
         #expect(attr.attribute(.link, at: safeRange.location, effectiveRange: nil) as? URL == URL(string: "https://example.com"))
+        #expect(attr.attribute(.link, at: localRange.location, effectiveRange: nil) as? URL == URL(string: "file:///repo/app.py#L10-L20"))
+        #expect(attr.attribute(.link, at: localhostRange.location, effectiveRange: nil) as? URL == URL(string: "file://localhost/repo/b.py#L3"))
+        #expect(attr.attribute(.link, at: codeLinkRange.location, effectiveRange: nil) as? URL == URL(string: "file:///repo/controller.py#L42"))
+        #expect(attr.attribute(.underlineStyle, at: localRange.location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue)
+        #expect(attr.attribute(.link, at: remoteRange.location, effectiveRange: nil) == nil)
+        #expect(attr.attribute(.link, at: relRange.location, effectiveRange: nil) == nil)
         #expect(attr.attribute(.link, at: badRange.location, effectiveRange: nil) == nil)
 
         // Blockquote carries depth attribute.
