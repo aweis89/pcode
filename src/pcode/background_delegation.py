@@ -58,7 +58,7 @@ from pydantic_ai_harness.background_tools._capability import (
 )
 
 from pcode.steering import run_request, steering_pending, take_steering
-from pcode.worker_channel import hub_for
+from pcode.worker_channel import hub_for, resume_hint
 
 DELEGATE = "delegate_task"
 # How often a waiting delegation checks for steering; `shell` polls as often.
@@ -143,10 +143,10 @@ def timeout_detached_message(task_id: str, worker_id: str = "") -> str:
     )
 
 
-def stopped_message(task_id: str, worker_id: str = "") -> str:
+def stopped_message(task_id: str, worker_id: str = "", hint: str = "") -> str:
     return (
         f"The background delegation ({_named(task_id, worker_id)}) was stopped as requested "
-        "before it reported. It may have left partial changes."
+        f"before it reported. It may have left partial changes.{hint}"
     )
 
 
@@ -314,7 +314,7 @@ class BackgroundDelegation(BackgroundTools):
                 if not stop_requested():
                     return
                 # Stopped by `manage_worker(action='stop')`, not by the run ending: say so.
-                stopped = stopped_message(task_id, worker_id)
+                stopped = stopped_message(task_id, worker_id, resume_hint(handle))
                 result = make_background_result(DELEGATE, task_id, stopped, failed=True)
                 outcome = _Completion(DELEGATE, ctx.max_retries, result, dispatched)
             elif child.error is not None:

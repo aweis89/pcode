@@ -40,10 +40,12 @@ from pcode.worker_channel import (
     WorkerHub,
     bind_worker,
     current_worker,
+    interrupted_note,
     labelled,
     notify,
     render_brief,
     report_text,
+    resume_hint,
     unbind_worker,
 )
 from pcode.worktree import WorktreeError, describe, setup_scripts
@@ -441,7 +443,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
         # Validates everything that can refuse the call before changing any state.
         handle = self.hub.claim(ctx.tool_call_id or uuid4().hex, arguments)
         reports = [self.hub.require(worker_id) for worker_id in include_reports or ()]
-        brief = render_brief(
+        brief = interrupted_note(handle) + render_brief(
             task, context=context, boundaries=boundaries, done_when=done_when, reports=reports
         )
         token = bind_worker(handle)
@@ -473,8 +475,21 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
                     result = await self._delegate(ctx, agent_name, brief, workspace_mode, model)
             else:
                 result = await self._delegate(ctx, agent_name, brief, workspace_mode, model)
-        except BaseException:
+        except ModelRetry as error:
+            # A contained crash, timeout or refusal: Harness's retry never reaches
+            # `labelled`, so name the worker and say whether it can be resumed.
             handle.status = "stopped" if handle.stop_requested else "failed"
+            handle.report = str(error)
+            if hint := resume_hint(handle):
+                raise ModelRetry(f"{error}{hint}") from error
+            raise
+        except BaseException as error:
+            handle.status = "stopped" if handle.stop_requested else "failed"
+            handle.report = (
+                "Stopped before it reported."
+                if handle.stop_requested
+                else f"Failed before it reported ({type(error).__name__})."
+            )
             raise
         else:
             failed = _outcome.get() not in (None, "ok") or (
@@ -482,6 +497,8 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             )
             handle.status = "failed" if failed else "done"
             handle.report = report_text(result)
+            if failed and isinstance(result, str):
+                result += resume_hint(handle)
         finally:
             if shared_token is not None:
                 _inherited_shared.reset(shared_token)
@@ -492,6 +509,10 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             unread = len(handle.inbox)
             handle.inbox.clear()
             if handle.status != "running":
+                if handle.status != "done" and handle.worker_model is not None:
+                    # Its `agy` session ends here and ran tools pcode never saw,
+                    # so a resume would start blind: refuse it (`resume_hint`).
+                    handle.messages = []
                 if (
                     handle.status != "done" or handle.workspace_mode == "isolated"
                 ) and handle.worker_model is not None:
@@ -664,7 +685,7 @@ class WorkspaceSubAgentToolset(SubAgentToolset):
             outcome="contained",
             output=(
                 f"Sub-agent {agent_name!r} crashed: {error_message(exc)} "
-                "Treat this as a recoverable failure and decide from existing evidence."
+                "Treat this as a recoverable failure; its changes so far stay in the workspace."
             ),
             cause=exc,
         )

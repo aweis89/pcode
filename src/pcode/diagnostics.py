@@ -210,6 +210,32 @@ def provider_context(model) -> dict[str, str]:
     return result
 
 
+QUOTA_MARKERS = (
+    "insufficient_quota",
+    "no credits remaining",
+    "credit balance is too low",
+    "billing_hard_limit_reached",
+    "exceeded your current quota",
+)
+
+
+def _detail_text(detail: dict) -> str:
+    return " ".join(
+        str(detail.get(key, ""))
+        for key in ("provider_code", "provider_type", "provider_message", "message")
+    ).lower()
+
+
+def quota_exhausted(error: BaseException) -> bool:
+    """Whether the provider said the account's quota or credits ran out; waiting won't help."""
+    detail = error_details(error)
+    while detail:
+        if any(marker in _detail_text(detail) for marker in QUOTA_MARKERS):
+            return True
+        detail = detail.get("cause", detail.get("context", {}))
+    return False
+
+
 def quota_message(error: BaseException) -> str | None:
     """Classify bounded provider causes; never echo arbitrary response text."""
     detail = error_details(error)
@@ -218,20 +244,8 @@ def quota_message(error: BaseException) -> str | None:
     while detail:
         if http_status is None:
             http_status = detail.get("status")
-        text = " ".join(
-            str(detail.get(key, ""))
-            for key in ("provider_code", "provider_type", "provider_message", "message")
-        ).lower()
-        if any(
-            marker in text
-            for marker in (
-                "insufficient_quota",
-                "no credits remaining",
-                "credit balance is too low",
-                "billing_hard_limit_reached",
-                "exceeded your current quota",
-            )
-        ):
+        text = _detail_text(detail)
+        if any(marker in text for marker in QUOTA_MARKERS):
             return (
                 "Provider quota or credits exhausted. Check usage and billing for the "
                 "selected provider account; a new login may not help. "

@@ -8,14 +8,21 @@ or mutable per-agent handler is needed, and cancellation resets the binding.
 
 import asyncio
 import logging
+import random
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from time import monotonic
 
-from pydantic_ai import CapabilityEvent, RunContext
+from pydantic_ai import CapabilityEvent, RunContext, capture_run_messages
 from pydantic_ai.agent import WrapperAgent
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import (
+    ModelAPIError,
+    ModelOverloadedError,
+    ModelQuotaExceededError,
+    ModelRateLimitError,
+)
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -29,13 +36,14 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    repair_messages,
 )
 
 from pcode import retries
 from pcode.antigravity_tools import BridgedToolFinished, BridgedToolStarted
 from pcode.background_delegation import DelegationDelivered, DelegationDetached
 from pcode.cache_warnings import CacheBustEvent
-from pcode.diagnostics import transient
+from pcode.diagnostics import quota_exhausted, transient
 from pcode.error_report import error_message
 from pcode.filesystem import FileChangeEvent
 from pcode.inspection import capture
@@ -63,6 +71,38 @@ from pcode.worker_channel import WorkerUpdate, current_worker, notify
 
 _parent: ContextVar[RunContext | None] = ContextVar("delegation_parent", default=None)
 logger = logging.getLogger(__name__)
+
+# A worker refused for a rate limit or overload waits and resends, a turn does
+# not: parallel workers cause their own limits, and a parent re-delegating them
+# all at once meets the same limit again. Seconds per try, jittered.
+RATE_LIMIT_BACKOFF = (15.0, 30.0, 60.0)
+# A longer `retry-after` (a plan's usage window) fails at once; it is resumable.
+RATE_LIMIT_LONGEST = 60.0
+
+
+def _model_error(error: BaseException) -> ModelAPIError | None:
+    """The provider error behind `error`, following a short cause chain."""
+    current: BaseException | None = error
+    for _ in range(8):
+        if current is None or isinstance(current, ModelAPIError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def rate_limit_wait(error: BaseException, waits: int) -> float | None:
+    """Seconds a worker waits before resending after a rate limit; None to fail now."""
+    cause = _model_error(error)
+    if cause is None or waits >= len(RATE_LIMIT_BACKOFF):
+        return None
+    limited = isinstance(cause, ModelRateLimitError | ModelOverloadedError) or getattr(
+        cause, "status_code", None
+    ) in (429, 529)
+    if not limited or isinstance(cause, ModelQuotaExceededError) or quota_exhausted(error):
+        return None
+    if (asked := getattr(cause, "retry_after", None)) is not None:
+        return None if asked > RATE_LIMIT_LONGEST else max(asked, 1.0)
+    return RATE_LIMIT_BACKOFF[waits] * random.uniform(0.8, 1.2)
 
 
 @dataclass(kw_only=True)
@@ -128,50 +168,74 @@ class ResumableAgent(WrapperAgent):
         if self.override_model is not None:
             kwargs["model"] = self.override_model
         attempts = int(load_preferences().get("retry_attempts", SETTINGS["retry_attempts"].default))
-        attempt = 0
+        attempt = waits = 0
         handle = current_worker()
         earlier = handle.tokens if handle is not None else 0
         if message_history is None and handle is not None and handle.resume_from:
             # `continue_worker`: the follow-up joins the worker's own history.
             message_history = handle.resume_from
+        # Responses already counted, by run: earlier runs and earlier attempts.
+        # By run id rather than position, which retries and compaction shift.
+        seen = {m.run_id for m in message_history or () if isinstance(m, ModelResponse)}
+        spent = 0
         while True:
             checkpoint = RequestCheckpoint()
-            try:
-                result = await self.wrapped.run(
-                    user_prompt,
-                    message_history=message_history,
-                    capabilities=[*(capabilities or ()), checkpoint],
-                    **kwargs,
-                )
+            with capture_run_messages() as captured:
+                try:
+                    result = await self.wrapped.run(
+                        user_prompt,
+                        message_history=message_history,
+                        capabilities=[*(capabilities or ()), checkpoint],
+                        **kwargs,
+                    )
+                except BaseException as error:
+                    failure = error
+                else:
+                    failure = None
+                finally:
+                    # Exact, from the responses themselves: the live count misses
+                    # the final response and cannot read a shared usage counter.
+                    added = [
+                        m for m in captured if isinstance(m, ModelResponse) and m.run_id not in seen
+                    ]
+                    spent += sum(m.usage.total_tokens for m in added)
+                    seen.update(m.run_id for m in added)
+                    if handle is not None:
+                        handle.tokens = earlier + spent
+            if failure is None:
                 if handle is not None:
                     handle.messages = result.all_messages()
-                    # Exact, from this run's own responses: the live count misses
-                    # the final response and cannot read a shared usage counter.
-                    added = handle.messages[len(handle.resume_from or ()) :]
-                    handle.tokens = earlier + sum(
-                        m.usage.total_tokens for m in added if isinstance(m, ModelResponse)
-                    )
                 return result
-            except Exception as error:
-                if attempt >= attempts or checkpoint.messages is None or not transient(error):
-                    raise
-                attempt += 1
-                user_prompt, message_history = None, checkpoint.messages
-                # The panel shows the reconnect; a warning would print over it.
-                logger.debug(
-                    "Sub-agent %r: %s Retrying %d/%d",
-                    self.name,
-                    error_message(error),
-                    attempt,
-                    attempts,
-                )
+            error = failure
+            delay = None
+            if isinstance(error, Exception) and checkpoint.messages is not None:
+                if attempt < attempts and transient(error):
+                    attempt += 1
+                    delay = retries.RETRY_DELAY
+                    activity = f"Reconnecting {attempt}/{attempts}"
+                elif (wait := rate_limit_wait(error, waits)) is not None:
+                    waits += 1
+                    delay = wait
+                    activity = f"Rate limited; retrying in {round(wait)}s"
+            if delay is None:
                 if handle is not None:
-                    handle.activity = f"Reconnecting {attempt}/{attempts}"
-                    handle.running_tools = []  # The resent request starts over.
-                    handle.mark_progress()
-                if (parent := _parent.get()) is not None:
-                    await parent.emit(ChildActivity(activity=f"Reconnecting {attempt}/{attempts}"))
-                await asyncio.sleep(retries.RETRY_DELAY)
+                    # Kept so `continue_worker` picks up here rather than from
+                    # nothing: the request as sent if one was refused, otherwise
+                    # all the run got to (a stop mid-tool), else its last history.
+                    kept = checkpoint.messages or repair_messages(captured)
+                    if kept:
+                        handle.messages = kept
+                raise error
+            user_prompt, message_history = None, checkpoint.messages
+            # The panel shows the retry; a warning would print over it.
+            logger.debug("Sub-agent %r: %s %s", self.name, error_message(error), activity)
+            if handle is not None:
+                handle.activity = activity
+                handle.running_tools = []  # The resent request starts over.
+                handle.mark_progress()
+            if (parent := _parent.get()) is not None:
+                await parent.emit(ChildActivity(activity=activity))
+            await asyncio.sleep(delay)
 
 
 async def stream_child_activity(_ctx, events):

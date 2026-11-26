@@ -408,7 +408,10 @@ class WorkerHub:
                     "Integrate its branch and delegate a new task instead."
                 )
             if not handle.messages:
-                raise ModelRetry(f"Worker {handle.id} left no history to continue from.")
+                raise ModelRetry(
+                    f"Worker {handle.id} ({handle.status}) left no history to continue from; "
+                    "delegate a new task."
+                )
             if handle.agent != agent:
                 raise ModelRetry(f"Worker {handle.id} is a {handle.agent!r}; use that agent_name.")
             # The previous call no longer names it, so its row stops updating.
@@ -592,6 +595,39 @@ def report_text(result: Any) -> str:
     if isinstance(result, dict):
         return str(result.get("summary") or "")
     return str(result or "")
+
+
+def resume_hint(handle: WorkerHandle) -> str:
+    """What a failed or stopped worker's result adds when `continue_worker` can resume it.
+
+    Only promised when true: an isolated worker is its branch, and an Antigravity
+    worker's session ends with the failure (its tools ran inside one model call,
+    so pcode's history misses what they did).
+    """
+    if (
+        handle.workspace_mode == "isolated"
+        or not handle.messages
+        or handle.worker_model is not None
+    ):
+        return ""
+    return (
+        f" Worker {handle.id} kept its history up to where it stopped: resume it with "
+        f"delegate_task(continue_worker='{handle.id}', task=...) instead of starting a new "
+        "worker."
+    )
+
+
+def interrupted_note(handle: WorkerHandle) -> str:
+    """A line for a resumed worker whose last run failed or was stopped, else ''."""
+    if handle.resume_from is None or handle.previous is None:
+        return ""
+    if handle.previous[0] not in ("failed", "stopped"):
+        return ""
+    return (
+        f"[pcode] Your last run was cut off ({handle.previous[0]}). A tool it was running "
+        "may have partly taken effect, so check the workspace before redoing an "
+        "interrupted step.\n\n"
+    )
 
 
 def labelled(handle: WorkerHandle, result: Any) -> Any:

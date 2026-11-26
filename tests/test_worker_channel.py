@@ -531,3 +531,97 @@ def test_liveness_flags_a_long_silence_and_running_tools(monkeypatch):
 
     handle.status = "done"
     assert "liveness" not in handle.summary()
+
+
+def rate_limited(retry_after=None):
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    return ModelHTTPError(429, "test-model", retry_after=retry_after)
+
+
+def test_a_worker_that_fails_partway_keeps_its_history_and_can_be_resumed(tmp_path):
+    (tmp_path / "notes.txt").write_text("NOTE CONTENT")
+    seen: list[str] = []
+
+    async def parent(messages, info):
+        text = request_text(messages)
+        seen.append(text)
+        if "REPORT RESUMED" in text:
+            yield "Final"
+        elif "continue_worker='w1'" in text:
+            yield call(
+                "delegate_task",
+                "second",
+                agent_name="worker",
+                task="Carry on",
+                continue_worker="w1",
+            )
+        else:
+            yield call("delegate_task", "first", agent_name="worker", task="Survey it")
+
+    async def child(messages, info):
+        text = all_text(messages)
+        if "Carry on" in text:
+            # The resumed run carries the failed run's prompt and tool result.
+            assert "Survey it" in text and "NOTE CONTENT" in text
+            assert "Your last run was cut off (failed)" in text
+            yield "REPORT RESUMED"
+        elif "NOTE CONTENT" in text:
+            # Asked to wait longer than a worker does: it fails at once.
+            raise rate_limited(retry_after=3600)
+        else:
+            yield call("read_file", "read", path="notes.txt")
+
+    events = run(runtime(tmp_path, parent, child))
+    failure = next(text for text in seen if "continue_worker='w1'" in text)
+    assert "Worker w1 kept its history" in failure
+    assert "[worker w1]\nREPORT RESUMED" in seen[-1]
+    failed = [e for e in events if isinstance(e, WorkerStatus) and e.status == "failed"]
+    # The failed run's one answered request still counts.
+    assert failed and failed[-1].tokens and failed[-1].tokens > 0
+
+
+def test_a_rate_limited_worker_waits_and_resends(tmp_path, monkeypatch):
+    from pcode import delegation
+
+    monkeypatch.setattr(
+        delegation, "rate_limit_wait", lambda error, waits: 0.0 if waits < 1 else None
+    )
+    calls = 0
+
+    async def parent(messages, info):
+        if "REPORT" in request_text(messages):
+            yield "Final"
+        else:
+            yield call("delegate_task", "first", agent_name="worker", task="Survey it")
+
+    async def child(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise rate_limited()
+        yield "REPORT"
+
+    events = run(runtime(tmp_path, parent, child))
+    assert calls == 2
+    assert [e for e in events if isinstance(e, WorkerStatus)][-1].status == "done"
+
+
+def test_rate_limit_wait_rules():
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from pcode.delegation import RATE_LIMIT_BACKOFF, rate_limit_wait
+
+    assert 0.8 * 15 <= rate_limit_wait(rate_limited(), 0) <= 1.2 * 15
+    assert rate_limit_wait(rate_limited(5), 0) == 5
+    assert rate_limit_wait(rate_limited(0), 0) == 1.0
+    assert rate_limit_wait(rate_limited(3600), 0) is None
+    assert rate_limit_wait(rate_limited(), len(RATE_LIMIT_BACKOFF)) is None
+    assert rate_limit_wait(ModelHTTPError(529, "m"), 0) is not None
+    assert rate_limit_wait(ModelHTTPError(400, "m"), 0) is None
+    quota = ModelHTTPError(429, "m", body={"error": {"code": "insufficient_quota"}})
+    assert rate_limit_wait(quota, 0) is None
+    wrapped = RuntimeError("outer")
+    wrapped.__cause__ = rate_limited(5)
+    assert rate_limit_wait(wrapped, 0) == 5
+    assert rate_limit_wait(ValueError("x"), 0) is None
