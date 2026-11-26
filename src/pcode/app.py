@@ -1110,8 +1110,10 @@ class PreviewApp:
             raise ValueError(f"Usage: /show-thinking [{'|'.join(THINKING_MODES)}]")
         if not argument:
             current = self.activity.thinking_mode
-            index = THINKING_MODES.index(current) if current in THINKING_MODES else -1
-            argument = THINKING_MODES[(index + 1) % len(THINKING_MODES)]
+            # Pcode.app's transcript has no activity panel: thinking is shown or not.
+            modes = ("off", "scrollback") if self.editor_only else THINKING_MODES
+            index = modes.index(current) if current in modes else -1
+            argument = modes[(index + 1) % len(modes)]
         self.set_thinking_mode(argument)
         lines = [
             f"Thinking: {argument}. Usage: /show-thinking [{'|'.join(THINKING_MODES)}]; "

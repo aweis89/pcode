@@ -3124,6 +3124,7 @@ def test_host_starts_without_a_model_and_activates_one_later(tmp_path, host_dir,
                 await obs_w.drain()
                 ready = await read_message(obs_r)
                 assert ready["type"] == "ready" and ready["model"] == ""
+                assert ready["show_thinking"] == host.activity.thinking_mode
 
                 client.submit("hello preview", "queue")
                 await until(lambda: view.count("preview_reply"))
@@ -3135,6 +3136,14 @@ def test_host_starts_without_a_model_and_activates_one_later(tmp_path, host_dir,
                 assert seen[0]["method"] == "user" and seen[0]["args"] == ["hello preview"]
                 assert seen[1]["method"] == "turn_event"
                 assert "local UI preview" in seen[1]["args"][0]["$event"]["fields"]["markdown"]
+
+                # `/show-thinking` reaches the app's transcript as `thinking_mode`.
+                client.set_thinking("off")
+                while True:
+                    msg = await asyncio.wait_for(read_message(obs_r), timeout=2.0)
+                    if msg.get("method") == "thinking_mode":
+                        break
+                assert msg["args"] == ["off"]
 
                 # Nothing to load or start until a model is picked.
                 assert not loaded and not mcp_started

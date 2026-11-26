@@ -112,6 +112,8 @@ enum PCodeHostEvent: Equatable {
     case sessionState(PCodeHostSessionDelta)
     /// The conversation's identity or settings changed (`session_changed`); carries the host's current session id.
     case sessionChanged(String)
+    /// `/show-thinking` changed on the host (`thinking_mode`); carries pcode's mode name.
+    case thinkingMode(String)
 }
 
 /// The `SESSION_FIELDS` (`pcode.controller`) a `state` notify carries that the app tracks.
@@ -255,6 +257,9 @@ enum PCodeHostEventDecoder {
             return delta.isEmpty ? nil : .sessionState(delta)
         case "session_changed":
             return .sessionChanged((args.first as? String) ?? "")
+        case "thinking_mode":
+            guard let mode = args.first as? String, !mode.isEmpty else { return nil }
+            return .thinkingMode(mode)
         default:
             // Terminal-only or unknown notifications are ignored safely.
             return nil
@@ -430,7 +435,9 @@ final class PCodeTranscriptEventReducer {
                 thinkingCounter += 1
                 activeThinkingID = "host-thinking-\(thinkingCounter)"
                 activeThinkingText = ""
-                activeThinkingStartedAt = liveClock ? Date() : nil
+                // Only a block streaming in front of the user: a connect's catch-up replay
+                // is live but instant, so timing it would always say "1s".
+                activeThinkingStartedAt = reveal ? Date() : nil
             }
             let id = activeThinkingID!
             activeThinkingText.append(delta)
@@ -748,6 +755,9 @@ final class PCodeTranscriptEventReducer {
         case .sessionState, .sessionChanged:
             // Session state, not transcript content (`PCodeHostSessionState`).
             break
+
+        case .thinkingMode(let mode):
+            doc.showThinking = PCodeThinkingVisibility.isShown(mode: mode)
         }
     }
 
@@ -811,7 +821,7 @@ final class PCodeTranscriptEventReducer {
     ) {
         let item = PCodeTranscriptItem(
             id: id,
-            payload: .thinking(thinking, isExpanded: doc.thinkingExpansionState(id: id)),
+            payload: .thinking(thinking),
             spacingAfter: 6)
         doc.upsertItem(item, reveal: reveal)
     }
@@ -894,6 +904,8 @@ final class PCodeHostSocketClient {
         /// The host entry's state at handshake (`working`, `idle`, ...).
         let hostState: String
         let pacedScrollback: PCodeStreamingPaceMode
+        /// The host's `show_thinking` mode; nil from a host too old to report it.
+        var showThinking: String? = nil
         let history: [PCodeHostEvent]
         let catchUpCalls: [PCodeHostEvent]
     }
@@ -1169,6 +1181,7 @@ final class PCodeHostSocketClient {
             title: (obj["title"] as? String) ?? "",
             hostState: (obj["state"] as? String) ?? "",
             pacedScrollback: pace,
+            showThinking: obj["show_thinking"] as? String,
             history: history,
             catchUpCalls: catchUp)
     }

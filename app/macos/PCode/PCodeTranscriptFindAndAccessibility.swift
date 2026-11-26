@@ -374,9 +374,8 @@ extension PCodeTranscriptDocumentView {
         case .diff(let payload, let isExpanded):
             let state = isExpanded ? "expanded" : "collapsed"
             return (.group, "Diff", "\(payload.displayToolName) \(payload.path) (\(state))", !payload.patch.isEmpty)
-        case .thinking(let thinking, let isExpanded):
-            let state = isExpanded ? "expanded" : "collapsed"
-            return (.group, "Thinking", "\(PCodeThinkingCardView.headerTitle(for: thinking)) (\(state))", true)
+        case .thinking(let thinking):
+            return (.group, "Thinking", PCodeThinkingCardView.headerTitle(for: thinking), false)
         case .status(let status):
             return (.staticText, "Status", PCodeStatusRowView.displayLabel(for: status), false)
         }

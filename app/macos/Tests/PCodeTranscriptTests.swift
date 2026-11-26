@@ -910,56 +910,54 @@ struct PCodeTranscriptTests {
             kind: "Thinking", fields: ["text": "t"]) == .thinking(text: "t", elapsedSeconds: nil))
     }
 
-    @Test @MainActor func thinkingDisplayModesSettleExpandAndHide() {
+    @Test @MainActor func thinkingShowsInFullOrHidesWithShowThinking() {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
         scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
-        doc.thinkingDisplay = .collapse
+        doc.showThinking = true
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
-        func thinking() -> (PCodeThinkingPayload, Bool)? {
-            for item in doc.items {
-                if case .thinking(let payload, let isExpanded) = item.payload { return (payload, isExpanded) }
+        func thinkingRows() -> [(index: Int, payload: PCodeThinkingPayload)] {
+            doc.items.enumerated().compactMap { index, item in
+                if case .thinking(let payload) = item.payload { return (index, payload) }
+                return nil
             }
-            return nil
         }
 
         reducer.apply(.turnStarted(prompt: "Go", isSide: false, runID: "r1"), reveal: false)
-        reducer.apply(.thinkingDelta("Weighing options"), reveal: false)
-        #expect(thinking()?.0.isStreaming == true)
-        #expect(thinking()?.1 == false)
+        reducer.apply(.thinkingDelta("Weighing **options**"), reveal: false)
+        #expect(thinkingRows().first?.payload.isStreaming == true)
+        // The whole thought is selectable text, not a collapsed summary.
+        if let row = thinkingRows().first {
+            #expect(doc.plainTextForCopy(at: row.index).contains("Weighing"))
+        }
         // Answer text without a `Thinking` marker still settles the block.
         reducer.apply(.textDelta("Done."), reveal: false)
-        #expect(thinking()?.0.isStreaming == false)
-        #expect(thinking()?.0.text == "Weighing options")
-        // A settled collapsed row has no selectable body; its header is chrome.
-        if let idx = doc.items.firstIndex(where: { $0.kind == .thinking }) {
-            #expect(doc.plainTextForCopy(at: idx).isEmpty)
+        #expect(thinkingRows().first?.payload.isStreaming == false)
+        if let row = thinkingRows().first {
+            // Settled thinking renders its Markdown.
+            #expect(doc.plainTextForCopy(at: row.index) == "Weighing options")
         }
 
-        doc.thinkingDisplay = .show
-        #expect(thinking()?.1 == true)
-        if let idx = doc.items.firstIndex(where: { $0.kind == .thinking }) {
-            #expect(doc.plainTextForCopy(at: idx).contains("Weighing options"))
-        }
-
-        doc.thinkingDisplay = .hide
-        #expect(thinking() == nil)
-        // New thinking while hidden stays out of the display list...
+        // The host's `/show-thinking off` hides every row; new thinking stays hidden...
+        reducer.apply(.thinkingMode("off"), reveal: false)
+        #expect(thinkingRows().isEmpty)
         reducer.apply(.message(markdown: "Done."), reveal: false)
         reducer.apply(.thinkingDelta("More"), reveal: false)
         reducer.apply(.thinking(text: "More thoughts", elapsedSeconds: 2), reveal: false)
-        #expect(thinking() == nil)
+        #expect(thinkingRows().isEmpty)
         #expect(doc.items.contains { $0.kind == .prose })
-        // ...and comes back when shown again.
-        doc.thinkingDisplay = .collapse
-        #expect(doc.items.filter { $0.kind == .thinking }.count == 2)
-        #expect(doc.items.allSatisfy { item in
-            if case .thinking(_, let isExpanded) = item.payload { return !isExpanded }
-            return true
-        })
+        // ...and any other mode brings them all back.
+        reducer.apply(.thinkingMode("scrollback"), reveal: false)
+        #expect(thinkingRows().count == 2)
+        reducer.apply(.thinkingMode("off"), reveal: false)
+        reducer.apply(.thinkingMode("activity-panel"), reveal: false)
+        #expect(thinkingRows().count == 2)
+        #expect(PCodeHostEventDecoder.decodeRPCCall(method: "thinking_mode", args: ["off"], kwargs: [:]) == .thinkingMode("off"))
+        #expect(PCodeHostSocketClient.decodeWelcome(["show_thinking": "off"]).showThinking == "off")
+        #expect(PCodeHostSocketClient.decodeWelcome([:]).showThinking == nil)
     }
 
     @Test @MainActor func eventReducerHandlesUpsertsParentNestingDiffsAndThinking() {
@@ -968,7 +966,7 @@ struct PCodeTranscriptTests {
         scrollView.frame = CGRect(x: 0, y: 0, width: 760, height: 600)
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
-        doc.thinkingDisplay = .collapse
+        doc.showThinking = true
         let reducer = PCodeTranscriptEventReducer(documentView: doc)
 
         reducer.apply(.turnStarted(prompt: "Refactor parser", isSide: false, runID: "r1"), reveal: false)
@@ -1473,17 +1471,13 @@ struct PCodeTranscriptTests {
             with: .rightMouseDown, location: windowPoint, modifierFlags: [], timestamp: 0,
             windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
         let menu = try #require(doc.menu(for: event))
-        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls", "Thinking"])
+        #expect(menu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Copy", "Copy Answer as Markdown", "Select All", "Group Tool Calls"])
 
         // Copy is offered only with a selection; the other two always.
         #expect(!doc.validateUserInterfaceItem(menu.items[0]))
         #expect(doc.validateUserInterfaceItem(menu.items[1]))
         doc.selectAll(nil)
         #expect(doc.validateUserInterfaceItem(menu.items[0]))
-
-        let thinkingOptions = try #require(menu.items.last?.submenu).items
-        #expect(thinkingOptions.map(\.title) == ["Show Expanded", "Collapse", "Hide"])
-        #expect(thinkingOptions.allSatisfy { doc.validateUserInterfaceItem($0) })
 
         doc.copyAnswerMarkdown(menu.items[1])
         #expect(pasteboard.string(forType: .string) == markdown)

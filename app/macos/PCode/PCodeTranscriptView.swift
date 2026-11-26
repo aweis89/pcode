@@ -70,7 +70,7 @@ struct PCodeTranscriptItem: Identifiable {
         case tool(PCodePeekToolCall, isExpanded: Bool)
         case toolGroup(PCodeToolGroupPayload)
         case diff(PCodeDiffPayload, isExpanded: Bool)
-        case thinking(PCodeThinkingPayload, isExpanded: Bool)
+        case thinking(PCodeThinkingPayload)
         case status(PCodePeekTurn.Status)
     }
 
@@ -122,7 +122,7 @@ struct PCodeTranscriptItem: Identifiable {
             return group.plainSummaryText
         case .diff(let diff, let isExpanded):
             return isExpanded ? "\(diff.path)\n\(diff.patch)" : PCodeDiffCardView.summaryLine(for: diff)
-        case .thinking(let thinking, _):
+        case .thinking(let thinking):
             return thinking.text
         case .status(let status):
             return PCodeStatusRowView.displayLabel(for: status)
@@ -201,7 +201,7 @@ struct PCodeTranscriptItem: Identifiable {
                 truncated: false,
                 depth: 0), isExpanded: false)
         case .thinking:
-            self.payload = .thinking(PCodeThinkingPayload(text: plainText), isExpanded: false)
+            self.payload = .thinking(PCodeThinkingPayload(text: plainText))
         case .status:
             let status: PCodePeekTurn.Status = isFailed ? .failed : (PCodePeekTurn.Status(rawValue: plainText.lowercased()) ?? .running)
             self.payload = .status(status)
@@ -341,11 +341,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
         }
     }
-    /// How thinking blocks render: always expanded, collapsed to a one-line summary, or hidden.
-    var thinkingDisplay: PCodeThinkingDisplay = PCodeTranscriptPreferences.shared.thinkingDisplay {
+    /// Whether thinking rows show (pcode's `show_thinking`; a live pane follows its host).
+    /// Hidden rows stay in `rawItems`, so showing them again needs no replay.
+    var showThinking: Bool = PCodeThinkingVisibility.loadDefaultFromPreferences() {
         didSet {
-            guard thinkingDisplay != oldValue else { return }
-            applyThinkingDisplayChange()
+            guard showThinking != oldValue else { return }
+            syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
         }
     }
 
@@ -586,7 +587,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let projection = PCodeToolGrouper.project(
             rawItems: rawItems,
             groupTools: groupTools,
-            hideThinking: thinkingDisplay == .hide,
+            hideThinking: !showThinking,
             expandedGroupIDs: expandedGroupIDs,
             absorbPulses: absorbPulseByGroupID)
         items = projection.items
@@ -669,7 +670,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if expandedGroupIDs.contains(id) { return true }
         if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
             switch rawItems[rawIdx].payload {
-            case .tool(_, let isExpanded), .diff(_, let isExpanded), .thinking(_, let isExpanded):
+            case .tool(_, let isExpanded), .diff(_, let isExpanded):
                 return isExpanded
             case .toolGroup(let payload):
                 return payload.isExpanded
@@ -679,39 +680,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return false }
         switch items[idx].payload {
-        case .tool(_, let isExpanded), .diff(_, let isExpanded), .thinking(_, let isExpanded):
+        case .tool(_, let isExpanded), .diff(_, let isExpanded):
             return isExpanded
         case .toolGroup(let payload):
             return payload.isExpanded
         default:
             return false
         }
-    }
-
-    /// Expansion for a thinking row being upserted: its current state if it exists,
-    /// otherwise the default for the thinking display preference.
-    func thinkingExpansionState(id: String) -> Bool {
-        if rawItemIndexByID[id] != nil { return isItemExpanded(id: id) }
-        return thinkingDisplay == .show
-    }
-
-    /// Re-apply the thinking display preference: Show expands every block, Collapse folds
-    /// them, Hide drops them from the projection (they stay in `rawItems`).
-    private func applyThinkingDisplayChange() {
-        if thinkingDisplay != .hide {
-            let expand = thinkingDisplay == .show
-            for idx in rawItems.indices {
-                let raw = rawItems[idx]
-                guard case .thinking(let thinking, let isExpanded) = raw.payload, isExpanded != expand else { continue }
-                rawItems[idx] = PCodeTranscriptItem(
-                    id: raw.id,
-                    payload: .thinking(thinking, isExpanded: expand),
-                    spacingAfter: raw.spacingAfter,
-                    revision: raw.revision &+ 1,
-                    depth: raw.depth)
-            }
-        }
-        syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
     }
 
     private struct FoldSnapshot {
@@ -783,13 +758,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
 
         // Hidden thinking lives only in `rawItems` until the preference changes.
-        if item.kind == .thinking && thinkingDisplay == .hide {
+        if item.kind == .thinking && !showThinking {
             return max(0, items.count - 1)
         }
 
         // Fast path: ungrouped mode, OR non-groupable item appended at tail / updated in place.
         // Hidden thinking makes display indices differ from raw ones, so positional inserts re-project.
-        if (!groupTools && (insertAt == nil || thinkingDisplay != .hide)) || (!isGroupableItem && (existingRawIdx != nil ? itemIndexByID[item.id] != nil : insertAt == nil)) {
+        if (!groupTools && (insertAt == nil || showThinking)) || (!isGroupableItem && (existingRawIdx != nil ? itemIndexByID[item.id] != nil : insertAt == nil)) {
             let updatedItem = rawItems[finalRawIdx]
             return upsertDisplayItemDirectly(updatedItem, insertAt: groupTools ? nil : insertAt, reveal: reveal)
         }
@@ -888,7 +863,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         var projection = PCodeToolGrouper.project(
             rawItems: rawItems,
             groupTools: groupTools,
-            hideThinking: thinkingDisplay == .hide,
+            hideThinking: !showThinking,
             expandedGroupIDs: expandedGroupIDs,
             absorbPulses: absorbPulseByGroupID)
 
@@ -899,7 +874,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             projection = PCodeToolGrouper.project(
                 rawItems: rawItems,
                 groupTools: groupTools,
-                hideThinking: thinkingDisplay == .hide,
+                hideThinking: !showThinking,
                 expandedGroupIDs: expandedGroupIDs,
                 absorbPulses: absorbPulseByGroupID)
         }
@@ -1772,20 +1747,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     self?.toggleDiffExpansion(id: item.id)
                 })
 
-        case (let view as PCodeThinkingCardView, .thinking(let thinking, let isExpanded)):
-            let attr = cachedThinkingAttributedString(for: item.id, thinking: thinking, isExpanded: isExpanded)
+        case (let view as PCodeThinkingCardView, .thinking(let thinking)):
+            let attr = cachedThinkingAttributedString(for: item.id, thinking: thinking)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
             return view.configure(
                 thinking: thinking,
-                isExpanded: isExpanded,
                 attributedText: attr,
                 width: width,
                 typography: typography,
                 theme: theme,
-                selectedRange: localSel,
-                onToggle: { [weak self] in
-                    self?.toggleThinkingExpansion(id: item.id)
-                })
+                selectedRange: localSel)
 
         case (let view as PCodeStatusRowView, .status(let status)):
             let attr = cachedStatusAttributedString(for: item.id, status: status)
@@ -1914,34 +1885,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 mountViews(in: visibleRect)
             }
         }
-    }
-
-    private func toggleThinkingExpansion(id: String) {
-        guard let index = itemIndexByID[id],
-              items.indices.contains(index),
-              case .thinking(let thinking, let isExpanded) = items[index].payload
-        else { return }
-        if !isExpanded {
-            stickyBottom.unpinForUserAction()
-        }
-        notifySearchContentWillChange()
-        removeAttributedCache(for: id)
-        if let rawIdx = rawItemIndexByID[id], rawItems.indices.contains(rawIdx) {
-            rawItems[rawIdx] = PCodeTranscriptItem(
-                id: id,
-                payload: .thinking(thinking, isExpanded: !isExpanded),
-                spacingAfter: rawItems[rawIdx].spacingAfter,
-                revision: rawItems[rawIdx].revision &+ 1,
-                depth: rawItems[rawIdx].depth)
-        }
-        items[index] = PCodeTranscriptItem(
-            id: id,
-            payload: .thinking(thinking, isExpanded: !isExpanded),
-            spacingAfter: items[index].spacingAfter,
-            revision: items[index].revision &+ 1,
-            depth: items[index].depth)
-        invalidateSearchIndex()
-        mountViews(in: visibleRect)
     }
 
     private func remountVisibleViews() {
@@ -2342,12 +2285,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
             return true
         }
-        if item.action == #selector(setThinkingDisplayFromMenu(_:)) {
-            if let menuItem = item as? NSMenuItem {
-                menuItem.state = (menuItem.representedObject as? String) == thinkingDisplay.rawValue ? .on : .off
-            }
-            return true
-        }
         if item.action == #selector(performFindPanelAction(_:)),
            let finder = textFinder,
            let action = NSTextFinder.Action(rawValue: item.tag)
@@ -2448,7 +2385,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             height: entry.height)]
     }
 
-    /// Accessibility helper to toggle expandable `.tool`, `.toolGroup`, `.diff`, or `.thinking` rows.
+    /// Accessibility helper to toggle expandable `.tool`, `.toolGroup`, or `.diff` rows.
     func toggleExpansionForAccessibility(id: String) {
         guard let idx = itemIndexByID[id], items.indices.contains(idx) else { return }
         switch items[idx].payload {
@@ -2458,8 +2395,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             toggleToolGroupExpansion(id: id)
         case .diff:
             toggleDiffExpansion(id: id)
-        case .thinking:
-            toggleThinkingExpansion(id: id)
         default:
             break
         }
@@ -2519,29 +2454,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         groupItem.target = self
         groupItem.state = groupTools ? .on : .off
         menu.addItem(groupItem)
-        let thinkingItem = NSMenuItem(title: "Thinking", action: nil, keyEquivalent: "")
-        let thinkingMenu = NSMenu()
-        for option in PCodeThinkingDisplay.allCases {
-            let item = NSMenuItem(
-                title: option.menuTitle,
-                action: #selector(setThinkingDisplayFromMenu(_:)),
-                keyEquivalent: "")
-            item.target = self
-            item.representedObject = option.rawValue
-            item.state = thinkingDisplay == option ? .on : .off
-            thinkingMenu.addItem(item)
-        }
-        thinkingItem.submenu = thinkingMenu
-        menu.addItem(thinkingItem)
         return menu
-    }
-
-    @objc func setThinkingDisplayFromMenu(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let option = PCodeThinkingDisplay(rawValue: raw)
-        else { return }
-        PCodeTranscriptPreferences.shared.thinkingDisplay = option
-        thinkingDisplay = option
     }
 
     @objc func toggleGroupToolsFromMenu(_ sender: Any?) {
@@ -2600,8 +2513,8 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             return isExpanded
                 ? cachedDiffAttributedString(for: item.id, payload: payload).string
                 : PCodeDiffCardView.summaryLine(for: payload)
-        case .thinking(let thinking, let isExpanded):
-            return cachedThinkingAttributedString(for: item.id, thinking: thinking, isExpanded: isExpanded).string
+        case .thinking(let thinking):
+            return cachedThinkingAttributedString(for: item.id, thinking: thinking).string
         case .status(let status):
             return cachedStatusAttributedString(for: item.id, status: status).string
         }
@@ -2687,15 +2600,10 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             guard isExpanded else { return PCodeDiffCardView.headerHeight }
             let lineCount = max(1, min(200, diff.patch.split(separator: "\n", omittingEmptySubsequences: false).count))
             return PCodeDiffCardView.headerHeight + 40 + CGFloat(lineCount) * typography.lineHeight(scale: typography.codeBlockScale)
-        case .thinking(let thinking, let isExpanded):
-            let header = PCodeThinkingCardView.headerHeight
-            if isExpanded {
-                let lines = max(1, min(40, thinking.text.count / 72 + 1))
-                return header + CGFloat(lines) * typography.lineHeight(scale: PCodeThinkingCardView.bodyScale)
-            }
-            return thinking.isStreaming
-                ? header + PCodeThinkingCardView.tailHeight(typography: typography)
-                : header
+        case .thinking(let thinking):
+            let lines = max(1, min(40, thinking.text.count / 80 + 1))
+            return PCodeThinkingCardView.headerHeight
+                + CGFloat(lines) * typography.lineHeight(scale: PCodeThinkingCardView.bodyScale)
         }
     }
 
@@ -2830,15 +2738,13 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     private func cachedThinkingAttributedString(
         for id: String,
-        thinking: PCodeThinkingPayload,
-        isExpanded: Bool
+        thinking: PCodeThinkingPayload
     ) -> NSAttributedString {
         if let cached = attributedCache[id] {
             return cached
         }
         let built = PCodeThinkingCardView.attributedText(
             for: thinking,
-            isExpanded: isExpanded,
             typography: typography,
             theme: theme)
         storeAttributedCache(built, for: id)
@@ -2957,7 +2863,6 @@ final class PCodeTranscriptScrollView: NSScrollView {
     private var observers: [NSObjectProtocol] = []
     private var typographyCancellable: AnyCancellable?
     private var preferencesCancellable: AnyCancellable?
-    private var thinkingPreferenceCancellable: AnyCancellable?
     private var bottomContentInsetValue: CGFloat = 0
     private var lastClipHeight: CGFloat = 0
     /// Optional predicate gating `⌘F`/`⌘G`/`⌘⇧G` so the scroll view never steals shortcuts
@@ -3054,12 +2959,6 @@ final class PCodeTranscriptScrollView: NSScrollView {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] grouped in
                 self?.transcriptDocumentView.groupTools = grouped
-            }
-        thinkingPreferenceCancellable = PCodeTranscriptPreferences.shared.$thinkingDisplay
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] display in
-                self?.transcriptDocumentView.thinkingDisplay = display
             }
     }
 

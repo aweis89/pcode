@@ -271,6 +271,9 @@ class _Client:
 
     def set_thinking(self, mode: str) -> None:
         self.host.controller.set_thinking(mode)
+        # Pcode.app's transcript shows or hides thinking rows to match.
+        for peer in list(self.host.transcript_observers):
+            peer.notify("thinking_mode", self.host.activity.thinking_mode)
 
     def adjust_effort(self, direction: int) -> None:
         self.host.controller.adjust_effort(direction)
@@ -802,6 +805,7 @@ class SessionHost:
             "model": self.controller.model or self.entry.model,
             "state": self.entry.state,
             "paced_scrollback": paced,
+            "show_thinking": self.activity.thinking_mode,
             "history": history,
             "calls": calls,
         }
