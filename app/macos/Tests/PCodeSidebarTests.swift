@@ -249,4 +249,71 @@ struct PCodeSidebarTests {
         #expect(groups[0].recentSessions.map(\.id) == ["newer-recent", "older-recent"])
         #expect(groups[1].recentSessions.map(\.id) == ["visible-recent"])
     }
+
+    @Test func clampsFolderHeightWithinBounds() {
+        #expect(PCodeSidebarLayout.clampedFolderHeight(10) == PCodeSidebarLayout.minFolderHeight)
+        #expect(PCodeSidebarLayout.clampedFolderHeight(180) == 180)
+        #expect(PCodeSidebarLayout.clampedFolderHeight(2000) == PCodeSidebarLayout.maxFolderHeight)
+        #expect(PCodeSidebarLayout.clampedFolderHeight(0) == PCodeSidebarLayout.minFolderHeight)
+        #expect(PCodeSidebarLayout.clampedFolderHeight(.nan) == PCodeSidebarLayout.minFolderHeight)
+    }
+
+    @Test func sessionSubtitleCombinesWorktreeAndRelativeTime() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let fourHoursAgo = now.addingTimeInterval(-4 * 3600)
+        #expect(PCodeWorkspace.sessionSubtitle(worktreeName: nil, updatedDate: fourHoursAgo, now: now) == "4h")
+        #expect(PCodeWorkspace.sessionSubtitle(worktreeName: "fix-ui", updatedDate: fourHoursAgo, now: now) == "fix-ui · 4h")
+        #expect(PCodeWorkspace.sessionSubtitle(worktreeName: "fix-ui", updatedDate: nil, now: now) == "fix-ui")
+        #expect(PCodeWorkspace.sessionSubtitle(worktreeName: nil, updatedDate: nil, now: now) == nil)
+    }
+
+    @Test func buildProjectGroupsFloatsStarredToTopOfFolderAndSortsHostedByLastActive() throws {
+        func makeInfo(id: String, workspace: String, updated: String) throws -> PCodeSessionInfo {
+            let json = """
+            {"id":"\(id)","workspace":"\(workspace)","updated":"\(updated)","title":"\(id)","turns":1}
+            """
+            return try JSONDecoder().decode(PCodeSessionInfo.self, from: Data(json.utf8))
+        }
+
+        let proj = PCodeWorkspace.normalizePath("/tmp/star-proj")
+        let hiddenProj = PCodeWorkspace.normalizePath("/tmp/hidden-star-proj")
+
+        let recentNew = try makeInfo(id: "recent-new", workspace: proj, updated: "2026-11-26T05:00:00+00:00")
+        let recentOldStarred = try makeInfo(id: "recent-old-starred", workspace: proj, updated: "2026-11-25T01:00:00+00:00")
+        let hostedOlder = try makeInfo(id: "hosted-older", workspace: proj, updated: "2026-11-26T01:00:00+00:00")
+        let hostedNewer = try makeInfo(id: "hosted-newer", workspace: proj, updated: "2026-11-26T04:00:00+00:00")
+        let hostedStarred = try makeInfo(id: "hosted-starred", workspace: proj, updated: "2026-11-25T02:00:00+00:00")
+        let hiddenStarred = try makeInfo(id: "hidden-starred", workspace: hiddenProj, updated: "2026-11-25T03:00:00+00:00")
+
+        let hosts: [String: PCodeHostStatus] = [
+            "hosted-older": PCodeHostStatus(hostID: "h1", pid: 1, sessionID: "hosted-older", state: "idle", title: "", outcome: "", turns: 1, unseen: false, updated: 100),
+            "hosted-newer": PCodeHostStatus(hostID: "h2", pid: 2, sessionID: "hosted-newer", state: "working", title: "", outcome: "", turns: 1, unseen: false, updated: 300),
+            "hosted-starred": PCodeHostStatus(hostID: "h3", pid: 3, sessionID: "hosted-starred", state: "idle", title: "", outcome: "failed", turns: 1, unseen: true, updated: 50),
+        ]
+
+        let groups = PCodeWorkspace.buildProjectGroups(
+            panes: [],
+            projectPathForPane: { $0.projectPath },
+            history: [recentNew, hostedNewer, hostedOlder, hiddenStarred, hostedStarred, recentOldStarred],
+            detachedHostStatuses: hosts,
+            pinnedFolders: [],
+            hiddenFolders: [hiddenProj],
+            starredSessionIDs: ["recent-old-starred", "hosted-starred", "hidden-starred"])
+
+        #expect(groups.map(\.path) == [proj, hiddenProj])
+        // Starred hosted floats first; remaining hosted sorted by updated descending.
+        #expect(groups[0].hostedSessions.map(\.id) == ["hosted-starred", "hosted-newer", "hosted-older"])
+        #expect(groups[0].starredHostedSessions.map(\.id) == ["hosted-starred"])
+        #expect(groups[0].unstarredHostedSessions.map(\.id) == ["hosted-newer", "hosted-older"])
+        // Starred recent floats first even though it is older.
+        #expect(groups[0].recentSessions.map(\.id) == ["recent-old-starred", "recent-new"])
+        #expect(groups[0].starredRecentSessions.map(\.id) == ["recent-old-starred"])
+        #expect(groups[0].unstarredRecentSessions.map(\.id) == ["recent-new"])
+        // Folder status flags surface running, failed, and unseen simultaneously.
+        #expect(groups[0].hasRunning)
+        #expect(groups[0].hasFailed)
+        #expect(groups[0].hasUnseen([]))
+        // Hidden folder stays visible because it contains a starred session.
+        #expect(groups[1].starredRecentSessions.map(\.id) == ["hidden-starred"])
+    }
 }

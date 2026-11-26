@@ -26,6 +26,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from pcode import remote_profile
@@ -259,7 +260,11 @@ class _Client:
         host = self.host
         if host._latest is self:
             host._latest = self.displaced
-        host.update(attached=len(host.terminals()), unseen=host.entry.unseen or self.unseen_before)
+        host.update(
+            attached=len(host.terminals()),
+            unseen=host.entry.unseen or self.unseen_before,
+            touch=False,
+        )
 
     def cancel(self) -> None:
         self.host.controller.cancel()
@@ -578,7 +583,8 @@ class SessionHost:
         path.unlink(missing_ok=True)
         self.server = await asyncio.start_unix_server(self._accept, path=path, limit=LINE_LIMIT)
         os.chmod(path, 0o600)
-        self.update(state="idle")
+        # Not activity: a resumed session keeps the age `main` gave it from its last turn.
+        self.update(state="idle", touch=False)
         if self.entry.session_id:
             # Running again, so /attach lists the host instead of the stopped one.
             forget_stopped(self.entry.session_id, self.directory)
@@ -691,7 +697,7 @@ class SessionHost:
                 if self.running_command is client:
                     self.running_command = None
                 if not self.stopped.is_set():
-                    self.update(attached=len(self.terminals()))
+                    self.update(attached=len(self.terminals()), touch=False)
 
     async def _observe(
         self, hello: dict, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -831,7 +837,7 @@ class SessionHost:
         client.displaced, self._latest = self._latest, client
         client.unseen_before = self.entry.unseen
         # Shown now, so whatever finished while nobody watched has been seen.
-        self.update(attached=len(self.terminals()), unseen=False)
+        self.update(attached=len(self.terminals()), unseen=False, touch=False)
         self._state = self.controller.session_state()
         return {
             "id": self.entry.id,
@@ -1085,14 +1091,20 @@ class SessionHost:
                 client.peer.notify("session_state", state)
         session = getattr(self.controller.runtime, "session", None)
         if session is not None and session.info.id != self.entry.session_id:
-            self.update(session_id=session.info.id, forked_from=session.info.forked_from or "")
+            # A /resume ages from the resumed session's last turn, not from now.
+            self.update(
+                session_id=session.info.id,
+                forked_from=session.info.forked_from or "",
+                updated=_activity_time(session.info.updated),
+                touch=False,
+            )
             forget_stopped(session.info.id, self.directory)
             self.own_jobs()
         # /attach lists the session by its name once it has one, not its first prompt.
         if (title := state.get("session_title")) and title != self.entry.title:
-            self.update(title=title)
+            self.update(title=title, touch=False)
         if (model := state.get("model") or "") != self.entry.model:
-            self.update(model=model)
+            self.update(model=model, touch=False)
 
     def own_jobs(self) -> None:
         """Tag the jobs this host launches with its session, and take back that session's.
@@ -1105,10 +1117,10 @@ class SessionHost:
 
     # The entry other terminals read
 
-    def update(self, **changes) -> None:
+    def update(self, *, touch: bool = True, **changes) -> None:
         for key, value in changes.items():
             setattr(self.entry, key, value)
-        write_entry(self.entry, self.directory)
+        write_entry(self.entry, self.directory, touch=touch)
 
     def turn_began(self, prompt: str) -> None:
         self.reset_buffer()
@@ -1380,6 +1392,14 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _activity_time(stamp: str) -> float:
+    """A session's ISO `updated` as epoch seconds, or now if it doesn't parse."""
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except TypeError, ValueError:
+        return time.time()
+
+
 def read_carry(path: Path | None) -> dict | None:
     """The hand-over `--carry` names, removing the file; None without one (or unreadable)."""
     if path is None:
@@ -1458,6 +1478,18 @@ def plan_startup(controller: SessionController, model: str | None, saved) -> Non
         )
 
 
+def move_into(workspace: Path) -> None:
+    """Make `workspace` this process's directory, as well as the session's.
+
+    `spawn_host` starts a host in the caller's directory, which can be another
+    session's worktree. Once that session removes it, a host left there fails
+    every `getcwd()`, and with it anything that asks (sub-agents, tool display).
+    """
+    with contextlib.suppress(OSError):
+        os.chdir(workspace)
+        os.environ["PWD"] = str(workspace)  # getcwd is right; an inherited PWD is not
+
+
 async def _serve(args: argparse.Namespace) -> dict | None:
     """Run the host until it stops; `spawn_host` arguments for its successor, if any."""
     from pcode.app import _enter_worktree, _resume_workspace
@@ -1512,6 +1544,7 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         prompt = first_prompt(saved.info, saved.directory.parent)
         first = "" if prompt.startswith("(") else prompt
         entry.title = saved.info.name or saved.info.title or first
+        entry.updated = _activity_time(saved.info.updated)
     elif profile is not None:
         # Never the shared checkout, even from inside a linked worktree.
         workspace, session_id = _enter_worktree(
@@ -1522,7 +1555,8 @@ async def _serve(args: argparse.Namespace) -> dict | None:
         workspace, session_id = _enter_worktree(workspace, args.worktree)
         workspace = workspace.resolve()
     entry.workspace = str(workspace)
-    write_entry(entry)
+    write_entry(entry, touch=saved is None)
+    move_into(workspace)
 
     host = SessionHost(entry)
     host.carried = read_carry(args.carry)
@@ -1576,6 +1610,8 @@ async def _serve(args: argparse.Namespace) -> dict | None:
                 saved.close()  # Startup failed before a runtime took it.
         # A stop that came after `restart` must not tidy away the successor's worktree.
         if not host.keep_worktree and host.successor is None:
+            # Out of the worktree first, so removing it leaves no process inside.
+            move_into(Path.home())
             # A terminal that asked to keep it tidies it itself, and can ask first.
             leave_worktree(
                 controller.workspace,
