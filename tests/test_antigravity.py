@@ -514,6 +514,191 @@ def test_a_message_sent_mid_turn_steers_it(fake_agy, tmp_path):
     ]
 
 
+def test_deferred_steering_commits_at_step_boundary_mid_text_and_mid_tool():
+    """AntigravityStream sends steering immediately, but defers the transcript commit
+    until the in-flight step (and any running tools) finishes."""
+    from pydantic_ai.messages import PartEndEvent, PartStartEvent
+
+    from pcode.antigravity import AntigravityStream
+    from pcode.steering import Steering
+
+    async def exercise_mid_text():
+        events_log: list[str] = []
+        queue = ["say MANGO"]
+        updates: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        r1 = loop.create_future()
+        r2 = loop.create_future()
+
+        class FakeConn:
+            def begin(self, method, params):
+                events_log.append(f"rpc:{params['prompt'][0]['text']}")
+                return r2
+
+        class FakeSession:
+            session_id = "s-mid-text"
+            connection = FakeConn()
+            daemon_tools: set[str] = set()
+
+        def take(*, defer_commit=False):
+            taken = list(queue)
+            queue.clear()
+            if not defer_commit:
+                events_log.append(f"commit:{taken}")
+            return taken
+
+        def commit(msgs):
+            events_log.append(f"commit:{msgs}")
+
+        steering = Steering(take, lambda: bool(queue), commit_messages=commit)
+
+        class FakeCtx:
+            messages = [ModelRequest(parts=[UserPromptPart("count")])]
+            capabilities = {"steering": steering}
+
+        stream = AntigravityStream(
+            model_request_parameters=ModelRequestParameters(),
+            model_id="fake-neon",
+            run_context=FakeCtx(),
+        )
+        stream.session = FakeSession()
+        stream.reply = r1
+        stream.replies = [r1]
+
+        async def feed():
+            # Step 1 starts streaming text; steer arrives mid-text.
+            updates.put_nowait(
+                {"sessionUpdate": "agent_message_chunk", "content": {"text": "1, 2, "}}
+            )
+            await asyncio.sleep(0.05)
+            # Step 1 finishes streaming AFTER steer was already sent.
+            updates.put_nowait({"sessionUpdate": "agent_message_chunk", "content": {"text": "3."}})
+            updates.put_nowait({"sessionUpdate": "usage_update", "used": 100})
+            await asyncio.sleep(0.05)
+            # Step 2 replies having seen the steer.
+            updates.put_nowait(
+                {"sessionUpdate": "agent_message_chunk", "content": {"text": "MANGO"}}
+            )
+            updates.put_nowait({"sessionUpdate": "usage_update", "used": 120})
+            r2.set_result({"stopReason": "end_turn"})
+            updates.put_nowait(r2)
+
+        async def _get_event_iterator():
+            async for ev in stream._events(updates, stream.session):
+                yield ev
+
+        stream._get_event_iterator = _get_event_iterator
+        feeder = asyncio.create_task(feed())
+        async for ev in stream:
+            if isinstance(ev, PartEndEvent) and isinstance(ev.part, TextPart):
+                events_log.append(f"part_end:{ev.part.content}")
+            elif isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart):
+                events_log.append(f"part_start:{ev.part.content}")
+        await feeder
+        return events_log
+
+    log = run(exercise_mid_text())
+    # RPC was sent immediately; commit waited until step 1's TextPart ended before step 2.
+    assert "rpc:say MANGO" in log
+    assert (
+        log.index("part_end:1, 2, 3.")
+        < log.index("commit:['say MANGO']")
+        < log.index("part_start:MANGO")
+    )
+
+    async def exercise_mid_tool():
+        events_log: list[str] = []
+        queue = ["say PINEAPPLE"]
+        updates: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        r1 = loop.create_future()
+        r2 = loop.create_future()
+
+        class FakeConn:
+            def begin(self, method, params):
+                events_log.append(f"rpc:{params['prompt'][0]['text']}")
+                return r2
+
+        class FakeSession:
+            session_id = "s-mid-tool"
+            connection = FakeConn()
+            daemon_tools: set[str] = set()
+
+        def take(*, defer_commit=False):
+            taken = list(queue)
+            queue.clear()
+            return taken
+
+        def commit(msgs):
+            events_log.append(f"commit:{msgs}")
+
+        steering = Steering(take, lambda: bool(queue), commit_messages=commit)
+
+        class FakeCtx:
+            messages = [ModelRequest(parts=[UserPromptPart("run bash")])]
+            capabilities = {"steering": steering}
+
+        stream = AntigravityStream(
+            model_request_parameters=ModelRequestParameters(),
+            model_id="fake-neon",
+            run_context=FakeCtx(),
+        )
+        stream.session = FakeSession()
+        stream.reply = r1
+        stream.replies = [r1]
+
+        async def feed():
+            # Step 1 emits usage_update + tool_call (in_progress).
+            updates.put_nowait({"sessionUpdate": "usage_update", "used": 50})
+            updates.put_nowait(
+                {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "t1",
+                    "status": "in_progress",
+                    "title": "sleep",
+                }
+            )
+            await asyncio.sleep(0.05)
+            # Tool completes -> steering should commit right after tool completes, before step 2!
+            updates.put_nowait(
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "t1",
+                    "status": "completed",
+                    "title": "sleep",
+                }
+            )
+            await asyncio.sleep(0.05)
+            updates.put_nowait(
+                {"sessionUpdate": "agent_message_chunk", "content": {"text": "PINEAPPLE"}}
+            )
+            updates.put_nowait({"sessionUpdate": "usage_update", "used": 80})
+            r2.set_result({"stopReason": "end_turn"})
+            updates.put_nowait(r2)
+
+        async def _get_event_iterator():
+            async for ev in stream._events(updates, stream.session):
+                yield ev
+
+        stream._get_event_iterator = _get_event_iterator
+        feeder = asyncio.create_task(feed())
+        async for ev in stream:
+            if isinstance(ev, PartStartEvent) and isinstance(ev.part, NativeToolReturnPart):
+                events_log.append("tool_return")
+            elif isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart):
+                events_log.append(f"part_start:{ev.part.content}")
+        await feeder
+        return events_log
+
+    tool_log = run(exercise_mid_tool())
+    assert "rpc:say PINEAPPLE" in tool_log
+    assert (
+        tool_log.index("tool_return")
+        < tool_log.index("commit:['say PINEAPPLE']")
+        < tool_log.index("part_start:PINEAPPLE")
+    )
+
+
 def test_a_steered_turn_that_is_cancelled_still_continues(fake_agy, tmp_path):
     queue: list = []
 

@@ -903,6 +903,8 @@ class SessionHost:
             "state": self.entry.state,
             "paced_scrollback": paced,
             "show_thinking": self.activity.thinking_mode,
+            "queued_prompts": list(self.activity.queued_prompts),
+            "queued_modes": list(self.activity.queued_modes),
             "history": history,
             "calls": calls,
         }

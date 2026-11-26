@@ -87,14 +87,34 @@ struct PCodeHostStateTests {
     @Test func welcomeSeedsSessionAndBusy() {
         let welcome = PCodeHostSocketClient.decodeWelcome([
             "type": "ready", "id": "h1", "session_id": "s1", "title": "t", "state": "working",
+            "queued_prompts": ["steer me", "next turn", "wake"],
+            "queued_modes": ["steering", "queue", "provider_wake"],
             "history": [], "calls": [["state", [["turn_outcome": "done"]], [:]]],
         ])
         #expect(welcome.hostState == "working")
         var state = PCodeHostSessionState(welcome: welcome)
         #expect(state.sessionID == "s1" && state.busy && state.promptState == "running")
+        #expect(state.pendingPrompts.map(\.mode) == [.steering, .queued])
+        #expect(state.pendingPrompts.map(\.text) == ["steer me", "next turn"])
         for event in welcome.catchUpCalls { state.apply(event) }
         #expect(state.turnOutcome == "done")
         let idle = PCodeHostSessionState(welcome: PCodeHostSocketClient.decodeWelcome(["state": "idle"]))
-        #expect(!idle.busy && idle.promptState == "")
+        #expect(!idle.busy && idle.promptState == "" && idle.pendingPrompts.isEmpty)
+    }
+
+    @Test func foldsQueuedPromptsAndClearsOnReset() {
+        var state = PCodeHostSessionState()
+        let deltaEvent = PCodeHostEventDecoder.decodeRPCCall(
+            method: "state",
+            args: [["queued_prompts": ["also fix docs", "then deploy"], "queued_modes": ["steering", "queue"]]],
+            kwargs: [:])
+        #expect(deltaEvent != nil)
+        #expect(state.apply(deltaEvent!))
+        #expect(state.pendingPrompts.count == 2)
+        #expect(state.pendingPrompts[0].mode == .steering && state.pendingPrompts[0].text == "also fix docs")
+        #expect(state.pendingPrompts[1].mode == .queued && state.pendingPrompts[1].text == "then deploy")
+
+        #expect(state.apply(.conversationReset))
+        #expect(state.pendingPrompts.isEmpty)
     }
 }

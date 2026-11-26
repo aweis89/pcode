@@ -172,11 +172,14 @@ enum PCodePeekBlock: Identifiable {
     /// A whole assistant message, rendered as one `StructuredText` so selection spans its blocks.
     case markdown(id: Int, text: String)
     case tool(PCodePeekToolCall)
+    /// A mid-turn steering message delivered during the turn.
+    case steering(id: Int, text: String)
 
     var id: String {
         switch self {
         case .markdown(let id, _): return "m:\(id)"
         case .tool(let call): return "t:\(call.id)"
+        case .steering(let id, _): return "s:\(id)"
         }
     }
 }
@@ -217,6 +220,7 @@ final class PCodeTranscriptLoader {
 
     private static let kindMarkers: [Data] = [
         Data("\"turn_started\"".utf8),
+        Data("\"steering\"".utf8),
         Data("\"Message\"".utf8),
         Data("\"ToolSummary\"".utf8),
         Data("\"turn_completed\"".utf8),
@@ -359,6 +363,11 @@ final class PCodeTranscriptLoader {
             guard let idx = targetIndex else { continue }
 
             switch kind {
+            case "steering":
+                if let prompt = record["prompt"] as? String, !prompt.isEmpty {
+                    turns[idx].blocks.append(.steering(id: nextBlockID, text: prompt))
+                    nextBlockID += 1
+                }
             case "Message":
                 if let markdown = record["markdown"] as? String, !markdown.isEmpty {
                     turns[idx].blocks.append(.markdown(id: nextBlockID, text: markdown))

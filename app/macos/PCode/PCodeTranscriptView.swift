@@ -276,6 +276,12 @@ struct PCodeTranscriptItem: Identifiable {
                         }
                     }
 
+                case .steering(let blockID, let text):
+                    result.append(PCodeTranscriptItem(
+                        id: "turn-\(turn.id)-steer-\(blockID)",
+                        payload: .prompt(label: "", text: text, isSide: false),
+                        spacingAfter: 12))
+
                 case .tool(let call):
                     result.append(PCodeTranscriptItem(
                         id: "turn-\(turn.id)-tool-\(call.id)",

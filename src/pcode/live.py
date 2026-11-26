@@ -258,7 +258,8 @@ class AgentRuntime:
         # Shell jobs outlive both the run and the conversation, so the registry
         # is not reset by `_clear`, `/new`, or conversation checkout.
         self.jobs = job_registry()
-        self.take_steering = lambda: []
+        self.take_steering = lambda **_: []
+        self.commit_steering = lambda messages: None
         self.has_steering = lambda: False
         # Prompt overhead describes the agent's configuration, not one
         # conversation, so it outlives /new and conversation checkout.
@@ -1480,16 +1481,30 @@ class AgentRuntime:
         with agent.override(model_settings=lambda ctx: self.agent.model_settings):
             yield
 
-    def _consume_steering(self, run_id: str) -> list[str]:
-        messages = self.take_steering()
+    def _consume_steering(self, run_id: str, *, defer_commit: bool = False) -> list:
+        try:
+            messages = self.take_steering(defer_commit=defer_commit)
+        except TypeError:
+            messages = self.take_steering()
+            defer_commit = False
+        if defer_commit:
+            # Keep `Steer` objects intact so `_commit_steering` records `sent_at`.
+            return list(messages)
+        self._journal_steering(run_id, messages)
+        # Plain text onward: the stamp is for the journal, not the model request.
+        return [str(text) for text in messages]
+
+    def _commit_steering(self, run_id: str, messages: list) -> None:
+        self.commit_steering(messages)
+        self._journal_steering(run_id, messages)
+
+    def _journal_steering(self, run_id: str, messages: list) -> None:
         if self.session:
             for text in messages:
                 # When it was typed, beside the record's own delivery `time`:
                 # the gap is how long the tools ahead of it held it back.
                 sent = {"sent_at": text.sent_at} if hasattr(text, "sent_at") else {}
                 self.session.append("steering", run_id=run_id, prompt=str(text), **sent)
-        # Plain text onward: the stamp is for the journal, not the model request.
-        return [str(text) for text in messages]
 
     def _run_capabilities(
         self, context: TurnContext, chosen: TurnModel, *, provider_continuation: bool = False
@@ -1501,11 +1516,14 @@ class AgentRuntime:
             ([StepPersistence(store=self.session.store)] if self.session else [])
             + [
                 Steering(
-                    lambda: self._consume_steering(run_id),
+                    lambda *, defer_commit=False: self._consume_steering(
+                        run_id, defer_commit=defer_commit
+                    ),
                     lambda: self.has_steering(),
                     # A message naming images brings them, as a prompt does.
                     prepare=lambda text: self._with_images(text, self.agent.model),
                     reminder=STEERING_REMINDER,
+                    commit_messages=lambda messages: self._commit_steering(run_id, messages),
                 ),
             ]
             # Provider continuations send no prompt over ACP, so keep pcode's
