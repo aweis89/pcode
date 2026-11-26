@@ -2917,6 +2917,38 @@ def test_an_app_pane_exits_when_its_host_is_stopped_elsewhere():
     assert not app.running and app.session_over
 
 
+def test_an_app_pane_stays_open_while_restart_replaces_its_host(monkeypatch, host_dir):
+    """`/restart` with nothing to resume stops the host itself; the pane must not exit."""
+
+    async def run():
+        class Host:
+            remote = True
+            id, pid, session_id, lost = "aaaa1111", 4242, "", False
+
+            def stop(self, *, keep_worktree=False):
+                # The host answers its stop with `host_closed` and goes away.
+                app.controller.host_stopped = True
+                app.host_closed()
+
+        async def wait_for_exit(pid, timeout=30.0):
+            return True
+
+        started = []
+
+        async def start_host_session(resume, note=None):
+            started.append(resume)
+
+        monkeypatch.setattr("pcode.remote.wait_for_exit", wait_for_exit)
+        app = PreviewApp(model="m", runtime=Host(), console=Console(file=StringIO(), width=200))
+        app.editor_only = True
+        app.start_host_session = start_host_session
+        await app.restart_host()
+        assert app.running and not app.session_over
+        assert started == [""]
+
+    asyncio.run(run())
+
+
 def test_an_app_pane_whose_host_vanished_says_so_in_the_editor():
     """Its transcript goes nowhere, so a crashed host is reported where the pane shows text."""
 
