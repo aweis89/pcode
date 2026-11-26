@@ -314,7 +314,13 @@ extension Ghostty.SurfaceView {
         switch payload.prefix(while: { $0 != ";" }) {
         case "session":
             let id = String(payload.dropFirst("session;".count))
-            pcodeSession = Self.pcodeResumeInput(id) == nil ? nil : id
+            let valid = Self.pcodeResumeInput(id) == nil ? nil : id
+            // A resuming workspace pane's client says "no session" once before it
+            // attaches to its host; dropping the session the app opened the pane for
+            // would show it untitled until then. Once attached, an empty marker
+            // (`/new` before its first turn) is honored.
+            if valid == nil, pcodeIsSessionPane, pcodeHost == nil, pcodeSession != nil { return }
+            pcodeSession = valid
         case "host":
             let id = String(payload.dropFirst("host;".count))
             pcodeHost = PCode.valid(id, length: 8...8, hex: true) ? id : nil
