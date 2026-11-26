@@ -1561,4 +1561,102 @@ struct PCodeTranscriptTests {
         doc.groupTools = true
         #expect(doc.items.map(\.kind) == [.prompt, .toolGroup])
     }
+
+    @Test @MainActor func expandedToolGroupAbsorbPreservesRevisionsAndSelectionRemapsAcrossExpand() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 500)
+        scrollView.layoutSubtreeIfNeeded()
+        let doc = scrollView.transcriptDocumentView
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Inspect", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolSummary(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "t2", parentCallID: "", name: "read_file", detail: "b.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolStarted(callID: "t3", parentCallID: "", name: "shell", detail: "ls", command: "ls", purpose: ""), reveal: false)
+
+        // Expand the group while t3 is running, then finish t3 (oldMid.count == newMid.count == 4).
+        let groupID = doc.items[1].id
+        doc.toggleExpansionForAccessibility(id: groupID)
+        #expect(doc.items.count == 5) // prompt + group + t1 + t2 + t3(running)
+        let t1RevBefore = doc.items[2].revision
+
+        reducer.apply(.toolSummary(callID: "t3", parentCallID: "", name: "shell", detail: "ls", command: "ls", failed: false, elapsedSeconds: 0.2, error: "", result: "ok", isBackgroundJob: false), reveal: true)
+        // t1's revision must stay synced with rawItems (no revision drift).
+        #expect(doc.items[2].revision == t1RevBefore)
+        if let rawIdx = doc.indexOfRawItem(id: "call-t1") {
+            #expect(doc.items[2].revision == doc.rawItems[rawIdx].revision)
+        }
+
+        // Collapse group, append prose, select part of prose, then expand group above it:
+        // selection must remap onto the prose row instead of shifting onto a tool row.
+        doc.toggleExpansionForAccessibility(id: groupID)
+        reducer.apply(.message(markdown: "Final answer text."), reveal: false)
+        guard let proseIdxBefore = doc.items.firstIndex(where: { $0.kind == .prose }) else {
+            Issue.record("Expected prose item")
+            return
+        }
+        doc.setSelection(PCodeTranscriptSelection(
+            anchor: .init(itemIndex: proseIdxBefore, utf16Offset: 0),
+            focus: .init(itemIndex: proseIdxBefore, utf16Offset: 5)))
+        #expect(doc.selectedPlainText() == "Final")
+
+        doc.toggleExpansionForAccessibility(id: groupID)
+        #expect(doc.selectedPlainText() == "Final")
+        doc.toggleExpansionForAccessibility(id: groupID)
+        #expect(doc.selectedPlainText() == "Final")
+    }
+
+    @Test @MainActor func outOfOrderParallelCompletionAndCustomParentToolGrouping() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        reducer.apply(.turnStarted(prompt: "Parallel", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "p1", parentCallID: "", name: "shell", detail: "slow", command: "slow", purpose: ""), reveal: true)
+        reducer.apply(.toolStarted(callID: "p2", parentCallID: "", name: "read_file", detail: "fast.swift", command: "", purpose: ""), reveal: true)
+
+        // p2 finishes before p1 -> p2 folds into group above still-running p1.
+        reducer.apply(.toolSummary(callID: "p2", parentCallID: "", name: "read_file", detail: "fast.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: true)
+        #expect(doc.items.map(\.kind) == [.prompt, .toolGroup, .tool])
+        #expect(doc.items[2].id == "call-p1")
+        let stableGroupID = doc.items[1].id
+
+        // p1 finishes -> folds into the SAME group ID.
+        reducer.apply(.toolSummary(callID: "p1", parentCallID: "", name: "shell", detail: "slow", command: "slow", failed: false, elapsedSeconds: 1.0, error: "", result: nil, isBackgroundJob: false), reveal: true)
+        #expect(doc.items.map(\.kind) == [.prompt, .toolGroup])
+        #expect(doc.items[1].id == stableGroupID)
+
+        // Non-delegate parent tool with nested depth-1 children stays ungrouped so children aren't orphaned.
+        reducer.apply(.message(markdown: "Running workflow."), reveal: false)
+        reducer.apply(.toolSummary(callID: "wf", parentCallID: "", name: "run_workflow", detail: "audit", command: "", failed: false, elapsedSeconds: 1.0, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "wc1", parentCallID: "wf", name: "read_file", detail: "x.py", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+        reducer.apply(.toolSummary(callID: "wc2", parentCallID: "wf", name: "read_file", detail: "y.py", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
+
+        let tailKinds = Array(doc.items.suffix(2).map(\.kind))
+        #expect(tailKinds == [.tool, .toolGroup])
+        #expect(doc.items[doc.items.count - 2].id == "call-wf")
+        #expect(doc.items[doc.items.count - 1].depth == 1)
+    }
+
+    @Test @MainActor func btwItemSyncDiffsAgainstRawItemsWhenGrouped() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let doc = PCodeTranscriptDocumentView(typography: PCodeTypography.shared.snapshot, theme: theme)
+        doc.groupTools = true
+
+        let t1 = PCodeTranscriptItem(id: "t1", kind: .tool, plainText: "read_file", secondaryText: "a.py")
+        let t2 = PCodeTranscriptItem(id: "t2", kind: .tool, plainText: "shell", secondaryText: "ls")
+        let prose = PCodeTranscriptItem(id: "p1", kind: .prose, plainText: "Done")
+
+        PCodeTranscriptItemSync.apply([t1, t2], to: doc)
+        #expect(doc.rawItems.count == 2)
+        #expect(doc.items.map(\.kind) == [.toolGroup])
+
+        // Re-applying with an appended prose row must not reset or duplicate tools.
+        PCodeTranscriptItemSync.apply([t1, t2, prose], to: doc)
+        #expect(doc.rawItems.count == 3)
+        #expect(doc.items.map(\.kind) == [.toolGroup, .prose])
+    }
 }

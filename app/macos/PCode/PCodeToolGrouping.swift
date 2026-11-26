@@ -271,10 +271,21 @@ enum PCodeToolGrouper {
         out.reserveCapacity(rawItems.count)
         var groupMap: [String: String] = [:]
 
+        func canGroup(at index: Int) -> Bool {
+            let candidate = rawItems[index]
+            guard isGroupable(candidate) else { return false }
+            // Any tool heading nested child calls (`depth > candidate.depth`) stays its own row
+            // so its children are never orphaned beneath a collapsed group pill.
+            if index + 1 < rawItems.count && rawItems[index + 1].depth > candidate.depth {
+                return false
+            }
+            return true
+        }
+
         var i = 0
         while i < rawItems.count {
             let item = rawItems[i]
-            guard isGroupable(item) else {
+            guard canGroup(at: i) else {
                 out.append(item)
                 i += 1
                 continue
@@ -282,7 +293,7 @@ enum PCodeToolGrouper {
 
             let runDepth = item.depth
             let runStart = i
-            while i < rawItems.count && isGroupable(rawItems[i]) && rawItems[i].depth == runDepth {
+            while i < rawItems.count && canGroup(at: i) && rawItems[i].depth == runDepth {
                 i += 1
             }
             let run = rawItems[runStart..<i]

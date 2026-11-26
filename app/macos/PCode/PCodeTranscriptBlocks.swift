@@ -26,6 +26,7 @@ extension PCodeTranscriptRowHosting {
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
     }
 
     func setCurtainRevealProgress(_ progress: CGFloat?) {
@@ -385,6 +386,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         textView.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
         copyPayload = nil
         copyButton.cancelCopiedFlash()
     }
@@ -505,6 +507,7 @@ final class PCodeCodeBlockView: NSView, PCodeTranscriptRowHosting {
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         textView.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
         highlightTask?.cancel()
         highlightTask = nil
         highlightGeneration &+= 1
@@ -817,6 +820,7 @@ final class PCodeTableBlockView: NSView, PCodeTranscriptRowHosting {
         setHovered(false)
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
+        layer?.removeAllAnimations()
         scrollView.resetScrollOrigin()
     }
 
@@ -1151,6 +1155,7 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
         spinnerView.stopAnimating()
         spinnerView.isHidden = true
         iconView.isHidden = false
@@ -1472,6 +1477,21 @@ final class PCodeToolCardView: NSView, PCodeTranscriptRowHosting {
 
 // MARK: - Tool Group Summary Row (Folded Consecutive Settled Tools & Edits)
 
+/// Full-row disclosure button that forwards right-clicks up to `PCodeTranscriptDocumentView.menu(for:)`
+/// so users can right-click a grouped tool pill directly to toggle "Group Tool Calls".
+private final class PCodeContextMenuForwardingButton: NSButton {
+    override func menu(for event: NSEvent) -> NSMenu? {
+        var ancestor = superview
+        while let current = ancestor {
+            if let doc = current as? PCodeTranscriptDocumentView {
+                return doc.menu(for: event)
+            }
+            ancestor = current.superview
+        }
+        return super.menu(for: event)
+    }
+}
+
 final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .toolGroup
     let textView = PCodeTextKit2BlockView()
@@ -1480,7 +1500,7 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     private let elapsedLabel = NSTextField(labelWithString: "")
     private let chevronContainer = NSView()
     private let chevronView = NSImageView()
-    private let tapButton = NSButton()
+    private let tapButton = PCodeContextMenuForwardingButton()
     private var onToggle: (() -> Void)?
     private var lastTheme: PCodeTranscriptTheme?
     private var lastIsExpanded = false
@@ -1993,6 +2013,7 @@ final class PCodeDiffCardView: NSView, PCodeTranscriptRowHosting {
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         textView.inkSweepFrontier = nil
+        layer?.removeAllAnimations()
         scrollView.resetScrollOrigin()
         copyButton.cancelCopiedFlash()
         spinnerView.stopAnimating()

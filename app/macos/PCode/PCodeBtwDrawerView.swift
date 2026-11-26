@@ -125,7 +125,7 @@ enum PCodeTranscriptItemSync {
     }
 
     static func apply(_ new: [PCodeTranscriptItem], to document: PCodeTranscriptDocumentView) {
-        let steps = plan(from: document.items, to: new)
+        let steps = plan(from: document.rawItems, to: new)
         let byID = Dictionary(new.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for step in steps {
             switch step {

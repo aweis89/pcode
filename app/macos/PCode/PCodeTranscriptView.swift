@@ -351,6 +351,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     private var expandedGroupIDs: Set<String> = []
     private var absorbPulseByGroupID: [String: UInt64] = [:]
     private var groupIDByRawItemID: [String: String] = [:]
+    private var activeFoldGhostLayers: [CALayer] = []
     private var reusePools: [PCodeTranscriptItem.Kind: [any PCodeTranscriptRowHosting]] = [:]
     private var attributedCache: [String: NSAttributedString] = [:]
     private var attributedCacheOrder: [String] = []
@@ -570,6 +571,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         notifySearchContentWillChange()
         expandedGroupIDs.removeAll(keepingCapacity: false)
         absorbPulseByGroupID.removeAll(keepingCapacity: false)
+        clearActiveFoldGhostLayers()
         rawItems = newItems
         rebuildRawItemIndexMap()
         let projection = PCodeToolGrouper.project(
@@ -889,6 +891,37 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             }
         }
 
+        // Capture selection endpoints by stable item ID so selection never jumps onto wrong rows
+        // when items are inserted/removed above it.
+        let savedSelectionEndpoints: (anchorID: String, anchorOffset: Int, focusID: String, focusOffset: Int)?
+        if let sel = selection,
+           oldItems.indices.contains(sel.anchor.itemIndex),
+           oldItems.indices.contains(sel.focus.itemIndex)
+        {
+            savedSelectionEndpoints = (
+                oldItems[sel.anchor.itemIndex].id, sel.anchor.utf16Offset,
+                oldItems[sel.focus.itemIndex].id, sel.focus.utf16Offset)
+        } else {
+            savedSelectionEndpoints = nil
+        }
+
+        // Capture top-visible anchor when scrolled up so layout mutations above the viewport
+        // don't jump visible content.
+        var savedViewportAnchor: (id: String, offsetFromTop: CGFloat, viewportTop: CGFloat)?
+        if !stickyBottom.shouldProgrammaticallyPin,
+           let scrollView = enclosingScrollView,
+           !layoutEngine.entries.isEmpty
+        {
+            let viewportTop = scrollView.contentView.bounds.origin.y
+            let vis = layoutEngine.visibleRange(in: CGRect(x: 0, y: viewportTop, width: 1, height: max(1, scrollView.contentView.bounds.height)))
+            if let firstVis = vis.first, oldItems.indices.contains(firstVis) {
+                savedViewportAnchor = (
+                    id: oldItems[firstVis].id,
+                    offsetFromTop: viewportTop - layoutEngine.entries[firstVis].yOffset,
+                    viewportTop: viewportTop)
+            }
+        }
+
         let oldMid = prefix..<(oldCount - suffix)
         let newMid = prefix..<(newCount - suffix)
         let newMidIDs = Set(newItems[newMid].map(\.id))
@@ -896,6 +929,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         notifySearchContentWillChange()
         for idx in oldMid {
             let oldID = oldItems[idx].id
+            if oldMid.count == newMid.count,
+               Self.displayItemsMatch(oldItems[idx], newItems[idx])
+            {
+                continue
+            }
             removeAttributedCache(for: oldID)
             if !newMidIDs.contains(oldID) {
                 revealQueue.remove(itemID: oldID)
@@ -917,12 +955,21 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 let idx = prefix + offset
                 let oldItem = items[idx]
                 let newItem = newItems[idx]
+                if Self.displayItemsMatch(oldItem, newItem) {
+                    continue
+                }
                 if oldItem.id == newItem.id && oldItem.kind == newItem.kind {
+                    // Only `.toolGroup` (compared by payload equality, not revision) bumps its
+                    // revision locally; raw-backed items keep `newItem.revision` so `rawItems`
+                    // and `items` never drift and break minimal prefix/suffix diffing.
+                    let nextRevision: UInt64 = (newItem.kind == .toolGroup)
+                        ? max(newItem.revision, oldItem.revision &+ 1)
+                        : newItem.revision
                     items[idx] = PCodeTranscriptItem(
                         id: newItem.id,
                         payload: newItem.payload,
                         spacingAfter: newItem.spacingAfter,
-                        revision: max(newItem.revision, oldItem.revision &+ 1),
+                        revision: nextRevision,
                         depth: newItem.depth)
                     layoutEngine.updateSpacingAfter(at: idx, spacingAfter: newItem.spacingAfter)
                 } else {
@@ -948,7 +995,23 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         rebuildItemIndexMap()
         invalidateSearchIndex()
-        clampSelectionToCurrentItems()
+        remapSelection(from: savedSelectionEndpoints)
+
+        // Compensate scroll origin when scrolled up and rows above the viewport changed height.
+        if let anchor = savedViewportAnchor,
+           let newAnchorIdx = itemIndexByID[anchor.id],
+           layoutEngine.entries.indices.contains(newAnchorIdx)
+        {
+            let desiredTop = layoutEngine.entries[newAnchorIdx].yOffset + anchor.offsetFromTop
+            let scrollDelta = desiredTop - anchor.viewportTop
+            if abs(scrollDelta) > 0.5 {
+                applyDocumentHeight(
+                    layoutEngine.totalHeight,
+                    scrollOriginDelta: scrollDelta,
+                    pinIfNeeded: false,
+                    allowSmoothGlide: false)
+            }
+        }
 
         for idx in newMid {
             let it = items[idx]
@@ -989,10 +1052,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    private func clearActiveFoldGhostLayers() {
+        for ghost in activeFoldGhostLayers {
+            ghost.removeAllAnimations()
+            ghost.removeFromSuperlayer()
+        }
+        activeFoldGhostLayers.removeAll(keepingCapacity: false)
+    }
+
     private func animateFoldSnapshot(_ snap: FoldSnapshot, into targetFrame: CGRect) {
         guard let hostLayer = layer else { return }
         let ghost = snap.layer
         hostLayer.addSublayer(ghost)
+        activeFoldGhostLayers.append(ghost)
 
         let duration: CFTimeInterval = 0.22
         let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
@@ -1017,8 +1089,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         group.isRemovedOnCompletion = false
 
         CATransaction.begin()
-        CATransaction.setCompletionBlock {
+        CATransaction.setCompletionBlock { [weak self] in
             ghost.removeFromSuperlayer()
+            self?.activeFoldGhostLayers.removeAll { $0 === ghost }
         }
         ghost.add(group, forKey: "pcode.tool.fold")
         CATransaction.commit()
@@ -1266,7 +1339,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     func appendStreamingToolCall(_ call: PCodePeekToolCall) {
         finishStreamingMessage()
         let item = PCodeTranscriptItem(
-            id: "stream-turn-\(streamingTurnCounter)-tool-\(call.id)-\(items.count)",
+            id: "stream-turn-\(streamingTurnCounter)-tool-\(call.id)-\(rawItems.count)",
             payload: .tool(call, isExpanded: false),
             spacingAfter: 5)
         upsertItem(item, reveal: true)
@@ -1277,7 +1350,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         finishStreamingMessage(reveal: reveal)
         if status != .complete {
             let item = PCodeTranscriptItem(
-                id: "stream-turn-\(streamingTurnCounter)-status-\(items.count)",
+                id: "stream-turn-\(streamingTurnCounter)-status-\(rawItems.count)",
                 payload: .status(status),
                 spacingAfter: 14)
             upsertItem(item, reveal: reveal)
@@ -1707,6 +1780,15 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             foldSnapshot: nil,
             animateShift: true,
             animateExpandedGroupID: willExpand ? id : nil)
+        if let proxy = accessibilityRowProxies[id],
+           let updatedIdx = itemIndexByID[id],
+           items.indices.contains(updatedIdx),
+           case .toolGroup(let updatedPayload) = items[updatedIdx].payload
+        {
+            let state = updatedPayload.isExpanded ? "expanded" : "collapsed"
+            proxy.setAccessibilityLabel("\(updatedPayload.plainSummaryText) (\(state))")
+        }
+        NSAccessibility.post(element: self, notification: .layoutChanged)
     }
 
     private func toggleToolExpansion(id: String) {
@@ -2080,6 +2162,29 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         onSmoothGlideActiveChanged?(active)
     }
 
+    private func remapSelection(
+        from endpoints: (anchorID: String, anchorOffset: Int, focusID: String, focusOffset: Int)?
+    ) {
+        guard let endpoints else {
+            clampSelectionToCurrentItems()
+            return
+        }
+        guard let newAnchorIdx = itemIndexByID[endpoints.anchorID],
+              let newFocusIdx = itemIndexByID[endpoints.focusID]
+        else {
+            selection = nil
+            updateMountedSelectionHighlights()
+            return
+        }
+        let anchorMax = (plainTextForCopy(at: newAnchorIdx) as NSString).length
+        let focusMax = (plainTextForCopy(at: newFocusIdx) as NSString).length
+        let remapped = PCodeTranscriptSelection(
+            anchor: .init(itemIndex: newAnchorIdx, utf16Offset: min(max(0, endpoints.anchorOffset), anchorMax)),
+            focus: .init(itemIndex: newFocusIdx, utf16Offset: min(max(0, endpoints.focusOffset), focusMax)))
+        selection = remapped.isEmpty ? nil : remapped
+        updateMountedSelectionHighlights()
+    }
+
     private func clampSelectionToCurrentItems() {
         guard var sel = selection else { return }
         guard !items.isEmpty else {
@@ -2090,10 +2195,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if sel.anchor.itemIndex > maxIdx {
             let maxLen = (plainTextForCopy(at: maxIdx) as NSString).length
             sel.anchor = .init(itemIndex: maxIdx, utf16Offset: maxLen)
+        } else {
+            let maxLen = (plainTextForCopy(at: sel.anchor.itemIndex) as NSString).length
+            sel.anchor = .init(itemIndex: sel.anchor.itemIndex, utf16Offset: min(max(0, sel.anchor.utf16Offset), maxLen))
         }
         if sel.focus.itemIndex > maxIdx {
             let maxLen = (plainTextForCopy(at: maxIdx) as NSString).length
             sel.focus = .init(itemIndex: maxIdx, utf16Offset: maxLen)
+        } else {
+            let maxLen = (plainTextForCopy(at: sel.focus.itemIndex) as NSString).length
+            sel.focus = .init(itemIndex: sel.focus.itemIndex, utf16Offset: min(max(0, sel.focus.utf16Offset), maxLen))
         }
         selection = sel.isEmpty ? nil : sel
     }
