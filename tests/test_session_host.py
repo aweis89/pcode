@@ -2396,7 +2396,7 @@ def test_a_full_session_id_finds_its_host_without_reading_sessions(host_dir, mon
         raise AssertionError("listed sessions")
 
     monkeypatch.setattr(pcode.sessions, "list_sessions", unread)
-    assert _running_host(identity, tmp_path, tmp_path).id == "live0000"
+    assert _running_host(identity, None, tmp_path).id == "live0000"
 
 
 def test_hosts_json_lists_running_hosts_for_scripts(host_dir, monkeypatch, capsys):

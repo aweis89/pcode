@@ -4492,8 +4492,10 @@ def _running_host(selector: str, session_dir: Path | None, workspace: Path):
     from pcode.host_protocol import list_hosts
 
     hosts = list_hosts()
-    # A full ID, as an app pane passes, names its host outright.
-    if running := next((entry for entry in hosts if entry.session_id == selector), None):
+    # A full ID, as an app pane passes, names its host outright (in the default
+    # store; another `--session-dir` resolves it there first).
+    running = next((entry for entry in hosts if entry.session_id == selector), None)
+    if running is not None and session_dir is None:
         return running
     from pcode.sessions import SessionError, resolve_session
 
