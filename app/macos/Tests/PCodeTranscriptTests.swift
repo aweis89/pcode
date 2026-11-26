@@ -1166,6 +1166,14 @@ struct PCodeTranscriptTests {
         #expect(expanded.string.contains("make e2e"))
         #expect(expanded.string.contains("checks: 2/12"))
 
+        // The btw drawer redraws a running card when its output grows.
+        let more = PCodePeekToolCall(
+            id: 1, name: "wait_for_job", detail: "j3", failed: false, elapsedSeconds: nil,
+            command: "make e2e", output: call.output + "\nchecks: 3/12", isRunning: true,
+            startedAt: call.startedAt)
+        #expect(PCodeTranscriptItemSync.signature(PCodeTranscriptItem(id: "w", payload: .tool(call, isExpanded: false)))
+            != PCodeTranscriptItemSync.signature(PCodeTranscriptItem(id: "w", payload: .tool(more, isExpanded: false))))
+
         // A job the runtime could not name still says which one is waited on.
         let unknown = PCodePeekToolCall(
             id: 2, name: "wait_for_job", detail: "j9", failed: false, elapsedSeconds: nil, command: "")
