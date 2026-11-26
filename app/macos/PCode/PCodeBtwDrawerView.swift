@@ -152,7 +152,9 @@ enum PCodeTranscriptItemSync {
         var parts = [item.kind.rawValue, "\(item.spacingAfter)", item.plainText]
         if case .tool(let call, _) = item.payload {
             parts += ["\(call.isRunning)", "\(call.failed)", "\(call.exitCode ?? 0)", "\(call.elapsedSeconds ?? -1)",
-                      "\(call.startedAt?.timeIntervalSinceReferenceDate ?? -1)"]
+                      "\(call.startedAt?.timeIntervalSinceReferenceDate ?? -1)",
+                      // A running card shows its line count and newest line, so new output redraws it.
+                      call.isRunning ? call.output : ""]
         }
         return parts.joined(separator: "\u{1F}")
     }
