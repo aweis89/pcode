@@ -6,13 +6,49 @@ struct PCodeUsageWindow: Equatable, Decodable, Identifiable {
     let key: String
     let label: String
     let usedPercent: Int
+    let resetAt: Double?
 
     var id: String { key }
+
+    init(key: String, label: String, usedPercent: Int, resetAt: Double? = nil) {
+        self.key = key
+        self.label = label
+        self.usedPercent = usedPercent
+        self.resetAt = resetAt
+    }
 
     private enum CodingKeys: String, CodingKey {
         case key
         case label
         case usedPercent = "used_percent"
+        case resetAt = "reset_at"
+    }
+
+    /// Label shown in the titlebar pill. For the weekly window, replaces the static `wk`
+    /// with the compact time remaining until reset (e.g. `6d5h`) when `resetAt` is in the future.
+    func displayLabel(now: Date = Date()) -> String {
+        if key == "weekly", let resetAt,
+           let formatted = Self.compactDuration(resetAt - now.timeIntervalSince1970) {
+            return formatted
+        }
+        return label
+    }
+
+    static func compactDuration(_ seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        let rawMinutes = seconds / 60
+        guard rawMinutes < Double(Int.max) else { return nil }
+        let totalMinutes = Int(rawMinutes)
+        let days = totalMinutes / 1440
+        let hours = (totalMinutes % 1440) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 {
+            return hours > 0 ? "\(days)d\(hours)h" : "\(days)d"
+        }
+        if hours > 0 {
+            return minutes > 0 ? "\(hours)h\(minutes)m" : "\(hours)h"
+        }
+        return "\(max(minutes, 1))m"
     }
 }
 

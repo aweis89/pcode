@@ -423,11 +423,23 @@ def test_duration():
 
 
 def test_usage_summaries():
-    assert usage.claude_summary(CLI_REPORT) == {
+    # Anchor Claude parsing to Oct 16, 2026 8:00pm America/Los_Angeles (PDT, UTC-7).
+    claude_now = datetime(2026, 10, 17, 3, 0, tzinfo=UTC).timestamp()
+    assert usage.claude_summary(CLI_REPORT, now=claude_now) == {
         "provider": "claude",
         "windows": [
-            {"key": "5h", "label": "5h", "used_percent": 6},
-            {"key": "weekly", "label": "wk", "used_percent": 9},
+            {
+                "key": "5h",
+                "label": "5h",
+                "used_percent": 6,
+                "reset_at": datetime(2026, 10, 17, 5, 30, tzinfo=UTC).timestamp(),
+            },
+            {
+                "key": "weekly",
+                "label": "wk",
+                "used_percent": 9,
+                "reset_at": datetime(2026, 10, 20, 1, 0, tzinfo=UTC).timestamp(),
+            },
         ],
     }
     assert usage.claude_summary("Total cost: $0.00") == {
@@ -437,32 +449,157 @@ def test_usage_summaries():
     assert usage.codex_summary(CODEX_BODY) == {
         "provider": "openai-codex",
         "windows": [
-            {"key": "5h", "label": "5h", "used_percent": 12},
-            {"key": "weekly", "label": "wk", "used_percent": 40},
+            {"key": "5h", "label": "5h", "used_percent": 12, "reset_at": NOW + 5400},
+            {
+                "key": "weekly",
+                "label": "wk",
+                "used_percent": 40,
+                "reset_at": NOW + 2 * 86400 + 3 * 3600,
+            },
         ],
     }
     assert usage.antigravity_summary(ANTIGRAVITY_BODY) == {
         "provider": "antigravity",
         "windows": [
-            {"key": "5h", "label": "5h", "used_percent": 20},
-            {"key": "weekly", "label": "wk", "used_percent": 6},
+            {"key": "5h", "label": "5h", "used_percent": 20, "reset_at": NOW + 2 * 3600},
+            {
+                "key": "weekly",
+                "label": "wk",
+                "used_percent": 6,
+                "reset_at": NOW + 6 * 86400 + 20 * 3600,
+            },
         ],
         "groups": [
             {
                 "name": "Gemini Models",
                 "windows": [
-                    {"key": "5h", "label": "5h", "used_percent": 20},
-                    {"key": "weekly", "label": "wk", "used_percent": 6},
+                    {"key": "5h", "label": "5h", "used_percent": 20, "reset_at": NOW + 2 * 3600},
+                    {
+                        "key": "weekly",
+                        "label": "wk",
+                        "used_percent": 6,
+                        "reset_at": NOW + 6 * 86400 + 20 * 3600,
+                    },
                 ],
             },
             {
                 "name": "Claude and GPT models",
                 "windows": [
-                    {"key": "5h", "label": "5h", "used_percent": 14},
+                    {
+                        "key": "5h",
+                        "label": "5h",
+                        "used_percent": 14,
+                        "reset_at": NOW + 2 * 3600 + 40 * 60,
+                    },
                 ],
             },
         ],
     }
+
+
+def test_parse_claude_reset_variants():
+    # Dec -> Jan year rollover.
+    dec_now = datetime(2026, 12, 29, 12, 0, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset("Current week: 20% used · resets Jan 3 at 6pm (UTC)", now=dec_now)
+        == datetime(2027, 1, 3, 18, 0, tzinfo=UTC).timestamp()
+    )
+    # 12am (midnight) and 12pm (noon) edge cases.
+    assert (
+        usage._parse_claude_reset(
+            "Current week: 20% used · resets Dec 30 at 12am (UTC)", now=dec_now
+        )
+        == datetime(2026, 12, 30, 0, 0, tzinfo=UTC).timestamp()
+    )
+    assert (
+        usage._parse_claude_reset(
+            "Current week: 20% used · resets Dec 30 at 12pm (UTC)", now=dec_now
+        )
+        == datetime(2026, 12, 30, 12, 0, tzinfo=UTC).timestamp()
+    )
+    # Time-only today vs tomorrow rollover.
+    assert (
+        usage._parse_claude_reset("Current session: 5% used · resets 3:30pm (UTC)", now=dec_now)
+        == datetime(2026, 12, 29, 15, 30, tzinfo=UTC).timestamp()
+    )
+    assert (
+        usage._parse_claude_reset("Current session: 5% used · resets 11am (UTC)", now=dec_now)
+        == datetime(2026, 12, 30, 11, 0, tzinfo=UTC).timestamp()
+    )
+    # Relative duration fallback.
+    assert (
+        usage._parse_claude_reset("Current week: 5% used · resets in 2d 3h", now=dec_now)
+        == dec_now + 2 * 86400 + 3 * 3600
+    )
+    # Stale dates in either direction (Dec->Oct or Jan->Dec) are omitted rather than wrapped ~11mo.
+    assert (
+        usage._parse_claude_reset("Current week: 5% used · resets Oct 19 at 6pm (UTC)", now=dec_now)
+        is None
+    )
+    jan_now = datetime(2026, 1, 5, 12, 0, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset("Current week: 5% used · resets Dec 28 at 6pm (UTC)", now=jan_now)
+        is None
+    )
+    # Unknown explicit timezone returns None rather than silently assuming local time.
+    assert (
+        usage._parse_claude_reset("Current week: 5% used · resets Jan 6 at 6pm (PST)", now=jan_now)
+        is None
+    )
+    # DST fall-back (2026-11-01 in America/Los_Angeles): picks the future fold=1 pass.
+    # 01:30 PST (fold=1) is 09:30 UTC; 01:45 PST (fold=1) is 09:45 UTC (15m later).
+    dst_fold1_now = datetime(2026, 11, 1, 9, 30, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset(
+            "Current session: 5% used · resets Nov 1 at 1:45am (America/Los_Angeles)",
+            now=dst_fold1_now,
+        )
+        == datetime(2026, 11, 1, 9, 45, tzinfo=UTC).timestamp()
+    )
+    # 01:30 PDT (fold=0) is 08:30 UTC; 01:15 PST (fold=1) is 09:15 UTC (45m later, same day).
+    dst_fold0_now = datetime(2026, 11, 1, 8, 30, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset(
+            "Current session: 5% used · resets 1:15am (America/Los_Angeles)",
+            now=dst_fold0_now,
+        )
+        == datetime(2026, 11, 1, 9, 15, tzinfo=UTC).timestamp()
+    )
+    # Invalid reset_at / reset_time values are omitted cleanly.
+    assert usage.codex_summary(
+        {
+            "rate_limit": {
+                "primary_window": {"used_percent": 10, "reset_at": True},
+                "secondary_window": {"used_percent": 20, "reset_at": float("inf")},
+            }
+        }
+    ) == {
+        "provider": "openai-codex",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 10},
+            {"key": "weekly", "label": "wk", "used_percent": 20},
+        ],
+    }
+    assert usage.antigravity_summary(
+        {
+            "command": {
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Gemini",
+                            "buckets": [
+                                {
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.9,
+                                    "reset_time": "not-a-timestamp",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    )["windows"] == [{"key": "weekly", "label": "wk", "used_percent": 10}]
 
 
 def test_print_usage_json(monkeypatch, capsys):
