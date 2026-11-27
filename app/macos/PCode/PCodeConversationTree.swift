@@ -91,21 +91,42 @@ struct PCodeConversationTurnNode: Identifiable, Equatable, Sendable {
 
 /// One flattened visual row for rendering `PCodeConversationTree` as a git-graph outline.
 struct PCodeConversationTreeRow: Identifiable, Equatable, Sendable {
+    enum RailTone: Equatable, Sendable {
+        case active
+        case inactive
+        case aside
+    }
+
     enum RailSegment: Equatable, Sendable {
         case empty
-        case vertical(active: Bool)
-        case branch(active: Bool, isLast: Bool)
+        case vertical(tone: RailTone)
+        /// Curved elbow peeling off from this lane into the next lane on the right.
+        case branch(trunkAbove: RailTone, trunkBelow: RailTone?, arm: RailTone)
     }
 
     let id: String
     let node: PCodeConversationTurnNode
     /// 1-based depth along this node's branch (counts normal turns & compactions from root).
     let turnNumber: Int
+    /// Parent's 1-based turn number (nil when parent is Conversation start).
+    let parentTurnNumber: Int?
+    /// Parent node's kind (nil when parent is Conversation start).
+    let parentKind: PCodeConversationTurnNode.Kind?
     let isOnActivePath: Bool
     let isActiveHead: Bool
-    /// Visual nesting depth; only increments at actual forks (linear runs stay aligned).
+    /// Visual lane index (0 = active/primary spine, +1 for each branch peeling off).
     let indentLevel: Int
+    /// Segments for ancestor lanes `0 ..< indentLevel`.
     let railColumns: [RailSegment]
+    /// Incoming vertical segment into this node's own lane (top of row to dot).
+    /// Nil when this row enters via a curved `branch` arm from `indentLevel - 1`.
+    let incomingLaneTone: RailTone?
+    /// Outgoing vertical segment from this node's dot to the bottom of the row.
+    /// Non-nil whenever this node has visible children below it (and is not collapsed).
+    let outgoingLaneTone: RailTone?
+    /// Number of visible direct children of this node (> 1 indicates a fork point).
+    let visibleChildCount: Int
+    /// True when this node peels off to a deeper lane from its parent (branch root or `/btw`).
     let isForkChild: Bool
     let isLastSibling: Bool
     /// Number of hidden descendant nodes when this node is collapsed as an inactive branch root.
@@ -517,9 +538,53 @@ struct PCodeConversationTree: Equatable, Sendable {
             return total
         }
 
-        func forks(_ siblings: [PCodeConversationTurnNode], parent: PCodeConversationTurnNode?) -> Bool {
-            if siblings.count > 1 { return true }
-            return (parent == nil || parent?.isSide == false) && siblings.contains(where: \.isSide)
+        func tone(of node: PCodeConversationTurnNode) -> PCodeConversationTreeRow.RailTone {
+            if activeSet.contains(node.id) { return .active }
+            if node.kind == .aside { return .aside }
+            return .inactive
+        }
+
+        func dominantTone(of slice: ArraySlice<PCodeConversationTurnNode>) -> PCodeConversationTreeRow.RailTone? {
+            guard !slice.isEmpty else { return nil }
+            if slice.contains(where: { activeSet.contains($0.id) }) { return .active }
+            if slice.allSatisfy({ $0.kind == .aside }) { return .aside }
+            return .inactive
+        }
+
+        /// Pick the single child (if any) that continues straight down the parent's lane.
+        /// All other children peel off to `lane + 1` immediately beneath the parent so
+        /// the active spine stays unbroken on lane 0 and every fork/aside visibly branches
+        /// right out of its parent.
+        func pickInLaneChild(
+            from kids: [PCodeConversationTurnNode],
+            parent: PCodeConversationTurnNode?
+        ) -> PCodeConversationTurnNode? {
+            guard !kids.isEmpty else { return nil }
+            if let activeChild = kids.first(where: { activeSet.contains($0.id) }) {
+                return activeChild
+            }
+            // If the parent is on the active path (i.e. it is HEAD, or Conversation start
+            // when activeID == nil), none of its children continue the active spine, so all
+            // children peel off to lane + 1 as inactive/aside branches.
+            if parent == nil || activeSet.contains(parent!.id) {
+                return nil
+            }
+            // On an inactive branch: a `/btw` thread's follow-ups stay in-line; otherwise
+            // the last non-side child continues in-line and earlier forks / `/btw`s peel off.
+            if parent?.isSide == true {
+                return kids.last
+            }
+            return kids.last(where: { !$0.isSide })
+        }
+
+        func orderChildren(
+            _ kids: [PCodeConversationTurnNode],
+            inLaneChild: PCodeConversationTurnNode?
+        ) -> [PCodeConversationTurnNode] {
+            guard let inLaneChild else { return kids }
+            var ordered = kids.filter { $0.id != inLaneChild.id }
+            ordered.append(inLaneChild)
+            return ordered
         }
 
         var rows: [PCodeConversationTreeRow] = []
@@ -528,11 +593,15 @@ struct PCodeConversationTree: Equatable, Sendable {
         func walk(
             node: PCodeConversationTurnNode,
             turnDepth: Int,
+            parentTurnNumber: Int?,
+            parentKind: PCodeConversationTurnNode.Kind?,
             indentLevel: Int,
             ancestorRails: [PCodeConversationTreeRow.RailSegment],
+            ownRail: PCodeConversationTreeRow.RailSegment?,
+            incomingLaneTone: PCodeConversationTreeRow.RailTone?,
             isForkChild: Bool,
             isLastSibling: Bool,
-            hasActiveFollowingSibling: Bool,
+            nextAncestorRailForSubtree: PCodeConversationTreeRow.RailSegment?,
             parentOnActivePath: Bool
         ) {
             guard !visited.contains(node.id) else { return }
@@ -546,19 +615,29 @@ struct PCodeConversationTree: Equatable, Sendable {
             let isCollapsible = isInactiveBranchRoot && descendants > 0 && trimmedQuery.isEmpty
             let isCollapsed = isCollapsible && collapsedBranchRoots.contains(node.id)
 
+            let kids = visibleChildren(of: node.id)
+            let inLaneChild = pickInLaneChild(from: kids, parent: node)
+            let orderedKids = orderChildren(kids, inLaneChild: inLaneChild)
+            let outgoingTone = isCollapsed ? nil : dominantTone(of: orderedKids[...])
+
             var rails = ancestorRails
-            if isForkChild {
-                rails.append(.branch(active: onActive, isLast: isLastSibling))
+            if let ownRail {
+                rails.append(ownRail)
             }
 
             let row = PCodeConversationTreeRow(
                 id: node.id,
                 node: node,
                 turnNumber: turnDepth,
+                parentTurnNumber: parentTurnNumber,
+                parentKind: parentKind,
                 isOnActivePath: onActive,
                 isActiveHead: isHead,
                 indentLevel: indentLevel,
                 railColumns: rails,
+                incomingLaneTone: incomingLaneTone,
+                outgoingLaneTone: outgoingTone,
+                visibleChildCount: kids.count,
                 isForkChild: isForkChild,
                 isLastSibling: isLastSibling,
                 collapsedDescendantCount: isCollapsed ? descendants : 0,
@@ -569,50 +648,128 @@ struct PCodeConversationTree: Equatable, Sendable {
 
             if isCollapsed { return }
 
-            let kids = visibleChildren(of: node.id)
-            let childForks = forks(kids, parent: node)
-            var nextAncestorRails = ancestorRails
-            if isForkChild {
-                nextAncestorRails.append(isLastSibling ? .empty : .vertical(active: hasActiveFollowingSibling))
+            var childBaseRails = ancestorRails
+            if let nextAncestorRailForSubtree {
+                childBaseRails.append(nextAncestorRailForSubtree)
             }
-            let nextIndent = indentLevel + (childForks ? 1 : 0)
 
-            for (index, child) in kids.enumerated() {
-                let activeFollows = kids[(index + 1)...].contains { activeSet.contains($0.id) }
-                walk(
-                    node: child,
-                    turnDepth: turnDepth + 1,
-                    indentLevel: nextIndent,
-                    ancestorRails: nextAncestorRails,
-                    isForkChild: childForks,
-                    isLastSibling: index == kids.count - 1,
-                    hasActiveFollowingSibling: activeFollows,
-                    parentOnActivePath: onActive
-                )
+            for (index, child) in orderedKids.enumerated() {
+                let isPeeled = (child.id != inLaneChild?.id)
+                let followingTone = dominantTone(of: orderedKids[(index + 1)...])
+                let childTone = tone(of: child)
+                if isPeeled {
+                    let trunkAbove = dominantTone(of: orderedKids[index...]) ?? childTone
+                    let branchRail: PCodeConversationTreeRow.RailSegment = .branch(
+                        trunkAbove: trunkAbove,
+                        trunkBelow: followingTone,
+                        arm: childTone
+                    )
+                    let subtreeRail: PCodeConversationTreeRow.RailSegment = followingTone.map { .vertical(tone: $0) } ?? .empty
+                    walk(
+                        node: child,
+                        turnDepth: turnDepth + 1,
+                        parentTurnNumber: turnDepth,
+                        parentKind: node.kind,
+                        indentLevel: indentLevel + 1,
+                        ancestorRails: childBaseRails,
+                        ownRail: branchRail,
+                        incomingLaneTone: nil,
+                        isForkChild: true,
+                        isLastSibling: followingTone == nil,
+                        nextAncestorRailForSubtree: subtreeRail,
+                        parentOnActivePath: onActive
+                    )
+                } else {
+                    walk(
+                        node: child,
+                        turnDepth: turnDepth + 1,
+                        parentTurnNumber: turnDepth,
+                        parentKind: node.kind,
+                        indentLevel: indentLevel,
+                        ancestorRails: childBaseRails,
+                        ownRail: nil,
+                        incomingLaneTone: childTone,
+                        isForkChild: false,
+                        isLastSibling: true,
+                        nextAncestorRailForSubtree: nil,
+                        parentOnActivePath: onActive
+                    )
+                }
             }
         }
 
         let roots = visibleChildren(of: nil)
-        let rootForks = forks(roots, parent: nil)
-        for (index, root) in roots.enumerated() {
-            let activeFollows = roots[(index + 1)...].contains { activeSet.contains($0.id) }
-            walk(
-                node: root,
-                turnDepth: 1,
-                indentLevel: rootForks ? 1 : 0,
-                ancestorRails: [],
-                isForkChild: rootForks,
-                isLastSibling: index == roots.count - 1,
-                hasActiveFollowingSibling: activeFollows,
-                parentOnActivePath: true
-            )
+        let inLaneRoot = pickInLaneChild(from: roots, parent: nil)
+        let orderedRoots = orderChildren(roots, inLaneChild: inLaneRoot)
+        for (index, root) in orderedRoots.enumerated() {
+            let isPeeled = (root.id != inLaneRoot?.id)
+            let followingTone = dominantTone(of: orderedRoots[(index + 1)...])
+            let rootTone = tone(of: root)
+            if isPeeled {
+                let trunkAbove = dominantTone(of: orderedRoots[index...]) ?? rootTone
+                let branchRail: PCodeConversationTreeRow.RailSegment = .branch(
+                    trunkAbove: trunkAbove,
+                    trunkBelow: followingTone,
+                    arm: rootTone
+                )
+                let subtreeRail: PCodeConversationTreeRow.RailSegment = followingTone.map { .vertical(tone: $0) } ?? .empty
+                walk(
+                    node: root,
+                    turnDepth: 1,
+                    parentTurnNumber: nil,
+                    parentKind: nil,
+                    indentLevel: 1,
+                    ancestorRails: [],
+                    ownRail: branchRail,
+                    incomingLaneTone: nil,
+                    isForkChild: true,
+                    isLastSibling: followingTone == nil,
+                    nextAncestorRailForSubtree: subtreeRail,
+                    parentOnActivePath: true
+                )
+            } else {
+                walk(
+                    node: root,
+                    turnDepth: 1,
+                    parentTurnNumber: nil,
+                    parentKind: nil,
+                    indentLevel: 0,
+                    ancestorRails: [],
+                    ownRail: nil,
+                    incomingLaneTone: rootTone,
+                    isForkChild: false,
+                    isLastSibling: true,
+                    nextAncestorRailForSubtree: nil,
+                    parentOnActivePath: true
+                )
+            }
         }
 
         if !trimmedQuery.isEmpty {
-            rows = rows.filter { row in
-                row.node.prompt.lowercased().contains(trimmedQuery)
+            rows = rows.compactMap { row in
+                let matches = row.node.prompt.lowercased().contains(trimmedQuery)
                     || row.node.response.lowercased().contains(trimmedQuery)
                     || row.node.id.lowercased().contains(trimmedQuery)
+                guard matches else { return nil }
+                return PCodeConversationTreeRow(
+                    id: row.id,
+                    node: row.node,
+                    turnNumber: row.turnNumber,
+                    parentTurnNumber: row.parentTurnNumber,
+                    parentKind: row.parentKind,
+                    isOnActivePath: row.isOnActivePath,
+                    isActiveHead: row.isActiveHead,
+                    indentLevel: 0,
+                    railColumns: [],
+                    incomingLaneTone: nil,
+                    outgoingLaneTone: nil,
+                    visibleChildCount: row.visibleChildCount,
+                    isForkChild: row.isForkChild,
+                    isLastSibling: row.isLastSibling,
+                    collapsedDescendantCount: 0,
+                    isCollapsibleBranchRoot: false,
+                    isCollapsed: false
+                )
             }
         }
         return rows
