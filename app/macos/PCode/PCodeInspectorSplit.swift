@@ -570,7 +570,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
 
     private func inspectorPanel(totalWidth: CGFloat, isOverlay: Bool) -> some View {
         VStack(spacing: 0) {
-            inspectorHeader(isOverlay: isOverlay)
+            inspectorHeader(totalWidth: totalWidth, isOverlay: isOverlay)
 
             Rectangle()
                 .fill(ghostty.config.splitDividerColor.opacity(0.75))
@@ -583,13 +583,14 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         .environment(\.colorScheme, colorScheme)
     }
 
-    private func inspectorHeader(isOverlay: Bool) -> some View {
-        HStack(spacing: 6) {
-            HStack(spacing: 2) {
-                tabButton(.changes, badge: changesBadgeCount, pulsing: changesHasStreaming)
-                tabButton(.agents, badge: agentsBadgeCount, pulsing: agentsStore.activeCount > 0)
-                tabButton(.commands, badge: commandsBadgeCount, pulsing: commandsStore.runningCount > 0)
-                tabButton(.tree, badge: treeBadgeCount, pulsing: false)
+    private func inspectorHeader(totalWidth: CGFloat, isOverlay: Bool) -> some View {
+        let isCompact = totalWidth < 430
+        return HStack(spacing: isCompact ? 4 : 6) {
+            HStack(spacing: isCompact ? 1 : 2) {
+                tabButton(.changes, badge: changesBadgeCount, pulsing: changesHasStreaming, compact: isCompact)
+                tabButton(.agents, badge: agentsBadgeCount, pulsing: agentsStore.activeCount > 0, compact: isCompact)
+                tabButton(.commands, badge: commandsBadgeCount, pulsing: commandsStore.runningCount > 0, compact: isCompact)
+                tabButton(.tree, badge: treeBadgeCount, pulsing: false, compact: isCompact)
             }
             .padding(2)
             .background(
@@ -597,7 +598,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                     .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
             )
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
 
             Button {
                 inspectorState.toggleExpanded()
@@ -607,7 +608,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                     : "arrow.up.left.and.arrow.down.right")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                    .frame(width: isCompact ? 20 : 22, height: 22)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -619,14 +620,14 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                    .frame(width: isCompact ? 20 : 22, height: 22)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(isOverlay ? "Close inspector (Esc / ⌘I)" : "Close inspector (⌘I)")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, isCompact ? 6 : 10)
+        .padding(.vertical, 5)
     }
 
     private var changesBadgeCount: Int {
@@ -650,14 +651,15 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         treeStore.tree.turnCount
     }
 
-    private func tabButton(_ tab: PCodeInspectorTab, badge: Int, pulsing: Bool) -> some View {
+    private func tabButton(_ tab: PCodeInspectorTab, badge: Int, pulsing: Bool, compact: Bool = false) -> some View {
         let selected = inspectorState.activeTab == tab
+        let showBadge = badge > 0 && (!compact || selected)
         return Button {
             inspectorState.activeTab = tab
         } label: {
-            HStack(spacing: 3) {
+            HStack(spacing: compact ? 2 : 3) {
                 Text(tab.title)
-                    .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                    .font(.system(size: compact ? 10.5 : 11, weight: selected ? .semibold : .medium))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                 if pulsing {
@@ -665,13 +667,13 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                         .fill(Color.accentColor)
                         .frame(width: 5, height: 5)
                 }
-                if badge > 0 {
+                if showBadge {
                     Text("\(badge)")
                         .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                         .foregroundStyle(selected ? .primary : .secondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, compact ? 3.5 : 4)
                         .padding(.vertical, 0.5)
                         .background(
                             Capsule()
@@ -680,7 +682,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 }
             }
             .foregroundStyle(selected ? .primary : .secondary)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, compact ? 4.5 : 6)
             .padding(.vertical, 3.5)
             .background(
                 RoundedRectangle(cornerRadius: 4.5, style: .continuous)
@@ -720,7 +722,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 actions: resolvedActions,
                 singleEditLabel: singleEditLabel,
                 isLoading: changesStore.isLoadingGit && (inspectorState.diffScope == .workingTree || inspectorState.diffScope == .branch),
-                codeFont: typography.snapshot.codeNSFont(scale: typography.snapshot.codeBlockScale),
+                codeFont: typography.snapshot.diffCodeNSFont(),
                 surfaceBackground: inspectorBackground,
                 foregroundColor: NSColor(ghostty.config.foregroundColor),
                 onScopeChange: { scope in

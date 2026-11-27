@@ -78,13 +78,27 @@ enum PCode {
         // Not the pane's directory: nothing from a checkout is near the overlay's command.
         config.workingDirectory = NSHomeDirectory()
         config.initialInput = nil
+        // Ignore inherited Ghostty font_size so we apply PCodeTypography's delta
+        // via changeFontSize (which also marks font_size_adjusted so config reloads
+        // don't reset overlays out of sync with the workspace).
+        config.fontSize = nil
         config.waitAfterCommand = false
         let view = Ghostty.SurfaceView(app, baseConfig: config)
         view.becomePCodeOverlay(of: owner)
         // Overlays are in no window's surface tree, so nothing else tells them
         // the light/dark scheme a `theme = light:…,dark:…` config switches on.
         applyColorScheme(to: view)
+        applyTypographyFontSize(to: view)
         return view
+    }
+
+    /// Apply `PCodeTypography.shared`'s current font-size offset (relative to default) to `view`.
+    static func applyTypographyFontSize(to view: Ghostty.SurfaceView) {
+        guard let surface = view.surface else { return }
+        let delta = Int((PCodeTypography.clampSize(PCodeTypography.shared.size) - PCodeTypography.defaultSize).rounded())
+        guard delta != 0 else { return }
+        let action = delta > 0 ? "increase_font_size:\(delta)" : "decrease_font_size:\(-delta)"
+        _ = ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8)))
     }
 
     /// Give `view` the app's current light/dark scheme (a no-op if it has it).
@@ -227,7 +241,7 @@ extension Ghostty.SurfaceView {
         objc_getAssociatedObject(self, &pcodeDockKey) as? PCodeDock
     }
 
-    private var existingPCodePopup: PCodePopup? {
+    var existingPCodePopup: PCodePopup? {
         objc_getAssociatedObject(self, &pcodePopupKey) as? PCodePopup
     }
 

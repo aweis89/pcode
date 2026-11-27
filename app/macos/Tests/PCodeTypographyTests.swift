@@ -91,4 +91,52 @@ struct PCodeTypographyTests {
         #expect(PCodeTypography.Weight.semibold.emphasisWeight == .bold)
         #expect(PCodeTypography.Weight.bold.emphasisWeight == .heavy)
     }
+
+    @Test func resetSizePreservesStyleAndWeight() {
+        withFreshDefaults { defaults in
+            let typo = PCodeTypography(defaults: defaults, codeFamilyAvailable: true)
+            typo.style = .mono
+            typo.weight = .bold
+            typo.size = 19
+
+            typo.resetSize()
+            #expect(typo.size == PCodeTypography.defaultSize)
+            #expect(typo.style == .mono)
+            #expect(typo.weight == .bold)
+        }
+    }
+
+    @Test func diffCodeFontIsDenserAndScalesWithTypographySize() {
+        withFreshDefaults { defaults in
+            let typo = PCodeTypography(defaults: defaults, codeFamilyAvailable: false)
+            let defaultSnap = typo.snapshot
+            let defaultDiffPt = defaultSnap.diffCodeNSFont().pointSize
+            let defaultCodePt = defaultSnap.codeNSFont(scale: defaultSnap.codeBlockScale).pointSize
+            #expect(defaultDiffPt < defaultCodePt)
+
+            typo.increaseSize()
+            typo.increaseSize()
+            #expect(typo.snapshot.diffCodeNSFont().pointSize > defaultDiffPt)
+
+            typo.size = PCodeTypography.minSize
+            #expect(typo.snapshot.diffCodeNSFont().pointSize >= 9.5)
+        }
+    }
+
+    @Test func fontSizeShortcutMatchesExpectedCombosOnly() {
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "=", modifierFlags: .command) == .increase)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "+", modifierFlags: [.command, .shift]) == .increase)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "=", modifierFlags: [.command, .shift]) == .increase)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "+", modifierFlags: [.command, .numericPad]) == .increase)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "-", modifierFlags: .command) == .decrease)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "-", modifierFlags: [.command, .numericPad]) == .decrease)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "0", modifierFlags: .command) == .reset)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "0", modifierFlags: [.command, .numericPad]) == .reset)
+
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "-", modifierFlags: [.command, .shift]) == nil)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "=", modifierFlags: [.command, .option]) == nil)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "0", modifierFlags: [.command, .shift]) == nil)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "=", modifierFlags: []) == nil)
+        #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "a", modifierFlags: .command) == nil)
+    }
 }

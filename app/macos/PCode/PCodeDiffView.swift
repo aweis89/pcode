@@ -243,10 +243,10 @@ struct PCodeChangesInspectorView: View {
 
     private var resolvedCodeFont: NSFont {
         if let codeFont { return codeFont }
-        if let jb = NSFont(name: "JetBrainsMono-Regular", size: 12) {
+        if let jb = NSFont(name: "JetBrainsMono-Regular", size: 11) {
             return jb
         }
-        return NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        return NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     }
 
     private var canUseSideBySide: Bool {
@@ -285,8 +285,20 @@ struct PCodeChangesInspectorView: View {
 
     // MARK: - Top Toolbar
 
+    private var isCompactToolbar: Bool { containerWidth < 490 }
+    private var isVeryCompactToolbar: Bool { containerWidth < 360 }
+
+    private var compactScopeTitle: String {
+        switch state.diffScope {
+        case .session: return "Session"
+        case .workingTree: return "Working"
+        case .branch: return "Branch"
+        case .singleEdit: return singleEditLabel ?? "Edit"
+        }
+    }
+
     private var toolbar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: isCompactToolbar ? 4 : 8) {
             scopeControl
 
             if state.diffScope == .session {
@@ -295,7 +307,7 @@ struct PCodeChangesInspectorView: View {
 
             fileJumpMenu
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
 
             if isLoading {
                 ProgressView()
@@ -312,10 +324,12 @@ struct PCodeChangesInspectorView: View {
 
             followAgentButton
 
-            layoutToggleButton
+            if canUseSideBySide {
+                layoutToggleButton
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, isCompactToolbar ? 6 : 10)
+        .padding(.vertical, 4)
         .background(Color.primary.opacity(isDark ? 0.04 : 0.035))
     }
 
@@ -354,15 +368,16 @@ struct PCodeChangesInspectorView: View {
                 scopeMenuItem(.workingTree, icon: "tray.full")
                 scopeMenuItem(.branch, icon: "arrow.triangle.branch")
             } label: {
-                HStack(spacing: 4) {
-                    Text(state.diffScope.displayTitle)
-                        .font(.system(size: 11, weight: .medium))
+                HStack(spacing: 3) {
+                    Text(isCompactToolbar ? compactScopeTitle : state.diffScope.displayTitle)
+                        .font(.system(size: isCompactToolbar ? 10.5 : 11, weight: .medium))
+                        .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8.5, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
+                .padding(.horizontal, isCompactToolbar ? 6 : 7)
+                .padding(.vertical, 2.5)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .fill(Color.primary.opacity(isDark ? 0.08 : 0.06))
@@ -411,9 +426,11 @@ struct PCodeChangesInspectorView: View {
                 } label: {
                     Text(mode.title)
                         .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(selected ? .primary : .secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2.5)
+                        .padding(.horizontal, isCompactToolbar ? 5 : 6)
+                        .padding(.vertical, 2)
                         .background(
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .fill(selected ? Color.primary.opacity(isDark ? 0.14 : 0.10) : Color.clear)
@@ -422,6 +439,7 @@ struct PCodeChangesInspectorView: View {
                 .buttonStyle(.plain)
             }
         }
+        .fixedSize(horizontal: true, vertical: false)
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -459,16 +477,31 @@ struct PCodeChangesInspectorView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Text(isStream ? "All edits (\(diffs.count))" : "All files (\(diffs.count))")
-                    .font(.system(size: 11, weight: .medium))
+            HStack(spacing: 3) {
+                if isVeryCompactToolbar {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(diffs.isEmpty ? .secondary : .primary)
+                    Text("\(diffs.count)")
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .lineLimit(1)
+                        .foregroundStyle(diffs.isEmpty ? .secondary : .primary)
+                } else {
+                    Text(
+                        isCompactToolbar
+                            ? (isStream ? "Edits (\(diffs.count))" : "Files (\(diffs.count))")
+                            : (isStream ? "All edits (\(diffs.count))" : "All files (\(diffs.count))")
+                    )
+                    .font(.system(size: isCompactToolbar ? 10.5 : 11, weight: .medium))
+                    .lineLimit(1)
                     .foregroundStyle(diffs.isEmpty ? .secondary : .primary)
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8.5, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
+            .padding(.horizontal, isCompactToolbar ? 6 : 7)
+            .padding(.vertical, 2.5)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(Color.primary.opacity(isDark ? 0.06 : 0.04))
@@ -494,9 +527,11 @@ struct PCodeChangesInspectorView: View {
             HStack(spacing: 3) {
                 Image(systemName: state.followAgent ? "pin.fill" : "pin")
                     .font(.system(size: 10.5, weight: .medium))
-                if containerWidth >= 420 {
+                if !isCompactToolbar {
                     Text("Follow")
                         .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
             .padding(.horizontal, 6)
