@@ -92,6 +92,13 @@ def test_native_transcript_omits_model_and_context_from_footer(monkeypatch):
         assert "42k/200k" in terminal_text
         assert "steering" in terminal_text
 
+    # Undocked Swift surface (e.g., plain subshell / non-workspace) keeps the full footer.
+    monkeypatch.setattr(dock, "_active", None)
+    with ui_surface.override_ui_surface(ui_surface.UISurface.SWIFT):
+        undocked_text = fragment_list_to_text(app.toolbar())
+        assert "antigravity:gemini-4-neon (medium)" in undocked_text
+        assert "42k/200k" in undocked_text
+
     # Native Swift UI (docked) moves model and context to the window titlebar.
     monkeypatch.setattr(dock, "_active", SimpleNamespace())
     with ui_surface.override_ui_surface(ui_surface.UISurface.SWIFT):
@@ -100,8 +107,18 @@ def test_native_transcript_omits_model_and_context_from_footer(monkeypatch):
         assert "42k/200k" not in swift_text
         assert "steering" in swift_text
 
+        # Plain /btw (no model/effort override) keeps the session model omitted.
+        plain_aside = Aside(thread="t-plain", question="q?", status="answered", answer="a.")
+        app.controller.asides.items.append(plain_aside)
+        open_thread(app.activity, plain_aside.thread)
+        plain_btw_text = fragment_list_to_text(app.toolbar())
+        assert "btw reply" in plain_btw_text
+        assert "antigravity:gemini-4-neon" not in plain_btw_text
+        assert "42k/200k" not in plain_btw_text
+
         # A /btw thread with its own model override still shows that override in the footer.
         aside = Aside(
+            thread="t-model",
             question="q?",
             status="answered",
             answer="a.",
@@ -114,4 +131,19 @@ def test_native_transcript_omits_model_and_context_from_footer(monkeypatch):
         assert "btw reply" in btw_text
         assert "haiku" in btw_text
         assert "42k/200k" not in btw_text
+
+        # An effort-only `/btw +high` override also shows in the footer.
+        effort_aside = Aside(
+            thread="t-effort",
+            question="q?",
+            status="answered",
+            answer="a.",
+            effort="high",
+            label="high",
+        )
+        app.controller.asides.items.append(effort_aside)
+        open_thread(app.activity, effort_aside.thread)
+        effort_btw_text = fragment_list_to_text(app.toolbar())
+        assert "antigravity:gemini-4-neon (high)" in effort_btw_text
+        assert "42k/200k" not in effort_btw_text
         close(app.activity)

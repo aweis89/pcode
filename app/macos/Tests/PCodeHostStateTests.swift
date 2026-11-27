@@ -136,6 +136,14 @@ struct PCodeHostStateTests {
         #expect(welcome.effort == "medium")
         #expect(welcome.context == "42k/200k")
 
+        let legacyWelcome = PCodeHostSocketClient.decodeWelcome([
+            "type": "ready", "id": "h1", "session_id": "s1", "title": "t", "state": "idle",
+            "history": [], "calls": [],
+        ])
+        #expect(legacyWelcome.model == "")
+        #expect(legacyWelcome.effort == "")
+        #expect(legacyWelcome.context == "")
+
         let event = PCodeHostEventDecoder.decodeRPCCall(
             method: "session_metadata",
             args: [["model": "anthropic:claude-sonnet", "effort": "high", "context": "~12.5k/200k"]],
@@ -149,9 +157,15 @@ struct PCodeHostStateTests {
         #expect(split.provider == "antigravity")
         #expect(split.name == "gemini-4-neon")
 
-        let bare = PCodeSessionMetadataDisplay.splitModel("preview")
-        #expect(bare.provider == nil)
-        #expect(bare.name == "preview")
+        let multiColon = PCodeSessionMetadataDisplay.splitModel("ollama:llama3:8b")
+        #expect(multiColon.provider == "ollama")
+        #expect(multiColon.name == "llama3:8b")
+
+        for edge in ["preview", ":foo", "foo:"] {
+            let parsed = PCodeSessionMetadataDisplay.splitModel(edge)
+            #expect(parsed.provider == nil)
+            #expect(parsed.name == edge)
+        }
 
         #expect(PCodeSessionMetadataDisplay.normalizedEffort("medium") == "medium")
         #expect(PCodeSessionMetadataDisplay.normalizedEffort("n/a") == nil)
@@ -160,7 +174,9 @@ struct PCodeHostStateTests {
         #expect(abs((PCodeSessionMetadataDisplay.contextFillRatio("50k/200k") ?? -1) - 0.25) < 0.001)
         #expect(abs((PCodeSessionMetadataDisplay.contextFillRatio("~1.5m/2m") ?? -1) - 0.75) < 0.001)
         #expect(abs((PCodeSessionMetadataDisplay.contextFillRatio("250k/200k") ?? -1) - 1.0) < 0.001)
+        #expect(PCodeSessionMetadataDisplay.contextFillRatio("0/200k") == 0.0)
         #expect(PCodeSessionMetadataDisplay.contextFillRatio("42k/?") == nil)
+        #expect(PCodeSessionMetadataDisplay.contextFillRatio("inf/200k") == nil)
         #expect(PCodeSessionMetadataDisplay.contextFillRatio("") == nil)
     }
 }

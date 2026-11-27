@@ -141,6 +141,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         self.attachedHostID = normalizedHost
         documentView.paceMode = paceMode
         resetSessionState(sessionID: normalizedSession ?? "")
+        onHostEvent?(.sessionMetadata(model: "", effort: "", context: ""))
         connectionState = initialRelaunchAttempt > 0
             ? .relaunching(attempt: initialRelaunchAttempt, maxAttempts: maxRelaunchAttempts)
             : .starting

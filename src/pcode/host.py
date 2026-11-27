@@ -1135,6 +1135,7 @@ class SessionHost:
         if method in RESETS:
             self.reset_buffer()
         if method == "conversation_reset":
+            self._observer_metadata = {}
             self.update(session_id="", forked_from="", title="", last_prompt="", outcome="")
             self.own_jobs()
         for client in list(self.clients.values()):

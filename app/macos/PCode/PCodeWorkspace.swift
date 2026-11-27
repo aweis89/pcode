@@ -937,16 +937,11 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
 
     @MainActor
     func applyInspectorEvent(_ event: PCodeHostEvent) {
-        switch event {
-        case .sessionMetadata(let model, let effort, let context):
+        if case .sessionMetadata(let model, let effort, let context) = event {
             if modelName != model { modelName = model }
             if modelEffort != effort { modelEffort = effort }
             if contextUsage != context { contextUsage = context }
             return
-        case .conversationReset:
-            if !contextUsage.isEmpty { contextUsage = "" }
-        default:
-            break
         }
         changesStore.apply(event)
         agentsStore.apply(event)
@@ -5021,12 +5016,12 @@ private struct PCodeActiveSessionTitleContent: View {
                             if let provider = modelParts.provider {
                                 Text(provider)
                                     .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(.secondary.opacity(0.75))
                                     .lineLimit(1)
                                     .truncationMode(.tail)
                                 Text(":")
                                     .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(.quaternary)
+                                    .foregroundStyle(.secondary.opacity(0.45))
                             }
                             Text(modelParts.name)
                                 .font(.system(size: 11, weight: .medium))
@@ -5037,8 +5032,9 @@ private struct PCodeActiveSessionTitleContent: View {
                             if let effortLabel {
                                 Text("(\(effortLabel))")
                                     .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(.secondary.opacity(0.75))
                                     .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
                         }
                         .padding(.horizontal, 7)
@@ -5056,16 +5052,18 @@ private struct PCodeActiveSessionTitleContent: View {
                     if !pane.contextUsage.isEmpty {
                         HStack(spacing: 5) {
                             if let ratio = contextRatio {
-                                GeometryReader { proxy in
-                                    ZStack(alignment: .leading) {
-                                        Capsule(style: .continuous)
-                                            .fill(Color.primary.opacity(0.10))
+                                let barWidth: CGFloat = 24
+                                let fillWidth: CGFloat = ratio > 0 ? max(2, barWidth * ratio) : 0
+                                ZStack(alignment: .leading) {
+                                    Capsule(style: .continuous)
+                                        .fill(Color.primary.opacity(0.10))
+                                    if fillWidth > 0 {
                                         Capsule(style: .continuous)
                                             .fill(contextAccentColor.opacity(0.8))
-                                            .frame(width: max(2, proxy.size.width * ratio))
+                                            .frame(width: fillWidth)
                                     }
                                 }
-                                .frame(width: 24, height: 3.5)
+                                .frame(width: barWidth, height: 3.5)
                             }
                             Text(pane.contextUsage)
                                 .font(.system(size: 11, weight: .medium).monospacedDigit())

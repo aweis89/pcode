@@ -3203,7 +3203,7 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
-        if not native_header or btw_model_override:
+        if not native_header or btw_model_override or not self.model:
             segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
         if not native_header:
             context = self.controller.context_label()

@@ -183,7 +183,7 @@ enum PCodeSessionMetadataDisplay {
         } else {
             multiplier = 1
         }
-        guard let value = Double(text), value >= 0 else { return nil }
+        guard let value = Double(text), value.isFinite, value >= 0 else { return nil }
         return value * multiplier
     }
 }
