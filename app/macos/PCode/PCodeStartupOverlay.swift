@@ -142,33 +142,47 @@ struct PCodeStartupOverlay: View {
     }
 
     private var primaryColor: Color {
-        if let palette = ghostty.config.palette([6, 4, 14, 12]),
-           let c = palette[6] ?? palette[4] ?? palette[14] ?? palette[12] {
-            return c
-        }
-        return .accentColor
+        PCodeGyroSpinner.paletteColors(for: ghostty.config).primary
     }
 
     private var secondaryColor: Color {
-        if let palette = ghostty.config.palette([5, 13, 4, 12]),
-           let c = palette[5] ?? palette[13] ?? palette[4] ?? palette[12] {
-            return c
-        }
-        return ghostty.config.foregroundColor.opacity(0.8)
+        PCodeGyroSpinner.paletteColors(for: ghostty.config).secondary
     }
 }
 
 /// 3D counter-rotating gyroscope rings with orbiting beads and a pulsing core,
 /// Z-sorted per frame. Matches `kitty_spinner._render_gyro` in `pcode`.
-private struct PCodeGyroSpinner: View {
+struct PCodeGyroSpinner: View {
     let primary: Color
     let secondary: Color
     let isLight: Bool
+    /// Tuned for small inline slots (~14pt): heavier strokes/beads, fewer
+    /// segments, and a 30fps cap so long turns stay cheap.
+    var compact: Bool = false
+    var paused: Bool = false
     @Environment(\.pcodeWindowOnScreen) private var onScreen
 
     private static let period: Double = 2.8
-    private static let ringRadius: Double = 0.78
-    private static let steps: Int = 44
+
+    /// Dual-tone accent colors pulled from the active terminal palette.
+    static func paletteColors(for config: Ghostty.Config) -> (primary: Color, secondary: Color) {
+        let primary: Color
+        if let palette = config.palette([6, 4, 14, 12]),
+           let c = palette[6] ?? palette[4] ?? palette[14] ?? palette[12] {
+            primary = c
+        } else {
+            primary = .accentColor
+        }
+
+        let secondary: Color
+        if let palette = config.palette([5, 13, 4, 12]),
+           let c = palette[5] ?? palette[13] ?? palette[4] ?? palette[12] {
+            secondary = c
+        } else {
+            secondary = config.foregroundColor.opacity(0.8)
+        }
+        return (primary, secondary)
+    }
 
     private struct RGB {
         let r: Double
@@ -230,8 +244,12 @@ private struct PCodeGyroSpinner: View {
         let c1 = RGB(primary, isLight: isLight)
         let c2 = RGB(secondary, isLight: isLight)
 
+        let steps = compact ? 22 : 44
+        let ringRadius = compact ? 0.80 : 0.78
+        let interval: Double? = compact ? (1.0 / 30.0) : nil
+
         // Paused while the window is hidden or covered: nobody sees it.
-        TimelineView(.animation(minimumInterval: nil, paused: !onScreen)) { context in
+        TimelineView(.animation(minimumInterval: interval, paused: paused || !onScreen)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let ang = (t.truncatingRemainder(dividingBy: Self.period) / Self.period) * (2.0 * .pi)
 
@@ -241,12 +259,13 @@ private struct PCodeGyroSpinner: View {
                 let cy = Double(size.height) * 0.5
 
                 var prims: [(z: Double, prim: Primitive)] = []
-                prims.reserveCapacity(Self.steps * 2 + 3)
+                prims.reserveCapacity(steps * 2 + 3)
 
                 // Pulsing center core.
                 let pulse = 0.5 + 0.5 * sin(ang * 2.0)
                 let coreRGB = c1.mixed(with: c2, t: 0.5).lit(0.28 + 0.22 * pulse, isLight: isLight)
-                let coreR = (0.165 + 0.045 * pulse) * scale
+                let coreBase = compact ? 0.195 : 0.165
+                let coreR = (coreBase + 0.045 * pulse) * scale
                 prims.append((
                     0.0,
                     .disc(x: cx, y: cy, radius: coreR, rgb: coreRGB, alpha: 0.88, specular: 0.45, glow: 0.30)
@@ -257,7 +276,11 @@ private struct PCodeGyroSpinner: View {
                     (c2, -ang + 0.8, 1.02, -0.58, -ang * 2.0 + 1.5),
                 ]
 
-                let r = Self.ringRadius
+                let r = ringRadius
+                let strokeBase = compact ? 0.072 : 0.040
+                let strokeSpan = compact ? 0.064 : 0.042
+                let beadBase = compact ? 0.115 : 0.082
+                let beadSpan = compact ? 0.075 : 0.064
                 for (col, yaw, tiltX, roll, beadAng) in rings {
                     let cyw = cos(yaw), syw = sin(yaw)
                     let ctx = cos(tiltX), stx = sin(tiltX)
@@ -276,12 +299,12 @@ private struct PCodeGyroSpinner: View {
                     }
 
                     var prev = project(0)
-                    for i in 1...Self.steps {
-                        let next = project((Double(i) / Double(Self.steps)) * 2.0 * .pi)
+                    for i in 1...steps {
+                        let next = project((Double(i) / Double(steps)) * 2.0 * .pi)
                         let zm = 0.5 * (prev.z + next.z)
                         let depth = 0.5 + 0.5 * zm
-                        let width = (0.040 + 0.042 * depth) * scale
-                        let alpha = 0.20 + 0.76 * pow(depth, 1.25)
+                        let width = (strokeBase + strokeSpan * depth) * scale
+                        let alpha = (compact ? 0.26 : 0.20) + (compact ? 0.74 : 0.76) * pow(depth, 1.25)
                         prims.append((
                             zm,
                             .segment(
@@ -297,7 +320,7 @@ private struct PCodeGyroSpinner: View {
                     let bead = project(beadAng)
                     let bdepth = 0.5 + 0.5 * bead.z
                     let bcol = col.lit(0.35 * bdepth, isLight: isLight)
-                    let brad = (0.082 + 0.064 * bdepth) * scale
+                    let brad = (beadBase + beadSpan * bdepth) * scale
                     prims.append((
                         bead.z + 0.05,
                         .disc(

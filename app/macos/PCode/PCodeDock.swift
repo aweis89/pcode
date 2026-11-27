@@ -599,8 +599,16 @@ private struct PCodeComposerStatusStrip: View {
     var body: some View {
         HStack(spacing: 8) {
             if status.busy || status.starting {
+                let colors = PCodeGyroSpinner.paletteColors(for: ghostty.config)
                 HStack(spacing: 6) {
-                    PCodeComposerSpinner(paused: !onScreen)
+                    PCodeGyroSpinner(
+                        primary: colors.primary,
+                        secondary: colors.secondary,
+                        isLight: stripColorScheme == .light,
+                        compact: true,
+                        paused: !onScreen
+                    )
+                    .frame(width: 14, height: 14)
                     Text(status.phase.isEmpty ? "Working" : status.phase)
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.primary.opacity(0.82))
@@ -675,26 +683,6 @@ private struct PCodeComposerStatusStrip: View {
                 .font(.system(size: 11, weight: .regular).monospacedDigit())
                 .foregroundStyle(.secondary.opacity(0.75))
                 .fixedSize(horizontal: true, vertical: false)
-        }
-    }
-}
-
-/// Smooth native spinning arc for `PCodeComposerStatusStrip`, paused when occluded.
-private struct PCodeComposerSpinner: View {
-    let paused: Bool
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: paused)) { context in
-            let period = 0.85
-            let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
-            Circle()
-                .trim(from: 0.08, to: 0.72)
-                .stroke(
-                    Color.accentColor.opacity(0.85),
-                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-                )
-                .frame(width: 10, height: 10)
-                .rotationEffect(.degrees(phase * 360))
         }
     }
 }
