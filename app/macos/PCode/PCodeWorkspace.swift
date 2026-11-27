@@ -3224,6 +3224,7 @@ enum PCodeSidebarLayout {
 
 struct PCodeWorkspaceView: View {
     @EnvironmentObject var ghostty: Ghostty.App
+    @Environment(\.pcodeWindowOnScreen) private var windowOnScreen
     @ObservedObject var workspace: PCodeWorkspace
     @State private var isDropTargeted = false
     /// `workspace.sidebarWidth` when the current resize drag began.
@@ -3242,33 +3243,42 @@ struct PCodeWorkspaceView: View {
                     let totalWidth = geometry.size.width
                     let sidebarWidth = workspace.effectiveSidebarWidth(in: totalWidth)
                     let sidebarVisible = !workspace.sidebarAutoHide || workspace.sidebarRevealed
+                    let detailLeadingInset: CGFloat = sidebarVisible ? sidebarWidth + 1 : 0
                     ZStack(alignment: .leading) {
+                        // Snap detailPane straight to its target width/position so transcript
+                        // reflow and terminal resize happen once instead of jumping through
+                        // intermediate widths while the sidebar animates.
+                        detailPane
+                            .padding(.leading, detailLeadingInset)
+
                         HStack(spacing: 0) {
-                            ZStack(alignment: .trailing) {
-                                if sidebarVisible {
-                                    sidebar
-                                        .frame(width: sidebarWidth)
-                                        .background(sidebarBackground)
-                                        .onHover { workspace.sidebarHoverChanged($0) }
-                                        .onAppear { workspace.scheduleSidebarHideIfPointerOutside() }
-                                        .transition(.identity)
-                                }
-                            }
-                            .frame(width: sidebarVisible ? sidebarWidth : 0, alignment: .trailing)
-                            .clipped()
+                            sidebar
+                                .frame(width: sidebarWidth)
+                                .background(sidebarBackground)
+                                .environment(\.pcodeWindowOnScreen, windowOnScreen && sidebarVisible)
+                                .onHover { workspace.sidebarHoverChanged($0) }
 
-                            if sidebarVisible {
-                                Rectangle()
-                                    .fill(
-                                        sidebarHandleHovered || sidebarDragStart != nil
-                                            ? Color.accentColor.opacity(0.6)
-                                            : ghostty.config.splitDividerColor
-                                    )
-                                    .frame(width: 1)
-                                    .transition(.identity)
-                            }
-
-                            detailPane
+                            Rectangle()
+                                .fill(
+                                    sidebarHandleHovered || sidebarDragStart != nil
+                                        ? Color.accentColor.opacity(0.6)
+                                        : ghostty.config.splitDividerColor
+                                )
+                                .frame(width: 1)
+                        }
+                        .frame(width: sidebarWidth + 1, height: geometry.size.height)
+                        .frame(
+                            width: sidebarVisible ? sidebarWidth + 1 : 0,
+                            height: geometry.size.height,
+                            alignment: .trailing
+                        )
+                        .clipped()
+                        .allowsHitTesting(sidebarVisible)
+                        .accessibilityHidden(!sidebarVisible)
+                        .zIndex(2)
+                        .animation(.easeOut(duration: 0.2), value: sidebarVisible)
+                        .onChange(of: sidebarVisible) { visible in
+                            if visible { workspace.scheduleSidebarHideIfPointerOutside() }
                         }
 
                         // Mounted above both sidebar and detailPane so Ghostty's NSView
@@ -3298,10 +3308,9 @@ struct PCodeWorkspaceView: View {
                             .frame(width: 11)
                             .offset(x: sidebarWidth - 5)
                             .zIndex(5)
-                            .transition(.identity)
                         }
                     }
-                    .animation(.easeOut(duration: 0.2), value: sidebarVisible)
+                    .background(ghostty.config.backgroundColor, ignoresSafeAreaEdges: [])
                 }
 
                 if workspace.showingDirectoryPicker && workspace.selectedPane != nil {
