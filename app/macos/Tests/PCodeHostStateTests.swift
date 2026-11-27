@@ -224,6 +224,10 @@ struct PCodeHostStateTests {
                 .displayLabel(now: now) == "5h30m"
         )
         #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 5 * 3_600)
+                .displayLabel(now: now) == "5h"
+        )
+        #expect(
             PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 45 * 60)
                 .displayLabel(now: now) == "45m"
         )
@@ -231,13 +235,29 @@ struct PCodeHostStateTests {
             PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 15)
                 .displayLabel(now: now) == "1m"
         )
-        // Missing or already-elapsed reset time falls back to the static `wk` label.
+        // Missing, already-elapsed, non-finite, or overflowing reset times fall back to `wk`.
         #expect(
             PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: nil)
                 .displayLabel(now: now) == "wk"
         )
         #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000)
+                .displayLabel(now: now) == "wk"
+        )
+        #expect(
             PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 999_000)
+                .displayLabel(now: now) == "wk"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: .nan)
+                .displayLabel(now: now) == "wk"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: .infinity)
+                .displayLabel(now: now) == "wk"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1e30)
                 .displayLabel(now: now) == "wk"
         )
     }

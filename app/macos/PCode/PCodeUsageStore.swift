@@ -27,17 +27,18 @@ struct PCodeUsageWindow: Equatable, Decodable, Identifiable {
     /// Label shown in the titlebar pill. For the weekly window, replaces the static `wk`
     /// with the compact time remaining until reset (e.g. `6d5h`) when `resetAt` is in the future.
     func displayLabel(now: Date = Date()) -> String {
-        if key == "weekly", let resetAt, resetAt.isFinite {
-            let remaining = resetAt - now.timeIntervalSince1970
-            if remaining > 0 {
-                return Self.compactDuration(remaining)
-            }
+        if key == "weekly", let resetAt,
+           let formatted = Self.compactDuration(resetAt - now.timeIntervalSince1970) {
+            return formatted
         }
         return label
     }
 
-    static func compactDuration(_ seconds: TimeInterval) -> String {
-        let totalMinutes = Int(seconds / 60)
+    static func compactDuration(_ seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        let rawMinutes = seconds / 60
+        guard rawMinutes < Double(Int.max) else { return nil }
+        let totalMinutes = Int(rawMinutes)
         let days = totalMinutes / 1440
         let hours = (totalMinutes % 1440) / 60
         let minutes = totalMinutes % 60

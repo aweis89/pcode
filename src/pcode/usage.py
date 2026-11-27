@@ -121,22 +121,40 @@ def _to_24h(hour: int, meridiem: str) -> int | None:
     return hour + 12 if is_pm else hour
 
 
+_CLAUDE_MAX_RESET_SECONDS = 35 * 86400
+
+
+def _local_or_zone_timestamp(
+    year: int, month: int, day: int, hour: int, minute: int, tz: ZoneInfo | None, fold: int
+) -> float | None:
+    try:
+        if tz is not None:
+            return datetime(year, month, day, hour, minute, tzinfo=tz, fold=fold).timestamp()
+        return datetime(year, month, day, hour, minute, fold=fold).astimezone().timestamp()
+    except ValueError:
+        return None
+
+
 def _parse_claude_reset(line: str, now: float | None = None) -> float | None:
     """Parse Claude Code's `· resets Oct 19 at 6pm (America/Los_Angeles)` into epoch seconds."""
     resets_match = _CLAUDE_RESETS_RE.search(line)
     if not resets_match:
         return None
     text = resets_match.group(1).strip()
-    tz = datetime.now().astimezone().tzinfo
+    tz: ZoneInfo | None = None
     if tz_match := _CLAUDE_TZ_RE.match(text):
         text = tz_match.group(1).strip()
         try:
             tz = ZoneInfo(tz_match.group(2).strip())
         except ZoneInfoNotFoundError, ValueError:
-            pass
+            return None
 
     now_ts = time.time() if now is None else now
-    ref = datetime.fromtimestamp(now_ts, tz)
+    ref = (
+        datetime.fromtimestamp(now_ts, tz)
+        if tz is not None
+        else datetime.fromtimestamp(now_ts).astimezone()
+    )
 
     if rel_match := _CLAUDE_RELATIVE_RE.match(text):
         days = int(rel_match.group(1) or 0)
@@ -152,27 +170,31 @@ def _parse_claude_reset(line: str, now: float | None = None) -> float | None:
         minute = int(dt_match.group(4) or 0)
         if month is None or hour24 is None or not 0 <= minute <= 59:
             return None
+        candidates: list[float] = []
         for year_offset in (0, 1):
-            try:
-                candidate = datetime(ref.year + year_offset, month, day, hour24, minute, tzinfo=tz)
-            except ValueError:
-                continue
-            delta = candidate - ref
-            if year_offset == 0 and delta > timedelta(0):
-                return candidate.timestamp()
-            if year_offset == 1 and timedelta(0) < delta <= timedelta(days=35):
-                return candidate.timestamp()
-        return None
+            for fold in (0, 1):
+                ts = _local_or_zone_timestamp(
+                    ref.year + year_offset, month, day, hour24, minute, tz, fold
+                )
+                if ts is not None and 0 < ts - now_ts <= _CLAUDE_MAX_RESET_SECONDS:
+                    candidates.append(ts)
+        return min(candidates) if candidates else None
 
     if time_match := _CLAUDE_TIME_ONLY_RE.match(text):
         hour24 = _to_24h(int(time_match.group(1)), time_match.group(3))
         minute = int(time_match.group(2) or 0)
         if hour24 is None or not 0 <= minute <= 59:
             return None
-        candidate = ref.replace(hour=hour24, minute=minute, second=0, microsecond=0)
-        if candidate <= ref:
-            candidate += timedelta(days=1)
-        return candidate.timestamp()
+        candidates = []
+        for day_offset in (0, 1):
+            target_date = ref.date() + timedelta(days=day_offset)
+            for fold in (0, 1):
+                ts = _local_or_zone_timestamp(
+                    target_date.year, target_date.month, target_date.day, hour24, minute, tz, fold
+                )
+                if ts is not None and ts > now_ts:
+                    candidates.append(ts)
+        return min(candidates) if candidates else None
 
     return None
 

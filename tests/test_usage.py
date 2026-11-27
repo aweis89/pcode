@@ -504,6 +504,19 @@ def test_parse_claude_reset_variants():
         usage._parse_claude_reset("Current week: 20% used · resets Jan 3 at 6pm (UTC)", now=dec_now)
         == datetime(2027, 1, 3, 18, 0, tzinfo=UTC).timestamp()
     )
+    # 12am (midnight) and 12pm (noon) edge cases.
+    assert (
+        usage._parse_claude_reset(
+            "Current week: 20% used · resets Dec 30 at 12am (UTC)", now=dec_now
+        )
+        == datetime(2026, 12, 30, 0, 0, tzinfo=UTC).timestamp()
+    )
+    assert (
+        usage._parse_claude_reset(
+            "Current week: 20% used · resets Dec 30 at 12pm (UTC)", now=dec_now
+        )
+        == datetime(2026, 12, 30, 12, 0, tzinfo=UTC).timestamp()
+    )
     # Time-only today vs tomorrow rollover.
     assert (
         usage._parse_claude_reset("Current session: 5% used · resets 3:30pm (UTC)", now=dec_now)
@@ -518,11 +531,75 @@ def test_parse_claude_reset_variants():
         usage._parse_claude_reset("Current week: 5% used · resets in 2d 3h", now=dec_now)
         == dec_now + 2 * 86400 + 3 * 3600
     )
-    # Stale date well in the past is omitted rather than rolled forward ~11 months.
+    # Stale dates in either direction (Dec->Oct or Jan->Dec) are omitted rather than wrapped ~11mo.
     assert (
         usage._parse_claude_reset("Current week: 5% used · resets Oct 19 at 6pm (UTC)", now=dec_now)
         is None
     )
+    jan_now = datetime(2026, 1, 5, 12, 0, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset("Current week: 5% used · resets Dec 28 at 6pm (UTC)", now=jan_now)
+        is None
+    )
+    # Unknown explicit timezone returns None rather than silently assuming local time.
+    assert (
+        usage._parse_claude_reset("Current week: 5% used · resets Jan 6 at 6pm (PST)", now=jan_now)
+        is None
+    )
+    # DST fall-back (2026-11-01 in America/Los_Angeles): picks the future fold=1 pass.
+    # 01:30 PST (fold=1) is 09:30 UTC; 01:45 PST (fold=1) is 09:45 UTC (15m later).
+    dst_fold1_now = datetime(2026, 11, 1, 9, 30, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset(
+            "Current session: 5% used · resets Nov 1 at 1:45am (America/Los_Angeles)",
+            now=dst_fold1_now,
+        )
+        == datetime(2026, 11, 1, 9, 45, tzinfo=UTC).timestamp()
+    )
+    # 01:30 PDT (fold=0) is 08:30 UTC; 01:15 PST (fold=1) is 09:15 UTC (45m later, same day).
+    dst_fold0_now = datetime(2026, 11, 1, 8, 30, tzinfo=UTC).timestamp()
+    assert (
+        usage._parse_claude_reset(
+            "Current session: 5% used · resets 1:15am (America/Los_Angeles)",
+            now=dst_fold0_now,
+        )
+        == datetime(2026, 11, 1, 9, 15, tzinfo=UTC).timestamp()
+    )
+    # Invalid reset_at / reset_time values are omitted cleanly.
+    assert usage.codex_summary(
+        {
+            "rate_limit": {
+                "primary_window": {"used_percent": 10, "reset_at": True},
+                "secondary_window": {"used_percent": 20, "reset_at": float("inf")},
+            }
+        }
+    ) == {
+        "provider": "openai-codex",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 10},
+            {"key": "weekly", "label": "wk", "used_percent": 20},
+        ],
+    }
+    assert usage.antigravity_summary(
+        {
+            "command": {
+                "data": {
+                    "groups": [
+                        {
+                            "name": "Gemini",
+                            "buckets": [
+                                {
+                                    "window": "weekly",
+                                    "remaining_fraction": 0.9,
+                                    "reset_time": "not-a-timestamp",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    )["windows"] == [{"key": "weekly", "label": "wk", "used_percent": 10}]
 
 
 def test_print_usage_json(monkeypatch, capsys):
