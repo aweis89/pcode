@@ -3392,8 +3392,6 @@ struct PCodeWorkspaceView: View {
                 .font(.headline)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            Button { workspace.toggleInspector() } label: { Image(systemName: "sidebar.right") }
-                .help("Toggle Session Inspector (⌘I)")
             Button { workspace.toggleSidebarFileChanges() } label: {
                 Image(systemName: "list.bullet.indent")
                     .foregroundStyle(workspace.showSidebarFileChanges ? Color.accentColor : Color.primary)
@@ -3414,6 +3412,8 @@ struct PCodeWorkspaceView: View {
                 }
             }
             .help(workspace.sidebarAutoHide ? "Keep sidebar visible (⌥⌘S)" : "Auto-hide sidebar (⌥⌘S)")
+            Button { workspace.toggleInspector() } label: { Image(systemName: "sidebar.right") }
+                .help("Toggle Session Inspector (⌘I)")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
