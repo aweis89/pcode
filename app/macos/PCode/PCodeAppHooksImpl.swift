@@ -30,8 +30,10 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     }
 
     func showHelp() -> Bool {
-        guard let url = URL(string: "https://aweis89.github.io/pcode/") else { return false }
-        return NSWorkspace.shared.open(url)
+        if let url = URL(string: "https://aweis89.github.io/pcode/") {
+            _ = NSWorkspace.shared.open(url)
+        }
+        return true
     }
 
     func showWorkspace(_ ghostty: Ghostty.App) {

@@ -9,12 +9,14 @@ final class PCodeAboutController: NSWindowController, NSWindowDelegate {
     private init() {
         let hostingController = NSHostingController(rootView: PCodeAboutView())
         let window = NSWindow(contentViewController: hostingController)
-        window.title = ""
+        window.title = "About Pcode"
         window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
+        window.isExcludedFromWindowsMenu = true
+        window.isRestorable = false
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
         window.setContentSize(hostingController.view.fittingSize)
@@ -50,6 +52,10 @@ final class PCodeAboutController: NSWindowController, NSWindowDelegate {
 
     @IBAction func closeWindow(_ sender: Any?) {
         window?.performClose(sender)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        hide()
     }
 
     @objc func cancel(_ sender: Any?) {
@@ -104,7 +110,7 @@ struct PCodeAboutView: View {
                     if let version {
                         PropertyRow(label: "Version", value: version)
                     }
-                    if let build {
+                    if let build, build != version {
                         PropertyRow(label: "Build", value: build)
                     }
                 }

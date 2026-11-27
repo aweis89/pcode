@@ -224,11 +224,14 @@ struct PCodeMenuTests {
     @Test @MainActor
     func mainMenuWorkspaceModeRebrandsPrunesAndCleansSeparators() throws {
         let menu = Self.makeMainMenu()
+        // Capture child items of dropped submenus so we can verify they detach too.
+        let droppedSubmenuChild = try #require(Self.item(withAction: "equalizeSplits:", in: menu))
         // Add an extra stray Ghostty-branded item to verify the recursive safety net.
         let helpMenu = try #require(menu.items.last?.submenu)
         helpMenu.addItem(Self.makeItem("Ghostty Community", action: "openCommunity:"))
 
         PCodeMenu.configureMainMenu(menu, replacesTerminalWindows: true)
+        #expect(droppedSubmenuChild.menu == nil)
 
         // Zero "ghostty" strings anywhere in the configured menu tree.
         for title in Self.allTitles(in: menu) {

@@ -185,6 +185,7 @@ enum PCodeMenu {
             }
             if let submenu = item.submenu {
                 if submenuTitles.contains(item.title) || submenuTitles.contains(submenu.title) {
+                    submenu.removeAllItems()
                     menu.removeItem(item)
                     continue
                 }
@@ -224,6 +225,9 @@ enum PCodeMenu {
         var lastWasSeparator = false
 
         for item in menu.items {
+            if item.isHidden {
+                continue
+            }
             if item.isSeparatorItem {
                 if !sawNonSeparator || lastWasSeparator {
                     menu.removeItem(item)
@@ -236,7 +240,7 @@ enum PCodeMenu {
             }
         }
 
-        while let last = menu.items.last, last.isSeparatorItem {
+        while let last = menu.items.last(where: { !$0.isHidden }), last.isSeparatorItem {
             menu.removeItem(last)
         }
     }
