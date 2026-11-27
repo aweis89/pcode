@@ -191,29 +191,79 @@ struct PCodeInspectorModelsTests {
         )
         #expect(wrappedSbs.heights[2] == wrapped.heights[3])
 
-        // Verify horizontal scroll is disabled while wrapping is enabled.
+        // Verify horizontal scroll is disabled and offsets reset while wrapping is enabled.
         let scrollView = PCodeDiffScrollView(theme: theme, syntaxStore: PCodeDiffSyntaxStore())
         scrollView.frame = CGRect(x: 0, y: 0, width: 280, height: 300)
         scrollView.diffDocumentView.apply(
             snapshot: unwrapped,
             layout: .unified,
-            wrapLines: false,
             selection: nil,
             theme: theme,
             followBottom: false,
             allowSmoothGlide: false
         )
         #expect(scrollView.diffDocumentView.canScrollHorizontally)
+        scrollView.diffDocumentView.adjustHorizontalScroll(deltaX: -60, locationInView: NSPoint(x: 100, y: 50))
+        #expect(scrollView.diffDocumentView.unifiedHorizontalOffset > 0)
 
         scrollView.diffDocumentView.apply(
             snapshot: wrapped,
             layout: .unified,
-            wrapLines: true,
             selection: nil,
             theme: theme,
             followBottom: false,
             allowSmoothGlide: false
         )
         #expect(!scrollView.diffDocumentView.canScrollHorizontally)
+        #expect(scrollView.diffDocumentView.unifiedHorizontalOffset == 0)
+
+        // Verify parity across edge cases: tabs, unbroken tokens, Unicode, embedded CR, and syntax tokens.
+        let edgeCases: [(String, [PCodeSyntaxToken]?)] = [
+            ("\t\tlet tabbed = value", nil),
+            (String(repeating: "a", count: 80), nil),
+            ("let greeting = \"こんにちは世界 🚀✨ — wrapping unicode text cleanly\"", nil),
+            ("first\rsecond", nil),
+            ("let keyword = \"highlighted string value that wraps across lines\"", [
+                PCodeSyntaxToken(content: "let", kind: .keyword),
+                PCodeSyntaxToken(content: " keyword = ", kind: .plain),
+                PCodeSyntaxToken(content: "\"highlighted string value that wraps across lines\"", kind: .string),
+            ]),
+        ]
+        for (idx, (sample, tokens)) in edgeCases.enumerated() {
+            let expectedLines = PCodeDiffLayoutSnapshot.wrappedLineCount(
+                for: sample,
+                wrapWidth: wrapWidth,
+                codeFont: font,
+                charAdvance: theme.charAdvance
+            )
+            let cached = cache.ctLine(
+                text: sample,
+                tokens: tokens,
+                lineKind: .added,
+                hunkKeyHash: 99,
+                lineIndex: idx,
+                theme: theme,
+                wrapWidth: wrapWidth
+            )
+            #expect(cached.ctLines.count == expectedLines)
+        }
+
+        // Verify resizing wrap width updates row heights cleanly.
+        let widerWidth: CGFloat = 600
+        let wrappedWider = PCodeDiffLayoutSnapshot.build(
+            diffs: [diff],
+            layout: .unified,
+            collapsedFiles: [],
+            expandedGaps: [:],
+            focusedFilePath: nil,
+            updatedUnseenFiles: [],
+            copiedPath: nil,
+            lineRowHeight: theme.lineRowHeight,
+            charAdvance: theme.charAdvance,
+            bottomPadding: 16,
+            wrapCodeWidth: widerWidth,
+            codeFont: font
+        )
+        #expect(wrappedWider.heights[3] < wrapped.heights[3])
     }
 }
