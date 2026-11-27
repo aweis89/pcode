@@ -644,6 +644,7 @@ class SessionHost:
         self.buffer: list[tuple[str, tuple, dict]] = []
         self.settled_end: int | None = None
         self._state: dict = {}
+        self._observer_metadata: dict[str, str] = {}
         self.stopped = asyncio.Event()
         # A restart resumes this session in its worktree, so stopping must not tidy it away.
         self.keep_worktree = False
@@ -915,6 +916,8 @@ class SessionHost:
             "title": self.entry.title,
             "workspace": self.entry.workspace,
             "model": self.controller.model or self.entry.model,
+            "effort": self.controller.current_effort(),
+            "context": self.controller.context_label().removeprefix(" · "),
             "state": self.entry.state,
             "paced_scrollback": paced,
             "show_thinking": self.activity.thinking_mode,
@@ -1210,6 +1213,15 @@ class SessionHost:
             self._state = state
             for client in list(self.clients.values()):
                 client.peer.notify("session_state", state)
+        metadata = {
+            "model": state.get("model") or "",
+            "effort": state.get("effort") or "",
+            "context": (state.get("context") or "").removeprefix(" · "),
+        }
+        if metadata != self._observer_metadata:
+            self._observer_metadata = metadata
+            for peer in list(self.transcript_observers):
+                peer.notify("session_metadata", metadata)
         session = getattr(self.controller.runtime, "session", None)
         if session is not None and session.info.id != self.entry.session_id:
             # A /resume ages from the resumed session's last turn, not from now.

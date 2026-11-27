@@ -107,6 +107,7 @@ from pcode.ui import (
     create_prompt,
     suspended_editor,
 )
+from pcode.ui_surface import native_transcript_active
 from pcode.worktree import (
     SESSION_WORKTREE_PREFIX,
     WORKTREES_DIR,
@@ -3167,13 +3168,17 @@ class PreviewApp:
             model += f" ({effort})"
         # Read left to right and cut from the right: the path leads, then send
         # mode and live activity, then metadata, with the help hint last.
+        native_header = native_transcript_active()
         btw = self.btw_thread()
+        btw_model_override = False
         if btw:
             newest = btw[-1]
             if newest.model:
                 model = newest.label or newest.model
+                btw_model_override = True
             elif newest.effort:
                 model = f"{self.model} ({newest.effort})" if self.model else newest.effort
+                btw_model_override = True
             segments = [("btw", "btw reply")]
         else:
             once = " (once)" if self.send_mode_once else ""
@@ -3198,17 +3203,19 @@ class PreviewApp:
             segments.extend([("sep", " · "), ("activity", f"{running} btw running")])
         if unread := self.asides.unread:
             segments.extend([("sep", " · "), ("activity", f"{unread} btw ready")])
-        segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
-        context = self.controller.context_label()
-        # Colorize the token counts distinctly from the " · " and "/" around them.
-        parts = re.split(r"(~?\d[\d.]*[a-z]?)", context)
-        segments.extend(
-            ("context-value", part)
-            if re.fullmatch(r"~?\d[\d.]*[a-z]?", part)
-            else ("context", part)
-            for part in parts
-            if part
-        )
+        if not native_header or btw_model_override:
+            segments.extend([("sep", " · "), ("model", plain(model, limit=None))])
+        if not native_header:
+            context = self.controller.context_label()
+            # Colorize the token counts distinctly from the " · " and "/" around them.
+            parts = re.split(r"(~?\d[\d.]*[a-z]?)", context)
+            segments.extend(
+                ("context-value", part)
+                if re.fullmatch(r"~?\d[\d.]*[a-z]?", part)
+                else ("context", part)
+                for part in parts
+                if part
+            )
         if self.activity.cache_note:
             segments.extend([("sep", " · "), ("cache", self.activity.cache_note)])
         if self.activity.show_hints:

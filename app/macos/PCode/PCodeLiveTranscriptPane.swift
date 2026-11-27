@@ -267,6 +267,10 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     self.onHostEvent?(.history(welcome.history))
                 }
                 self.shownHistory = welcome.catchUpCalls.isEmpty ? welcome.history : nil
+                self.onHostEvent?(.sessionMetadata(
+                    model: welcome.model,
+                    effort: welcome.effort,
+                    context: welcome.context))
                 var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
                     state.apply(event)

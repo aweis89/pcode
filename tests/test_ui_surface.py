@@ -66,3 +66,52 @@ def test_native_transcript_hides_editor_tool_rows_and_command_preview(monkeypatc
         assert layout.preview_layout() is None
         assert layout.group_rows() == []
         assert layout.status_height() == 0
+
+
+def test_native_transcript_omits_model_and_context_from_footer(monkeypatch):
+    from pathlib import Path
+
+    from prompt_toolkit.formatted_text import fragment_list_to_text
+
+    from pcode import app as app_mod
+    from pcode.app import PreviewApp
+    from pcode.aside import Aside
+    from pcode.btw_view import close, open_thread
+
+    app = PreviewApp(model="antigravity:gemini-4-neon", workspace=Path("/tmp/proj"))
+    app._startup_pending = False
+    fake_output = SimpleNamespace(get_size=lambda: Size(rows=24, columns=160))
+    monkeypatch.setattr(app_mod, "get_app", lambda: SimpleNamespace(output=fake_output))
+    monkeypatch.setattr(app.controller, "context_label", lambda: " · 42k/200k")
+    monkeypatch.setattr(app, "current_effort", lambda: "medium")
+
+    # Terminal UI keeps model and context in the editor footer.
+    with ui_surface.override_ui_surface(ui_surface.UISurface.TERMINAL):
+        terminal_text = fragment_list_to_text(app.toolbar())
+        assert "antigravity:gemini-4-neon (medium)" in terminal_text
+        assert "42k/200k" in terminal_text
+        assert "steering" in terminal_text
+
+    # Native Swift UI (docked) moves model and context to the window titlebar.
+    monkeypatch.setattr(dock, "_active", SimpleNamespace())
+    with ui_surface.override_ui_surface(ui_surface.UISurface.SWIFT):
+        swift_text = fragment_list_to_text(app.toolbar())
+        assert "antigravity:gemini-4-neon" not in swift_text
+        assert "42k/200k" not in swift_text
+        assert "steering" in swift_text
+
+        # A /btw thread with its own model override still shows that override in the footer.
+        aside = Aside(
+            question="q?",
+            status="answered",
+            answer="a.",
+            model="anthropic:claude-haiku",
+            label="haiku",
+        )
+        app.controller.asides.items.append(aside)
+        open_thread(app.activity, aside.thread)
+        btw_text = fragment_list_to_text(app.toolbar())
+        assert "btw reply" in btw_text
+        assert "haiku" in btw_text
+        assert "42k/200k" not in btw_text
+        close(app.activity)
