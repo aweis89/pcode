@@ -15,9 +15,11 @@ import asyncio
 import json
 import math
 import os
+import re
 import selectors
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -25,6 +27,7 @@ from datetime import datetime
 
 import httpx2
 
+USAGE_JSON_COMMAND = "--usage-json"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 TIMEOUT = httpx2.Timeout(15, connect=5)
 CLAUDE_USAGE_ARGS = ("-p", "/usage", "--output-format", "json", "--no-session-persistence")
@@ -74,13 +77,17 @@ def usage_report(provider: str | None = None) -> list[str]:
 
 # Claude Code
 
+_CLAUDE_SESSION_RE = re.compile(r"^current session:\s*(\d+(?:\.\d+)?)%\s*used\b", re.IGNORECASE)
+_CLAUDE_WEEKLY_ALL_RE = re.compile(
+    r"^current week\s*\(all models\):\s*(\d+(?:\.\d+)?)%\s*used\b", re.IGNORECASE
+)
+_CLAUDE_WEEKLY_ANY_RE = re.compile(
+    r"^current week(?:\s*\([^)]*\))?:\s*(\d+(?:\.\d+)?)%\s*used\b", re.IGNORECASE
+)
 
-def claude_usage() -> list[str]:
-    """The plan limits Claude Code's own `/usage` reports, run headless.
 
-    `claude -p /usage` answers locally from the CLI's login without a model
-    turn, so pcode never reads Claude Code's token.
-    """
+def _fetch_claude_report() -> str:
+    """Run `claude -p /usage` headless and return its raw report text."""
     from pcode.models import claude_sdk_installed
 
     if not claude_sdk_installed():
@@ -120,7 +127,47 @@ def claude_usage() -> list[str]:
     if data.get("is_error"):
         first = data["result"].strip().splitlines()[:1]
         raise UsageUnavailable(first[0] if first else "Claude Code's /usage failed.")
-    return claude_lines(data["result"])
+    return data["result"]
+
+
+def claude_usage() -> list[str]:
+    """The plan limits Claude Code's own `/usage` reports, run headless.
+
+    `claude -p /usage` answers locally from the CLI's login without a model
+    turn, so pcode never reads Claude Code's token.
+    """
+    return claude_lines(_fetch_claude_report())
+
+
+def claude_summary(report: str) -> dict:
+    """Structured session/weekly percentage summary from Claude Code's `/usage` text."""
+    if report.lstrip().startswith("Total cost:"):
+        return {"provider": "claude", "windows": []}
+    section = report.split(CLAUDE_BREAKDOWN_HEADING, 1)[0]
+    session_pct: int | None = None
+    weekly_all_pct: int | None = None
+    weekly_any_pct: int | None = None
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if session_pct is None and (match := _CLAUDE_SESSION_RE.match(line)):
+            session_pct = _clamp_percent(float(match.group(1)))
+        elif weekly_all_pct is None and (match := _CLAUDE_WEEKLY_ALL_RE.match(line)):
+            weekly_all_pct = _clamp_percent(float(match.group(1)))
+        elif weekly_any_pct is None and (match := _CLAUDE_WEEKLY_ANY_RE.match(line)):
+            weekly_any_pct = _clamp_percent(float(match.group(1)))
+    windows: list[dict] = []
+    if session_pct is not None:
+        windows.append({"key": "5h", "label": "5h", "used_percent": session_pct})
+    weekly_pct = weekly_all_pct if weekly_all_pct is not None else weekly_any_pct
+    if weekly_pct is not None:
+        windows.append({"key": "weekly", "label": "wk", "used_percent": weekly_pct})
+    return {"provider": "claude", "windows": windows}
+
+
+def claude_usage_summary() -> dict:
+    return claude_summary(_fetch_claude_report())
 
 
 def claude_lines(report: str) -> list[str]:
@@ -137,15 +184,59 @@ def claude_lines(report: str) -> list[str]:
 
 
 def codex_usage() -> list[str]:
+    return codex_lines(_fetch_codex_sync())
+
+
+def _fetch_codex_sync() -> dict:
     try:
-        data = asyncio.run(_fetch_codex())
+        return asyncio.run(_fetch_codex())
     except UsageUnavailable:
         raise
     except httpx2.HTTPError as error:
         raise UsageUnavailable(f"Request failed: {type(error).__name__}") from None
     except Exception as error:  # noqa: BLE001 - credential errors are the provider's own types.
         raise UsageUnavailable(str(error).split("\n")[0]) from None
-    return codex_lines(data)
+
+
+def codex_summary(data: dict) -> dict:
+    """Structured primary/secondary window summary from Codex's usage response."""
+    details = data.get("rate_limit")
+    windows: list[dict] = []
+    if isinstance(details, dict):
+        for key in ("primary_window", "secondary_window"):
+            window = details.get(key)
+            if not isinstance(window, dict):
+                continue
+            used = window.get("used_percent")
+            if (
+                not isinstance(used, (int, float))
+                or isinstance(used, bool)
+                or not math.isfinite(used)
+            ):
+                continue
+            seconds = window.get("limit_window_seconds")
+            valid_seconds = (
+                isinstance(seconds, (int, float))
+                and not isinstance(seconds, bool)
+                and math.isfinite(seconds)
+                and seconds > 0
+            )
+            if valid_seconds and seconds == 5 * 3600:
+                win_key, label = "5h", "5h"
+            elif valid_seconds and seconds == 7 * 86400:
+                win_key, label = "weekly", "wk"
+            elif valid_seconds:
+                win_key = label = duration(seconds)
+            elif key == "primary_window":
+                win_key, label = "5h", "5h"
+            else:
+                win_key, label = "weekly", "wk"
+            windows.append({"key": win_key, "label": label, "used_percent": _clamp_percent(used)})
+    return {"provider": "openai-codex", "windows": windows}
+
+
+def codex_usage_summary() -> dict:
+    return codex_summary(_fetch_codex_sync())
 
 
 async def _fetch_codex() -> dict:
@@ -280,8 +371,8 @@ def _run_antigravity_usage(
     return returncode, stdout, stderr
 
 
-def antigravity_usage() -> list[str]:
-    """The quota limits `agy -p /usage --output-format json` reports."""
+def _fetch_antigravity_data() -> dict:
+    """Run `agy -p /usage --output-format json` and return the parsed payload."""
     from pcode.antigravity import COMMAND, child_env
 
     executable = shutil.which(COMMAND)
@@ -308,7 +399,62 @@ def antigravity_usage() -> list[str]:
     status = data.get("status")
     if isinstance(status, str) and status.upper() not in ("", "SUCCESS"):
         raise UsageUnavailable(f"Antigravity's /usage failed ({status}).")
-    return antigravity_lines(data)
+    return data
+
+
+def antigravity_usage() -> list[str]:
+    """The quota limits `agy -p /usage --output-format json` reports."""
+    return antigravity_lines(_fetch_antigravity_data())
+
+
+_WINDOW_ORDER = {"5h": 0, "weekly": 1}
+
+
+def antigravity_summary(data: dict) -> dict:
+    """Structured per-group quota summary from `agy -p /usage --output-format json`."""
+    command = data.get("command")
+    raw_groups = (
+        command.get("data", {}).get("groups")
+        if isinstance(command, dict) and isinstance(command.get("data"), dict)
+        else None
+    )
+    groups: list[dict] = []
+    if isinstance(raw_groups, list):
+        for group in raw_groups:
+            if not isinstance(group, dict):
+                continue
+            group_name = str(group.get("name") or "Models")
+            windows: list[dict] = []
+            for bucket in group.get("buckets") or ():
+                if not isinstance(bucket, dict):
+                    continue
+                remaining = bucket.get("remaining_fraction")
+                if (
+                    not isinstance(remaining, (int, float))
+                    or isinstance(remaining, bool)
+                    or not math.isfinite(remaining)
+                ):
+                    continue
+                window = bucket.get("window")
+                window_str = window if isinstance(window, str) else ""
+                if window_str == "5h":
+                    win_key, label = "5h", "5h"
+                elif window_str == "weekly":
+                    win_key, label = "weekly", "wk"
+                else:
+                    fallback = window_str or str(bucket.get("name") or "limit")
+                    win_key, label = fallback, fallback
+                used_pct = _clamp_percent((1.0 - float(remaining)) * 100.0)
+                windows.append({"key": win_key, "label": label, "used_percent": used_pct})
+            windows.sort(key=lambda item: _WINDOW_ORDER.get(item["key"], 99))
+            if windows:
+                groups.append({"name": group_name, "windows": windows})
+    default_windows = groups[0]["windows"] if groups else []
+    return {"provider": "antigravity", "windows": default_windows, "groups": groups}
+
+
+def antigravity_usage_summary() -> dict:
+    return antigravity_summary(_fetch_antigravity_data())
 
 
 def _iso_timestamp(value: object) -> float | None:
@@ -364,6 +510,38 @@ def antigravity_lines(data: dict, now: float | None = None) -> list[str]:
         if fallback:
             return fallback
     return ["No limits reported for this login."]
+
+
+def _clamp_percent(value: float) -> int:
+    return round(max(0.0, min(100.0, float(value))))
+
+
+def usage_summary(provider: str) -> dict:
+    """Structured percentage summary for one subscription provider."""
+    sources: dict[str, Callable[[], dict]] = {
+        "claude": claude_usage_summary,
+        "openai-codex": codex_usage_summary,
+        "antigravity": antigravity_usage_summary,
+    }
+    fetch = sources.get(provider)
+    if fetch is None:
+        raise ValueError(f"Unknown usage provider: {provider!r}")
+    return fetch()
+
+
+def print_usage_json(argv: list[str]) -> int:
+    """Fast-path CLI entry for `pcode --usage-json <provider>`."""
+    provider = argv[0].strip() if len(argv) == 1 else ""
+    if provider not in USAGE_PROVIDERS:
+        print(f"Usage: pcode {USAGE_JSON_COMMAND} [{'|'.join(USAGE_PROVIDERS)}]", file=sys.stderr)
+        return 2
+    try:
+        payload = usage_summary(provider)
+    except UsageUnavailable as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    print(json.dumps(payload, separators=(",", ":")))
+    return 0
 
 
 # Formatting

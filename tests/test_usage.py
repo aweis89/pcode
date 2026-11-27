@@ -420,3 +420,91 @@ def test_duration():
         "1d",
         "1d 1h",
     ]
+
+
+def test_usage_summaries():
+    assert usage.claude_summary(CLI_REPORT) == {
+        "provider": "claude",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 6},
+            {"key": "weekly", "label": "wk", "used_percent": 9},
+        ],
+    }
+    assert usage.claude_summary("Total cost: $0.00") == {
+        "provider": "claude",
+        "windows": [],
+    }
+    assert usage.codex_summary(CODEX_BODY) == {
+        "provider": "openai-codex",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 12},
+            {"key": "weekly", "label": "wk", "used_percent": 40},
+        ],
+    }
+    assert usage.antigravity_summary(ANTIGRAVITY_BODY) == {
+        "provider": "antigravity",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 20},
+            {"key": "weekly", "label": "wk", "used_percent": 6},
+        ],
+        "groups": [
+            {
+                "name": "Gemini Models",
+                "windows": [
+                    {"key": "5h", "label": "5h", "used_percent": 20},
+                    {"key": "weekly", "label": "wk", "used_percent": 6},
+                ],
+            },
+            {
+                "name": "Claude and GPT models",
+                "windows": [
+                    {"key": "5h", "label": "5h", "used_percent": 14},
+                ],
+            },
+        ],
+    }
+
+
+def test_print_usage_json(monkeypatch, capsys):
+    monkeypatch.setattr(
+        usage,
+        "claude_usage_summary",
+        lambda: {
+            "provider": "claude",
+            "windows": [{"key": "5h", "label": "5h", "used_percent": 11}],
+        },
+    )
+    assert usage.print_usage_json(["claude"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "provider": "claude",
+        "windows": [{"key": "5h", "label": "5h", "used_percent": 11}],
+    }
+    assert usage.print_usage_json(["unknown"]) == 2
+    assert "Usage: pcode --usage-json" in capsys.readouterr().err
+    assert usage.print_usage_json([]) == 2
+    assert "Usage: pcode --usage-json" in capsys.readouterr().err
+    assert usage.print_usage_json(["claude", "extra"]) == 2
+    assert "Usage: pcode --usage-json" in capsys.readouterr().err
+
+    # Edge cases: non-finite / bool limit_window_seconds and missing windows.
+    assert usage.codex_summary(
+        {
+            "rate_limit": {
+                "primary_window": {"used_percent": 15.6, "limit_window_seconds": True},
+                "secondary_window": {"used_percent": 120, "limit_window_seconds": float("inf")},
+            }
+        }
+    ) == {
+        "provider": "openai-codex",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 16},
+            {"key": "weekly", "label": "wk", "used_percent": 100},
+        ],
+    }
+
+    def broken():
+        raise usage.UsageUnavailable("not logged in")
+
+    monkeypatch.setattr(usage, "codex_usage_summary", broken)
+    assert usage.print_usage_json(["openai-codex"]) == 1
+    assert "not logged in" in capsys.readouterr().err

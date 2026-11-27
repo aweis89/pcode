@@ -68,6 +68,11 @@ def main() -> None:
         from pcode.completion import print_candidates
 
         sys.exit(print_candidates(sys.argv[2:]))
+    if sys.argv[1:2] == ["--usage-json"]:
+        # Native titlebar usage refresh: skip the frontend import.
+        from pcode.usage import print_usage_json
+
+        sys.exit(print_usage_json(sys.argv[2:]))
     # First, before the slow imports: the default action would kill the process.
     signal.signal(signal.SIGUSR2, remember_app_restart)
     from pcode.proctitle import rename

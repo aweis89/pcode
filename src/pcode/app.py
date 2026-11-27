@@ -3168,7 +3168,7 @@ class PreviewApp:
             model += f" ({effort})"
         # Read left to right and cut from the right: the path leads, then send
         # mode and live activity, then metadata, with the help hint last.
-        native_header = native_transcript_active()
+        native_header = self.editor_only or native_transcript_active()
         btw = self.btw_thread()
         btw_model_override = False
         if btw:

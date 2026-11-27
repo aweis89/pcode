@@ -179,4 +179,84 @@ struct PCodeHostStateTests {
         #expect(PCodeSessionMetadataDisplay.contextFillRatio("inf/200k") == nil)
         #expect(PCodeSessionMetadataDisplay.contextFillRatio("") == nil)
     }
+
+    @Test func decodesProviderUsageAndMatchesAntigravityGroups() throws {
+        let json = """
+        {
+          "provider": "antigravity",
+          "windows": [{"key": "5h", "label": "5h", "used_percent": 20}],
+          "groups": [
+            {
+              "name": "Gemini Models",
+              "windows": [
+                {"key": "5h", "label": "5h", "used_percent": 20},
+                {"key": "weekly", "label": "wk", "used_percent": 6}
+              ]
+            },
+            {
+              "name": "Claude and GPT models",
+              "windows": [
+                {"key": "5h", "label": "5h", "used_percent": 14}
+              ]
+            }
+          ]
+        }
+        """
+        let usage = try JSONDecoder().decode(PCodeProviderUsage.self, from: Data(json.utf8))
+        #expect(usage.windows(forModel: "antigravity:gemini-4-neon").map(\.usedPercent) == [20, 6])
+        #expect(usage.windows(forModel: "antigravity:claude-sonnet-5-5").map(\.usedPercent) == [14])
+        #expect(usage.windows(forModel: "antigravity:gpt-oss-120b").map(\.usedPercent) == [14])
+        // Unrecognized Antigravity model falls back to the first non-empty group.
+        #expect(usage.windows(forModel: "antigravity:other-model").map(\.usedPercent) == [20, 6])
+    }
+
+    @Test @MainActor func usageStoreCachesAndHonorsCooldowns() {
+        var fetches: [String] = []
+        var nextResult: PCodeProviderUsage? = PCodeProviderUsage(
+            provider: "claude",
+            windows: [
+                PCodeUsageWindow(key: "5h", label: "5h", usedPercent: 6),
+                PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 9),
+            ],
+            groups: nil)
+        var pendingCompletion: (@Sendable (PCodeProviderUsage?) -> Void)?
+        var holdNext = false
+        let store = PCodeUsageStore(ttl: 180, turnRefreshCooldown: 60, failureBackoff: 120) { provider, _, done in
+            fetches.append(provider)
+            if holdNext {
+                pendingCompletion = done
+            } else {
+                done(nextResult)
+            }
+        }
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        // Unsupported provider does not fetch.
+        store.refreshIfNeeded(forModel: "anthropic:claude-sonnet", directory: "/tmp", now: t0)
+        #expect(fetches.isEmpty)
+
+        // First fetch populates cache.
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", now: t0)
+        #expect(fetches == ["claude"])
+        #expect(store.windows(forModel: "claude:claude-sonnet").map(\.label) == ["5h", "wk"])
+
+        // Within TTL (and within turnRefreshCooldown), does not refetch.
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", now: t0.addingTimeInterval(30))
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", afterTurn: true, now: t0.addingTimeInterval(30))
+        #expect(fetches.count == 1)
+
+        // After a turn past turnRefreshCooldown (60s), refetches; if it fails, enforces failureBackoff (120s).
+        nextResult = nil
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", afterTurn: true, now: t0.addingTimeInterval(90))
+        #expect(fetches.count == 2)
+        // Must back off for 120s after the failed refresh even though prior success is >60s old.
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", afterTurn: true, now: t0.addingTimeInterval(150))
+        #expect(fetches.count == 2)
+
+        // Once failureBackoff elapses, refetches and deduplicates while in-flight.
+        holdNext = true
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", now: t0.addingTimeInterval(220))
+        store.refreshIfNeeded(forModel: "claude:claude-sonnet", directory: "/tmp", now: t0.addingTimeInterval(221))
+        #expect(fetches.count == 3)
+        pendingCompletion?(nil)
+    }
 }
