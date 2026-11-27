@@ -1731,7 +1731,23 @@ final class PCodeDiffDocumentView: NSView {
     private var measuredRightCodeWidth: CGFloat = 0
 
     // 120Hz smooth follow-agent glide (reusing PCodeSmoothScrollGlide from transcript)
-    private var smoothGlide = PCodeSmoothScrollGlide()
+    static func makeStreamingGlide() -> PCodeSmoothScrollGlide {
+        PCodeSmoothScrollGlide()
+    }
+
+    /// Snappy catch-up glide used when the user explicitly clicks Follow from scrolled-up content,
+    /// zipping to the bottom quickly before settling back into normal streaming conveyor speed.
+    static func makeCatchUpGlide() -> PCodeSmoothScrollGlide {
+        PCodeSmoothScrollGlide(
+            minSpeed: 900.0,
+            maxSpeed: 8500.0,
+            catchUpSeconds: 0.28,
+            maxOffset: 100_000.0
+        )
+    }
+
+    private var smoothGlide = PCodeDiffDocumentView.makeStreamingGlide()
+    private var isCatchUpGlide = false
     private var displayLink: CADisplayLink?
     private var lastDisplayTick: CFTimeInterval = 0
     private var programmaticScrollDepth = 0
@@ -1878,7 +1894,7 @@ final class PCodeDiffDocumentView: NSView {
             }
         } else if !followBottom {
             isFollowPinnedToBottom = false
-            smoothGlide.reset()
+            resetToStreamingGlide()
             stopDisplayLink()
         }
 
@@ -1901,6 +1917,11 @@ final class PCodeDiffDocumentView: NSView {
 
     // MARK: - Programmatic Scrolling
 
+    private func resetToStreamingGlide() {
+        isCatchUpGlide = false
+        smoothGlide = Self.makeStreamingGlide()
+    }
+
     func scrollToBottom(animated: Bool) {
         guard let scrollView = enclosingScrollView else { return }
         let maxOriginY = max(0, bounds.height - scrollView.contentView.bounds.height)
@@ -1908,11 +1929,12 @@ final class PCodeDiffDocumentView: NSView {
         isFollowPinnedToBottom = true
 
         if animated && window != nil && maxOriginY - currentY > 1 {
-            smoothGlide.reset()
+            isCatchUpGlide = true
+            smoothGlide = Self.makeCatchUpGlide()
             smoothGlide.addOffset(maxOriginY - currentY)
             ensureDisplayLinkRunning()
         } else {
-            smoothGlide.reset()
+            resetToStreamingGlide()
             stopDisplayLink()
             setClipOriginY(maxOriginY, in: scrollView)
             mountViews(in: visibleRect)
@@ -1926,7 +1948,7 @@ final class PCodeDiffDocumentView: NSView {
         guard let targetY = snapshot.anchorYByID[idOrPath] ?? snapshot.anchorYByPath[idOrPath] else {
             return false
         }
-        smoothGlide.reset()
+        resetToStreamingGlide()
         stopDisplayLink()
         let maxOriginY = max(0, bounds.height - scrollView.contentView.bounds.height)
         let clampedY = max(0, min(maxOriginY, targetY))
@@ -2018,7 +2040,7 @@ final class PCodeDiffDocumentView: NSView {
     func handleLiveScrollBegan() {
         if smoothGlide.isActive {
             // Let user take over immediately without fighting their fingers.
-            smoothGlide.reset()
+            resetToStreamingGlide()
             stopDisplayLink()
         }
     }
@@ -2086,6 +2108,9 @@ final class PCodeDiffDocumentView: NSView {
 
     fileprivate func handleDisplayLinkTick(_ sender: CADisplayLink) {
         guard smoothGlide.isActive, let scrollView = enclosingScrollView else {
+            if isCatchUpGlide {
+                resetToStreamingGlide()
+            }
             stopDisplayLink()
             return
         }
@@ -2103,6 +2128,9 @@ final class PCodeDiffDocumentView: NSView {
         (scrollView as? PCodeDiffScrollView)?.updateStickyHeader()
 
         if !smoothGlide.isActive {
+            if isCatchUpGlide {
+                resetToStreamingGlide()
+            }
             stopDisplayLink()
         }
     }
