@@ -24,6 +24,10 @@ struct PCodeInspectorTreeView: View {
     @State private var isNavigating: Bool = false
     @State private var statusBanner: String?
 
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var hasAsides: Bool {
         store.tree.nodesByID.values.contains { $0.kind == .aside }
     }
@@ -118,7 +122,7 @@ struct PCodeInspectorTreeView: View {
                         .fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.05))
                 )
 
-                if store.tree.hasBranches {
+                if store.tree.hasBranches || store.tree.inactiveNodeCount > 0 {
                     branchScopeToggle
                 }
             }
@@ -242,30 +246,38 @@ struct PCodeInspectorTreeView: View {
 
     // MARK: - Graph Layout Constants
 
-    private let graphLaneWidth: CGFloat = 16
     private let graphDotY: CGFloat = 15
     private let scrollBarWidth: CGFloat = 2.5
     private let scrollBarSpacing: CGFloat = 3.5
+
+    private func laneWidth(for rows: [PCodeConversationTreeRow]) -> CGFloat {
+        let maxIndent = rows.reduce(0) { max($0, $1.indentLevel) }
+        if maxIndent >= 6 { return 12 }
+        if maxIndent >= 4 { return 14 }
+        return 16
+    }
 
     // MARK: - Tree List
 
     private var treeList: some View {
         let currentRows = rows
+        let laneW = laneWidth(for: currentRows)
         let startOutgoingTone = conversationStartOutgoingTone(for: currentRows)
+        let isSearching = !trimmedSearchText.isEmpty
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        conversationStartRow(outgoingTone: startOutgoingTone)
+                    if !isSearching {
+                        conversationStartRow(outgoingTone: startOutgoingTone, laneW: laneW)
                     }
 
                     ForEach(currentRows) { row in
-                        treeRowView(row)
+                        treeRowView(row, laneW: laneW, isSearching: isSearching)
                             .id(row.id)
                     }
 
-                    if currentRows.isEmpty && !searchText.isEmpty {
-                        Text("No turns matching \"\(searchText)\"")
+                    if currentRows.isEmpty && isSearching {
+                        Text("No turns matching \"\(trimmedSearchText)\"")
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
@@ -277,7 +289,7 @@ struct PCodeInspectorTreeView: View {
             }
             .onChange(of: store.visibleTurnID) { newID in
                 guard let newID,
-                      searchText.isEmpty,
+                      trimmedSearchText.isEmpty,
                       hoveredRowID == nil,
                       selectedInactiveNode == nil
                 else { return }
@@ -302,12 +314,13 @@ struct PCodeInspectorTreeView: View {
     }
 
     private func conversationStartRow(
-        outgoingTone: PCodeConversationTreeRow.RailTone?
+        outgoingTone: PCodeConversationTreeRow.RailTone?,
+        laneW: CGFloat
     ) -> some View {
         let isActive = store.tree.activeID == nil
         let isHovered = hoveredRowID == "__start__"
         return HStack(spacing: 0) {
-            Color.clear.frame(width: scrollBarWidth + scrollBarSpacing + graphLaneWidth, height: 1)
+            Color.clear.frame(width: scrollBarWidth + scrollBarSpacing + laneW, height: 1)
 
             HStack(spacing: 6) {
                 Text("Conversation start")
@@ -328,7 +341,7 @@ struct PCodeInspectorTreeView: View {
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(.vertical, 1)
                             .background(
                                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                                     .fill(Color.primary.opacity(0.08))
@@ -350,13 +363,13 @@ struct PCodeInspectorTreeView: View {
         )
         .overlay(alignment: .leading) {
             Canvas { ctx, size in
-                let cx = graphLaneWidth / 2
+                let cx = laneW / 2
                 let cy = size.height / 2
                 let ringRadius: CGFloat = 3.5
 
                 if let outgoingTone {
                     var stem = Path()
-                    stem.move(to: CGPoint(x: cx, y: cy + ringRadius))
+                    stem.move(to: CGPoint(x: cx, y: cy + ringRadius + 0.6))
                     stem.addLine(to: CGPoint(x: cx, y: size.height))
                     ctx.stroke(
                         stem,
@@ -377,7 +390,7 @@ struct PCodeInspectorTreeView: View {
                     lineWidth: isActive ? 1.8 : 1.25
                 )
             }
-            .frame(width: graphLaneWidth)
+            .frame(width: laneW)
             .padding(.leading, scrollBarWidth + scrollBarSpacing)
             .allowsHitTesting(false)
         }
@@ -395,12 +408,12 @@ struct PCodeInspectorTreeView: View {
         }
     }
 
-    private func treeRowView(_ row: PCodeConversationTreeRow) -> some View {
+    private func treeRowView(_ row: PCodeConversationTreeRow, laneW: CGFloat, isSearching: Bool) -> some View {
         let isInViewport = row.isOnActivePath && store.visibleTurnID == row.id
         let isSelected = selectedNodeID == row.id
         let isHovered = hoveredRowID == row.id
         let canMutate = !store.isBusy && !isNavigating && !row.node.isSyntheticLive && actions.navigateTree != nil
-        let gutterWidth = CGFloat(row.indentLevel + 1) * graphLaneWidth
+        let gutterWidth = CGFloat(row.indentLevel + 1) * laneW
 
         return HStack(alignment: .top, spacing: 0) {
             // Left scroll-spy bar + reserved space for the continuous git-graph gutter overlay.
@@ -414,6 +427,8 @@ struct PCodeInspectorTreeView: View {
                         Text("#\(row.turnNumber)")
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundStyle(row.isOnActivePath ? Color.secondary : Color.secondary.opacity(0.6))
+                            .lineLimit(1)
+                            .fixedSize()
                     } else if row.node.kind == .aside {
                         Text("/btw")
                             .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
@@ -423,6 +438,8 @@ struct PCodeInspectorTreeView: View {
                             .background(
                                 Capsule().fill(Color.purple.opacity(0.14))
                             )
+                            .lineLimit(1)
+                            .fixedSize()
                     } else {
                         Text("Compacted")
                             .font(.system(size: 9.5, weight: .semibold))
@@ -432,6 +449,8 @@ struct PCodeInspectorTreeView: View {
                             .background(
                                 Capsule().fill(Color.primary.opacity(0.08))
                             )
+                            .lineLimit(1)
+                            .fixedSize()
                     }
 
                     Text(rowTitle(row.node))
@@ -446,7 +465,7 @@ struct PCodeInspectorTreeView: View {
                     } else if isInViewport {
                         viewportBadge
                     } else if row.isForkChild && !row.isOnActivePath && row.node.kind != .aside {
-                        branchOriginBadge(parentTurnNumber: row.parentTurnNumber)
+                        branchOriginBadge(parentTurnNumber: row.parentTurnNumber, parentKind: row.parentKind)
                     }
                 }
 
@@ -462,7 +481,7 @@ struct PCodeInspectorTreeView: View {
 
                     Spacer(minLength: 4)
 
-                    if row.visibleChildCount > 1 && !activeBranchOnly && searchText.isEmpty {
+                    if row.visibleChildCount > 1 && !activeBranchOnly && !isSearching {
                         metaChip(
                             icon: "arrow.triangle.branch",
                             text: "\(row.visibleChildCount)",
@@ -556,6 +575,7 @@ struct PCodeInspectorTreeView: View {
                     lineWidth: 1
                 )
                 .padding(.vertical, 1.5)
+                .allowsHitTesting(false)
         )
         .overlay(alignment: .leading) {
             HStack(spacing: 0) {
@@ -564,7 +584,7 @@ struct PCodeInspectorTreeView: View {
                     .frame(width: scrollBarWidth)
                     .padding(.vertical, 5)
                 Spacer().frame(width: scrollBarSpacing)
-                graphGutterView(for: row)
+                graphGutterView(for: row, laneW: laneW)
                     .frame(width: gutterWidth)
             }
             .allowsHitTesting(false)
@@ -720,9 +740,9 @@ struct PCodeInspectorTreeView: View {
         case .active:
             return Color.accentColor.opacity(colorScheme == .dark ? 0.85 : 0.78)
         case .inactive:
-            return Color.secondary.opacity(colorScheme == .dark ? 0.42 : 0.36)
+            return Color.secondary.opacity(colorScheme == .dark ? 0.44 : 0.48)
         case .aside:
-            return Color.purple.opacity(colorScheme == .dark ? 0.72 : 0.62)
+            return Color.purple.opacity(colorScheme == .dark ? 0.72 : 0.65)
         }
     }
 
@@ -730,18 +750,26 @@ struct PCodeInspectorTreeView: View {
         tone == .active ? 1.75 : 1.35
     }
 
-    private func graphGutterView(for row: PCodeConversationTreeRow) -> some View {
+    private func graphGutterView(for row: PCodeConversationTreeRow, laneW: CGFloat) -> some View {
         Canvas { ctx, size in
-            let laneW = graphLaneWidth
             let dotY = min(graphDotY, size.height / 2)
             let ownX = CGFloat(row.indentLevel) * laneW + laneW / 2
 
             let dotRadius: CGFloat
+            let isHollowGlyph: Bool
             switch row.node.kind {
-            case .compaction: dotRadius = 4.2
-            case .aside: dotRadius = 3.0
-            case .turn: dotRadius = row.isActiveHead ? 3.5 : 3.25
+            case .compaction:
+                dotRadius = 4.2
+                isHollowGlyph = !row.isOnActivePath
+            case .aside:
+                dotRadius = 3.0
+                isHollowGlyph = false
+            case .turn:
+                dotRadius = row.isActiveHead ? 3.5 : 3.25
+                isHollowGlyph = !row.isOnActivePath
             }
+            // Inset stroke endpoints to the outer perimeter of hollow glyphs so rails never poke inside.
+            let edgeInset: CGFloat = dotRadius + (isHollowGlyph ? 0.7 : 0)
 
             // 1. Draw ancestor lanes (pass-through verticals and curved branch elbows).
             for (col, segment) in row.railColumns.enumerated() {
@@ -760,21 +788,23 @@ struct PCodeInspectorTreeView: View {
                     )
                 case .branch(let trunkAbove, let trunkBelow, let arm):
                     let curveStartY = max(0, dotY - 11)
-                    // Curved branch arm peeling smoothly off this lane into the child dot on the right.
-                    var curve = Path()
-                    curve.move(to: CGPoint(x: x, y: curveStartY))
-                    curve.addCurve(
-                        to: CGPoint(x: ownX - dotRadius, y: dotY),
-                        control1: CGPoint(x: x, y: dotY),
-                        control2: CGPoint(x: x + (ownX - x) * 0.45, y: dotY)
-                    )
-                    ctx.stroke(
-                        curve,
-                        with: .color(railColor(for: arm)),
-                        style: StrokeStyle(lineWidth: railLineWidth(for: arm), lineCap: .round)
-                    )
+                    let armEndX = ownX - edgeInset
 
                     if let trunkBelow {
+                        // Curved branch arm peeling smoothly off this lane into the child dot.
+                        var curve = Path()
+                        curve.move(to: CGPoint(x: x, y: curveStartY))
+                        curve.addCurve(
+                            to: CGPoint(x: armEndX, y: dotY),
+                            control1: CGPoint(x: x, y: dotY),
+                            control2: CGPoint(x: x + (armEndX - x) * 0.45, y: dotY)
+                        )
+                        ctx.stroke(
+                            curve,
+                            with: .color(railColor(for: arm)),
+                            style: StrokeStyle(lineWidth: railLineWidth(for: arm), lineCap: .butt)
+                        )
+
                         // Continuing trunk runs straight from top to bottom.
                         if trunkAbove == trunkBelow {
                             var trunk = Path()
@@ -803,15 +833,23 @@ struct PCodeInspectorTreeView: View {
                                 lineWidth: railLineWidth(for: trunkBelow)
                             )
                         }
-                    } else if curveStartY > 0 {
-                        // Last sibling: vertical trunk ends smoothly where the curve begins.
-                        var topTrunk = Path()
-                        topTrunk.move(to: CGPoint(x: x, y: 0))
-                        topTrunk.addLine(to: CGPoint(x: x, y: curveStartY))
+                    } else {
+                        // Last sibling: stroke vertical trunk + curved arm as one continuous path
+                        // so translucent strokes never double-alpha at the join.
+                        var combined = Path()
+                        combined.move(to: CGPoint(x: x, y: 0))
+                        if curveStartY > 0 {
+                            combined.addLine(to: CGPoint(x: x, y: curveStartY))
+                        }
+                        combined.addCurve(
+                            to: CGPoint(x: armEndX, y: dotY),
+                            control1: CGPoint(x: x, y: dotY),
+                            control2: CGPoint(x: x + (armEndX - x) * 0.45, y: dotY)
+                        )
                         ctx.stroke(
-                            topTrunk,
-                            with: .color(railColor(for: trunkAbove)),
-                            lineWidth: railLineWidth(for: trunkAbove)
+                            combined,
+                            with: .color(railColor(for: arm)),
+                            style: StrokeStyle(lineWidth: railLineWidth(for: arm), lineCap: .butt)
                         )
                     }
                 }
@@ -821,7 +859,7 @@ struct PCodeInspectorTreeView: View {
             if let incoming = row.incomingLaneTone {
                 var line = Path()
                 line.move(to: CGPoint(x: ownX, y: 0))
-                line.addLine(to: CGPoint(x: ownX, y: max(0, dotY - dotRadius)))
+                line.addLine(to: CGPoint(x: ownX, y: max(0, dotY - edgeInset)))
                 ctx.stroke(
                     line,
                     with: .color(railColor(for: incoming)),
@@ -832,7 +870,7 @@ struct PCodeInspectorTreeView: View {
             // 3. Outgoing vertical segment in this node's own lane (dot to bottom of row).
             if let outgoing = row.outgoingLaneTone {
                 var line = Path()
-                line.move(to: CGPoint(x: ownX, y: min(size.height, dotY + dotRadius)))
+                line.move(to: CGPoint(x: ownX, y: min(size.height, dotY + edgeInset)))
                 line.addLine(to: CGPoint(x: ownX, y: size.height))
                 ctx.stroke(
                     line,
@@ -901,11 +939,25 @@ struct PCodeInspectorTreeView: View {
         }
     }
 
-    private func branchOriginBadge(parentTurnNumber: Int?) -> some View {
-        HStack(spacing: 2.5) {
+    private func branchOriginBadge(
+        parentTurnNumber: Int?,
+        parentKind: PCodeConversationTurnNode.Kind?
+    ) -> some View {
+        let label: String
+        switch parentKind {
+        case .compaction:
+            label = "from compact"
+        case .aside:
+            label = "from /btw"
+        case .turn:
+            label = parentTurnNumber.map { "from #\($0)" } ?? "from start"
+        case nil:
+            label = "from start"
+        }
+        return HStack(spacing: 2.5) {
             Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 7.5, weight: .semibold))
-            Text(parentTurnNumber.map { "from #\($0)" } ?? "from start")
+            Text(label)
                 .font(.system(size: 8.5, weight: .medium, design: .monospaced))
         }
         .foregroundStyle(.secondary.opacity(0.85))
@@ -914,6 +966,8 @@ struct PCodeInspectorTreeView: View {
         .background(
             Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
         )
+        .lineLimit(1)
+        .fixedSize()
     }
 
     private var headBadge: some View {
@@ -925,6 +979,8 @@ struct PCodeInspectorTreeView: View {
             .background(
                 Capsule().fill(Color.accentColor.opacity(0.16))
             )
+            .lineLimit(1)
+            .fixedSize()
     }
 
     private var viewportBadge: some View {
@@ -936,6 +992,8 @@ struct PCodeInspectorTreeView: View {
             .background(
                 Capsule().fill(Color.primary.opacity(0.08))
             )
+            .lineLimit(1)
+            .fixedSize()
     }
 
     private func metaChip(icon: String, text: String, tint: Color) -> some View {
@@ -946,6 +1004,8 @@ struct PCodeInspectorTreeView: View {
                 .font(.system(size: 9.5, design: .monospaced))
         }
         .foregroundStyle(tint.opacity(0.85))
+        .lineLimit(1)
+        .fixedSize()
     }
 
     private func statusChip(_ label: String, color: Color) -> some View {
@@ -957,6 +1017,8 @@ struct PCodeInspectorTreeView: View {
             .background(
                 Capsule().fill(color.opacity(0.14))
             )
+            .lineLimit(1)
+            .fixedSize()
     }
 
     private func rowActionButton(

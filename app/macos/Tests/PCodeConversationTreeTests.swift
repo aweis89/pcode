@@ -287,4 +287,76 @@ struct PCodeConversationTreeTests {
         #expect(rows[2].indentLevel == 1)
         #expect(rows[2].railColumns == [.branch(trunkAbove: .inactive, trunkBelow: nil, arm: .inactive)])
     }
+
+    @Test func nestedForksMultipleRootsToneTransitionsAndSearchFlattening() {
+        let data = Self.jsonl([
+            // Inactive root 1 with nested fork
+            ["kind": "turn_started", "run_id": "r1", "parent_id": NSNull(), "prompt": "Old root"],
+            ["kind": "turn_completed", "run_id": "r1"],
+            ["kind": "turn_started", "run_id": "r1a", "parent_id": "r1", "prompt": "Sub branch A"],
+            ["kind": "turn_completed", "run_id": "r1a"],
+            ["kind": "tree_selected", "node_id": "r1"],
+            ["kind": "turn_started", "run_id": "r1b", "parent_id": "r1", "prompt": "Sub branch B"],
+            ["kind": "turn_completed", "run_id": "r1b"],
+            // Active root 2 with compaction and a fork off compaction
+            ["kind": "tree_selected", "node_id": NSNull()],
+            ["kind": "turn_started", "run_id": "r2", "parent_id": NSNull(), "prompt": "Active root"],
+            ["kind": "turn_completed", "run_id": "r2"],
+            ["kind": "compaction_checkpoint", "node_id": "c1", "parent_id": "r2", "focus": "ctx", "before": 20000, "after": 4000],
+            ["kind": "turn_started", "run_id": "after_c_inactive", "parent_id": "c1", "prompt": "Fork off compaction"],
+            ["kind": "turn_completed", "run_id": "after_c_inactive"],
+            ["kind": "tree_selected", "node_id": "c1"],
+            ["kind": "turn_started", "run_id": "s_on_c", "parent_id": "c1", "prompt": "Aside on compaction", "side": ["thread": "t"]],
+            ["kind": "turn_completed", "run_id": "s_on_c"],
+        ])
+
+        let tree = PCodeConversationTree.parse(journalData: data)
+        let rows = tree.flattenedRows()
+        #expect(rows.map(\.id) == ["r1", "r1a", "r1b", "r2", "c1", "after_c_inactive", "s_on_c"])
+
+        // Inactive root peels off Conversation start (parentTurnNumber == nil, parentKind == nil).
+        #expect(rows[0].indentLevel == 1)
+        #expect(rows[0].parentTurnNumber == nil)
+        #expect(rows[0].parentKind == nil)
+        #expect(rows[0].railColumns == [.branch(trunkAbove: .active, trunkBelow: .active, arm: .inactive)])
+
+        // Nested fork inside inactive root peels to lane 2.
+        #expect(rows[1].id == "r1a")
+        #expect(rows[1].indentLevel == 2)
+        #expect(rows[1].parentTurnNumber == 1)
+        #expect(rows[1].parentKind == .turn)
+        #expect(rows[1].railColumns == [
+            .vertical(tone: .active),
+            .branch(trunkAbove: .inactive, trunkBelow: .inactive, arm: .inactive),
+        ])
+
+        // Second child continues in-lane on lane 1.
+        #expect(rows[2].id == "r1b")
+        #expect(rows[2].indentLevel == 1)
+        #expect(rows[2].incomingLaneTone == .inactive)
+        #expect(rows[2].railColumns == [.vertical(tone: .active)])
+
+        // Fork off compaction records parentKind == .compaction and transitions trunk from inactive -> aside.
+        let forkOffCompaction = rows.first { $0.id == "after_c_inactive" }
+        #expect(forkOffCompaction?.parentKind == .compaction)
+        #expect(forkOffCompaction?.railColumns == [.branch(trunkAbove: .inactive, trunkBelow: .aside, arm: .inactive)])
+
+        let asideOnCompaction = rows.first { $0.id == "s_on_c" }
+        #expect(asideOnCompaction?.railColumns == [.branch(trunkAbove: .aside, trunkBelow: nil, arm: .aside)])
+
+        // Collapsing r1 hides descendants but keeps active lane-0 trunkBelow intact.
+        let collapsed = tree.flattenedRows(collapsedBranchRoots: ["r1"])
+        #expect(collapsed.first?.id == "r1")
+        #expect(collapsed.first?.outgoingLaneTone == nil)
+        #expect(collapsed.first?.railColumns == [.branch(trunkAbove: .active, trunkBelow: .active, arm: .inactive)])
+
+        // Search flattens rails and finds matches even inside collapsed branches.
+        let searched = tree.flattenedRows(collapsedBranchRoots: ["r1"], searchQuery: "Sub branch A")
+        #expect(searched.count == 1)
+        #expect(searched[0].id == "r1a")
+        #expect(searched[0].indentLevel == 0)
+        #expect(searched[0].railColumns.isEmpty)
+        #expect(searched[0].incomingLaneTone == nil)
+        #expect(searched[0].outgoingLaneTone == nil)
+    }
 }

@@ -110,6 +110,8 @@ struct PCodeConversationTreeRow: Identifiable, Equatable, Sendable {
     let turnNumber: Int
     /// Parent's 1-based turn number (nil when parent is Conversation start).
     let parentTurnNumber: Int?
+    /// Parent node's kind (nil when parent is Conversation start).
+    let parentKind: PCodeConversationTurnNode.Kind?
     let isOnActivePath: Bool
     let isActiveHead: Bool
     /// Visual lane index (0 = active/primary spine, +1 for each branch peeling off).
@@ -592,6 +594,7 @@ struct PCodeConversationTree: Equatable, Sendable {
             node: PCodeConversationTurnNode,
             turnDepth: Int,
             parentTurnNumber: Int?,
+            parentKind: PCodeConversationTurnNode.Kind?,
             indentLevel: Int,
             ancestorRails: [PCodeConversationTreeRow.RailSegment],
             ownRail: PCodeConversationTreeRow.RailSegment?,
@@ -627,6 +630,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                 node: node,
                 turnNumber: turnDepth,
                 parentTurnNumber: parentTurnNumber,
+                parentKind: parentKind,
                 isOnActivePath: onActive,
                 isActiveHead: isHead,
                 indentLevel: indentLevel,
@@ -665,6 +669,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                         node: child,
                         turnDepth: turnDepth + 1,
                         parentTurnNumber: turnDepth,
+                        parentKind: node.kind,
                         indentLevel: indentLevel + 1,
                         ancestorRails: childBaseRails,
                         ownRail: branchRail,
@@ -679,6 +684,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                         node: child,
                         turnDepth: turnDepth + 1,
                         parentTurnNumber: turnDepth,
+                        parentKind: node.kind,
                         indentLevel: indentLevel,
                         ancestorRails: childBaseRails,
                         ownRail: nil,
@@ -711,6 +717,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                     node: root,
                     turnDepth: 1,
                     parentTurnNumber: nil,
+                    parentKind: nil,
                     indentLevel: 1,
                     ancestorRails: [],
                     ownRail: branchRail,
@@ -725,6 +732,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                     node: root,
                     turnDepth: 1,
                     parentTurnNumber: nil,
+                    parentKind: nil,
                     indentLevel: 0,
                     ancestorRails: [],
                     ownRail: nil,
@@ -748,6 +756,7 @@ struct PCodeConversationTree: Equatable, Sendable {
                     node: row.node,
                     turnNumber: row.turnNumber,
                     parentTurnNumber: row.parentTurnNumber,
+                    parentKind: row.parentKind,
                     isOnActivePath: row.isOnActivePath,
                     isActiveHead: row.isActiveHead,
                     indentLevel: 0,
