@@ -201,4 +201,90 @@ struct PCodeConversationTreeTests {
         #expect(doc.scrollToTurn("uuid-2"))
         #expect(doc.currentVisibleTurnID() == "uuid-2")
     }
+
+    @Test func activeSpineStaysOnLaneZeroAndBranchesPeelOffWithContinuousTones() {
+        let data = Self.jsonl([
+            ["kind": "turn_started", "run_id": "t1", "parent_id": NSNull(), "prompt": "Root"],
+            ["kind": "turn_completed", "run_id": "t1"],
+            // Inactive branch off t1 (2 turns)
+            ["kind": "turn_started", "run_id": "t2a", "parent_id": "t1", "prompt": "Alt 1"],
+            ["kind": "turn_completed", "run_id": "t2a"],
+            ["kind": "turn_started", "run_id": "t3a", "parent_id": "t2a", "prompt": "Alt 2"],
+            ["kind": "turn_completed", "run_id": "t3a"],
+            // /btw off t1
+            ["kind": "turn_started", "run_id": "s1", "parent_id": "t1", "prompt": "Aside?", "side": ["thread": "a"]],
+            ["kind": "turn_completed", "run_id": "s1"],
+            // Active branch off t1
+            ["kind": "tree_selected", "node_id": "t1"],
+            ["kind": "turn_started", "run_id": "t2b", "parent_id": "t1", "prompt": "Main 2"],
+            ["kind": "turn_completed", "run_id": "t2b"],
+            ["kind": "turn_started", "run_id": "t3b", "parent_id": "t2b", "prompt": "Main 3"],
+            ["kind": "turn_completed", "run_id": "t3b"],
+        ])
+
+        let tree = PCodeConversationTree.parse(journalData: data)
+        let rows = tree.flattenedRows()
+        #expect(rows.map(\.id) == ["t1", "t2a", "t3a", "s1", "t2b", "t3b"])
+
+        // Active spine stays at lane 0 throughout.
+        #expect(rows[0].indentLevel == 0)
+        #expect(rows[0].outgoingLaneTone == .active)
+        #expect(rows[0].visibleChildCount == 3)
+
+        // Inactive branch root peels off lane 0 -> lane 1, while active trunk passes through lane 0.
+        #expect(rows[1].id == "t2a")
+        #expect(rows[1].indentLevel == 1)
+        #expect(rows[1].parentTurnNumber == 1)
+        #expect(rows[1].incomingLaneTone == nil)
+        #expect(rows[1].outgoingLaneTone == .inactive)
+        #expect(rows[1].railColumns == [.branch(trunkAbove: .active, trunkBelow: .active, arm: .inactive)])
+
+        // Linear child on inactive branch stays on lane 1 with continuous gray vertical + active lane 0 pass-through.
+        #expect(rows[2].id == "t3a")
+        #expect(rows[2].indentLevel == 1)
+        #expect(rows[2].incomingLaneTone == .inactive)
+        #expect(rows[2].outgoingLaneTone == nil)
+        #expect(rows[2].railColumns == [.vertical(tone: .active)])
+
+        // /btw aside peels off lane 0 with purple arm, active trunk still passes through lane 0.
+        #expect(rows[3].id == "s1")
+        #expect(rows[3].indentLevel == 1)
+        #expect(rows[3].railColumns == [.branch(trunkAbove: .active, trunkBelow: .active, arm: .aside)])
+
+        // Active continuation stays on lane 0 with unbroken active vertical.
+        #expect(rows[4].id == "t2b")
+        #expect(rows[4].indentLevel == 0)
+        #expect(rows[4].incomingLaneTone == .active)
+        #expect(rows[4].outgoingLaneTone == .active)
+        #expect(rows[4].railColumns.isEmpty)
+
+        // Active HEAD terminates lane 0 cleanly.
+        #expect(rows[5].id == "t3b")
+        #expect(rows[5].indentLevel == 0)
+        #expect(rows[5].incomingLaneTone == .active)
+        #expect(rows[5].outgoingLaneTone == nil)
+    }
+
+    @Test func headWithOnlyInactiveChildrenPeelsAllChildrenOffInInactiveTone() {
+        let data = Self.jsonl([
+            ["kind": "turn_started", "run_id": "t1", "parent_id": NSNull(), "prompt": "Root"],
+            ["kind": "turn_completed", "run_id": "t1"],
+            ["kind": "turn_started", "run_id": "t2a", "parent_id": "t1", "prompt": "Branch A"],
+            ["kind": "turn_completed", "run_id": "t2a"],
+            ["kind": "tree_selected", "node_id": "t1"],
+            ["kind": "turn_started", "run_id": "t2b", "parent_id": "t1", "prompt": "Branch B"],
+            ["kind": "turn_completed", "run_id": "t2b"],
+            ["kind": "tree_selected", "node_id": "t1"],
+        ])
+
+        let tree = PCodeConversationTree.parse(journalData: data)
+        let rows = tree.flattenedRows()
+        #expect(rows.map(\.id) == ["t1", "t2a", "t2b"])
+        #expect(rows[0].isActiveHead)
+        #expect(rows[0].outgoingLaneTone == .inactive)
+        #expect(rows[1].indentLevel == 1)
+        #expect(rows[1].railColumns == [.branch(trunkAbove: .inactive, trunkBelow: .inactive, arm: .inactive)])
+        #expect(rows[2].indentLevel == 1)
+        #expect(rows[2].railColumns == [.branch(trunkAbove: .inactive, trunkBelow: nil, arm: .inactive)])
+    }
 }
