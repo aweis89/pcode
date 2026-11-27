@@ -117,8 +117,53 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
         return NSFont(descriptor: desc, size: pt) ?? fallback
     }
 
+    private struct FontMemberCandidate: Sendable {
+        let postScript: String
+        let weight: Int
+        let isItalic: Bool
+        let isCondensedOrExpanded: Bool
+    }
+
+    private static let familyMembersLock = NSLock()
+    private static var familyMembersCache: [String: [FontMemberCandidate]] = [:]
+
+    private static func cachedMembers(for family: String) -> [FontMemberCandidate] {
+        familyMembersLock.lock()
+        if let cached = familyMembersCache[family] {
+            familyMembersLock.unlock()
+            return cached
+        }
+        familyMembersLock.unlock()
+
+        let italicMask = NSFontTraitMask.italicFontMask.rawValue
+        let condensedOrExpandedMask =
+            NSFontTraitMask.condensedFontMask.rawValue
+            | NSFontTraitMask.expandedFontMask.rawValue
+            | NSFontTraitMask.compressedFontMask.rawValue
+            | NSFontTraitMask.narrowFontMask.rawValue
+
+        let members = NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []
+        let parsed: [FontMemberCandidate] = members.compactMap { entry in
+            guard entry.count >= 4,
+                  let ps = entry[0] as? String,
+                  let w = entry[2] as? Int,
+                  let traits = entry[3] as? UInt
+            else { return nil }
+            return FontMemberCandidate(
+                postScript: ps,
+                weight: w,
+                isItalic: (traits & italicMask) != 0,
+                isCondensedOrExpanded: (traits & condensedOrExpandedMask) != 0)
+        }
+
+        familyMembersLock.lock()
+        familyMembersCache[family] = parsed
+        familyMembersLock.unlock()
+        return parsed
+    }
+
     /// Resolves a named font family to the closest matching `NSFont` for `weight` and `italic`.
-    /// Uses `availableMembers(ofFontFamily:)` so families missing intermediate weights (e.g. Medium)
+    /// Uses cached `availableMembers(ofFontFamily:)` so families missing intermediate weights (e.g. Medium)
     /// pick the nearest weight in the same family rather than silently falling back to Helvetica.
     static func resolveFamilyNSFont(
         family: String,
@@ -133,40 +178,10 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
             return font
         }
 
-        guard let members = NSFontManager.shared.availableMembers(ofFontFamily: family),
-              !members.isEmpty
-        else { return nil }
+        let candidates = cachedMembers(for: family)
+        guard !candidates.isEmpty else { return nil }
 
         let targetAppKitWeight = appKitWeight(for: weight)
-        let italicMask = NSFontTraitMask.italicFontMask.rawValue
-
-        struct Candidate {
-            let postScript: String
-            let weight: Int
-            let isItalic: Bool
-            let isCondensedOrExpanded: Bool
-        }
-
-        let condensedOrExpandedMask =
-            NSFontTraitMask.condensedFontMask.rawValue
-            | NSFontTraitMask.expandedFontMask.rawValue
-            | NSFontTraitMask.compressedFontMask.rawValue
-            | NSFontTraitMask.narrowFontMask.rawValue
-
-        let candidates: [Candidate] = members.compactMap { entry in
-            guard entry.count >= 4,
-                  let ps = entry[0] as? String,
-                  let w = entry[2] as? Int,
-                  let traits = entry[3] as? UInt
-            else { return nil }
-            return Candidate(
-                postScript: ps,
-                weight: w,
-                isItalic: (traits & italicMask) != 0,
-                isCondensedOrExpanded: (traits & condensedOrExpandedMask) != 0)
-        }
-
-        guard !candidates.isEmpty else { return nil }
 
         // Prefer matching italic trait; if italic was requested and the family has no
         // italic faces, pick the best upright face and convert it to italic below.
@@ -523,36 +538,33 @@ final class PCodeTypography: ObservableObject {
 
     // MARK: - System font discovery
 
-    /// All installed user-facing font families (excluding hidden `.`-prefixed system fonts).
-    static func availableSystemFontFamilies() -> [String] {
-        NSFontManager.shared.availableFontFamilies
-            .filter { !$0.hasPrefix(".") }
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-
-    /// Installed fixed-pitch (monospace) font families suitable for code blocks, diffs, and the docked editor.
-    static func availableMonospaceFontFamilies() -> [String] {
+    /// Discovers all user-facing font families and fixed-pitch (monospace) families in a single pass.
+    static func discoverSystemFontFamilies() -> (all: [String], monospace: [String]) {
         let manager = NSFontManager.shared
         let fixedPitchMask = NSFontTraitMask.fixedPitchFontMask.rawValue
-        var families = availableSystemFontFamilies().filter { family in
+        let all = manager.availableFontFamilies
+            .filter { !$0.hasPrefix(".") }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let mono = all.filter { family in
             if family == defaultCodeFamily { return true }
             guard let members = manager.availableMembers(ofFontFamily: family),
                   !members.isEmpty
             else { return false }
             return members.contains { entry in
-                if entry.count >= 4, let traits = entry[3] as? UInt, (traits & fixedPitchMask) != 0 {
-                    return true
-                }
-                return false
+                entry.count >= 4 && ((entry[3] as? UInt) ?? 0) & fixedPitchMask != 0
             }
         }
-        if !families.contains(defaultCodeFamily),
-           manager.availableFontFamilies.contains(defaultCodeFamily)
-        {
-            families.append(defaultCodeFamily)
-            families.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        }
-        return families
+        return (all: all, monospace: mono)
+    }
+
+    /// All installed user-facing font families (excluding hidden `.`-prefixed system fonts).
+    static func availableSystemFontFamilies() -> [String] {
+        discoverSystemFontFamilies().all
+    }
+
+    /// Installed fixed-pitch (monospace) font families suitable for code blocks, diffs, and the docked editor.
+    static func availableMonospaceFontFamilies() -> [String] {
+        discoverSystemFontFamilies().monospace
     }
 
     // MARK: - Ghostty terminal typography override
@@ -577,9 +589,13 @@ final class PCodeTypography: ObservableObject {
             "font-family-bold = \"\"",
             "font-family-italic = \"\"",
             "font-family-bold-italic = \"\"",
+            "font-style = default",
+            "font-style-bold = default",
+            "font-style-italic = default",
+            "font-style-bold-italic = default",
         ]
         if let resolved {
-            let safe = escapeGhosttyConfigValue(resolved)
+            let safe = sanitizeGhosttyConfigValue(resolved)
             if !safe.isEmpty {
                 lines.append("font-family = \"\(safe)\"")
             }
@@ -588,11 +604,13 @@ final class PCodeTypography: ObservableObject {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    private static func escapeGhosttyConfigValue(_ value: String) -> String {
-        let filtered = value.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }
+    /// Ghostty's config `LineIterator` strips outer quotes verbatim without unescaping backslashes,
+    /// so sanitize by dropping control chars and double quotes rather than inserting backslashes.
+    private static func sanitizeGhosttyConfigValue(_ value: String) -> String {
+        let filtered = value.unicodeScalars.filter {
+            $0.value >= 0x20 && $0.value != 0x7F && $0 != "\""
+        }
         return String(String.UnicodeScalarView(filtered))
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     /// Writes `ghosttyOverrideFilePath` atomically and returns the path if ready.

@@ -1339,19 +1339,12 @@ final class PCodeWorkspace: ObservableObject {
                 }
             }
         typographyCodeFamilySubscription = PCodeTypography.shared.$codeFamily
+            .map(PCodeTypographySnapshot.normalizedFamily)
             .removeDuplicates()
             .dropFirst()
+            .debounce(for: .zero, scheduler: DispatchQueue.main)
             .sink { [weak self] _ in
-                guard let self else { return }
-                let apply = {
-                    PCodeTypography.shared.syncGhosttyOverrideFile()
-                    self.ghostty.reloadConfig()
-                }
-                if Thread.isMainThread {
-                    apply()
-                } else {
-                    DispatchQueue.main.async(execute: apply)
-                }
+                self?.ghostty.reloadConfig()
             }
         peek.onTargetChange = { [weak self] in
             guard let self else { return }

@@ -8,6 +8,7 @@ final class PCodeSettingsController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let hostingController = NSHostingController(rootView: PCodeSettingsView())
+        hostingController.sizingOptions = [.preferredContentSize]
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Pcode Settings"
         window.styleMask = [.titled, .closable]
@@ -49,6 +50,18 @@ final class PCodeSettingsController: NSWindowController, NSWindowDelegate {
 
     @IBAction func closeWindow(_ sender: Any?) {
         window?.performClose(sender)
+    }
+
+    @IBAction func increaseFontSize(_ sender: Any?) {
+        PCodeTypography.shared.increaseSize()
+    }
+
+    @IBAction func decreaseFontSize(_ sender: Any?) {
+        PCodeTypography.shared.decreaseSize()
+    }
+
+    @IBAction func resetFontSize(_ sender: Any?) {
+        PCodeTypography.shared.resetSize()
     }
 
     override func cancelOperation(_ sender: Any?) {
@@ -167,10 +180,9 @@ struct PCodeSettingsView: View {
         .frame(width: 480)
         .onAppear {
             if allFamilies.isEmpty {
-                allFamilies = PCodeTypography.availableSystemFontFamilies()
-            }
-            if monoFamilies.isEmpty {
-                monoFamilies = PCodeTypography.availableMonospaceFontFamilies()
+                let discovered = PCodeTypography.discoverSystemFontFamilies()
+                allFamilies = discovered.all
+                monoFamilies = discovered.monospace
             }
         }
     }
@@ -207,6 +219,8 @@ struct PCodeSettingsView: View {
                 Text("let font = typography.codeNSFont(scale: 0.92)")
                     .font(typography.codeFont(scale: typography.codeBlockScale))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -268,6 +282,12 @@ private struct PCodeFontFamilyPicker: View {
 
     var body: some View {
         Button {
+            if !isPresented {
+                query = ""
+                if supportsMonospaceFilter, let selection, !primaryFamilies.contains(selection) {
+                    showAllFonts = true
+                }
+            }
             isPresented.toggle()
         } label: {
             HStack(spacing: 6) {

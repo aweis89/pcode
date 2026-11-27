@@ -196,6 +196,8 @@ struct PCodeTypographyTests {
         let bundled = PCodeTypography.ghosttyOverrideConfigText(codeFamily: nil, codeFamilyAvailable: true)
         #expect(bundled.contains("font-family = \"\""))
         #expect(bundled.contains("font-family-bold = \"\""))
+        #expect(bundled.contains("font-style = default"))
+        #expect(bundled.contains("font-style-bold = default"))
         #expect(bundled.contains("font-family = \"JetBrains Mono\""))
         #expect(bundled.contains("font-size = 14"))
 
@@ -203,9 +205,9 @@ struct PCodeTypographyTests {
         #expect(custom.contains("font-family = \"Menlo\""))
         #expect(!custom.contains("JetBrains Mono"))
 
-        let escaped = PCodeTypography.ghosttyOverrideConfigText(
+        let sanitized = PCodeTypography.ghosttyOverrideConfigText(
             codeFamily: "My \"Quoted\" Font\nInjected", codeFamilyAvailable: true)
-        #expect(escaped.contains("font-family = \"My \\\"Quoted\\\" FontInjected\""))
+        #expect(sanitized.contains("font-family = \"My Quoted FontInjected\""))
     }
 
     @Test func pickFontsReflectTypographySnapshot() {

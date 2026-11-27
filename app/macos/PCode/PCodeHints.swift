@@ -73,14 +73,11 @@ struct PCodeHintBar: View {
     let fonts: PCodePickFonts?
     let muted: Color
 
-    private var liveFonts: PCodePickFonts {
-        PCodePickFonts(typography: typography.snapshot)
-    }
-
     var body: some View {
+        let liveFonts = PCodePickFonts(typography: typography.snapshot)
         ViewThatFits(in: .horizontal) {
             ForEach(Array(PCodeHint.narrowings(hints).enumerated()), id: \.offset) { _, shown in
-                row(shown)
+                row(shown, fonts: liveFonts)
             }
         }
         .font(PCodePickFonts.small(liveFonts, fallbackSize: 11))
@@ -91,12 +88,12 @@ struct PCodeHintBar: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func row(_ shown: [PCodeHint]) -> some View {
+    private func row(_ shown: [PCodeHint], fonts: PCodePickFonts) -> some View {
         HStack(spacing: 14) {
             ForEach(Array(shown.enumerated()), id: \.offset) { _, hint in
                 HStack(spacing: 4) {
                     Text(hint.key)
-                        .font(PCodePickFonts.small(liveFonts, fallbackSize: 11, weight: .semibold))
+                        .font(PCodePickFonts.small(fonts, fallbackSize: 11, weight: .semibold))
                         .padding(.horizontal, 4)
                         .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.08)))
                     Text(hint.label)

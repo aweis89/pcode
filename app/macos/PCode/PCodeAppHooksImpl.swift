@@ -48,7 +48,8 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     }
 
     var configOverrideFilePath: String? {
-        PCodeTypography.shared.syncGhosttyOverrideFile()
+        guard replacesTerminalWindows else { return nil }
+        return PCodeTypography.shared.syncGhosttyOverrideFile()
     }
 
     func showWorkspace(_ ghostty: Ghostty.App) {
