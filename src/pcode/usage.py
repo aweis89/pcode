@@ -23,7 +23,8 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx2
 
@@ -84,6 +85,96 @@ _CLAUDE_WEEKLY_ALL_RE = re.compile(
 _CLAUDE_WEEKLY_ANY_RE = re.compile(
     r"^current week(?:\s*\([^)]*\))?:\s*(\d+(?:\.\d+)?)%\s*used\b", re.IGNORECASE
 )
+_CLAUDE_RESETS_RE = re.compile(r"\bresets\s+(.+?)\s*$", re.IGNORECASE)
+_CLAUDE_TZ_RE = re.compile(r"^(.*?)\s*\(([^()]+)\)\s*$")
+_CLAUDE_DATE_TIME_RE = re.compile(
+    r"^([A-Za-z]+)\s+(\d{1,2})(?:\s*(?:,|at)\s*|\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)$",
+    re.IGNORECASE,
+)
+_CLAUDE_TIME_ONLY_RE = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$", re.IGNORECASE)
+_CLAUDE_RELATIVE_RE = re.compile(
+    r"^in\s+(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?$",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _to_24h(hour: int, meridiem: str) -> int | None:
+    if not 1 <= hour <= 12:
+        return None
+    is_pm = meridiem.lower() == "pm"
+    if hour == 12:
+        return 12 if is_pm else 0
+    return hour + 12 if is_pm else hour
+
+
+def _parse_claude_reset(line: str, now: float | None = None) -> float | None:
+    """Parse Claude Code's `· resets Oct 19 at 6pm (America/Los_Angeles)` into epoch seconds."""
+    resets_match = _CLAUDE_RESETS_RE.search(line)
+    if not resets_match:
+        return None
+    text = resets_match.group(1).strip()
+    tz = datetime.now().astimezone().tzinfo
+    if tz_match := _CLAUDE_TZ_RE.match(text):
+        text = tz_match.group(1).strip()
+        try:
+            tz = ZoneInfo(tz_match.group(2).strip())
+        except ZoneInfoNotFoundError, ValueError:
+            pass
+
+    now_ts = time.time() if now is None else now
+    ref = datetime.fromtimestamp(now_ts, tz)
+
+    if rel_match := _CLAUDE_RELATIVE_RE.match(text):
+        days = int(rel_match.group(1) or 0)
+        hours = int(rel_match.group(2) or 0)
+        minutes = int(rel_match.group(3) or 0)
+        total = days * 86400 + hours * 3600 + minutes * 60
+        return now_ts + total if total > 0 else None
+
+    if dt_match := _CLAUDE_DATE_TIME_RE.match(text):
+        month = _MONTHS.get(dt_match.group(1)[:3].lower())
+        day = int(dt_match.group(2))
+        hour24 = _to_24h(int(dt_match.group(3)), dt_match.group(5))
+        minute = int(dt_match.group(4) or 0)
+        if month is None or hour24 is None or not 0 <= minute <= 59:
+            return None
+        for year_offset in (0, 1):
+            try:
+                candidate = datetime(ref.year + year_offset, month, day, hour24, minute, tzinfo=tz)
+            except ValueError:
+                continue
+            delta = candidate - ref
+            if year_offset == 0 and delta > timedelta(0):
+                return candidate.timestamp()
+            if year_offset == 1 and timedelta(0) < delta <= timedelta(days=35):
+                return candidate.timestamp()
+        return None
+
+    if time_match := _CLAUDE_TIME_ONLY_RE.match(text):
+        hour24 = _to_24h(int(time_match.group(1)), time_match.group(3))
+        minute = int(time_match.group(2) or 0)
+        if hour24 is None or not 0 <= minute <= 59:
+            return None
+        candidate = ref.replace(hour=hour24, minute=minute, second=0, microsecond=0)
+        if candidate <= ref:
+            candidate += timedelta(days=1)
+        return candidate.timestamp()
+
+    return None
 
 
 def _fetch_claude_report() -> str:
@@ -139,30 +230,45 @@ def claude_usage() -> list[str]:
     return claude_lines(_fetch_claude_report())
 
 
-def claude_summary(report: str) -> dict:
+def claude_summary(report: str, now: float | None = None) -> dict:
     """Structured session/weekly percentage summary from Claude Code's `/usage` text."""
     if report.lstrip().startswith("Total cost:"):
         return {"provider": "claude", "windows": []}
     section = report.split(CLAUDE_BREAKDOWN_HEADING, 1)[0]
     session_pct: int | None = None
+    session_reset: float | None = None
     weekly_all_pct: int | None = None
+    weekly_all_reset: float | None = None
     weekly_any_pct: int | None = None
+    weekly_any_reset: float | None = None
     for raw_line in section.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if session_pct is None and (match := _CLAUDE_SESSION_RE.match(line)):
             session_pct = _clamp_percent(float(match.group(1)))
+            session_reset = _parse_claude_reset(line, now=now)
         elif weekly_all_pct is None and (match := _CLAUDE_WEEKLY_ALL_RE.match(line)):
             weekly_all_pct = _clamp_percent(float(match.group(1)))
+            weekly_all_reset = _parse_claude_reset(line, now=now)
         elif weekly_any_pct is None and (match := _CLAUDE_WEEKLY_ANY_RE.match(line)):
             weekly_any_pct = _clamp_percent(float(match.group(1)))
+            weekly_any_reset = _parse_claude_reset(line, now=now)
     windows: list[dict] = []
     if session_pct is not None:
-        windows.append({"key": "5h", "label": "5h", "used_percent": session_pct})
-    weekly_pct = weekly_all_pct if weekly_all_pct is not None else weekly_any_pct
+        item: dict = {"key": "5h", "label": "5h", "used_percent": session_pct}
+        if session_reset is not None:
+            item["reset_at"] = session_reset
+        windows.append(item)
+    if weekly_all_pct is not None:
+        weekly_pct, weekly_reset = weekly_all_pct, weekly_all_reset
+    else:
+        weekly_pct, weekly_reset = weekly_any_pct, weekly_any_reset
     if weekly_pct is not None:
-        windows.append({"key": "weekly", "label": "wk", "used_percent": weekly_pct})
+        item = {"key": "weekly", "label": "wk", "used_percent": weekly_pct}
+        if weekly_reset is not None:
+            item["reset_at"] = weekly_reset
+        windows.append(item)
     return {"provider": "claude", "windows": windows}
 
 
@@ -231,7 +337,16 @@ def codex_summary(data: dict) -> dict:
                 win_key, label = "5h", "5h"
             else:
                 win_key, label = "weekly", "wk"
-            windows.append({"key": win_key, "label": label, "used_percent": _clamp_percent(used)})
+            item: dict = {"key": win_key, "label": label, "used_percent": _clamp_percent(used)}
+            reset_at = window.get("reset_at")
+            if (
+                isinstance(reset_at, (int, float))
+                and not isinstance(reset_at, bool)
+                and math.isfinite(reset_at)
+                and reset_at > 0
+            ):
+                item["reset_at"] = float(reset_at)
+            windows.append(item)
     return {"provider": "openai-codex", "windows": windows}
 
 
@@ -445,7 +560,11 @@ def antigravity_summary(data: dict) -> dict:
                     fallback = window_str or str(bucket.get("name") or "limit")
                     win_key, label = fallback, fallback
                 used_pct = _clamp_percent((1.0 - float(remaining)) * 100.0)
-                windows.append({"key": win_key, "label": label, "used_percent": used_pct})
+                item: dict = {"key": win_key, "label": label, "used_percent": used_pct}
+                reset_at = _iso_timestamp(bucket.get("reset_time"))
+                if reset_at is not None:
+                    item["reset_at"] = reset_at
+                windows.append(item)
             windows.sort(key=lambda item: _WINDOW_ORDER.get(item["key"], 99))
             if windows:
                 groups.append({"name": group_name, "windows": windows})

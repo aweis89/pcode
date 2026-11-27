@@ -4931,6 +4931,7 @@ private struct PCodeActiveSessionTitleContent: View {
     let leadingClearance: CGFloat
 
     @State private var wasRunning = false
+    @State private var usageClock = Date()
 
     private static let usageRefreshTimer = Timer.publish(every: 180, on: .main, in: .common).autoconnect()
 
@@ -5111,8 +5112,8 @@ private struct PCodeActiveSessionTitleContent: View {
                                         .foregroundStyle(.secondary.opacity(0.45))
                                 }
                                 HStack(spacing: 2.5) {
-                                    Text(window.label)
-                                        .font(.system(size: 10.5, weight: .regular))
+                                    Text(window.displayLabel(now: usageClock))
+                                        .font(.system(size: 10.5, weight: .regular).monospacedDigit())
                                         .foregroundStyle(.secondary.opacity(0.75))
                                     Text("\(window.usedPercent)%")
                                         .font(.system(size: 11, weight: .medium).monospacedDigit())
@@ -5142,6 +5143,7 @@ private struct PCodeActiveSessionTitleContent: View {
         .onAppear {
             syncWindowTitle()
             wasRunning = pane.activity == .running
+            usageClock = Date()
             usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
         }
         .onChange(of: title) { _ in syncWindowTitle() }
@@ -5160,11 +5162,13 @@ private struct PCodeActiveSessionTitleContent: View {
         }
         .onChange(of: controlActiveState) { state in
             if state != .inactive {
+                usageClock = Date()
                 usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
             }
         }
         .onReceive(Self.usageRefreshTimer) { _ in
             guard workspace.windowVisible() else { return }
+            usageClock = Date()
             usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
         }
     }

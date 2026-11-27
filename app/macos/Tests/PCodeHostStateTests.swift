@@ -189,8 +189,8 @@ struct PCodeHostStateTests {
             {
               "name": "Gemini Models",
               "windows": [
-                {"key": "5h", "label": "5h", "used_percent": 20},
-                {"key": "weekly", "label": "wk", "used_percent": 6}
+                {"key": "5h", "label": "5h", "used_percent": 20, "reset_at": 1007200},
+                {"key": "weekly", "label": "wk", "used_percent": 6, "reset_at": 1536400}
               ]
             },
             {
@@ -203,11 +203,43 @@ struct PCodeHostStateTests {
         }
         """
         let usage = try JSONDecoder().decode(PCodeProviderUsage.self, from: Data(json.utf8))
-        #expect(usage.windows(forModel: "antigravity:gemini-4-neon").map(\.usedPercent) == [20, 6])
+        let geminiWindows = usage.windows(forModel: "antigravity:gemini-4-neon")
+        #expect(geminiWindows.map(\.usedPercent) == [20, 6])
+        #expect(geminiWindows.map(\.resetAt) == [1_007_200, 1_536_400])
         #expect(usage.windows(forModel: "antigravity:claude-sonnet-5-5").map(\.usedPercent) == [14])
         #expect(usage.windows(forModel: "antigravity:gpt-oss-120b").map(\.usedPercent) == [14])
         // Unrecognized Antigravity model falls back to the first non-empty group.
         #expect(usage.windows(forModel: "antigravity:other-model").map(\.usedPercent) == [20, 6])
+
+        // Weekly window replaces static `wk` with compact remaining duration; `5h` stays `5h`.
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        #expect(geminiWindows[0].displayLabel(now: now) == "5h")
+        #expect(geminiWindows[1].displayLabel(now: now) == "6d5h")
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 6 * 86_400)
+                .displayLabel(now: now) == "6d"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 5 * 3_600 + 30 * 60)
+                .displayLabel(now: now) == "5h30m"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 45 * 60)
+                .displayLabel(now: now) == "45m"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 1_000_000 + 15)
+                .displayLabel(now: now) == "1m"
+        )
+        // Missing or already-elapsed reset time falls back to the static `wk` label.
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: nil)
+                .displayLabel(now: now) == "wk"
+        )
+        #expect(
+            PCodeUsageWindow(key: "weekly", label: "wk", usedPercent: 6, resetAt: 999_000)
+                .displayLabel(now: now) == "wk"
+        )
     }
 
     @Test @MainActor func usageStoreCachesAndHonorsCooldowns() {
