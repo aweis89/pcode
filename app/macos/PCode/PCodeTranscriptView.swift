@@ -418,6 +418,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     var groupTools: Bool = PCodeTranscriptPreferences.shared.groupTools {
         didSet {
             guard groupTools != oldValue else { return }
+            clearActiveFoldGhostLayers()
             syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
         }
     }
@@ -599,6 +600,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil {
+            clearActiveFoldGhostLayers()
             stopDisplayLink()
             stopLiveRunningTimer()
             cancelResumingDwellTimer()
@@ -907,30 +909,88 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     }
 
     private struct FoldSnapshot {
-        let rawItemID: String
-        let layer: CALayer
-        let originFrame: CGRect
+        let targetGroupID: String?
+        let rawItemID: String?
+        let contentLayer: CALayer
+        let originTopY: CGFloat
+        let originBottomY: CGFloat
+    }
+
+    private func captureRowBitmapLayer(for view: NSView) -> (layer: CALayer, drawnFrame: CGRect)? {
+        guard view.bounds.width > 1,
+              view.bounds.height > 1,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+        else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let cgImage = rep.cgImage else { return nil }
+        let rowLayer = CALayer()
+        rowLayer.contents = cgImage
+        rowLayer.contentsScale = window?.backingScaleFactor ?? 2.0
+        rowLayer.anchorPoint = CGPoint(x: 0, y: 0)
+        // Start from where the row is drawn, including any shift still sliding it into place.
+        let drawnFrame = view.frame.offsetBy(dx: 0, dy: Self.inFlightShift(of: view))
+        rowLayer.bounds = CGRect(origin: .zero, size: drawnFrame.size)
+        rowLayer.cornerRadius = view.layer?.cornerRadius ?? 5
+        if let masked = view.layer?.maskedCorners {
+            rowLayer.maskedCorners = masked
+        }
+        rowLayer.masksToBounds = true
+        return (rowLayer, drawnFrame)
     }
 
     private func captureFoldSnapshot(for itemID: String) -> FoldSnapshot? {
         guard window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               let view = mountedViews[itemID],
-              view.bounds.width > 1,
-              view.bounds.height > 1,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+              let captured = captureRowBitmapLayer(for: view)
         else { return nil }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        guard let cgImage = rep.cgImage else { return nil }
-        let ghost = CALayer()
-        ghost.contents = cgImage
-        ghost.contentsScale = window?.backingScaleFactor ?? 2.0
-        // Start from where the row is drawn, including any shift still sliding it into place.
-        let drawnFrame = view.frame.offsetBy(dx: 0, dy: Self.inFlightShift(of: view))
-        ghost.frame = drawnFrame
-        ghost.cornerRadius = view.layer?.cornerRadius ?? 5
-        ghost.masksToBounds = true
-        return FoldSnapshot(rawItemID: itemID, layer: ghost, originFrame: drawnFrame)
+        let container = CALayer()
+        container.anchorPoint = CGPoint(x: 0, y: 0)
+        container.bounds = CGRect(x: 0, y: 0, width: bounds.width, height: captured.drawnFrame.height)
+        captured.layer.position = CGPoint(x: captured.drawnFrame.minX, y: 0)
+        container.addSublayer(captured.layer)
+        return FoldSnapshot(
+            targetGroupID: nil,
+            rawItemID: itemID,
+            contentLayer: container,
+            originTopY: captured.drawnFrame.minY,
+            originBottomY: captured.drawnFrame.maxY)
+    }
+
+    /// Snapshot the currently mounted child rows of an expanded tool group so manual collapse
+    /// can tuck them cleanly behind the group pill instead of popping them out into a blank gap.
+    private func captureCollapseSnapshot(forGroupID groupID: String, entries: [PCodeToolGroupEntry]) -> FoldSnapshot? {
+        guard window != nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        else { return nil }
+        let visible = visibleRect
+        var capturedRows: [(layer: CALayer, drawnFrame: CGRect)] = []
+        capturedRows.reserveCapacity(min(entries.count, 24))
+        for entry in entries {
+            guard let view = mountedViews[entry.id],
+                  view.frame.intersects(visible),
+                  let captured = captureRowBitmapLayer(for: view)
+            else { continue }
+            capturedRows.append(captured)
+        }
+        guard !capturedRows.isEmpty else { return nil }
+        let minY = capturedRows.map(\.drawnFrame.minY).min() ?? 0
+        let maxY = capturedRows.map(\.drawnFrame.maxY).max() ?? minY
+        guard maxY - minY > 1 else { return nil }
+
+        let container = CALayer()
+        container.anchorPoint = CGPoint(x: 0, y: 0)
+        container.bounds = CGRect(x: 0, y: 0, width: bounds.width, height: maxY - minY)
+        for row in capturedRows {
+            row.layer.position = CGPoint(x: row.drawnFrame.minX, y: row.drawnFrame.minY - minY)
+            container.addSublayer(row.layer)
+        }
+        return FoldSnapshot(
+            targetGroupID: groupID,
+            rawItemID: nil,
+            contentLayer: container,
+            originTopY: minY,
+            originBottomY: maxY)
     }
 
     /// Insert or update a transcript item by its stable `id` (used by both live streaming
@@ -1194,14 +1254,14 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
         // Capture where mounted rows are drawn now (frame plus any in-flight shift) so surviving
         // rows can glide smoothly when heights shift.
-        var previousRowYs: [String: CGFloat] = [:]
+        var previousRowFrames: [String: CGRect] = [:]
         let shouldAnimateMotion = window != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let previousClipOriginY = enclosingScrollView?.contentView.bounds.origin.y ?? 0
         let previousTotalHeight = layoutEngine.totalHeight
         if shouldAnimateMotion && (animateShift || animateExpandedGroupID != nil) {
-            previousRowYs.reserveCapacity(mountedViews.count)
+            previousRowFrames.reserveCapacity(mountedViews.count)
             for (id, view) in mountedViews {
-                previousRowYs[id] = view.frame.minY + Self.inFlightShift(of: view)
+                previousRowFrames[id] = view.frame.offsetBy(dx: 0, dy: Self.inFlightShift(of: view))
             }
         }
 
@@ -1352,19 +1412,33 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         // would slide rows that never moved and snap the ones that did.
         if shouldAnimateMotion {
             let originShift = (enclosingScrollView?.contentView.bounds.origin.y ?? 0) - previousClipOriginY
+            let maxShift = max(400, enclosingScrollView?.contentView.bounds.height ?? 400)
+            let tailShift = previousTotalHeight - layoutEngine.totalHeight
             if let snap = foldSnapshot,
-               let targetGroupID = groupIDByRawItemID[snap.rawItemID],
+               let targetGroupID = snap.targetGroupID ?? snap.rawItemID.flatMap({ groupIDByRawItemID[$0] }),
                let groupView = mountedViews[targetGroupID]
             {
-                animateFoldSnapshot(snap, into: groupView.frame, originShift: originShift)
+                // Anchor the clip strictly below the post-collapse group card (shifted by any
+                // in-flight/origin offset) so windowed groups that grow on collapse never show
+                // collapsing child snapshots bleeding behind their translucent rows.
+                let groupStartTop = previousRowFrames[targetGroupID].map { $0.minY + originShift } ?? groupView.frame.minY
+                let clipStartTop = groupStartTop + groupView.frame.height
+                animateFoldSnapshot(
+                    snap,
+                    clipStartTop: clipStartTop,
+                    groupEndBottom: groupView.frame.maxY,
+                    originShift: originShift,
+                    tailShift: tailShift,
+                    maxShift: maxShift)
             }
-            if !previousRowYs.isEmpty {
+            if !previousRowFrames.isEmpty {
                 animateVerticalShifts(
-                    from: previousRowYs,
+                    from: previousRowFrames,
                     originShift: originShift,
                     unchangedAbove: prefix,
                     unchangedFrom: newCount - suffix,
-                    tailShift: previousTotalHeight - layoutEngine.totalHeight)
+                    tailShift: tailShift,
+                    maxShift: maxShift)
             }
             if let expandedID = animateExpandedGroupID,
                let groupIdx = itemIndexByID[expandedID],
@@ -1376,8 +1450,11 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
     }
 
+    private static let collapseAnimationDuration: CFTimeInterval = 0.20
+
     private func clearActiveFoldGhostLayers() {
         for ghost in activeFoldGhostLayers {
+            ghost.sublayers?.forEach { $0.removeAllAnimations() }
             ghost.removeAllAnimations()
             ghost.removeFromSuperlayer()
         }
@@ -1391,63 +1468,109 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         return CGFloat(value.doubleValue)
     }
 
-    private func animateFoldSnapshot(_ snap: FoldSnapshot, into targetFrame: CGRect, originShift: CGFloat) {
+    /// Tuck retiring tool row(s) upward behind the group pill's bottom edge without squishing
+    /// or floating over the pill. Runs on the exact same duration and curve as
+    /// `animateVerticalShifts` so rows below stay glued to the retracting bottom edge.
+    private func animateFoldSnapshot(
+        _ snap: FoldSnapshot,
+        clipStartTop: CGFloat,
+        groupEndBottom: CGFloat,
+        originShift: CGFloat,
+        tailShift: CGFloat,
+        maxShift: CGFloat
+    ) {
         guard let hostLayer = layer else { return }
-        let ghost = snap.layer
-        hostLayer.addSublayer(ghost)
-        activeFoldGhostLayers.append(ghost)
+        let contentStartTop = snap.originTopY + originShift
+        let contentStartBottom = snap.originBottomY + originShift
+        let collapseHeight = contentStartBottom - clipStartTop
+        guard collapseHeight > 1.0,
+              collapseHeight < maxShift,
+              abs(tailShift + originShift) < maxShift,
+              abs(groupEndBottom - clipStartTop) < maxShift
+        else { return }
 
-        let duration: CFTimeInterval = 0.22
+        let clipLayer = CALayer()
+        clipLayer.masksToBounds = true
+        clipLayer.anchorPoint = CGPoint(x: 0, y: 0)
+        clipLayer.zPosition = -1
+
+        let contentLayer = snap.contentLayer
+        let contentLocalStartY = contentStartTop - clipStartTop
+        let contentLocalEndY = contentLocalStartY - collapseHeight
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        clipLayer.position = CGPoint(x: 0, y: groupEndBottom)
+        clipLayer.bounds = CGRect(x: 0, y: 0, width: bounds.width, height: 0)
+        contentLayer.position = CGPoint(x: 0, y: contentLocalEndY)
+        contentLayer.opacity = 0
+        clipLayer.addSublayer(contentLayer)
+        hostLayer.insertSublayer(clipLayer, at: 0)
+        CATransaction.commit()
+
+        activeFoldGhostLayers.append(clipLayer)
+
+        let duration = Self.collapseAnimationDuration
         let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
 
-        let moveY = CABasicAnimation(keyPath: "position.y")
-        // Start where the row was on screen, even if the scroll origin moved with the fold.
-        moveY.fromValue = snap.originFrame.midY + originShift
-        moveY.toValue = targetFrame.midY
+        let clipBoundsAnim = CABasicAnimation(keyPath: "bounds.size.height")
+        clipBoundsAnim.fromValue = collapseHeight
+        clipBoundsAnim.toValue = CGFloat(0)
+        clipBoundsAnim.duration = duration
+        clipBoundsAnim.timingFunction = timing
 
-        let scaleY = CABasicAnimation(keyPath: "transform.scale.y")
-        scaleY.fromValue = 1.0
-        scaleY.toValue = 0.62
+        let clipPosAnim = CABasicAnimation(keyPath: "position.y")
+        clipPosAnim.fromValue = clipStartTop
+        clipPosAnim.toValue = groupEndBottom
+        clipPosAnim.duration = duration
+        clipPosAnim.timingFunction = timing
+
+        let slideUp = CABasicAnimation(keyPath: "position.y")
+        slideUp.fromValue = contentLocalStartY
+        slideUp.toValue = contentLocalEndY
+        slideUp.duration = duration
+        slideUp.timingFunction = timing
 
         let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0.95
-        fade.toValue = 0.0
-
-        let group = CAAnimationGroup()
-        group.animations = [moveY, scaleY, fade]
-        group.duration = duration
-        group.timingFunction = timing
-        group.fillMode = .forwards
-        group.isRemovedOnCompletion = false
+        fade.fromValue = Float(1.0)
+        fade.toValue = Float(0.0)
+        fade.duration = duration * 0.85
+        fade.timingFunction = timing
 
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
-            ghost.removeFromSuperlayer()
-            self?.activeFoldGhostLayers.removeAll { $0 === ghost }
+            clipLayer.removeFromSuperlayer()
+            self?.activeFoldGhostLayers.removeAll { $0 === clipLayer }
         }
-        ghost.add(group, forKey: "pcode.tool.fold")
+        clipLayer.add(clipBoundsAnim, forKey: "pcode.tool.fold.clipHeight")
+        if abs(groupEndBottom - clipStartTop) > 0.5 {
+            clipLayer.add(clipPosAnim, forKey: "pcode.tool.fold.clipPos")
+        }
+        contentLayer.add(slideUp, forKey: "pcode.tool.fold.slide")
+        contentLayer.add(fade, forKey: "pcode.tool.fold.fade")
         CATransaction.commit()
     }
 
     /// Slide each mounted row from where it was drawn on screen to its new frame.
     ///
-    /// `previousRowYs` holds each row's old drawn document Y; `originShift` is how far the scroll
-    /// origin moved meanwhile. Rows mounted only now (scrolled into view by the change) have no
-    /// old Y, so it is inferred: rows before `unchangedAbove` kept their document Y, and rows from
-    /// `unchangedFrom` on moved by `tailShift`. Without that, a row revealed above a fold would
-    /// sit still while its neighbours slide, overlapping it.
+    /// `previousRowFrames` holds each row's old drawn document frame; `originShift` is how far
+    /// the scroll origin moved meanwhile. Rows mounted only now (scrolled into view by the
+    /// change) have no old Y, so it is inferred: rows before `unchangedAbove` kept their
+    /// document Y, and rows from `unchangedFrom` on moved by `tailShift`. Without that, a row
+    /// revealed above a fold would sit still while its neighbours slide, overlapping it.
     private func animateVerticalShifts(
-        from previousRowYs: [String: CGFloat],
+        from previousRowFrames: [String: CGRect],
         originShift: CGFloat,
         unchangedAbove: Int,
         unchangedFrom: Int,
-        tailShift: CGFloat
+        tailShift: CGFloat,
+        maxShift: CGFloat
     ) {
         let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
         for (id, view) in mountedViews {
             let oldY: CGFloat
-            if let known = previousRowYs[id] {
-                oldY = known
+            if let known = previousRowFrames[id] {
+                oldY = known.minY
             } else if let idx = itemIndexByID[id], idx < unchangedAbove {
                 oldY = view.frame.minY
             } else if let idx = itemIndexByID[id], idx >= unchangedFrom {
@@ -1456,7 +1579,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 continue
             }
             let dy = oldY + originShift - view.frame.minY
-            guard abs(dy) > 1.0 && abs(dy) < 400, let viewLayer = view.layer else {
+            guard abs(dy) > 1.0 && abs(dy) < maxShift, let viewLayer = view.layer else {
                 // A row that now stays put must not keep sliding toward a stale target.
                 view.layer?.removeAnimation(forKey: "pcode.row.shift")
                 continue
@@ -1464,7 +1587,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             let anim = CABasicAnimation(keyPath: "transform.translation.y")
             anim.fromValue = dy
             anim.toValue = 0
-            anim.duration = 0.20
+            anim.duration = Self.collapseAnimationDuration
             anim.timingFunction = timing
             viewLayer.add(anim, forKey: "pcode.row.shift")
         }
@@ -2659,15 +2782,19 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
               case .toolGroup(let payload) = items[index].payload
         else { return }
         let willExpand = !payload.isExpanded
+        let collapseSnapshot: FoldSnapshot?
         if willExpand {
+            collapseSnapshot = nil
+            clearActiveFoldGhostLayers()
             unpinFromBottom()
             expandedGroupIDs.insert(id)
         } else {
+            collapseSnapshot = captureCollapseSnapshot(forGroupID: id, entries: payload.entries)
             expandedGroupIDs.remove(id)
         }
         syncProjectedItems(
             revealNewIDs: [],
-            foldSnapshot: nil,
+            foldSnapshot: collapseSnapshot,
             animateShift: true,
             animateExpandedGroupID: willExpand ? id : nil)
         if let proxy = accessibilityRowProxies[id],
