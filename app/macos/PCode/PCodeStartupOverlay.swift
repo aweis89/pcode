@@ -77,10 +77,11 @@ struct PCodeStartupOverlay: View {
             let horizontal = PCodeDock.horizontalLayout(in: geometry.size.width)
             ZStack(alignment: .bottomTrailing) {
                 Color.clear
+                let colors = PCodeGyroSpinner.paletteColors(for: ghostty.config)
                 HStack(spacing: 12) {
                     PCodeGyroSpinner(
-                        primary: primaryColor,
-                        secondary: secondaryColor,
+                        primary: colors.primary,
+                        secondary: colors.secondary,
                         isLight: colorScheme == .light
                     )
                     .frame(width: 26, height: 26)
@@ -115,10 +116,11 @@ struct PCodeStartupOverlay: View {
             ZStack {
                 ghostty.config.backgroundColor
 
+                let colors = PCodeGyroSpinner.paletteColors(for: ghostty.config)
                 VStack(spacing: 18) {
                     PCodeGyroSpinner(
-                        primary: primaryColor,
-                        secondary: secondaryColor,
+                        primary: colors.primary,
+                        secondary: colors.secondary,
                         isLight: colorScheme == .light
                     )
                     .frame(width: 92, height: 92)
@@ -140,14 +142,6 @@ struct PCodeStartupOverlay: View {
         guard let label, !label.isEmpty else { return nil }
         return resuming ? "Resuming \(label)" : label
     }
-
-    private var primaryColor: Color {
-        PCodeGyroSpinner.paletteColors(for: ghostty.config).primary
-    }
-
-    private var secondaryColor: Color {
-        PCodeGyroSpinner.paletteColors(for: ghostty.config).secondary
-    }
 }
 
 /// 3D counter-rotating gyroscope rings with orbiting beads and a pulsing core,
@@ -159,28 +153,15 @@ struct PCodeGyroSpinner: View {
     /// Tuned for small inline slots (~14pt): heavier strokes/beads, fewer
     /// segments, and a 30fps cap so long turns stay cheap.
     var compact: Bool = false
-    var paused: Bool = false
     @Environment(\.pcodeWindowOnScreen) private var onScreen
 
     private static let period: Double = 2.8
 
     /// Dual-tone accent colors pulled from the active terminal palette.
     static func paletteColors(for config: Ghostty.Config) -> (primary: Color, secondary: Color) {
-        let primary: Color
-        if let palette = config.palette([6, 4, 14, 12]),
-           let c = palette[6] ?? palette[4] ?? palette[14] ?? palette[12] {
-            primary = c
-        } else {
-            primary = .accentColor
-        }
-
-        let secondary: Color
-        if let palette = config.palette([5, 13, 4, 12]),
-           let c = palette[5] ?? palette[13] ?? palette[4] ?? palette[12] {
-            secondary = c
-        } else {
-            secondary = config.foregroundColor.opacity(0.8)
-        }
+        let palette = config.palette([4, 5, 6, 12, 13, 14])
+        let primary = palette?[6] ?? palette?[4] ?? palette?[14] ?? palette?[12] ?? .accentColor
+        let secondary = palette?[5] ?? palette?[13] ?? palette?[4] ?? palette?[12] ?? config.foregroundColor.opacity(0.8)
         return (primary, secondary)
     }
 
@@ -245,11 +226,12 @@ struct PCodeGyroSpinner: View {
         let c2 = RGB(secondary, isLight: isLight)
 
         let steps = compact ? 22 : 44
-        let ringRadius = compact ? 0.80 : 0.78
+        let ringRadius = compact ? 0.76 : 0.78
         let interval: Double? = compact ? (1.0 / 30.0) : nil
+        let glowScale = compact ? 1.55 : 2.2
 
         // Paused while the window is hidden or covered: nobody sees it.
-        TimelineView(.animation(minimumInterval: interval, paused: paused || !onScreen)) { context in
+        TimelineView(.animation(minimumInterval: interval, paused: !onScreen)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             let ang = (t.truncatingRemainder(dividingBy: Self.period) / Self.period) * (2.0 * .pi)
 
@@ -349,7 +331,7 @@ struct PCodeGyroSpinner: View {
                         )
                     case let .disc(x, y, radius, rgb, alpha, specular, glow):
                         if glow > 0 {
-                            let glowR = radius * 2.2
+                            let glowR = radius * glowScale
                             let glowRect = CGRect(x: x - glowR, y: y - glowR, width: glowR * 2, height: glowR * 2)
                             let grad = Gradient(stops: [
                                 .init(color: rgb.color(opacity: alpha * glow), location: 0),

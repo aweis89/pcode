@@ -605,8 +605,7 @@ private struct PCodeComposerStatusStrip: View {
                         primary: colors.primary,
                         secondary: colors.secondary,
                         isLight: stripColorScheme == .light,
-                        compact: true,
-                        paused: !onScreen
+                        compact: true
                     )
                     .frame(width: 14, height: 14)
                     Text(status.phase.isEmpty ? "Working" : status.phase)
