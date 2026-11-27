@@ -285,7 +285,7 @@ struct PCodeChangesInspectorView: View {
 
     // MARK: - Top Toolbar
 
-    private var isCompactToolbar: Bool { containerWidth < 430 }
+    private var isCompactToolbar: Bool { containerWidth < 490 }
     private var isVeryCompactToolbar: Bool { containerWidth < 360 }
 
     private var compactScopeTitle: String {
@@ -324,7 +324,7 @@ struct PCodeChangesInspectorView: View {
 
             followAgentButton
 
-            if !isCompactToolbar || canUseSideBySide {
+            if canUseSideBySide {
                 layoutToggleButton
             }
         }
@@ -527,9 +527,11 @@ struct PCodeChangesInspectorView: View {
             HStack(spacing: 3) {
                 Image(systemName: state.followAgent ? "pin.fill" : "pin")
                     .font(.system(size: 10.5, weight: .medium))
-                if containerWidth >= 420 {
+                if !isCompactToolbar {
                     Text("Follow")
                         .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
             .padding(.horizontal, 6)

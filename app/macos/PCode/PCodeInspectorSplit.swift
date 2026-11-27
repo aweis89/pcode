@@ -584,7 +584,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
     }
 
     private func inspectorHeader(totalWidth: CGFloat, isOverlay: Bool) -> some View {
-        let isCompact = totalWidth < 370
+        let isCompact = totalWidth < 430
         return HStack(spacing: isCompact ? 4 : 6) {
             HStack(spacing: isCompact ? 1 : 2) {
                 tabButton(.changes, badge: changesBadgeCount, pulsing: changesHasStreaming, compact: isCompact)

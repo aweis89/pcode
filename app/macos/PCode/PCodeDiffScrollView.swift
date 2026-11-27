@@ -48,6 +48,19 @@ struct PCodeDiffTheme: Equatable {
 
     let lineRowHeight: CGFloat
     let charAdvance: CGFloat
+    let unifiedOldNumWidth: CGFloat
+    let unifiedNewNumWidth: CGFloat
+    let unifiedMarkerWidth: CGFloat
+    let sideBySideNumWidth: CGFloat
+    let sideBySideMarkerWidth: CGFloat
+
+    var unifiedGutterWidth: CGFloat {
+        unifiedOldNumWidth + unifiedNewNumWidth + unifiedMarkerWidth
+    }
+
+    var sideBySideHalfGutterWidth: CGFloat {
+        sideBySideNumWidth + sideBySideMarkerWidth
+    }
 
     static func make(
         isDark: Bool,
@@ -69,6 +82,9 @@ struct PCodeDiffTheme: Equatable {
         let rowHeight = ceil(codeFont.pointSize * 1.32) + 1
         let sampleWidth = ("M" as NSString).size(withAttributes: [.font: codeFont]).width
         let charAdvance = max(6.0, sampleWidth)
+        let fiveDigitWidth = ceil(("99999" as NSString).size(withAttributes: [.font: gutterFont]).width)
+        let numColWidth = max(34, fiveDigitWidth + 9)
+        let markerWidth = max(12, ceil(("+" as NSString).size(withAttributes: [.font: gutterFont]).width) + 4)
 
         let primaryTintBase = isDark ? NSColor.white : NSColor.black
         let headerBase = surfaceBackground.blended(
@@ -112,7 +128,12 @@ struct PCodeDiffTheme: Equatable {
             dividerColor: primaryTintBase.withAlphaComponent(isDark ? 0.14 : 0.10),
             fillerCellFill: primaryTintBase.withAlphaComponent(isDark ? 0.035 : 0.025),
             lineRowHeight: rowHeight,
-            charAdvance: charAdvance
+            charAdvance: charAdvance,
+            unifiedOldNumWidth: numColWidth,
+            unifiedNewNumWidth: numColWidth,
+            unifiedMarkerWidth: markerWidth,
+            sideBySideNumWidth: numColWidth,
+            sideBySideMarkerWidth: max(11, markerWidth - 1)
         )
     }
 }
@@ -1270,11 +1291,6 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
     var rowKind: PCodeDiffRowKind { .unifiedLine }
     override var isFlipped: Bool { true }
 
-    static let oldNumWidth: CGFloat = 32
-    static let newNumWidth: CGFloat = 32
-    static let markerWidth: CGFloat = 12
-    static let gutterWidth: CGFloat = oldNumWidth + newNumWidth + markerWidth // 76pt
-
     private var payload: PCodeDiffUnifiedLinePayload?
     private var theme: PCodeDiffTheme?
     private var isSelected = false
@@ -1374,7 +1390,7 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             let s = String(oldNum) as NSString
             let sz = s.size(withAttributes: gutterAttrs)
             s.draw(
-                at: CGPoint(x: Self.oldNumWidth - 5 - sz.width, y: midY - sz.height * 0.5),
+                at: CGPoint(x: theme.unifiedOldNumWidth - 5 - sz.width, y: midY - sz.height * 0.5),
                 withAttributes: gutterAttrs
             )
         }
@@ -1382,7 +1398,7 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             let s = String(newNum) as NSString
             let sz = s.size(withAttributes: gutterAttrs)
             s.draw(
-                at: CGPoint(x: Self.oldNumWidth + Self.newNumWidth - 6 - sz.width, y: midY - sz.height * 0.5),
+                at: CGPoint(x: theme.unifiedOldNumWidth + theme.unifiedNewNumWidth - 6 - sz.width, y: midY - sz.height * 0.5),
                 withAttributes: gutterAttrs
             )
         }
@@ -1403,7 +1419,7 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             ]
             let s = marker as NSString
             let sz = s.size(withAttributes: markerAttrs)
-            let mx = Self.oldNumWidth + Self.newNumWidth + (Self.markerWidth - sz.width) * 0.5
+            let mx = theme.unifiedOldNumWidth + theme.unifiedNewNumWidth + (theme.unifiedMarkerWidth - sz.width) * 0.5
             s.draw(at: CGPoint(x: mx, y: midY - sz.height * 0.5), withAttributes: markerAttrs)
         }
 
@@ -1426,9 +1442,9 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
         )
         onMeasuredWidth?(entry.width + 24)
         let codeRect = CGRect(
-            x: Self.gutterWidth,
+            x: theme.unifiedGutterWidth,
             y: 0,
-            width: max(0, bounds.width - Self.gutterWidth),
+            width: max(0, bounds.width - theme.unifiedGutterWidth),
             height: bounds.height
         )
         drawCoreTextDiffLine(
@@ -1447,10 +1463,6 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
 private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView {
     var rowKind: PCodeDiffRowKind { .sideBySideRow }
     override var isFlipped: Bool { true }
-
-    static let numWidth: CGFloat = 32
-    static let markerWidth: CGFloat = 11
-    static let halfGutterWidth: CGFloat = numWidth + markerWidth // 43pt
 
     private var payload: PCodeDiffSideBySidePayload?
     private var theme: PCodeDiffTheme?
@@ -1644,7 +1656,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             let s = String(num) as NSString
             let sz = s.size(withAttributes: attrs)
             s.draw(
-                at: CGPoint(x: rect.minX + Self.numWidth - 5 - sz.width, y: midY - sz.height * 0.5),
+                at: CGPoint(x: rect.minX + theme.sideBySideNumWidth - 5 - sz.width, y: midY - sz.height * 0.5),
                 withAttributes: attrs
             )
         }
@@ -1665,7 +1677,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             let s = marker as NSString
             let sz = s.size(withAttributes: attrs)
             s.draw(
-                at: CGPoint(x: rect.minX + Self.numWidth + (Self.markerWidth - sz.width) * 0.5, y: midY - sz.height * 0.5),
+                at: CGPoint(x: rect.minX + theme.sideBySideNumWidth + (theme.sideBySideMarkerWidth - sz.width) * 0.5, y: midY - sz.height * 0.5),
                 withAttributes: attrs
             )
         }
@@ -1683,9 +1695,9 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             theme: theme
         )
         let codeRect = CGRect(
-            x: rect.minX + Self.halfGutterWidth,
+            x: rect.minX + theme.sideBySideHalfGutterWidth,
             y: rect.minY,
-            width: max(0, rect.width - Self.halfGutterWidth),
+            width: max(0, rect.width - theme.sideBySideHalfGutterWidth),
             height: rect.height
         )
         drawCoreTextDiffLine(
@@ -1986,17 +1998,17 @@ final class PCodeDiffDocumentView: NSView {
 
     var canScrollHorizontally: Bool {
         if currentLayout == .sideBySide {
-            let halfCodeW = max(0, floor((bounds.width - 1) * 0.5) - PCodeDiffSideBySideRowView.halfGutterWidth)
+            let halfCodeW = max(0, floor((bounds.width - 1) * 0.5) - theme.sideBySideHalfGutterWidth)
             return effectiveMaxLeftCodeWidth > halfCodeW + 1 || effectiveMaxRightCodeWidth > halfCodeW + 1
         }
-        let codeW = max(0, bounds.width - PCodeDiffUnifiedLineRowView.gutterWidth)
+        let codeW = max(0, bounds.width - theme.unifiedGutterWidth)
         return effectiveMaxUnifiedCodeWidth > codeW + 1
     }
 
     func adjustHorizontalScroll(deltaX: CGFloat, locationInView: NSPoint) {
         if currentLayout == .sideBySide {
             let halfW = floor((bounds.width - 1) * 0.5)
-            let halfCodeW = max(0, halfW - PCodeDiffSideBySideRowView.halfGutterWidth)
+            let halfCodeW = max(0, halfW - theme.sideBySideHalfGutterWidth)
             if locationInView.x <= halfW {
                 let maxOff = max(0, effectiveMaxLeftCodeWidth - halfCodeW)
                 leftHorizontalOffset = max(0, min(maxOff, leftHorizontalOffset - deltaX))
@@ -2006,7 +2018,7 @@ final class PCodeDiffDocumentView: NSView {
             }
             pushHorizontalOffsetsToMountedRows()
         } else {
-            let codeW = max(0, bounds.width - PCodeDiffUnifiedLineRowView.gutterWidth)
+            let codeW = max(0, bounds.width - theme.unifiedGutterWidth)
             let maxOff = max(0, effectiveMaxUnifiedCodeWidth - codeW)
             unifiedHorizontalOffset = max(0, min(maxOff, unifiedHorizontalOffset - deltaX))
             pushHorizontalOffsetsToMountedRows()
@@ -2026,11 +2038,11 @@ final class PCodeDiffDocumentView: NSView {
     private func clampHorizontalOffsets() {
         if currentLayout == .sideBySide {
             let halfW = floor((bounds.width - 1) * 0.5)
-            let halfCodeW = max(0, halfW - PCodeDiffSideBySideRowView.halfGutterWidth)
+            let halfCodeW = max(0, halfW - theme.sideBySideHalfGutterWidth)
             leftHorizontalOffset = min(leftHorizontalOffset, max(0, effectiveMaxLeftCodeWidth - halfCodeW))
             rightHorizontalOffset = min(rightHorizontalOffset, max(0, effectiveMaxRightCodeWidth - halfCodeW))
         } else {
-            let codeW = max(0, bounds.width - PCodeDiffUnifiedLineRowView.gutterWidth)
+            let codeW = max(0, bounds.width - theme.unifiedGutterWidth)
             unifiedHorizontalOffset = min(unifiedHorizontalOffset, max(0, effectiveMaxUnifiedCodeWidth - codeW))
         }
     }

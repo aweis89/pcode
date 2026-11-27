@@ -1320,14 +1320,22 @@ final class PCodeWorkspace: ObservableObject {
         PCodeStartupTrace.mark("workspace init")
         PCodeWorkspaceMode.warmLoginShellCache()
         typographySizeSubscription = PCodeTypography.shared.$size
+            .map(PCodeTypography.clampSize)
+            .removeDuplicates()
             .dropFirst()
-            .receive(on: DispatchQueue.main)
             .sink { [weak self] newSize in
                 guard let self else { return }
-                let delta = Int((newSize - self.lastTypographySize).rounded())
-                self.lastTypographySize = newSize
-                guard delta != 0 else { return }
-                self.applyFontSizeDelta(delta, reset: newSize == PCodeTypography.defaultSize)
+                let apply = {
+                    let delta = Int((newSize - self.lastTypographySize).rounded())
+                    self.lastTypographySize = newSize
+                    guard delta != 0 else { return }
+                    self.applyFontSizeDelta(delta, reset: newSize == PCodeTypography.defaultSize)
+                }
+                if Thread.isMainThread {
+                    apply()
+                } else {
+                    DispatchQueue.main.async(execute: apply)
+                }
             }
         peek.onTargetChange = { [weak self] in
             guard let self else { return }
@@ -3131,6 +3139,12 @@ final class PCodeWorkspace: ObservableObject {
     /// Every live Ghostty terminal surface owned by the workspace (editors, shells, and overlays).
     private var allLiveSurfaces: [Ghostty.SurfaceView] {
         var result = panes.flatMap(\.surfaces)
+        for pane in panes {
+            if let overlay = pane.surface.existingPCodePopup?.slot?.surface,
+               !result.contains(where: { $0 === overlay }) {
+                result.append(overlay)
+            }
+        }
         if let overlay = PCode.keyboardOverlay(in: window), !result.contains(where: { $0 === overlay }) {
             result.append(overlay)
         }
