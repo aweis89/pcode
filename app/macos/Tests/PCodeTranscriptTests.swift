@@ -3102,4 +3102,66 @@ struct PCodeTranscriptTests {
         #expect(axChildren[1].accessibilityLabel() == "Warning")
         #expect(axChildren[2].accessibilityLabel() == "Error")
     }
+
+    @Test @MainActor func toolGroupCollapseTucksClippedBehindPillWithoutSquish() {
+        let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
+        let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 500)
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 720, height: 500),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false)
+        window.contentView = scrollView
+        scrollView.layoutSubtreeIfNeeded()
+
+        let doc = scrollView.transcriptDocumentView
+        doc.groupTools = true
+        doc.minimumLiveCardSeconds = 0
+        let reducer = PCodeTranscriptEventReducer(documentView: doc)
+
+        func tuckLayers() -> [CALayer] {
+            (doc.layer?.sublayers ?? []).filter { $0.animation(forKey: "pcode.tool.fold.clipHeight") != nil }
+        }
+
+        reducer.apply(.turnStarted(prompt: "Inspect", isSide: false, runID: "r1"), reveal: false)
+        reducer.apply(.toolStarted(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", purpose: ""), reveal: true)
+        reducer.apply(.toolStarted(callID: "t2", parentCallID: "", name: "shell", detail: "pytest", command: "pytest", purpose: ""), reveal: true)
+        scrollView.layoutSubtreeIfNeeded()
+
+        // First tool converts in-place into a 1-tool group pill -> no tuck layer needed.
+        reducer.apply(.toolSummary(callID: "t1", parentCallID: "", name: "read_file", detail: "a.swift", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: true)
+        #expect(tuckLayers().isEmpty)
+
+        // Second tool settles below the pill -> tucks behind the pill with clipping and no vertical squish.
+        reducer.apply(.toolSummary(callID: "t2", parentCallID: "", name: "shell", detail: "pytest", command: "pytest", failed: false, elapsedSeconds: 0.2, error: "", result: "ok", isBackgroundJob: false), reveal: true)
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let liveTucks = tuckLayers()
+            #expect(liveTucks.count == 1)
+            if let clip = liveTucks.first {
+                #expect(clip.masksToBounds == true)
+                #expect(clip.zPosition < 0)
+                #expect(clip.sublayers?.first?.animation(forKey: "pcode.tool.fold.slide") != nil)
+                #expect(clip.sublayers?.first?.animation(forKey: "pcode.tool.fold.fade") != nil)
+            }
+        }
+
+        // Expand then manually collapse -> captures mounted children and tucks them behind the pill.
+        let groupID = doc.items[1].id
+        doc.toggleExpansionForAccessibility(id: groupID)
+        scrollView.layoutSubtreeIfNeeded()
+        #expect(doc.items.count == 4) // prompt + group + t1 + t2
+
+        doc.toggleExpansionForAccessibility(id: groupID)
+        #expect(doc.items.count == 2) // prompt + group
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let collapseTucks = tuckLayers()
+            #expect(collapseTucks.count >= 1)
+            #expect(collapseTucks.allSatisfy { $0.masksToBounds && $0.zPosition < 0 })
+        }
+
+        doc.setItems([], pinToBottom: false)
+        #expect(tuckLayers().isEmpty)
+        window.contentView = nil
+    }
 }

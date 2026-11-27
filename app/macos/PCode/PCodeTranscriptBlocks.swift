@@ -2023,7 +2023,6 @@ private final class PCodeContextMenuForwardingButton: NSButton {
 final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     let itemKind: PCodeTranscriptItem.Kind = .toolGroup
     let textView = PCodeTextKit2BlockView()
-    private let pulseLayer = CALayer()
     private let iconView = NSImageView()
     private let elapsedLabel = NSTextField(labelWithString: "")
     private let chevronContainer = NSView()
@@ -2036,7 +2035,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     private var lastHasFailures = false
     private var lastHovered = false
     private var lastStackPosition: PCodeToolStackPosition = .standalone
-    private var lastAbsorbPulse: UInt64 = 0
     private var hasConfigured = false
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
@@ -2049,9 +2047,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.masksToBounds = true
-
-        pulseLayer.opacity = 0
-        layer?.addSublayer(pulseLayer)
 
         iconView.imageScaling = .scaleProportionallyDown
         addSubview(iconView)
@@ -2101,8 +2096,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         setCurtainRevealProgress(nil)
         primaryTextView?.inkSweepFrontier = nil
         layer?.removeAllAnimations()
-        pulseLayer.removeAllAnimations()
-        pulseLayer.opacity = 0
         chevronContainer.layer?.removeAllAnimations()
         chevronContainer.layer?.transform = CATransform3DIdentity
         elapsedLabel.isHidden = true
@@ -2111,21 +2104,12 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         lastIsRunning = false
         lastIsExpanded = false
         lastHasFailures = false
-        lastAbsorbPulse = 0
         hasConfigured = false
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyLayerColors(animated: false)
-    }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        pulseLayer.frame = bounds
-        CATransaction.commit()
     }
 
     /// Single source of truth for rendered tool group summary text (shared by drawing, copy, and Find).
@@ -2301,8 +2285,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
     ) -> CGFloat {
         let wasConfigured = hasConfigured
         let expansionChanged = wasConfigured && (lastIsExpanded != payload.isExpanded)
-        // A window shows each settle as a row changing in place; no pulse needed.
-        let shouldPulse = wasConfigured && payload.windowRows == nil && (payload.absorbPulse > lastAbsorbPulse)
 
         self.onToggle = onToggle
         self.lastTheme = theme
@@ -2310,7 +2292,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         self.lastIsExpanded = payload.isExpanded
         self.lastHasFailures = payload.failedCount > 0
         self.lastStackPosition = stackPosition
-        self.lastAbsorbPulse = payload.absorbPulse
         self.hasConfigured = true
 
         let cfg = NSImage.SymbolConfiguration(pointSize: 10.5, weight: .medium)
@@ -2388,9 +2369,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         tapButton.toolTip = payload.isExpanded ? "Collapse tool group" : "Expand \(payload.totalCount) tool calls"
 
         applyLayerColors(animated: false)
-        if shouldPulse {
-            playAbsorbPulse()
-        }
         return totalHeight
     }
 
@@ -2422,20 +2400,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
         CATransaction.setDisableActions(true)
         chevLayer.transform = targetTransform
         CATransaction.commit()
-    }
-
-    private func playAbsorbPulse() {
-        guard window != nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        let pulse = CAKeyframeAnimation(keyPath: "opacity")
-        pulse.values = [0.0, 1.0, 0.0]
-        pulse.keyTimes = [0.0, 0.18, 1.0]
-        pulse.duration = 0.38
-        pulse.timingFunctions = [
-            CAMediaTimingFunction(name: .easeOut),
-            CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0),
-        ]
-        pulseLayer.removeAnimation(forKey: "pcode.group.pulse")
-        pulseLayer.add(pulse, forKey: "pcode.group.pulse")
     }
 
     private func applyLayerColors(animated: Bool) {
@@ -2482,9 +2446,6 @@ final class PCodeToolGroupCardView: NSView, PCodeTranscriptRowHosting {
             layer?.maskedCorners = effectiveStack.maskedCorners
             layer?.borderWidth = borderWidth
             layer?.borderColor = borderColor?.cgColor
-            pulseLayer.backgroundColor = theme.accent.withAlphaComponent(theme.isDark ? 0.18 : 0.13).cgColor
-            pulseLayer.cornerRadius = 6
-            pulseLayer.maskedCorners = effectiveStack.maskedCorners
             CATransaction.commit()
         }
     }
