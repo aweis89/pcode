@@ -113,12 +113,14 @@ struct PCodeHostStateTests {
             args: [["queued_prompts": ["also fix docs", "then deploy"], "queued_modes": ["steering", "queue"]]],
             kwargs: [:])
         #expect(deltaEvent != nil)
-        #expect(state.apply(deltaEvent!))
+        let appliedDelta = state.apply(deltaEvent!)
+        #expect(appliedDelta)
         #expect(state.pendingPrompts.count == 2)
         #expect(state.pendingPrompts[0].mode == .steering && state.pendingPrompts[0].text == "also fix docs")
         #expect(state.pendingPrompts[1].mode == .queued && state.pendingPrompts[1].text == "then deploy")
 
-        #expect(state.apply(.conversationReset))
+        let appliedReset = state.apply(.conversationReset)
+        #expect(appliedReset)
         #expect(state.pendingPrompts.isEmpty)
     }
 }

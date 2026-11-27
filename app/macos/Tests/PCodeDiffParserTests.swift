@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Ghostty
@@ -400,5 +401,142 @@ struct PCodeDiffParserTests {
         // Oldest entry (0) must have been evicted by FIFO.
         let evicted = store.lineTokens(for: ["let v0 = 0"], language: "swift")
         #expect(evicted == nil)
+    }
+
+    // MARK: - Native AppKit Diff Layout & Virtualization
+
+    @Test func layoutSnapshotFlattensVisibleRangeAndStickyHeaderPushUp() {
+        let lines1 = (1...20).map { (i: Int) in
+            PCodeDiffLine(id: "f1-l\(i)", kind: .added, oldLineNumber: nil, newLineNumber: i, text: "let a\(i) = \(i)")
+        }
+        let lines2 = (1...15).map { (i: Int) in
+            PCodeDiffLine(id: "f2-l\(i)", kind: .context, oldLineNumber: i, newLineNumber: i, text: "let b\(i) = \(i)")
+        }
+        let f1 = PCodeFileDiff(
+            path: "src/First.swift",
+            kind: .added,
+            added: 20,
+            removed: 0,
+            hunks: [PCodeDiffHunk(id: "h1", header: "@@ -0,0 +1,20 @@", oldStart: 0, oldCount: 0, newStart: 1, newCount: 20, lines: lines1)]
+        )
+        let f2 = PCodeFileDiff(
+            path: "src/Second.swift",
+            kind: .modified,
+            added: 0,
+            removed: 0,
+            hunks: [PCodeDiffHunk(id: "h2", header: "@@ -1,15 +1,15 @@", oldStart: 1, oldCount: 15, newStart: 1, newCount: 15, lines: lines2)]
+        )
+
+        let snap = PCodeDiffLayoutSnapshot.build(
+            diffs: [f1, f2],
+            layout: .unified,
+            collapsedFiles: [],
+            expandedGaps: [:],
+            focusedFilePath: nil,
+            updatedUnseenFiles: [],
+            copiedPath: nil,
+            lineRowHeight: 20,
+            charAdvance: 7,
+            bottomPadding: 16
+        )
+
+        // Two file headers indexed in ascending order.
+        #expect(snap.fileHeaderIndices.count == 2)
+        let secondHeaderIdx = snap.fileHeaderIndices[1]
+        let secondHeaderY = snap.yOffsets[secondHeaderIdx]
+        #expect(secondHeaderY > 400)
+
+        // Visible range in a 100pt slice near the top should only cover a handful of rows.
+        let vis = snap.visibleRange(in: CGRect(x: 0, y: 50, width: 500, height: 100))
+        #expect(vis.count > 0 && vis.count <= 8)
+
+        // Sticky header stays pinned at yOffset = 0 while well inside file 1.
+        let midFile1 = snap.stickyHeaderState(for: 120)
+        #expect(midFile1?.rowIndex == snap.fileHeaderIndices[0])
+        #expect(midFile1?.yOffset == 0)
+
+        // Sticky header pushes upward smoothly as file 2's header enters the top 30pt band.
+        let approachingFile2 = snap.stickyHeaderState(for: secondHeaderY - 10)
+        #expect(approachingFile2?.rowIndex == snap.fileHeaderIndices[0])
+        #expect(approachingFile2?.yOffset == -20)
+
+        // Once scrolled past file 2's header, file 2 becomes the sticky header.
+        let insideFile2 = snap.stickyHeaderState(for: secondHeaderY + 5)
+        #expect(insideFile2?.rowIndex == secondHeaderIdx)
+        #expect(insideFile2?.yOffset == 0)
+    }
+
+    @Test @MainActor func nativeDiffScrollViewVirtualizesLargeDiffAndUpdatesStickyHeader() {
+        let lines = (1...250).map { i in
+            PCodeDiffLine(
+                id: "big-l\(i)",
+                kind: i % 2 == 0 ? .added : .context,
+                oldLineNumber: i % 2 == 0 ? nil : i,
+                newLineNumber: i,
+                text: "let value\(i) = computeSomethingReallyLongForHorizontalScroll(firstParameter: \(i), secondParameter: \"overflowing-beyond-640pt-viewport-width\")"
+            )
+        }
+        let bigFile = PCodeFileDiff(
+            path: "src/BigFile.swift",
+            kind: .modified,
+            added: 125,
+            removed: 0,
+            hunks: [PCodeDiffHunk(id: "h1", header: "@@ -1,125 +1,250 @@", oldStart: 1, oldCount: 125, newStart: 1, newCount: 250, lines: lines)]
+        )
+
+        let theme = PCodeDiffTheme.make(
+            isDark: true,
+            surfaceBackground: .black,
+            foreground: .white,
+            codeFont: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        )
+        let syntaxStore = PCodeDiffSyntaxStore(highlighter: CountingSyntaxHighlighter())
+        let scrollView = PCodeDiffScrollView(theme: theme, syntaxStore: syntaxStore)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 640, height: 320)
+        scrollView.layoutSubtreeIfNeeded()
+
+        let snap = PCodeDiffLayoutSnapshot.build(
+            diffs: [bigFile],
+            layout: .unified,
+            collapsedFiles: [],
+            expandedGaps: [:],
+            focusedFilePath: nil,
+            updatedUnseenFiles: [],
+            copiedPath: nil,
+            lineRowHeight: theme.lineRowHeight,
+            charAdvance: theme.charAdvance,
+            bottomPadding: 16
+        )
+
+        scrollView.diffDocumentView.apply(
+            snapshot: snap,
+            layout: .unified,
+            selection: nil,
+            theme: theme,
+            followBottom: false,
+            allowSmoothGlide: false
+        )
+
+        // Must virtualize: only rows intersecting the 320pt viewport are mounted, not all 250+ lines.
+        let mountedCount = scrollView.diffDocumentView.subviews.count
+        #expect(mountedCount > 5)
+        #expect(mountedCount < 40)
+
+        // At top (y=0), sticky header is hidden.
+        #expect(scrollView.stickyHeaderView.isHidden)
+
+        // Scroll down 400pt: sticky header appears and document remains virtualized.
+        scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: 400))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        scrollView.diffDocumentView.handleClipBoundsDidChange()
+        #expect(!scrollView.stickyHeaderView.isHidden)
+        #expect(scrollView.diffDocumentView.subviews.count < 40)
+
+        // Horizontal scroll adjusts offset smoothly and stays clamped >= 0.
+        #expect(scrollView.diffDocumentView.canScrollHorizontally)
+        scrollView.diffDocumentView.adjustHorizontalScroll(deltaX: -60, locationInView: NSPoint(x: 150, y: 450))
+        #expect(scrollView.diffDocumentView.unifiedHorizontalOffset > 0)
+        scrollView.diffDocumentView.adjustHorizontalScroll(deltaX: 500, locationInView: NSPoint(x: 150, y: 450))
+        #expect(scrollView.diffDocumentView.unifiedHorizontalOffset == 0)
     }
 }
