@@ -156,3 +156,104 @@ def test_native_transcript_omits_model_and_context_from_footer(monkeypatch):
         assert "antigravity:gemini-4-neon" not in editor_only_text
         assert "42k/200k" not in editor_only_text
         assert "steering" in editor_only_text
+
+
+def test_native_composer_chrome_hides_terminal_status_and_toolbar(monkeypatch):
+    import base64
+    import json
+
+    from pcode import drawer
+
+    activity = Activity(prompt="hi", prompt_state="running", status="Thinking · reading")
+    transcript = Transcript(Console(force_terminal=False, width=100))
+    with create_pipe_input() as pipe:
+        session = PromptSession(
+            input=pipe, output=DummyOutput(), bottom_toolbar=lambda: [("text", "bar")]
+        )
+        layout = PromptLayout(
+            session,
+            activity,
+            transcript,
+            shortcuts=SimpleNamespace(),
+            session_title=lambda: "My Session",
+            composer_state=lambda: {
+                "send_mode": "steering",
+                "send_mode_once": True,
+                "starting": False,
+                "steering_pending": 1,
+                "queued": 2,
+                "jobs": 0,
+                "btw_running": 0,
+                "btw_ready": 1,
+                "cache_note": "",
+            },
+        )
+    monkeypatch.setattr(layout, "size", lambda: Size(rows=40, columns=100))
+
+    # Terminal UI keeps the bottom toolbar, idle title, and terminal status border.
+    with ui_surface.override_ui_surface(ui_surface.UISurface.TERMINAL):
+        assert not layout.native_composer_chrome()
+        assert layout.toolbar_shown()
+        assert layout.top_row_filled()
+        assert layout.needs_animation()
+
+    # Docked Swift UI hides the terminal toolbar & top status row and emits composer APC payload.
+    monkeypatch.setattr(dock, "_active", SimpleNamespace())
+    with ui_surface.override_ui_surface(ui_surface.UISurface.SWIFT):
+        assert layout.native_composer_chrome()
+        assert not layout.toolbar_shown()
+        assert not layout.top_row_filled()
+        assert layout.idle_title() == []
+        assert not layout.needs_animation()
+
+        payload = layout.native_composer_payload()
+        assert payload == {
+            "busy": True,
+            "phase": "Thinking",
+            "send_mode": "steering",
+            "send_mode_once": True,
+            "starting": False,
+            "steering_pending": 1,
+            "queued": 2,
+            "jobs": 0,
+            "btw_running": 0,
+            "btw_ready": 1,
+            "cache_note": "",
+        }
+        # Running a single tool reports coarse "Working" (no command text).
+        activity.tools.record(
+            ToolStarted(call_id="c1", name="shell", detail="ls -la", command="ls -la")
+        )
+        assert layout.native_composer_payload()["phase"] == "Working"
+        # Multiple parallel tools report the count.
+        activity.tools.record(
+            ToolStarted(call_id="c2", name="read_file", detail="a.py", command="")
+        )
+        assert layout.native_composer_payload()["phase"] == "Running 2 tools"
+
+        # APC round-trip encodes compact JSON cleanly.
+        apc = drawer.composer_status(payload)
+        assert apc.startswith("\x1b_pcode;composer;") and apc.endswith("\x1b\\")
+        b64 = apc[len("\x1b_pcode;composer;") : -len("\x1b\\")]
+        assert json.loads(base64.b64decode(b64)) == payload
+
+        # Attached thinking band is suppressed in native transcript mode.
+        activity.attach_activity = True
+        activity.thought = "step by step reasoning"
+        assert layout.band_rows() == []
+
+        # sync_native_composer deduplicates unchanged payloads and emits on change.
+        writes: list[str] = []
+        fake_app = SimpleNamespace(
+            is_done=False,
+            output=SimpleNamespace(write_raw=writes.append, flush=lambda: None),
+        )
+        layout.sync_native_composer(fake_app)
+        assert len(writes) == 1
+        layout.sync_native_composer(fake_app)
+        assert len(writes) == 1  # unchanged -> no write
+        activity.prompt_state = "done"
+        layout.sync_native_composer(fake_app)
+        assert len(writes) == 2
+        assert layout.native_composer_payload()["busy"] is False
+        assert layout.native_composer_payload()["phase"] == ""

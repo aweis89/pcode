@@ -3612,6 +3612,7 @@ class PromptLayout:
         shortcuts: PrefixKeys,
         session_title: Callable[[], str] = lambda: "",
         kitty_spinners: kitty_spinner.KittySpinners | None = None,
+        composer_state: Callable[[], dict] | None = None,
     ):
         self.session = session
         self.activity = activity
@@ -3619,6 +3620,8 @@ class PromptLayout:
         self.shortcuts = shortcuts
         self.session_title = session_title
         self.kitty_spinners = kitty_spinners
+        self.composer_state = composer_state
+        self._composer_sent: dict | None = None
         self.editor = _fit_editor(session)
         self.render_cache = None
         self.root: _MeasuredSplit | None = None  # set by `layout()`
@@ -4072,6 +4075,10 @@ class PromptLayout:
         """
         if self.btw_docked():
             return []
+        from pcode.ui_surface import native_transcript_active
+
+        if native_transcript_active():
+            return []
         attached = self.activity.attach_activity and self.activity.status_shown
         return self.thought_rows() if attached else []
 
@@ -4282,7 +4289,12 @@ class PromptLayout:
 
     def startup_border_active(self, attached: bool | None = None) -> bool:
         """Whether the editor's top border is currently showing the startup animation."""
-        if self.btw_docked() or not self.activity.startup_animating or self.activity.status_shown:
+        if (
+            self.btw_docked()
+            or self.native_composer_chrome()
+            or not self.activity.startup_animating
+            or self.activity.status_shown
+        ):
             return False
         if attached is None:
             attached = self.plan_attached()
@@ -4600,7 +4612,7 @@ class PromptLayout:
         whether the turn worked; while a turn runs, the status row takes the
         border instead.
         """
-        if self.btw_docked():
+        if self.btw_docked() or self.native_composer_chrome():
             return []
         # Corners, stub, a space either side, and at least one rule cell.
         # Shaded, `heading_border` draws it: the lead, a space, a rule cell, the corner.
@@ -4721,10 +4733,76 @@ class PromptLayout:
         lead = " " * self.task_padding()
         return [("", lead), *self.btw_label(self.size().columns - 2 - len(lead))]
 
+    def native_composer_chrome(self) -> bool:
+        """True when Pcode.app renders the docked composer's status & steering strip natively."""
+        from pcode.ui_surface import native_transcript_active
+
+        return native_transcript_active() and not self.btw_docked()
+
+    def native_composer_payload(self) -> dict:
+        """Coarse live status + send-mode payload for Pcode.app's native composer strip."""
+        activity = self.activity
+        state = self.composer_state() if self.composer_state is not None else {}
+        busy = bool(activity.status_shown or activity.startup_label or state.get("starting"))
+        phase = ""
+        if activity.startup_label:
+            phase = plain(activity.startup_label, limit=None)
+        elif activity.status_shown:
+            if activity.prompt_kind != "user":
+                phase = plain(activity.prompt, limit=None)
+            elif agents := activity.tools.delegates:
+                count = len(agents)
+                phase = f"Waiting for {count} agent{'s' * (count > 1)}"
+            elif activity.tools.active is not None and activity.tools.active.settled is None:
+                running = activity.tools.running
+                phase = "Working" if running < 2 else f"Running {running} tools"
+            else:
+                raw_phase = status_parts(activity.status)[0]
+                if (
+                    raw_phase.startswith("Running")
+                    and not activity.tools.running
+                    and not activity.user_command
+                ):
+                    phase = "Waiting for model"
+                else:
+                    phase = raw_phase or "Thinking"
+        elif state.get("starting"):
+            phase = "Starting"
+        return {
+            "busy": busy,
+            "phase": phase,
+            "send_mode": str(state.get("send_mode") or "steering"),
+            "send_mode_once": bool(state.get("send_mode_once")),
+            "starting": bool(state.get("starting")),
+            "steering_pending": int(state.get("steering_pending") or 0),
+            "queued": int(state.get("queued") or 0),
+            "jobs": int(state.get("jobs") or 0),
+            "btw_running": int(state.get("btw_running") or 0),
+            "btw_ready": int(state.get("btw_ready") or 0),
+            "cache_note": str(state.get("cache_note") or ""),
+        }
+
+    def sync_native_composer(self, app) -> None:
+        """Send `pcode;composer;<base64 json>` to the docked surface whenever state changes."""
+        from pcode.ui_surface import native_transcript_active
+
+        if not native_transcript_active() or app.is_done:
+            return
+        from pcode.drawer import composer_status
+
+        payload = self.native_composer_payload()
+        if payload == self._composer_sent:
+            return
+        self._composer_sent = payload
+        app.output.write_raw(composer_status(payload))
+        app.output.flush()
+
     def top_row_filled(self) -> bool:
         """Whether the editor's top row carries text: a status, tasks, or a title."""
         if self.btw_docked():
             return self.btw_running_aside() is not None
+        if self.native_composer_chrome():
+            return self.plan_attached()
         return (
             self.activity.status_shown
             or bool(self.activity.startup_label)
@@ -4749,6 +4827,8 @@ class PromptLayout:
         if attached is None:
             attached = self.plan_attached()
         if self.btw_bar_height(attached=attached):
+            return 0
+        if self.native_composer_chrome():
             return 0
         return int(
             self.frame_shaded()
@@ -4826,7 +4906,13 @@ class PromptLayout:
         # The top border carries the running status, else the attached tasks'
         # heading. Attached tasks sit under it, and a divider separates them
         # from the text; frame_height counts both.
-        status = Condition(lambda: self.activity.status_shown and not self.btw_docked())
+        status = Condition(
+            lambda: (
+                self.activity.status_shown
+                and not self.btw_docked()
+                and not self.native_composer_chrome()
+            )
+        )
         btw_status = Condition(lambda: self.btw_running_aside() is not None)
         startup = Condition(self.startup_border_active)
         attached = Condition(self.plan_attached)
@@ -4892,7 +4978,11 @@ class PromptLayout:
 
     def toolbar_shown(self) -> bool:
         """Whether the main conversation's bottom toolbar is shown."""
-        return self.session.bottom_toolbar is not None and not self.btw_docked()
+        return (
+            self.session.bottom_toolbar is not None
+            and not self.btw_docked()
+            and not self.native_composer_chrome()
+        )
 
     def badge_on_toolbar(self) -> bool:
         """Docked, the vi mode badge floats right on the status bar, not in the box."""
@@ -4953,9 +5043,11 @@ class PromptLayout:
 
     def needs_animation(self) -> bool:
         activity = self.activity
+        terminal_spinner = (
+            activity.busy or activity.status_shown
+        ) and not self.native_composer_chrome()
         return (
-            activity.busy
-            or activity.status_shown
+            terminal_spinner
             or self.startup_border_active()
             # Keep redrawing while a notice is live: nothing else will ask for
             # the frame that finally removes it.
@@ -5017,6 +5109,7 @@ class PromptLayout:
             self.animation_task = None
         self.sync_native_menu(app)
         self.sync_native_toast(app)
+        self.sync_native_composer(app)
         self.replay_after_menu(app)
         self.refill_after_shrink(app)
 
@@ -5241,6 +5334,7 @@ def create_prompt(
     on_btw_close=None,
     key_prefix: str | None = None,
     session_title: Callable[[], str] = lambda: "",
+    composer_state: Callable[[], dict] | None = None,
     drafts: Drafts | None = None,
     kitty_spinners: kitty_spinner.KittySpinners | None = None,
     **kwargs,
@@ -5355,7 +5449,13 @@ def create_prompt(
     )
 
     prompt_layout = PromptLayout(
-        session, activity, transcript, shortcuts, session_title, kitty_spinners=kitty_spinners
+        session,
+        activity,
+        transcript,
+        shortcuts,
+        session_title,
+        kitty_spinners=kitty_spinners,
+        composer_state=composer_state,
     )
     if transcript is not None:
 
