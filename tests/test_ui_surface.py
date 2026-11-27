@@ -147,3 +147,12 @@ def test_native_transcript_omits_model_and_context_from_footer(monkeypatch):
         assert "antigravity:gemini-4-neon (high)" in effort_btw_text
         assert "42k/200k" not in effort_btw_text
         close(app.activity)
+
+    # Editor-only mode always implies the Swift titlebar even without PCODE_NATIVE_TRANSCRIPT.
+    app.editor_only = True
+    monkeypatch.setattr(dock, "_active", None)
+    with ui_surface.override_ui_surface(ui_surface.UISurface.TERMINAL):
+        editor_only_text = fragment_list_to_text(app.toolbar())
+        assert "antigravity:gemini-4-neon" not in editor_only_text
+        assert "42k/200k" not in editor_only_text
+        assert "steering" in editor_only_text

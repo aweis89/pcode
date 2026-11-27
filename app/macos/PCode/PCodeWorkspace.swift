@@ -1289,6 +1289,7 @@ final class PCodeWorkspace: ObservableObject {
 
     let ghostty: Ghostty.App
     let peek = PCodePeekController()
+    let usageStore = PCodeUsageStore()
     /// Whether the workspace window is on screen; set by its controller.
     var windowVisible: () -> Bool = { false }
     /// The same, for SwiftUI views (`pcodeWindowOnScreen`); kept current by `syncOcclusion`.
@@ -4892,6 +4893,7 @@ private struct PCodeWindowTitleBar: View {
                     PCodeActiveSessionTitleContent(
                         pane: pane,
                         workspace: workspace,
+                        usageStore: workspace.usageStore,
                         leadingClearance: leadingClearance
                     )
                     .id(pane.id)
@@ -4924,7 +4926,13 @@ private struct PCodeWindowTitleBar: View {
 private struct PCodeActiveSessionTitleContent: View {
     @ObservedObject var pane: PCodeSessionPane
     @ObservedObject var workspace: PCodeWorkspace
+    @ObservedObject var usageStore: PCodeUsageStore
+    @Environment(\.controlActiveState) private var controlActiveState
     let leadingClearance: CGFloat
+
+    @State private var wasRunning = false
+
+    private static let usageRefreshTimer = Timer.publish(every: 180, on: .main, in: .common).autoconnect()
 
     private var savedInfo: PCodeSessionInfo? {
         workspace.info(for: pane)
@@ -4961,11 +4969,28 @@ private struct PCodeActiveSessionTitleContent: View {
         return .secondary
     }
 
+    private var usageWindows: [PCodeUsageWindow] {
+        usageStore.windows(forModel: pane.modelName)
+    }
+
+    private func usageAccentColor(for usedPercent: Int) -> Color {
+        if usedPercent >= 90 { return .red.opacity(0.9) }
+        if usedPercent >= 75 { return .orange.opacity(0.9) }
+        return .secondary
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             HStack(spacing: 7) {
                 PCodeActivityIndicator(activity: pane.activity, unseen: false)
                     .frame(width: 10, height: 10)
+
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(.primary.opacity(0.92))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
 
                 HStack(spacing: 4) {
                     Image(systemName: "folder.fill")
@@ -4997,19 +5022,12 @@ private struct PCodeActiveSessionTitleContent: View {
                     Capsule(style: .continuous)
                         .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
-
-                Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.primary.opacity(0.92))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
             }
             .frame(minWidth: 0)
 
             Spacer(minLength: 12)
 
-            if !modelParts.name.isEmpty || !pane.contextUsage.isEmpty {
+            if !modelParts.name.isEmpty || !pane.contextUsage.isEmpty || !usageWindows.isEmpty {
                 HStack(spacing: 6) {
                     if !modelParts.name.isEmpty {
                         HStack(spacing: 3) {
@@ -5083,14 +5101,67 @@ private struct PCodeActiveSessionTitleContent: View {
                         )
                         .layoutPriority(1)
                     }
+
+                    if !usageWindows.isEmpty {
+                        HStack(spacing: 5) {
+                            ForEach(Array(usageWindows.enumerated()), id: \.element.id) { index, window in
+                                if index > 0 {
+                                    Text("·")
+                                        .font(.system(size: 10, weight: .regular))
+                                        .foregroundStyle(.secondary.opacity(0.45))
+                                }
+                                HStack(spacing: 2.5) {
+                                    Text(window.label)
+                                        .font(.system(size: 10.5, weight: .regular))
+                                        .foregroundStyle(.secondary.opacity(0.75))
+                                    Text("\(window.usedPercent)%")
+                                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                                        .foregroundStyle(usageAccentColor(for: window.usedPercent))
+                                }
+                            }
+                        }
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        )
+                        .layoutPriority(1)
+                    }
                 }
             }
         }
         .padding(.leading, leadingClearance)
         .padding(.trailing, 12)
-        .onAppear { syncWindowTitle() }
+        .onAppear {
+            syncWindowTitle()
+            wasRunning = pane.activity == .running
+            usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
+        }
         .onChange(of: title) { _ in syncWindowTitle() }
         .onChange(of: projectName) { _ in syncWindowTitle() }
+        .onChange(of: pane.modelName) { model in
+            usageStore.refreshIfNeeded(forModel: model, directory: pane.directory)
+        }
+        .onChange(of: pane.activity) { activity in
+            if wasRunning, activity != .running {
+                usageStore.refreshIfNeeded(
+                    forModel: pane.modelName,
+                    directory: pane.directory,
+                    afterTurn: true)
+            }
+            wasRunning = activity == .running
+        }
+        .onReceive(Self.usageRefreshTimer) { _ in
+            guard controlActiveState != .inactive else { return }
+            usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
+        }
     }
 
     private func syncWindowTitle() {
