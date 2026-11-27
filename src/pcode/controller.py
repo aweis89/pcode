@@ -4492,6 +4492,7 @@ class SessionController:
         self.view.note(
             f"Merged {count} into the conversation, which continues from the last answer."
         )
+        self.view.session_changed()
 
     async def summarize_thread(self, follows: Aside, instructions: str) -> None:
         """Summarize `follows`'s thread and send the summary to the model.

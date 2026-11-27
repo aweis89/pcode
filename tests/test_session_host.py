@@ -3154,6 +3154,9 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             assert ready["type"] == "ready"
             assert ready["version"] == TRANSCRIPT_OBSERVER_VERSION
             assert ready["paced_scrollback"] in ("rows", "typed", "off")
+            assert "effort" in ready
+            assert "context" in ready
+            assert not ready["context"].startswith(" · ")
             methods = [c[0] for c in ready["calls"]]
             assert "turn_event" in methods
             assert "redraw" not in methods
@@ -3185,6 +3188,34 @@ def test_observe_transcript_streams_history_catchup_and_live_data_only(tmp_path,
             host.emit("note", ("after replay",), {})
             msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
             assert (msg["method"], msg["args"]) == ("note", ["after replay"])
+
+            # Changing model/effort/context notifies transcript observers with `session_metadata`.
+            host.controller.model = "anthropic:claude-sonnet"
+            host.controller.current_effort = lambda: "high"
+            host.controller.context_label = lambda: " · 12k/200k"
+            host.push_state()
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert msg["method"] == "session_metadata"
+            assert msg["args"][0] == {
+                "model": "anthropic:claude-sonnet",
+                "effort": "high",
+                "context": "12k/200k",
+            }
+
+            # Repeating push_state with identical metadata does not re-emit `session_metadata`,
+            # while `conversation_reset` clears the dedup cache so the next push always resends.
+            host.push_state()
+            host.emit("note", ("dedup sentinel",), {})
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert (msg["method"], msg["args"]) == ("note", ["dedup sentinel"])
+
+            host.emit("conversation_reset", (), {})
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert msg["method"] == "conversation_reset"
+            host.push_state()
+            msg = await asyncio.wait_for(read_message(reader), timeout=2.0)
+            assert msg["method"] == "session_metadata"
+            assert msg["args"][0]["context"] == "12k/200k"
 
             # Observer is read-only: RPC requests are refused with PermissionError.
             req = {"type": "request", "id": 1, "method": "submit", "args": ["hi", "queue"]}

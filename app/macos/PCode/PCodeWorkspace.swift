@@ -888,6 +888,11 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// else the terminal's (`PCodePaneStateResolver`). Copied out so the sidebar does
     /// not observe the whole surface, which publishes on every resize and focus change.
     @Published private(set) var title = ""
+    /// Active model (`provider:name`), effort, and context usage (`used/limit`)
+    /// streamed from the session host for the native window titlebar.
+    @Published private(set) var modelName = ""
+    @Published private(set) var modelEffort = ""
+    @Published private(set) var contextUsage = ""
     /// The session host's entry while one holds this pane's session.
     @Published private(set) var hostStatus: PCodeHostStatus?
     private var resolver = PCodePaneStateResolver()
@@ -932,6 +937,12 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
 
     @MainActor
     func applyInspectorEvent(_ event: PCodeHostEvent) {
+        if case .sessionMetadata(let model, let effort, let context) = event {
+            if modelName != model { modelName = model }
+            if modelEffort != effort { modelEffort = effort }
+            if contextUsage != context { contextUsage = context }
+            return
+        }
         changesStore.apply(event)
         agentsStore.apply(event)
         commandsStore.apply(event)
@@ -4931,10 +4942,27 @@ private struct PCodeActiveSessionTitleContent: View {
         savedInfo?.worktreeName ?? pane.worktreeName
     }
 
-    var body: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: leadingClearance)
+    private var modelParts: (provider: String?, name: String) {
+        PCodeSessionMetadataDisplay.splitModel(pane.modelName)
+    }
 
+    private var effortLabel: String? {
+        PCodeSessionMetadataDisplay.normalizedEffort(pane.modelEffort)
+    }
+
+    private var contextRatio: Double? {
+        PCodeSessionMetadataDisplay.contextFillRatio(pane.contextUsage)
+    }
+
+    private var contextAccentColor: Color {
+        guard let ratio = contextRatio else { return .secondary }
+        if ratio >= 0.90 { return .red.opacity(0.9) }
+        if ratio >= 0.75 { return .orange.opacity(0.9) }
+        return .secondary
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
             HStack(spacing: 7) {
                 PCodeActivityIndicator(activity: pane.activity, unseen: false)
                     .frame(width: 10, height: 10)
@@ -4977,9 +5005,89 @@ private struct PCodeActiveSessionTitleContent: View {
                     .truncationMode(.tail)
                     .layoutPriority(1)
             }
+            .frame(minWidth: 0)
 
-            Spacer(minLength: 16)
+            Spacer(minLength: 12)
+
+            if !modelParts.name.isEmpty || !pane.contextUsage.isEmpty {
+                HStack(spacing: 6) {
+                    if !modelParts.name.isEmpty {
+                        HStack(spacing: 3) {
+                            if let provider = modelParts.provider {
+                                Text(provider)
+                                    .font(.system(size: 10.5, weight: .regular))
+                                    .foregroundStyle(.secondary.opacity(0.75))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Text(":")
+                                    .font(.system(size: 10.5, weight: .regular))
+                                    .foregroundStyle(.secondary.opacity(0.45))
+                            }
+                            Text(modelParts.name)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .layoutPriority(1)
+                            if let effortLabel {
+                                Text("(\(effortLabel))")
+                                    .font(.system(size: 10.5, weight: .regular))
+                                    .foregroundStyle(.secondary.opacity(0.75))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        )
+                    }
+
+                    if !pane.contextUsage.isEmpty {
+                        HStack(spacing: 5) {
+                            if let ratio = contextRatio {
+                                let barWidth: CGFloat = 24
+                                let fillWidth: CGFloat = ratio > 0 ? max(2, barWidth * ratio) : 0
+                                ZStack(alignment: .leading) {
+                                    Capsule(style: .continuous)
+                                        .fill(Color.primary.opacity(0.10))
+                                    if fillWidth > 0 {
+                                        Capsule(style: .continuous)
+                                            .fill(contextAccentColor.opacity(0.8))
+                                            .frame(width: fillWidth)
+                                    }
+                                }
+                                .frame(width: barWidth, height: 3.5)
+                            }
+                            Text(pane.contextUsage)
+                                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                                .foregroundStyle(contextAccentColor)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        )
+                        .layoutPriority(1)
+                    }
+                }
+            }
         }
+        .padding(.leading, leadingClearance)
+        .padding(.trailing, 12)
         .onAppear { syncWindowTitle() }
         .onChange(of: title) { _ in syncWindowTitle() }
         .onChange(of: projectName) { _ in syncWindowTitle() }

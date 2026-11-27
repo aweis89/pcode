@@ -141,6 +141,7 @@ final class PCodeLiveTranscriptController: ObservableObject {
         self.attachedHostID = normalizedHost
         documentView.paceMode = paceMode
         resetSessionState(sessionID: normalizedSession ?? "")
+        onHostEvent?(.sessionMetadata(model: "", effort: "", context: ""))
         connectionState = initialRelaunchAttempt > 0
             ? .relaunching(attempt: initialRelaunchAttempt, maxAttempts: maxRelaunchAttempts)
             : .starting
@@ -267,6 +268,10 @@ final class PCodeLiveTranscriptController: ObservableObject {
                     self.onHostEvent?(.history(welcome.history))
                 }
                 self.shownHistory = welcome.catchUpCalls.isEmpty ? welcome.history : nil
+                self.onHostEvent?(.sessionMetadata(
+                    model: welcome.model,
+                    effort: welcome.effort,
+                    context: welcome.context))
                 var state = PCodeHostSessionState(welcome: welcome)
                 for event in welcome.catchUpCalls {
                     state.apply(event)

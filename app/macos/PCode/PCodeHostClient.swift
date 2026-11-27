@@ -126,6 +126,66 @@ enum PCodeHostEvent: Equatable {
     case sessionChanged(String)
     /// `/show-thinking` changed on the host (`thinking_mode`); carries pcode's mode name.
     case thinkingMode(String)
+    /// Model, effort, and context window usage for the native window titlebar (`session_metadata`).
+    case sessionMetadata(model: String, effort: String, context: String)
+}
+
+/// Parsing helpers for displaying `session_metadata` in the native title bar.
+enum PCodeSessionMetadataDisplay {
+    /// Splits `"provider:model"` on the first colon when both sides are non-empty.
+    static func splitModel(_ raw: String) -> (provider: String?, name: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let colon = trimmed.firstIndex(of: ":") else {
+            return (nil, trimmed)
+        }
+        let provider = String(trimmed[..<colon])
+        let name = String(trimmed[trimmed.index(after: colon)...])
+        guard !provider.isEmpty, !name.isEmpty else {
+            return (nil, trimmed)
+        }
+        return (provider, name)
+    }
+
+    /// Returns the effort label when active, or nil when empty or `"n/a"`.
+    static func normalizedEffort(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "n/a" else { return nil }
+        return trimmed
+    }
+
+    /// Parses `"used/limit"` (e.g. `"42k/200k"`, `"~1.2m/2m"`) into a clamped `0...1` ratio.
+    static func contextFillRatio(_ raw: String) -> Double? {
+        let cleaned = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "·", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = cleaned.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let used = parseCompactTokens(String(parts[0])),
+              let limit = parseCompactTokens(String(parts[1])),
+              limit > 0
+        else { return nil }
+        return min(max(used / limit, 0), 1)
+    }
+
+    private static func parseCompactTokens(_ raw: String) -> Double? {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("~") { text.removeFirst() }
+        guard !text.isEmpty else { return nil }
+        let multiplier: Double
+        if let last = text.last?.lowercased(), last == "k" || last == "m" || last == "b" {
+            text.removeLast()
+            switch last {
+            case "k": multiplier = 1_000
+            case "m": multiplier = 1_000_000
+            default: multiplier = 1_000_000_000
+            }
+        } else {
+            multiplier = 1
+        }
+        guard let value = Double(text), value.isFinite, value >= 0 else { return nil }
+        return value * multiplier
+    }
 }
 
 /// One user message waiting to be delivered to the model (either steering the active turn
@@ -341,6 +401,12 @@ enum PCodeHostEventDecoder {
         case "thinking_mode":
             guard let mode = args.first as? String, !mode.isEmpty else { return nil }
             return .thinkingMode(mode)
+        case "session_metadata":
+            guard let dict = args.first as? [String: Any] else { return nil }
+            let model = (dict["model"] as? String) ?? ""
+            let effort = (dict["effort"] as? String) ?? ""
+            let context = (dict["context"] as? String) ?? ""
+            return .sessionMetadata(model: model, effort: effort, context: context)
         default:
             // Terminal-only or unknown notifications are ignored safely.
             return nil
@@ -897,8 +963,8 @@ final class PCodeTranscriptEventReducer {
                 spacingAfter: 6)
             doc.upsertItem(item, reveal: reveal)
 
-        case .sessionState, .sessionChanged:
-            // Session state, not transcript content (`PCodeHostSessionState`).
+        case .sessionState, .sessionChanged, .sessionMetadata:
+            // Session state and titlebar metadata, not transcript content.
             break
 
         case .thinkingMode(let mode):
@@ -1053,6 +1119,9 @@ final class PCodeHostSocketClient {
         let pacedScrollback: PCodeStreamingPaceMode
         /// The host's `show_thinking` mode; nil from a host too old to report it.
         var showThinking: String? = nil
+        var model: String = ""
+        var effort: String = ""
+        var context: String = ""
         var queuedPrompts: [String] = []
         var queuedModes: [String] = []
         let history: [PCodeHostEvent]
@@ -1331,6 +1400,9 @@ final class PCodeHostSocketClient {
             hostState: (obj["state"] as? String) ?? "",
             pacedScrollback: pace,
             showThinking: obj["show_thinking"] as? String,
+            model: (obj["model"] as? String) ?? "",
+            effort: (obj["effort"] as? String) ?? "",
+            context: (obj["context"] as? String) ?? "",
             queuedPrompts: (obj["queued_prompts"] as? [String]) ?? [],
             queuedModes: (obj["queued_modes"] as? [String]) ?? [],
             history: history,
