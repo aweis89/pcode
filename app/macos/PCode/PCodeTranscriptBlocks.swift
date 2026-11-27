@@ -251,7 +251,8 @@ final class PCodeBlockActionButton: NSButton {
     func flashCopied() {
         resetWork?.cancel()
         isShowingCopied = true
-        setTitle("Copied", symbol: "checkmark", accessibilityTitle: "Copied", color: .systemGreen)
+        let flashText = idleTitle.isEmpty ? "" : "Copied"
+        setTitle(flashText, symbol: "checkmark", accessibilityTitle: "Copied", color: .systemGreen)
         onVisualStateChanged?()
         let work = DispatchWorkItem { [weak self] in
             self?.isShowingCopied = false
@@ -603,6 +604,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         showsCopyButton = false
         copyPayload = nil
         copyButton.isHidden = true
+        copyButton.frame = .zero
         copyButton.cancelCopiedFlash()
         if let buttonTrackingArea {
             removeTrackingArea(buttonTrackingArea)
@@ -641,6 +643,7 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         copyButton.isHidden = !shouldShow
 
         guard shouldShow else {
+            copyButton.frame = .zero
             if let buttonTrackingArea {
                 removeTrackingArea(buttonTrackingArea)
                 self.buttonTrackingArea = nil
@@ -669,12 +672,9 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
 
     private func layoutCopyButton() {
         guard showsCopyButton else { return }
-        let btnW: CGFloat = copyButton.isFlashingCopied
-            ? max(Self.idleButtonWidth, ceil(copyButton.fittingSize.width) + 10)
-            : Self.idleButtonWidth
-        let btnX = max(4, lastRowWidth - btnW - Self.buttonRightMargin)
-        let nextFrame = CGRect(x: btnX, y: lastButtonY, width: btnW, height: Self.buttonHeight)
-        if copyButton.frame != nextFrame {
+        let btnX = max(4, lastRowWidth - Self.idleButtonWidth - Self.buttonRightMargin)
+        let nextFrame = CGRect(x: btnX, y: lastButtonY, width: Self.idleButtonWidth, height: Self.buttonHeight)
+        if copyButton.frame != nextFrame || buttonTrackingArea == nil {
             copyButton.frame = nextFrame
             updateTrackingAreas()
         }
@@ -684,14 +684,9 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         guard showsCopyButton, let theme = lastTheme else { return }
         let active = isButtonHovered || copyButton.isFlashingCopied
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            let bg: NSColor
-            if copyButton.isFlashingCopied {
-                bg = theme.codeBackground
-            } else if isButtonHovered {
-                bg = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.06)
-            } else {
-                bg = .clear
-            }
+            let bg: NSColor = isButtonHovered
+                ? theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.06)
+                : .clear
             copyButton.applyTheme(foreground: theme.secondaryForeground, background: bg)
         }
         copyButton.alphaValue = active ? 1.0 : 0.55
