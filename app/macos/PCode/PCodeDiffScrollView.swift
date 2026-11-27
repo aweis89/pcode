@@ -231,7 +231,7 @@ enum PCodeDiffFlatRow {
 }
 
 /// O(log N) flat layout engine for virtualized diff scrolling.
-/// Because diff lines never soft-wrap, every row has an exact, fixed height.
+/// Supports fixed-height single-line rows (default) and optional soft-wrapped rows.
 struct PCodeDiffLayoutSnapshot {
     static let fileHeaderHeight: CGFloat = 26
     static let hunkHeaderHeight: CGFloat = 20
@@ -239,6 +239,57 @@ struct PCodeDiffLayoutSnapshot {
     static let noticeHeight: CGFloat = 28
     static let truncatedNoticeHeight: CGFloat = 22
     static let fileBottomSpacerHeight: CGFloat = 4
+    static let wrapRightPadding: CGFloat = 10
+    static let minWrapCodeWidth: CGFloat = 40
+
+    static func unifiedWrapCodeWidth(viewportWidth: CGFloat, theme: PCodeDiffTheme) -> CGFloat {
+        floor(max(minWrapCodeWidth, viewportWidth - theme.unifiedGutterWidth - wrapRightPadding))
+    }
+
+    static func sideBySideWrapCodeWidth(viewportWidth: CGFloat, theme: PCodeDiffTheme) -> CGFloat {
+        let halfW = floor((viewportWidth - 1) * 0.5)
+        return floor(max(minWrapCodeWidth, halfW - theme.sideBySideHalfGutterWidth - wrapRightPadding))
+    }
+
+    /// Compute the number of visual wrapped lines for `text` at `wrapWidth` using CoreText's
+    /// `CTTypesetterSuggestLineBreak` (matching `PCodeDiffCTLineCache` exactly).
+    static func wrappedLineCount(
+        for text: String,
+        wrapWidth: CGFloat,
+        codeFont: NSFont,
+        charAdvance: CGFloat
+    ) -> Int {
+        guard !text.isEmpty, wrapWidth > 0 else { return 1 }
+        var approxWidth: CGFloat = 0
+        var canUseFastPath = true
+        for byte in text.utf8 {
+            if byte == 9 { // tab: CoreText default tab interval is 28pt
+                approxWidth += 28.0
+            } else if byte < 0x20 || byte >= 0x7F {
+                canUseFastPath = false
+                break
+            } else {
+                approxWidth += charAdvance
+            }
+        }
+        if canUseFastPath && approxWidth <= wrapWidth - charAdvance * 2 {
+            return 1
+        }
+        let attr = NSAttributedString(string: text, attributes: [.font: codeFont])
+        let typesetter = CTTypesetterCreateWithAttributedString(attr)
+        let totalLen = attr.length
+        var start = 0
+        var count = 0
+        while start < totalLen {
+            var breakLen = CTTypesetterSuggestLineBreak(typesetter, start, Double(wrapWidth))
+            if breakLen <= 0 {
+                breakLen = max(1, CTTypesetterSuggestClusterBreak(typesetter, start, Double(wrapWidth)))
+            }
+            start += breakLen
+            count += 1
+        }
+        return max(1, count)
+    }
 
     let rows: [PCodeDiffFlatRow]
     let yOffsets: [CGFloat]
@@ -253,6 +304,8 @@ struct PCodeDiffLayoutSnapshot {
     let maxUnifiedCodeWidth: CGFloat
     let maxLeftCodeWidth: CGFloat
     let maxRightCodeWidth: CGFloat
+    /// Active wrap width (in points) used to size rows when soft-wrap is enabled; `nil` when unwrapped.
+    let wrapCodeWidth: CGFloat?
 
     static let empty = PCodeDiffLayoutSnapshot(
         rows: [],
@@ -264,7 +317,8 @@ struct PCodeDiffLayoutSnapshot {
         anchorYByPath: [:],
         maxUnifiedCodeWidth: 0,
         maxLeftCodeWidth: 0,
-        maxRightCodeWidth: 0
+        maxRightCodeWidth: 0,
+        wrapCodeWidth: nil
     )
 
     static func build(
@@ -277,7 +331,9 @@ struct PCodeDiffLayoutSnapshot {
         copiedPath: String?,
         lineRowHeight: CGFloat,
         charAdvance: CGFloat,
-        bottomPadding: CGFloat
+        bottomPadding: CGFloat,
+        wrapCodeWidth: CGFloat? = nil,
+        codeFont: NSFont? = nil
     ) -> PCodeDiffLayoutSnapshot {
         guard !diffs.isEmpty else { return .empty }
 
@@ -313,6 +369,38 @@ struct PCodeDiffLayoutSnapshot {
                 }
             }
             return cols
+        }
+
+        @inline(__always)
+        func rowHeight(for text: String) -> CGFloat {
+            guard let wrapWidth = wrapCodeWidth, let font = codeFont else {
+                return lineRowHeight
+            }
+            let lines = wrappedLineCount(
+                for: text,
+                wrapWidth: wrapWidth,
+                codeFont: font,
+                charAdvance: charAdvance
+            )
+            return CGFloat(lines) * lineRowHeight
+        }
+
+        @inline(__always)
+        func sideBySideRowHeight(left: PCodeDiffLine?, right: PCodeDiffLine?, isMeta: Bool) -> CGFloat {
+            guard !isMeta, let wrapWidth = wrapCodeWidth, let font = codeFont else {
+                return lineRowHeight
+            }
+            if let l = left, let r = right, l.text == r.text {
+                let lines = wrappedLineCount(for: l.text, wrapWidth: wrapWidth, codeFont: font, charAdvance: charAdvance)
+                return CGFloat(lines) * lineRowHeight
+            }
+            let leftLines = left.map {
+                wrappedLineCount(for: $0.text, wrapWidth: wrapWidth, codeFont: font, charAdvance: charAdvance)
+            } ?? 1
+            let rightLines = right.map {
+                wrappedLineCount(for: $0.text, wrapWidth: wrapWidth, codeFont: font, charAdvance: charAdvance)
+            } ?? 1
+            return CGFloat(max(leftLines, rightLines)) * lineRowHeight
         }
 
         for diff in diffs {
@@ -374,7 +462,7 @@ struct PCodeDiffLayoutSnapshot {
                                 leftLineIndex: idx,
                                 rightLineIndex: idx
                             )),
-                            height: lineRowHeight
+                            height: sideBySideRowHeight(left: line, right: line, isMeta: false)
                         )
                     } else {
                         appendRow(
@@ -385,7 +473,7 @@ struct PCodeDiffLayoutSnapshot {
                                 lineIndex: idx,
                                 line: line
                             )),
-                            height: lineRowHeight
+                            height: rowHeight(for: line.text)
                         )
                     }
                 }
@@ -479,7 +567,7 @@ struct PCodeDiffLayoutSnapshot {
                                 leftLineIndex: sbsRow.left.flatMap { indexByLineID[$0.id] },
                                 rightLineIndex: sbsRow.right.flatMap { indexByLineID[$0.id] }
                             )),
-                            height: lineRowHeight
+                            height: sideBySideRowHeight(left: sbsRow.left, right: sbsRow.right, isMeta: sbsRow.isMeta)
                         )
                     }
                 } else {
@@ -493,7 +581,7 @@ struct PCodeDiffLayoutSnapshot {
                                 lineIndex: idx,
                                 line: line
                             )),
-                            height: lineRowHeight
+                            height: rowHeight(for: line.text)
                         )
                     }
                 }
@@ -520,7 +608,8 @@ struct PCodeDiffLayoutSnapshot {
             anchorYByPath: anchorYByPath,
             maxUnifiedCodeWidth: CGFloat(maxUnifiedChars) * charAdvance + 24,
             maxLeftCodeWidth: CGFloat(maxLeftChars) * charAdvance + 20,
-            maxRightCodeWidth: CGFloat(maxRightChars) * charAdvance + 20
+            maxRightCodeWidth: CGFloat(maxRightChars) * charAdvance + 20,
+            wrapCodeWidth: wrapCodeWidth
         )
     }
 
@@ -599,7 +688,7 @@ struct PCodeDiffLayoutSnapshot {
 @MainActor
 final class PCodeDiffCTLineCache {
     struct Entry {
-        let ctLine: CTLine
+        let ctLines: [CTLine]
         let width: CGFloat
     }
 
@@ -612,6 +701,7 @@ final class PCodeDiffCTLineCache {
         let isDark: Bool
         let fontName: String
         let fontSizeTenths: Int
+        let wrapWidthTenths: Int
     }
 
     private static let maxEntries = 4096
@@ -629,8 +719,10 @@ final class PCodeDiffCTLineCache {
         lineKind: PCodeDiffLine.Kind,
         hunkKeyHash: Int,
         lineIndex: Int,
-        theme: PCodeDiffTheme
+        theme: PCodeDiffTheme,
+        wrapWidth: CGFloat? = nil
     ) -> Entry {
+        let wrapWidthTenths = wrapWidth.map { max(1, Int(($0 * 10).rounded())) } ?? 0
         let key = Key(
             text: text,
             lineKind: lineKind,
@@ -639,7 +731,8 @@ final class PCodeDiffCTLineCache {
             hasTokens: tokens != nil && !(tokens?.isEmpty ?? true),
             isDark: theme.isDark,
             fontName: theme.codeFont.fontName,
-            fontSizeTenths: Int((theme.codeFont.pointSize * 10).rounded())
+            fontSizeTenths: Int((theme.codeFont.pointSize * 10).rounded()),
+            wrapWidthTenths: wrapWidthTenths
         )
         if let cached = entries[key] {
             return cached
@@ -669,9 +762,32 @@ final class PCodeDiffCTLineCache {
         }
         attr.endEditing()
 
-        let ctLine = CTLineCreateWithAttributedString(attr)
-        let width = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
-        let entry = Entry(ctLine: ctLine, width: width)
+        let ctLines: [CTLine]
+        let maxWidth: CGFloat
+        if let wrapWidth, wrapWidth > 0, attr.length > 0 {
+            let typesetter = CTTypesetterCreateWithAttributedString(attr)
+            let totalLen = attr.length
+            var start = 0
+            var segments: [CTLine] = []
+            var widest: CGFloat = 0
+            while start < totalLen {
+                var breakLen = CTTypesetterSuggestLineBreak(typesetter, start, Double(wrapWidth))
+                if breakLen <= 0 {
+                    breakLen = max(1, CTTypesetterSuggestClusterBreak(typesetter, start, Double(wrapWidth)))
+                }
+                let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: breakLen))
+                segments.append(line)
+                widest = max(widest, CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
+                start += breakLen
+            }
+            ctLines = segments
+            maxWidth = widest
+        } else {
+            let line = CTLineCreateWithAttributedString(attr)
+            ctLines = [line]
+            maxWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        }
+        let entry = Entry(ctLines: ctLines, width: maxWidth)
 
         entries[key] = entry
         keyOrder.append(key)
@@ -1238,7 +1354,7 @@ private final class PCodeDiffSpacerRowView: NSView, PCodeDiffReusableRowView {
 @MainActor
 private func drawCoreTextDiffLine(
     in ctx: CGContext,
-    ctLine: CTLine,
+    ctLines: [CTLine],
     intralineSpans: [PCodeIntralineSpan],
     lineKind: PCodeDiffLine.Kind,
     codeRect: CGRect,
@@ -1252,36 +1368,42 @@ private func drawCoreTextDiffLine(
     let ascender = theme.codeFont.ascender
     let descender = theme.codeFont.descender // negative
     let textHeight = ascender - descender
-    let baselineY = codeRect.minY + (codeRect.height - textHeight) * 0.5 + ascender
-
+    let segmentHeight = theme.lineRowHeight
     let originX = codeRect.minX - horizontalOffset
+    let drawIntraline = !intralineSpans.isEmpty && (lineKind == .added || lineKind == .deleted)
+    let intralineTint = (lineKind == .added) ? theme.addedIntralineFill : theme.deletedIntralineFill
 
-    // Draw intraline word-diff highlight rects behind glyphs (CoreText ignores NSAttributedString .backgroundColor).
-    if !intralineSpans.isEmpty && (lineKind == .added || lineKind == .deleted) {
-        let tint = (lineKind == .added) ? theme.addedIntralineFill : theme.deletedIntralineFill
-        let fullRange = CTLineGetStringRange(ctLine)
-        let maxIndex = fullRange.location + fullRange.length
-        ctx.setFillColor(tint.cgColor)
-        for span in intralineSpans where span.emphasized {
-            let start = max(0, min(span.range.lowerBound, maxIndex))
-            let end = max(start, min(span.range.upperBound, maxIndex))
-            guard end > start else { continue }
-            let x1 = CTLineGetOffsetForStringIndex(ctLine, start, nil)
-            let x2 = CTLineGetOffsetForStringIndex(ctLine, end, nil)
-            let rect = CGRect(
-                x: originX + x1,
-                y: codeRect.minY + 1,
-                width: max(2, x2 - x1),
-                height: max(0, codeRect.height - 2)
-            )
-            ctx.fill(rect)
+    for (segmentIndex, ctLine) in ctLines.enumerated() {
+        let segmentY = codeRect.minY + CGFloat(segmentIndex) * segmentHeight
+        let baselineY = segmentY + (segmentHeight - textHeight) * 0.5 + ascender
+
+        // Draw intraline word-diff highlight rects behind glyphs (CoreText ignores NSAttributedString .backgroundColor).
+        if drawIntraline {
+            let segRange = CTLineGetStringRange(ctLine)
+            let segStart = segRange.location
+            let segEnd = segRange.location + segRange.length
+            ctx.setFillColor(intralineTint.cgColor)
+            for span in intralineSpans where span.emphasized {
+                let start = max(segStart, span.range.lowerBound)
+                let end = min(segEnd, span.range.upperBound)
+                guard end > start else { continue }
+                let x1 = CTLineGetOffsetForStringIndex(ctLine, start, nil)
+                let x2 = CTLineGetOffsetForStringIndex(ctLine, end, nil)
+                let rect = CGRect(
+                    x: originX + x1,
+                    y: segmentY + 1,
+                    width: max(2, x2 - x1),
+                    height: max(0, segmentHeight - 2)
+                )
+                ctx.fill(rect)
+            }
         }
-    }
 
-    // CoreText expects an unflipped Y-up text matrix; flip locally around baselineY.
-    ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-    ctx.textPosition = CGPoint(x: originX, y: baselineY)
-    CTLineDraw(ctLine, ctx)
+        // CoreText expects an unflipped Y-up text matrix; flip locally around baselineY.
+        ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        ctx.textPosition = CGPoint(x: originX, y: baselineY)
+        CTLineDraw(ctLine, ctx)
+    }
 
     ctx.restoreGState()
 }
@@ -1295,6 +1417,7 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
     private var theme: PCodeDiffTheme?
     private var isSelected = false
     private var horizontalOffset: CGFloat = 0
+    private var wrapCodeWidth: CGFloat?
     private weak var syntaxStore: PCodeDiffSyntaxStore?
     private weak var lineCache: PCodeDiffCTLineCache?
     var onLineClick: ((PCodeDiffLine, String, NSEvent.ModifierFlags) -> Void)?
@@ -1317,12 +1440,14 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
         onMeasuredWidth = nil
         isSelected = false
         horizontalOffset = 0
+        wrapCodeWidth = nil
     }
 
     func configure(
         payload: PCodeDiffUnifiedLinePayload,
         isSelected: Bool,
         horizontalOffset: CGFloat,
+        wrapCodeWidth: CGFloat?,
         theme: PCodeDiffTheme,
         syntaxStore: PCodeDiffSyntaxStore,
         lineCache: PCodeDiffCTLineCache
@@ -1330,6 +1455,7 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
         self.payload = payload
         self.isSelected = isSelected
         self.horizontalOffset = horizontalOffset
+        self.wrapCodeWidth = wrapCodeWidth
         self.theme = theme
         self.syntaxStore = syntaxStore
         self.lineCache = lineCache
@@ -1380,12 +1506,12 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             ctx.fill(CGRect(x: 0, y: 0, width: 2.5, height: bounds.height))
         }
 
-        // Pinned line-number gutter
+        // Pinned line-number gutter (aligned to the first visual line when wrapped)
         let gutterAttrs: [NSAttributedString.Key: Any] = [
             .font: theme.gutterFont,
             .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.75),
         ]
-        let midY = bounds.height * 0.5
+        let midY = theme.lineRowHeight * 0.5
         if let oldNum = line.oldLineNumber {
             let s = String(oldNum) as NSString
             let sz = s.size(withAttributes: gutterAttrs)
@@ -1438,9 +1564,12 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             lineKind: line.kind,
             hunkKeyHash: syn.hunkKeyHash,
             lineIndex: payload.lineIndex,
-            theme: theme
+            theme: theme,
+            wrapWidth: wrapCodeWidth
         )
-        onMeasuredWidth?(entry.width + 24)
+        if wrapCodeWidth == nil {
+            onMeasuredWidth?(entry.width + 24)
+        }
         let codeRect = CGRect(
             x: theme.unifiedGutterWidth,
             y: 0,
@@ -1449,11 +1578,11 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
         )
         drawCoreTextDiffLine(
             in: ctx,
-            ctLine: entry.ctLine,
+            ctLines: entry.ctLines,
             intralineSpans: line.intralineSpans,
             lineKind: line.kind,
             codeRect: codeRect,
-            horizontalOffset: horizontalOffset,
+            horizontalOffset: wrapCodeWidth == nil ? horizontalOffset : 0,
             theme: theme
         )
     }
@@ -1470,6 +1599,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
     private var rightSelected = false
     private var leftHorizontalOffset: CGFloat = 0
     private var rightHorizontalOffset: CGFloat = 0
+    private var wrapCodeWidth: CGFloat?
     private weak var syntaxStore: PCodeDiffSyntaxStore?
     private weak var lineCache: PCodeDiffCTLineCache?
     var onLineClick: ((PCodeDiffLine, String, NSEvent.ModifierFlags) -> Void)?
@@ -1494,6 +1624,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         rightSelected = false
         leftHorizontalOffset = 0
         rightHorizontalOffset = 0
+        wrapCodeWidth = nil
     }
 
     func configure(
@@ -1502,6 +1633,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         rightSelected: Bool,
         leftHorizontalOffset: CGFloat,
         rightHorizontalOffset: CGFloat,
+        wrapCodeWidth: CGFloat?,
         theme: PCodeDiffTheme,
         syntaxStore: PCodeDiffSyntaxStore,
         lineCache: PCodeDiffCTLineCache
@@ -1511,6 +1643,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         self.rightSelected = rightSelected
         self.leftHorizontalOffset = leftHorizontalOffset
         self.rightHorizontalOffset = rightHorizontalOffset
+        self.wrapCodeWidth = wrapCodeWidth
         self.theme = theme
         self.syntaxStore = syntaxStore
         self.lineCache = lineCache
@@ -1598,7 +1731,9 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
                 theme: theme,
                 lineCache: lineCache
             )
-            onMeasuredSideWidths?(leftW + 20, rightW + 20)
+            if wrapCodeWidth == nil {
+                onMeasuredSideWidths?(leftW + 20, rightW + 20)
+            }
         }
 
         // Center divider
@@ -1647,7 +1782,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             }
         }
 
-        let midY = rect.midY
+        let midY = rect.minY + theme.lineRowHeight * 0.5
         if let num = lineNumber {
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: theme.gutterFont,
@@ -1692,7 +1827,8 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             lineKind: line.kind,
             hunkKeyHash: hunkKeyHash,
             lineIndex: lineIndex ?? 0,
-            theme: theme
+            theme: theme,
+            wrapWidth: wrapCodeWidth
         )
         let codeRect = CGRect(
             x: rect.minX + theme.sideBySideHalfGutterWidth,
@@ -1702,11 +1838,11 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         )
         drawCoreTextDiffLine(
             in: ctx,
-            ctLine: entry.ctLine,
+            ctLines: entry.ctLines,
             intralineSpans: line.intralineSpans,
             lineKind: line.kind,
             codeRect: codeRect,
-            horizontalOffset: horizontalOffset,
+            horizontalOffset: wrapCodeWidth == nil ? horizontalOffset : 0,
             theme: theme
         )
         return entry.width
@@ -1733,6 +1869,7 @@ final class PCodeDiffDocumentView: NSView {
 
     private var currentLayout: PCodeDiffLayout = .unified
     private var currentSelection: PCodeDiffSelection?
+    private var wrapLines: Bool { snapshot.wrapCodeWidth != nil }
 
     // Horizontal scroll offsets (in points, >= 0) and dynamically measured max code widths
     private(set) var unifiedHorizontalOffset: CGFloat = 0
@@ -1845,16 +1982,19 @@ final class PCodeDiffDocumentView: NSView {
     ) {
         let themeChanged = (newTheme != theme)
         let layoutChanged = (layout != currentLayout)
-        if themeChanged {
+        let wrapChanged = ((newSnapshot.wrapCodeWidth != nil) != (snapshot.wrapCodeWidth != nil))
+        let wrapWidthChanged = (newSnapshot.wrapCodeWidth != snapshot.wrapCodeWidth)
+        if themeChanged || wrapWidthChanged {
             theme = newTheme
             lineCache.clear()
         }
-        if layoutChanged {
+        if layoutChanged || wrapChanged || wrapWidthChanged {
             currentLayout = layout
             unifiedHorizontalOffset = 0
             leftHorizontalOffset = 0
             rightHorizontalOffset = 0
         }
+        let effectiveAllowSmoothGlide = allowSmoothGlide && !layoutChanged && !wrapChanged && !wrapWidthChanged
         currentSelection = selection
 
         let oldHeight = lastDocumentHeight
@@ -1885,7 +2025,7 @@ final class PCodeDiffDocumentView: NSView {
         if followBottom, let scrollView = enclosingScrollView {
             let maxOriginY = max(0, targetDocHeight - scrollView.contentView.bounds.height)
             let growth = targetDocHeight - oldHeight
-            if allowSmoothGlide && window != nil && wasNearBottom && (growth > 0.5 || smoothGlide.isActive) {
+            if effectiveAllowSmoothGlide && window != nil && wasNearBottom && (growth > 0.5 || smoothGlide.isActive) {
                 isFollowPinnedToBottom = true
                 if growth > 0.5 {
                     smoothGlide.addOffset(growth)
@@ -1997,6 +2137,7 @@ final class PCodeDiffDocumentView: NSView {
     // MARK: - Horizontal Scrolling (Axis-Latched from PCodeDiffScrollView)
 
     var canScrollHorizontally: Bool {
+        guard !wrapLines else { return false }
         if currentLayout == .sideBySide {
             let halfCodeW = max(0, floor((bounds.width - 1) * 0.5) - theme.sideBySideHalfGutterWidth)
             return effectiveMaxLeftCodeWidth > halfCodeW + 1 || effectiveMaxRightCodeWidth > halfCodeW + 1
@@ -2277,6 +2418,7 @@ final class PCodeDiffDocumentView: NSView {
                 payload: payload,
                 isSelected: isLineSelected(payload.line, filePath: payload.filePath),
                 horizontalOffset: unifiedHorizontalOffset,
+                wrapCodeWidth: snapshot.wrapCodeWidth,
                 theme: theme,
                 syntaxStore: syntaxStore,
                 lineCache: lineCache
@@ -2299,6 +2441,7 @@ final class PCodeDiffDocumentView: NSView {
                 rightSelected: isLineSelected(payload.row.right, filePath: payload.filePath),
                 leftHorizontalOffset: leftHorizontalOffset,
                 rightHorizontalOffset: rightHorizontalOffset,
+                wrapCodeWidth: snapshot.wrapCodeWidth,
                 theme: theme,
                 syntaxStore: syntaxStore,
                 lineCache: lineCache
@@ -2522,6 +2665,8 @@ final class PCodeDiffScrollView: NSScrollView {
 struct PCodeNativeDiffScrollView: NSViewRepresentable {
     let diffs: [PCodeFileDiff]
     let layout: PCodeDiffLayout
+    let wrapLines: Bool
+    let viewportWidth: CGFloat
     let collapsedFiles: Set<String>
     let expandedGaps: [PCodeDiffExpandedGapKey: [PCodeDiffLine]]
     let focusedFilePath: String?
@@ -2580,9 +2725,22 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
         doc.onUserScrolledAwayFromBottom = onUserScrolledAwayFromBottom
 
         let bottomPadding: CGFloat = selection != nil ? 56 : 16
+        let effectiveViewportWidth = viewportWidth > 1 ? viewportWidth : scrollView.contentSize.width
+        let wrapCodeWidth: CGFloat? = {
+            guard wrapLines else { return nil }
+            switch layout {
+            case .unified:
+                return PCodeDiffLayoutSnapshot.unifiedWrapCodeWidth(viewportWidth: effectiveViewportWidth, theme: theme)
+            case .sideBySide:
+                return PCodeDiffLayoutSnapshot.sideBySideWrapCodeWidth(viewportWidth: effectiveViewportWidth, theme: theme)
+            }
+        }()
+        let wrapWidthPoints = wrapCodeWidth.map { Int($0) } ?? 0
         let inputKey = Coordinator.SnapshotKey(
             diffs: diffs,
             layout: layout,
+            wrapLines: wrapLines,
+            wrapWidthPoints: wrapWidthPoints,
             collapsedFiles: collapsedFiles,
             expandedGapCounts: expandedGaps.mapValues(\.count),
             focusedFilePath: focusedFilePath,
@@ -2590,6 +2748,8 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
             copiedPath: copiedPath,
             lineRowHeight: theme.lineRowHeight,
             charAdvance: theme.charAdvance,
+            fontName: theme.codeFont.fontName,
+            fontSizeTenths: Int((theme.codeFont.pointSize * 10).rounded()),
             bottomPadding: bottomPadding
         )
 
@@ -2615,7 +2775,9 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
                     copiedPath: copiedPath,
                     lineRowHeight: theme.lineRowHeight,
                     charAdvance: theme.charAdvance,
-                    bottomPadding: bottomPadding
+                    bottomPadding: bottomPadding,
+                    wrapCodeWidth: wrapCodeWidth,
+                    codeFont: theme.codeFont
                 )
                 coord.lastSnapshotKey = inputKey
                 coord.cachedSnapshot = snapshot
@@ -2656,6 +2818,8 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
         struct SnapshotKey: Equatable {
             let diffs: [PCodeFileDiff]
             let layout: PCodeDiffLayout
+            let wrapLines: Bool
+            let wrapWidthPoints: Int
             let collapsedFiles: Set<String>
             let expandedGapCounts: [PCodeDiffExpandedGapKey: Int]
             let focusedFilePath: String?
@@ -2663,6 +2827,8 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
             let copiedPath: String?
             let lineRowHeight: CGFloat
             let charAdvance: CGFloat
+            let fontName: String
+            let fontSizeTenths: Int
             let bottomPadding: CGFloat
         }
 

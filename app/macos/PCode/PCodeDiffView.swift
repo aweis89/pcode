@@ -324,6 +324,8 @@ struct PCodeChangesInspectorView: View {
 
             followAgentButton
 
+            wrapToggleButton
+
             if canUseSideBySide {
                 layoutToggleButton
             }
@@ -546,6 +548,25 @@ struct PCodeChangesInspectorView: View {
         .help(state.followAgent ? "Following incoming edits (click to pause)" : "Paused auto-scroll (click to follow agent edits)")
     }
 
+    private var wrapToggleButton: some View {
+        Button {
+            state.wrapDiffLines.toggle()
+        } label: {
+            Image(systemName: "arrow.turn.down.left")
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(state.wrapDiffLines ? Color.accentColor.opacity(isDark ? 0.24 : 0.14) : Color.clear)
+                )
+                .foregroundStyle(state.wrapDiffLines ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help(state.wrapDiffLines ? "Disable line wrapping" : "Wrap long lines")
+        .accessibilityLabel(state.wrapDiffLines ? "Disable line wrapping" : "Wrap long lines")
+    }
+
     private var layoutToggleButton: some View {
         Button {
             guard canUseSideBySide else { return }
@@ -594,6 +615,8 @@ struct PCodeChangesInspectorView: View {
                     PCodeNativeDiffScrollView(
                         diffs: diffs,
                         layout: effectiveLayout,
+                        wrapLines: state.wrapDiffLines,
+                        viewportWidth: containerWidth,
                         collapsedFiles: state.collapsedFiles,
                         expandedGaps: expandedGaps,
                         focusedFilePath: state.focusedFilePath,

@@ -478,6 +478,7 @@ final class PCodeInspectorState: ObservableObject {
     static let maxSplitFraction: CGFloat = 0.72
 
     static let sessionDiffViewModeKey = "PCodeInspectorSessionDiffViewMode"
+    static let diffWrapLinesKey = "PCodeInspectorDiffWrapLines"
 
     @Published var isOpen: Bool = true
     @Published var activeTab: PCodeInspectorTab = .changes
@@ -494,6 +495,11 @@ final class PCodeInspectorState: ObservableObject {
         }
     }
     @Published var diffLayout: PCodeDiffLayout = .unified
+    @Published var wrapDiffLines: Bool = UserDefaults.standard.bool(forKey: PCodeInspectorState.diffWrapLinesKey) {
+        didSet {
+            UserDefaults.standard.set(wrapDiffLines, forKey: Self.diffWrapLinesKey)
+        }
+    }
     @Published var isExpanded: Bool = false
     @Published var followAgent: Bool = true
     @Published var splitFraction: CGFloat = PCodeInspectorState.defaultSplitFraction
