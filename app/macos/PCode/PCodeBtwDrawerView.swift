@@ -158,6 +158,8 @@ enum PCodeTranscriptItemSync {
                       "\(call.startedAt?.timeIntervalSinceReferenceDate ?? -1)",
                       // A running card shows its line count and newest line, so new output redraws it.
                       call.isRunning ? call.output : ""]
+        } else if case .prose(_, _, _, let showCopyButton) = item.payload {
+            parts.append(showCopyButton ? "copy" : "")
         } else if case .answerActions(let copyMarkdown) = item.payload {
             parts.append(copyMarkdown)
         }

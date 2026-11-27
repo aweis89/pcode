@@ -94,6 +94,8 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
     private var lastLayoutWidth: CGFloat = 0
     private var lastMeasuredHeight: CGFloat = 0
     private(set) var totalInkSweepLength: CGFloat = 0
+    /// Bounding rect of the final laid-out line fragment in this view's flipped coordinates.
+    private(set) var lastLineFrame: CGRect = .zero
 
     /// Active ink-sweep frontier in linear horizontal points across all lines (`nil` = fully revealed).
     var inkSweepFrontier: CGFloat? {
@@ -193,17 +195,19 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             let metrics = computeLayoutMetrics()
             totalInkSweepLength = metrics.inkSweepLength
             lastMeasuredHeight = metrics.height
+            lastLineFrame = metrics.lastLineFrame
             needsDisplay = true
         }
         return lastMeasuredHeight
     }
 
-    private func computeLayoutMetrics() -> (height: CGFloat, inkSweepLength: CGFloat) {
+    private func computeLayoutMetrics() -> (height: CGFloat, inkSweepLength: CGFloat, lastLineFrame: CGRect) {
         if (textContentStorage.textStorage?.length ?? 0) == 0 {
-            return (0, 0)
+            return (0, 0, .zero)
         }
         var totalSpan: CGFloat = 0
         var maxY: CGFloat = 0
+        var finalLine: CGRect = .zero
         textLayoutManager.enumerateTextLayoutFragments(
             from: textLayoutManager.documentRange.location,
             options: [.ensuresLayout]
@@ -214,11 +218,17 @@ final class PCodeTextKit2BlockView: NSView, NSTextLayoutManagerDelegate {
             }
             for line in fragment.textLineFragments {
                 totalSpan += max(1, ceil(line.typographicBounds.width))
+                let b = line.typographicBounds
+                finalLine = CGRect(
+                    x: frame.origin.x + b.origin.x,
+                    y: frame.origin.y + b.origin.y,
+                    width: b.width,
+                    height: b.height)
             }
             return true
         }
         let height = maxY > 0 ? maxY : textLayoutManager.usageBoundsForTextContainer.height
-        return (height, totalSpan)
+        return (height, totalSpan, finalLine)
     }
 
     private func inkSweepDirtyRect(from oldFrontier: CGFloat?, to newFrontier: CGFloat?) -> CGRect? {

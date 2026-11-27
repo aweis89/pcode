@@ -516,11 +516,30 @@ final class PCodePromptRowView: NSView, PCodeTranscriptRowHosting {
     }
 }
 
-// MARK: - Prose Row (TextKit 2 Markdown)
+// MARK: - Prose Row (TextKit 2 Markdown + Turn-End Inline Copy Icon)
 
 final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
+    private static let idleButtonWidth: CGFloat = 24
+    private static let buttonHeight: CGFloat = 20
+    private static let buttonRightMargin: CGFloat = 4
+    private static let minInlineGap: CGFloat = 10
+
     let itemKind: PCodeTranscriptItem.Kind = .prose
     let textView = PCodeTextKit2BlockView()
+    let copyButton = PCodeBlockActionButton(
+        title: "",
+        symbol: "doc.on.doc",
+        accessibilityTitle: "Copy answer as Markdown",
+        symbolPointSize: 11)
+    private var copyPayload: String?
+    private var showsCopyButton = false
+    /// Where the button puts the answer; the document view passes its own.
+    var pasteboard: NSPasteboard = .general
+    private var lastTheme: PCodeTranscriptTheme?
+    private var lastRowWidth: CGFloat = 0
+    private var lastButtonY: CGFloat = 0
+    private var isButtonHovered = false
+    private var buttonTrackingArea: NSTrackingArea?
 
     var primaryTextView: PCodeTextKit2BlockView? { textView }
     var selectableTextLength: Int { textView.textContentStorage.attributedString?.length ?? 0 }
@@ -530,6 +549,16 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         super.init(frame: frameRect)
         wantsLayer = true
         addSubview(textView)
+        copyButton.isHidden = true
+        copyButton.toolTip = "Copy answer as Markdown"
+        copyButton.target = self
+        copyButton.action = #selector(copyMarkdownPressed)
+        copyButton.layer?.cornerRadius = 5
+        copyButton.onVisualStateChanged = { [weak self] in
+            self?.layoutCopyButton()
+            self?.applyButtonAppearance()
+        }
+        addSubview(copyButton)
     }
 
     @available(*, unavailable)
@@ -541,16 +570,61 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         textView.selectedRange = range
     }
 
+    func setButtonHovered(_ hovered: Bool) {
+        guard isButtonHovered != hovered else { return }
+        isButtonHovered = hovered
+        applyButtonAppearance()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let buttonTrackingArea { removeTrackingArea(buttonTrackingArea) }
+        buttonTrackingArea = nil
+        guard !copyButton.isHidden, !copyButton.frame.isEmpty else { return }
+        let area = NSTrackingArea(
+            rect: copyButton.frame,
+            options: [.activeInKeyWindow, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        buttonTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        setButtonHovered(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setButtonHovered(false)
+    }
+
     func resetForTranscriptReuse() {
+        isButtonHovered = false
+        showsCopyButton = false
+        copyPayload = nil
+        copyButton.isHidden = true
+        copyButton.cancelCopiedFlash()
+        if let buttonTrackingArea {
+            removeTrackingArea(buttonTrackingArea)
+            self.buttonTrackingArea = nil
+        }
         setSelectedRange(nil)
         setCurtainRevealProgress(nil)
         textView.inkSweepFrontier = nil
         layer?.removeAllAnimations()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyButtonAppearance()
+    }
+
     func configure(
         attributedText: NSAttributedString,
+        copyMarkdown: String?,
+        showCopyButton: Bool,
         width: CGFloat,
+        theme: PCodeTranscriptTheme,
         selectedRange: NSRange?
     ) -> CGFloat {
         let insets = NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
@@ -558,7 +632,76 @@ final class PCodeProseRowView: NSView, PCodeTranscriptRowHosting {
         let textHeight = textView.configure(attributedText: attributedText, width: textWidth)
         textView.selectedRange = selectedRange
         textView.frame = CGRect(x: insets.left, y: insets.top, width: textWidth, height: textHeight)
-        return textHeight + insets.top + insets.bottom
+
+        copyPayload = copyMarkdown
+        lastTheme = theme
+        lastRowWidth = width
+        let shouldShow = showCopyButton && (copyMarkdown?.isEmpty == false)
+        showsCopyButton = shouldShow
+        copyButton.isHidden = !shouldShow
+
+        guard shouldShow else {
+            if let buttonTrackingArea {
+                removeTrackingArea(buttonTrackingArea)
+                self.buttonTrackingArea = nil
+            }
+            return textHeight + insets.top + insets.bottom
+        }
+
+        let lastLine = textView.lastLineFrame
+        let lastLineMaxXInRow = insets.left + lastLine.maxX
+        let fitsOnLastLine = !lastLine.isEmpty
+            && (lastLineMaxXInRow + Self.minInlineGap + Self.idleButtonWidth <= width - Self.buttonRightMargin)
+
+        let extraHeight: CGFloat
+        if fitsOnLastLine {
+            lastButtonY = max(0, insets.top + lastLine.midY - Self.buttonHeight * 0.5)
+            extraHeight = 0
+        } else {
+            lastButtonY = insets.top + textHeight + 2
+            extraHeight = Self.buttonHeight + 2
+        }
+
+        applyButtonAppearance()
+        layoutCopyButton()
+        return textHeight + insets.top + insets.bottom + extraHeight
+    }
+
+    private func layoutCopyButton() {
+        guard showsCopyButton else { return }
+        let btnW: CGFloat = copyButton.isFlashingCopied
+            ? max(Self.idleButtonWidth, ceil(copyButton.fittingSize.width) + 10)
+            : Self.idleButtonWidth
+        let btnX = max(4, lastRowWidth - btnW - Self.buttonRightMargin)
+        let nextFrame = CGRect(x: btnX, y: lastButtonY, width: btnW, height: Self.buttonHeight)
+        if copyButton.frame != nextFrame {
+            copyButton.frame = nextFrame
+            updateTrackingAreas()
+        }
+    }
+
+    private func applyButtonAppearance() {
+        guard showsCopyButton, let theme = lastTheme else { return }
+        let active = isButtonHovered || copyButton.isFlashingCopied
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let bg: NSColor
+            if copyButton.isFlashingCopied {
+                bg = theme.codeBackground
+            } else if isButtonHovered {
+                bg = theme.foreground.withAlphaComponent(theme.isDark ? 0.08 : 0.06)
+            } else {
+                bg = .clear
+            }
+            copyButton.applyTheme(foreground: theme.secondaryForeground, background: bg)
+        }
+        copyButton.alphaValue = active ? 1.0 : 0.55
+    }
+
+    @objc private func copyMarkdownPressed() {
+        guard let copyPayload, !copyPayload.isEmpty else { return }
+        pasteboard.clearContents()
+        pasteboard.setString(copyPayload, forType: .string)
+        copyButton.flashCopied()
     }
 }
 
@@ -579,6 +722,7 @@ final class PCodeAnswerActionsRowView: NSView, PCodeTranscriptRowHosting {
     /// Where the button puts the answer; the document view passes its own.
     var pasteboard: NSPasteboard = .general
     private var lastTheme: PCodeTranscriptTheme?
+    private var lastRowWidth: CGFloat = 0
     private var isButtonHovered = false
     private var buttonTrackingArea: NSTrackingArea?
 
@@ -654,6 +798,7 @@ final class PCodeAnswerActionsRowView: NSView, PCodeTranscriptRowHosting {
     ) -> CGFloat {
         copyPayload = copyMarkdown
         lastTheme = theme
+        lastRowWidth = width
         applyButtonAppearance()
         layoutCopyButton()
         return Self.rowHeight
@@ -663,7 +808,8 @@ final class PCodeAnswerActionsRowView: NSView, PCodeTranscriptRowHosting {
         let btnW: CGFloat = copyButton.isFlashingCopied
             ? max(Self.idleButtonWidth, ceil(copyButton.fittingSize.width) + 10)
             : Self.idleButtonWidth
-        let nextFrame = CGRect(x: 2, y: 1, width: btnW, height: Self.buttonHeight)
+        let btnX = max(2, lastRowWidth - btnW - 4)
+        let nextFrame = CGRect(x: btnX, y: 1, width: btnW, height: Self.buttonHeight)
         if copyButton.frame != nextFrame {
             copyButton.frame = nextFrame
             updateTrackingAreas()

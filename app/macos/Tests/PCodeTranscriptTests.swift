@@ -1504,7 +1504,7 @@ struct PCodeTranscriptTests {
         }
         func proseIndex(_ text: String) -> Int? {
             doc.items.firstIndex {
-                if case .prose(let markdown, _, _) = $0.payload { return markdown.contains(text) }
+                if case .prose(let markdown, _, _, _) = $0.payload { return markdown.contains(text) }
                 return false
             }
         }
@@ -1544,11 +1544,11 @@ struct PCodeTranscriptTests {
             return false
         }!
         let firstMsgIdx = items.firstIndex {
-            if case .prose(let md, _, _) = $0.payload { return md.contains("First step.") }
+            if case .prose(let md, _, _, _) = $0.payload { return md.contains("First step.") }
             return false
         }!
         let secondMsgIdx = items.firstIndex {
-            if case .prose(let md, _, _) = $0.payload { return md.contains("Checked docs too.") }
+            if case .prose(let md, _, _, _) = $0.payload { return md.contains("Checked docs too.") }
             return false
         }!
         #expect(firstMsgIdx < steerIdx && steerIdx < secondMsgIdx)
@@ -1663,10 +1663,10 @@ struct PCodeTranscriptTests {
         #expect(all.contains("let x = 42"))
     }
 
-    @Test @MainActor func finishedAnswerShowsBottomLeftCopyIconAndNoProseOverlay() throws {
+    @Test @MainActor func finishedTurnShowsInlineRightCopyIconOnceOnLastLine() throws {
         let theme = PCodeTranscriptTheme.make(background: .black, foreground: .white)
         let scrollView = PCodeTranscriptScrollView(typography: .shared, theme: theme)
-        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 400)
+        scrollView.frame = CGRect(x: 0, y: 0, width: 720, height: 500)
         scrollView.layoutSubtreeIfNeeded()
         let doc = scrollView.transcriptDocumentView
         let pasteboard = NSPasteboard.withUniqueName()
@@ -1675,67 +1675,88 @@ struct PCodeTranscriptTests {
 
         let markdown = "Intro **paragraph**.\n\n```swift\nlet x = 42\n```\n\n- one\n- two\n"
         doc.beginStreamingTurn(prompt: "Explain")
+        // Intermediate narration before a tool call must NOT get a copy icon.
+        doc.beginStreamingMessage(id: "msg-0")
+        doc.appendStreamingDelta("Let me check first.\n")
+        doc.appendStreamingToolCall(PCodePeekToolCall(
+            id: 1, name: "read_file", detail: "README.md", failed: false, elapsedSeconds: 0.1, command: ""))
         doc.beginStreamingMessage(id: "msg-1")
         doc.appendStreamingDelta(markdown)
-        doc.finishStreamingMessage()
+        doc.finishStreamingTurn(status: .complete)
 
-        var proseCount = 0
-        for item in doc.items {
-            guard case .prose(_, _, let copyMarkdown) = item.payload else { continue }
-            proseCount += 1
-            #expect(copyMarkdown == markdown)
-        }
-        #expect(proseCount == 2)
+        // No extra answerActions row when the turn ends with prose.
+        #expect(doc.items.filter { $0.kind == .answerActions }.isEmpty)
 
-        // Prose rows never overlay a floating button on top of text.
+        // Only the final prose block of the completed turn shows the inline copy icon.
         let proseRows = doc.subviews.compactMap { $0 as? PCodeProseRowView }
-        #expect(proseRows.count == 2)
-        for row in proseRows {
-            #expect(row.subviews.compactMap { $0 as? NSButton }.isEmpty)
-        }
+        #expect(proseRows.count == 3)
+        let visibleCopyRows = proseRows.filter { !$0.copyButton.isHidden }
+        #expect(visibleCopyRows.count == 1)
+        let finalRow = try #require(visibleCopyRows.first)
 
-        // One quiet bottom-left copy icon row sits below the finished answer.
-        let actionRows = doc.subviews.compactMap { $0 as? PCodeAnswerActionsRowView }
-        #expect(actionRows.count == 1)
-        let actionRow = try #require(actionRows.first)
-        #expect(!actionRow.copyButton.isHidden)
-        #expect(actionRow.copyButton.frame.minX <= 8)
-        #expect(actionRow.copyButton.alphaValue < 0.9)
-        // Row-wide hover does not light up the icon; hovering the button itself does.
-        actionRow.setHovered(true)
-        #expect(actionRow.copyButton.alphaValue < 0.9)
-        actionRow.setButtonHovered(true)
-        #expect(actionRow.copyButton.alphaValue == 1.0)
+        // Short last line ("- two"): icon floats flush-right on the last line with 0 extra height.
+        #expect(finalRow.copyButton.frame.maxX >= finalRow.bounds.width - 8)
+        #expect(finalRow.bounds.height == finalRow.textView.frame.height + 4)
+        #expect(finalRow.copyButton.alphaValue < 0.9)
+        finalRow.setHovered(true)
+        #expect(finalRow.copyButton.alphaValue < 0.9)
+        finalRow.setButtonHovered(true)
+        #expect(finalRow.copyButton.alphaValue == 1.0)
         pasteboard.clearContents()
-        actionRow.copyButton.performClick(nil)
+        finalRow.copyButton.performClick(nil)
         #expect(pasteboard.string(forType: .string) == markdown)
 
         // Repeated configure calls during the "Copied" flash do not drift button width.
-        let flashedWidth = actionRow.copyButton.frame.width
-        _ = actionRow.configure(copyMarkdown: markdown, width: 640, theme: theme)
-        _ = actionRow.configure(copyMarkdown: markdown, width: 640, theme: theme)
-        #expect(actionRow.copyButton.frame.width == flashedWidth)
+        let flashedWidth = finalRow.copyButton.frame.width
+        let attr = NSAttributedString(string: "Short line")
+        _ = finalRow.configure(
+            attributedText: attr, copyMarkdown: markdown, showCopyButton: true,
+            width: 640, theme: theme, selectedRange: nil)
+        _ = finalRow.configure(
+            attributedText: attr, copyMarkdown: markdown, showCopyButton: true,
+            width: 640, theme: theme, selectedRange: nil)
+        #expect(finalRow.copyButton.frame.width == flashedWidth)
 
-        // VoiceOver press on the footer row also copies the answer Markdown.
-        pasteboard.clearContents()
-        let actionID = try #require(doc.items.first { $0.kind == .answerActions }?.id)
-        doc.toggleExpansionForAccessibility(id: actionID)
-        #expect(pasteboard.string(forType: .string) == markdown)
+        // A full-width last line drops the copy icon cleanly below the text with zero overlap.
+        let wideText = NSAttributedString(
+            string: String(repeating: "word ", count: 6),
+            attributes: [.font: NSFont.systemFont(ofSize: 13)])
+        let wrappedHeight = finalRow.configure(
+            attributedText: wideText, copyMarkdown: markdown, showCopyButton: true,
+            width: 200, theme: theme, selectedRange: nil)
+        #expect(wrappedHeight > finalRow.textView.frame.height + 4)
+        #expect(finalRow.copyButton.frame.minY >= finalRow.textView.frame.maxY)
 
-        // Saved turns flattened for Peek emit the same footer row and prose payloads.
+        // Saved turns flattened for Peek attach showCopyButton only to the final prose block.
         let flattened = PCodeTranscriptItem.flatten(turns: [
-            PCodePeekTurn(id: 0, prompt: "Explain", blocks: [.markdown(id: 0, text: markdown)], status: .complete, side: false),
+            PCodePeekTurn(
+                id: 0,
+                prompt: "Explain",
+                blocks: [
+                    .markdown(id: 0, text: "Checking..."),
+                    .tool(PCodePeekToolCall(id: 1, name: "read_file", detail: "a.swift", failed: false, elapsedSeconds: 0.1, command: "")),
+                    .markdown(id: 1, text: markdown),
+                ],
+                status: .complete,
+                side: false),
         ])
-        let payloads = flattened.compactMap { item -> String? in
-            guard case .prose(_, _, let copyMarkdown) = item.payload else { return nil }
-            return copyMarkdown
+        let proseFlags = flattened.compactMap { item -> Bool? in
+            guard case .prose(_, _, _, let showCopy) = item.payload else { return nil }
+            return showCopy
         }
-        #expect(payloads == [markdown, markdown])
-        let footerPayloads = flattened.compactMap { item -> String? in
-            guard case .answerActions(let copyMarkdown) = item.payload else { return nil }
-            return copyMarkdown
-        }
-        #expect(footerPayloads == [markdown])
+        #expect(proseFlags == [false, false, true])
+        #expect(flattened.filter { $0.kind == .answerActions }.isEmpty)
+
+        // A turn ending in a code block falls back to a right-aligned answerActions row.
+        let codeOnly = PCodeTranscriptItem.flatten(turns: [
+            PCodePeekTurn(
+                id: 1,
+                prompt: "Snippet",
+                blocks: [.markdown(id: 0, text: "```swift\nlet y = 1\n```")],
+                status: .complete,
+                side: false),
+        ])
+        #expect(codeOnly.filter { $0.kind == .answerActions }.count == 1)
     }
 
     @Test @MainActor func contextMenuOffersCopySelectAllAndTheAnswer() throws {
@@ -2026,7 +2047,7 @@ struct PCodeTranscriptTests {
         reducer.apply(.toolSummary(callID: "solo", parentCallID: "", name: "read_file", detail: "README.md", command: "", failed: false, elapsedSeconds: 0.1, error: "", result: nil, isBackgroundJob: false), reveal: false)
         reducer.apply(.message(markdown: "Done."), reveal: false)
 
-        #expect(doc.items.map(\.kind) == [.prompt, .tool, .prose, .answerActions])
+        #expect(doc.items.map(\.kind) == [.prompt, .tool, .prose])
     }
 
     @Test @MainActor func toolGrouperFoldsCompletedEditsAndReportsFailures() {
@@ -2199,20 +2220,20 @@ struct PCodeTranscriptTests {
                 #expect(payload.windowEntries.count == min(n, PCodeToolGrouper.nestedWindowRows))
                 #expect(payload.windowEntries.last?.id == "call-c\(n)")
                 shownRows = payload.windowEntries.count
-                // prompt + delegate + window + prose + answerActions, whatever state the calls are in.
-                #expect(doc.items.count == 5)
+                // prompt + delegate + window + prose, whatever state the calls are in.
+                #expect(doc.items.count == 4)
             }
         }
 
         // Expanding is the user's call, and lists every call below the summary.
         let windowID = doc.items[2].id
         doc.toggleExpansionForAccessibility(id: windowID)
-        #expect(doc.items.count == 5 + 7)
+        #expect(doc.items.count == 4 + 7)
         #expect(doc.items[3].id == "call-c1")
         #expect(doc.items[3].depth == 2)
         #expect(window()?.windowEntries.isEmpty == true)
         doc.toggleExpansionForAccessibility(id: windowID)
-        #expect(doc.items.count == 5)
+        #expect(doc.items.count == 4)
     }
 
     @Test @MainActor func expandedWindowSummaryTracksNonGroupableChildren() {

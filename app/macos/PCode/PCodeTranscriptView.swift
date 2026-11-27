@@ -66,7 +66,7 @@ struct PCodeTranscriptItem: Identifiable {
 
     enum Payload {
         case prompt(label: String, text: String, isSide: Bool)
-        case prose(markdown: String, referenceDefinitions: String, copyMarkdown: String?)
+        case prose(markdown: String, referenceDefinitions: String, copyMarkdown: String?, showCopyButton: Bool = false)
         case codeBlock(language: String?, code: String, fullCopyCode: String, showHeader: Bool, groupID: String?)
         case table(PCodeMarkdownTable)
         case tool(PCodePeekToolCall, isExpanded: Bool)
@@ -117,7 +117,7 @@ struct PCodeTranscriptItem: Identifiable {
         switch payload {
         case .prompt(let label, let text, _):
             return label.isEmpty ? text : "\(label)\n\(text)"
-        case .prose(let markdown, _, _):
+        case .prose(let markdown, _, _, _):
             return markdown
         case .codeBlock(_, let code, _, _, _):
             return code
@@ -258,7 +258,8 @@ struct PCodeTranscriptItem: Identifiable {
                     isSide: turn.side),
                 spacingAfter: 12))
 
-            for block in turn.blocks {
+            let lastBlockIndex = turn.blocks.indices.last
+            for (blockIdx, block) in turn.blocks.enumerated() {
                 switch block {
                 case .markdown(let blockID, let text):
                     let parsed = PCodeTranscriptMarkdown.parseBlocks(text)
@@ -300,15 +301,32 @@ struct PCodeTranscriptItem: Identifiable {
                         }
                     }
 
-                    if includeAnswerActions, !parsed.isEmpty, !text.isEmpty, turn.status != .running {
-                        if let last = result.last {
-                            let tightGap: CGFloat = (last.kind == .prose) ? 2 : 4
-                            result[result.count - 1] = last.withSpacingAfter(tightGap)
+                    if includeAnswerActions,
+                       blockIdx == lastBlockIndex,
+                       !parsed.isEmpty,
+                       !text.isEmpty,
+                       turn.status != .running,
+                       let last = result.last
+                    {
+                        if case .prose(let md, let refDefs, let copyMD, _) = last.payload {
+                            result[result.count - 1] = PCodeTranscriptItem(
+                                id: last.id,
+                                payload: .prose(
+                                    markdown: md,
+                                    referenceDefinitions: refDefs,
+                                    copyMarkdown: copyMD,
+                                    showCopyButton: true),
+                                spacingAfter: last.spacingAfter,
+                                revision: last.revision,
+                                depth: last.depth,
+                                turnID: last.turnID)
+                        } else {
+                            result[result.count - 1] = last.withSpacingAfter(4)
+                            result.append(PCodeTranscriptItem(
+                                id: "turn-\(turn.id)-md-\(blockID)-actions",
+                                payload: .answerActions(copyMarkdown: text),
+                                spacingAfter: 10))
                         }
-                        result.append(PCodeTranscriptItem(
-                            id: "turn-\(turn.id)-md-\(blockID)-actions",
-                            payload: .answerActions(copyMarkdown: text),
-                            spacingAfter: 10))
                     }
 
                 case .steering(let blockID, let text):
@@ -480,6 +498,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     }
 
     private var activeStream: ActiveStreamingMessage?
+    private var lastTurnAnswer: (messageID: String, lastItemID: String, fullMarkdown: String)?
     private var revealQueue = PCodeRevealQueue()
     private var smoothGlide = PCodeSmoothScrollGlide()
     private var lastDisplayLinkTargetTimestamp: CFTimeInterval?
@@ -705,6 +724,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Settled history gets no reveal animation.
     func setItems(_ newItems: [PCodeTranscriptItem], pinToBottom: Bool) {
         notifySearchContentWillChange()
+        lastTurnAnswer = nil
         expandedGroupIDs.removeAll(keepingCapacity: false)
         absorbPulseByGroupID.removeAll(keepingCapacity: false)
         activeSinceByRawID.removeAll(keepingCapacity: false)
@@ -1518,6 +1538,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         reveal: Bool = true
     ) {
         finishStreamingMessage(reveal: reveal)
+        lastTurnAnswer = nil
         streamingTurnCounter += 1
         let item = PCodeTranscriptItem(
             id: "stream-turn-\(streamingTurnCounter)-prompt",
@@ -1569,72 +1590,47 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         }
         guard let finalStream = activeStream else { return }
         // Every prose block of the finished message carries the whole answer's Markdown
-        // for right-click "Copy Answer as Markdown", and a dedicated footer row underneath
-        // the last block hosts the unobtrusive copy icon.
+        // for right-click "Copy Answer as Markdown". The visible copy icon is attached
+        // once per turn when `finishStreamingTurn` completes so intermediate narration
+        // before tool calls stays uncluttered.
         let fullMarkdown = finalStream.settler.fullMarkdown
         if !fullMarkdown.isEmpty, finalStream.emittedBlockCount > 0 {
             for blockIndex in 0..<finalStream.emittedBlockCount {
                 let itemID = Self.streamingItemID(messageID: finalStream.id, blockIndex: blockIndex)
                 if let rawIdx = rawItemIndexByID[itemID],
-                   case .prose(let md, let refDefs, _) = rawItems[rawIdx].payload
+                   case .prose(let md, let refDefs, _, let showCopy) = rawItems[rawIdx].payload
                 {
                     rawItems[rawIdx] = PCodeTranscriptItem(
                         id: itemID,
-                        payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: fullMarkdown),
+                        payload: .prose(
+                            markdown: md,
+                            referenceDefinitions: refDefs,
+                            copyMarkdown: fullMarkdown,
+                            showCopyButton: showCopy),
                         spacingAfter: rawItems[rawIdx].spacingAfter,
                         revision: rawItems[rawIdx].revision &+ 1,
                         depth: rawItems[rawIdx].depth)
                 }
                 guard let idx = itemIndexByID[itemID],
-                      case .prose(let md, let refDefs, _) = items[idx].payload
+                      case .prose(let md, let refDefs, _, let showCopy) = items[idx].payload
                 else { continue }
                 items[idx] = PCodeTranscriptItem(
                     id: itemID,
-                    payload: .prose(markdown: md, referenceDefinitions: refDefs, copyMarkdown: fullMarkdown),
+                    payload: .prose(
+                        markdown: md,
+                        referenceDefinitions: refDefs,
+                        copyMarkdown: fullMarkdown,
+                        showCopyButton: showCopy),
                     spacingAfter: items[idx].spacingAfter,
                     revision: items[idx].revision &+ 1,
                     depth: items[idx].depth)
             }
 
             let lastItemID = Self.streamingItemID(messageID: finalStream.id, blockIndex: finalStream.emittedBlockCount - 1)
-            if let rawIdx = rawItemIndexByID[lastItemID] {
-                let tightGap: CGFloat = (rawItems[rawIdx].kind == .prose) ? 2 : 4
-                rawItems[rawIdx] = rawItems[rawIdx].withSpacingAfter(tightGap)
-            }
-            if let idx = itemIndexByID[lastItemID] {
-                let tightGap: CGFloat = (items[idx].kind == .prose) ? 2 : 4
-                items[idx] = items[idx].withSpacingAfter(tightGap)
-                layoutEngine.updateSpacingAfter(at: idx, spacingAfter: tightGap)
-            }
-
-            notifySearchContentWillChange()
-            let actionsItem = PCodeTranscriptItem(
-                id: "\(finalStream.id)-actions",
-                payload: .answerActions(copyMarkdown: fullMarkdown),
-                spacingAfter: 10)
-            let rawIdx = rawItems.count
-            rawItems.append(actionsItem)
-            rawItemIndexByID[actionsItem.id] = rawIdx
-            let estHeight = estimatedHeight(for: actionsItem)
-            let idx = items.count
-            items.append(actionsItem)
-            itemIndexByID[actionsItem.id] = idx
-            layoutEngine.append(
-                id: actionsItem.id,
-                height: estHeight,
-                spacingAfter: actionsItem.spacingAfter,
-                measured: false)
-            if reveal {
-                enqueueRevealIfNeeded(for: actionsItem, estimatedHeight: estHeight)
-            }
-            invalidateSearchIndex()
-            if stickyBottom.mode == .userScrolledUp {
-                setHasUnreadStreamingContent(true)
-            }
+            lastTurnAnswer = (finalStream.id, lastItemID, fullMarkdown)
         }
         activeStream = nil
         mountViews(in: visibleRect)
-        markUnreadIfOverflowedWhilePaused()
     }
 
     private static func streamingItemID(messageID: String, blockIndex: Int) -> String {
@@ -1743,19 +1739,91 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// Finalize the current streaming turn with its terminal status.
     func finishStreamingTurn(status: PCodePeekTurn.Status, reveal: Bool = true) {
         finishStreamingMessage(reveal: reveal)
+        let answer = lastTurnAnswer
+        lastTurnAnswer = nil
         if status != .complete {
             let item = PCodeTranscriptItem(
                 id: "stream-turn-\(streamingTurnCounter)-status-\(rawItems.count)",
                 payload: .status(status),
                 spacingAfter: 22)
             upsertItem(item, reveal: reveal)
-        } else if let lastIdx = items.indices.last {
-            if let lastRawIdx = rawItems.indices.last {
-                rawItems[lastRawIdx] = rawItems[lastRawIdx].withSpacingAfter(28)
+        } else {
+            if let answer,
+               let lastIdx = items.indices.last,
+               items[lastIdx].id == answer.lastItemID
+            {
+                if case .prose(let md, let refDefs, let copyMD, _) = items[lastIdx].payload {
+                    if let lastRawIdx = rawItemIndexByID[answer.lastItemID] {
+                        rawItems[lastRawIdx] = PCodeTranscriptItem(
+                            id: answer.lastItemID,
+                            payload: .prose(
+                                markdown: md,
+                                referenceDefinitions: refDefs,
+                                copyMarkdown: copyMD ?? answer.fullMarkdown,
+                                showCopyButton: true),
+                            spacingAfter: 28,
+                            revision: rawItems[lastRawIdx].revision &+ 1,
+                            depth: rawItems[lastRawIdx].depth,
+                            turnID: rawItems[lastRawIdx].turnID)
+                    }
+                    items[lastIdx] = PCodeTranscriptItem(
+                        id: answer.lastItemID,
+                        payload: .prose(
+                            markdown: md,
+                            referenceDefinitions: refDefs,
+                            copyMarkdown: copyMD ?? answer.fullMarkdown,
+                            showCopyButton: true),
+                        spacingAfter: 28,
+                        revision: items[lastIdx].revision &+ 1,
+                        depth: items[lastIdx].depth,
+                        turnID: items[lastIdx].turnID)
+                    layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 28)
+                    mountViews(in: visibleRect)
+                    return
+                } else {
+                    if let lastRawIdx = rawItemIndexByID[answer.lastItemID] {
+                        rawItems[lastRawIdx] = rawItems[lastRawIdx].withSpacingAfter(4)
+                    }
+                    items[lastIdx] = items[lastIdx].withSpacingAfter(4)
+                    layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 4)
+
+                    notifySearchContentWillChange()
+                    let actionsItem = PCodeTranscriptItem(
+                        id: "\(answer.messageID)-actions",
+                        payload: .answerActions(copyMarkdown: answer.fullMarkdown),
+                        spacingAfter: 28)
+                    let rawIdx = rawItems.count
+                    rawItems.append(actionsItem)
+                    rawItemIndexByID[actionsItem.id] = rawIdx
+                    let estHeight = estimatedHeight(for: actionsItem)
+                    let idx = items.count
+                    items.append(actionsItem)
+                    itemIndexByID[actionsItem.id] = idx
+                    layoutEngine.append(
+                        id: actionsItem.id,
+                        height: estHeight,
+                        spacingAfter: actionsItem.spacingAfter,
+                        measured: false)
+                    if reveal {
+                        enqueueRevealIfNeeded(for: actionsItem, estimatedHeight: estHeight)
+                    }
+                    invalidateSearchIndex()
+                    if stickyBottom.mode == .userScrolledUp {
+                        setHasUnreadStreamingContent(true)
+                    }
+                    mountViews(in: visibleRect)
+                    markUnreadIfOverflowedWhilePaused()
+                    return
+                }
             }
-            items[lastIdx] = items[lastIdx].withSpacingAfter(28)
-            layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 28)
-            mountViews(in: visibleRect)
+            if let lastIdx = items.indices.last {
+                if let lastRawIdx = rawItems.indices.last {
+                    rawItems[lastRawIdx] = rawItems[lastRawIdx].withSpacingAfter(28)
+                }
+                items[lastIdx] = items[lastIdx].withSpacingAfter(28)
+                layoutEngine.updateSpacingAfter(at: lastIdx, spacingAfter: 28)
+                mountViews(in: visibleRect)
+            }
         }
     }
 
@@ -2448,12 +2516,16 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                 selectedRange: localSel,
                 contentInsetX: contentInsetX)
 
-        case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, _)):
+        case (let view as PCodeProseRowView, .prose(let markdown, let refDefs, let copyMarkdown, let showCopyButton)):
+            view.pasteboard = pasteboard
             let attr = cachedProseAttributedString(for: item.id, markdown: markdown, referenceDefinitions: refDefs)
             let localSel = selection?.localRange(forItem: index, utf16Length: attr.length)
             return view.configure(
                 attributedText: attr,
+                copyMarkdown: copyMarkdown,
+                showCopyButton: showCopyButton,
                 width: width,
+                theme: theme,
                 selectedRange: localSel)
 
         case (let view as PCodeAnswerActionsRowView, .answerActions(let copyMarkdown)):
@@ -3357,7 +3429,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
               docPoint.y <= layoutEngine.entries[idx].yOffset + layoutEngine.entries[idx].height
         else { return nil }
         switch items[idx].payload {
-        case .prose(_, _, let copyMarkdown):
+        case .prose(_, _, let copyMarkdown, _):
             guard let copyMarkdown, !copyMarkdown.isEmpty else { return nil }
             return copyMarkdown
         case .answerActions(let copyMarkdown):
@@ -3385,7 +3457,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     func plainTextForCopy(at index: Int) -> String {
         let item = items[index]
         switch item.payload {
-        case .prose(let markdown, let refDefs, _):
+        case .prose(let markdown, let refDefs, _, _):
             return cachedProseAttributedString(for: item.id, markdown: markdown, referenceDefinitions: refDefs).string
         case .prompt(let label, let text, let isSide):
             return cachedPromptAttributedString(for: item.id, label: label, text: text, isSide: isSide).string
@@ -3498,7 +3570,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         case .prompt(let label, let text, _):
             let lines = max(1, min(12, text.count / 68 + 1))
             return (label.isEmpty ? 20 : 28) + CGFloat(lines) * typography.lineHeight()
-        case .prose(let markdown, _, _):
+        case .prose(let markdown, _, _, _):
             let lines = max(1, min(40, markdown.count / 72 + 1))
             return CGFloat(lines) * typography.lineHeight()
         case .codeBlock(_, let code, _, let showHeader, _):
