@@ -4075,6 +4075,10 @@ class PromptLayout:
         """
         if self.btw_docked():
             return []
+        from pcode.ui_surface import native_transcript_active
+
+        if native_transcript_active():
+            return []
         attached = self.activity.attach_activity and self.activity.status_shown
         return self.thought_rows() if attached else []
 
@@ -4780,7 +4784,9 @@ class PromptLayout:
 
     def sync_native_composer(self, app) -> None:
         """Send `pcode;composer;<base64 json>` to the docked surface whenever state changes."""
-        if not self.native_composer_chrome() or app.is_done:
+        from pcode.ui_surface import native_transcript_active
+
+        if not native_transcript_active() or app.is_done:
             return
         from pcode.drawer import composer_status
 
@@ -4796,7 +4802,7 @@ class PromptLayout:
         if self.btw_docked():
             return self.btw_running_aside() is not None
         if self.native_composer_chrome():
-            return self.plan_attached() or self.btw_active()
+            return self.plan_attached()
         return (
             self.activity.status_shown
             or bool(self.activity.startup_label)
@@ -4823,9 +4829,7 @@ class PromptLayout:
         if self.btw_bar_height(attached=attached):
             return 0
         if self.native_composer_chrome():
-            return int(
-                self.frame_shaded() and not attached and not self.band_rows() and self.btw_active()
-            )
+            return 0
         return int(
             self.frame_shaded()
             and not attached

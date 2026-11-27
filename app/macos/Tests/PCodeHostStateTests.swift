@@ -278,5 +278,14 @@ struct PCodeHostStateTests {
         #expect(PCodeComposerStatus.formatElapsed(5) == "5s")
         #expect(PCodeComposerStatus.formatElapsed(60) == "1m")
         #expect(PCodeComposerStatus.formatElapsed(125) == "2m 5s")
+
+        // Footprint and cardLayout account for the native status strip when shown.
+        let baseFootprint = PCodeDock.footprint(rows: 3, cell: 18, statusStrip: false)
+        let stripFootprint = PCodeDock.footprint(rows: 3, cell: 18, statusStrip: true)
+        #expect(stripFootprint == baseFootprint + PCodeDock.statusStripHeight + PCodeDock.statusStripSpacing)
+
+        let baseLayout = PCodeDock.cardLayout(in: CGSize(width: 800, height: 600), rows: 3, cell: 18, statusStrip: false)
+        let stripLayout = PCodeDock.cardLayout(in: CGSize(width: 800, height: 600), rows: 3, cell: 18, statusStrip: true)
+        #expect(stripLayout.cardTopFromBottom == baseLayout.cardTopFromBottom + PCodeDock.topMargin + PCodeDock.statusStripSpacing + PCodeDock.statusStripHeight)
     }
 }

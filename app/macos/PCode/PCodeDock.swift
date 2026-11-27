@@ -212,7 +212,8 @@ final class PCodeDock: NSObject, ObservableObject {
         surfaceRows: Int? = nil,
         editorHeight: CGFloat? = nil,
         drawerOpen: Bool = false,
-        drawerFraction: CGFloat = 0.45
+        drawerFraction: CGFloat = 0.45,
+        statusStrip: Bool = false
     ) -> CardLayout {
         let horizontal = horizontalLayout(
             in: size.width,
@@ -230,8 +231,9 @@ final class PCodeDock: NSObject, ObservableObject {
         }
         let maxY = size.height - bottomMargin
         let minY = maxY - height
+        let stripExtra: CGFloat = statusStrip ? (topMargin + statusStripSpacing + statusStripHeight) : 0
         let cardTop = cell > 0
-            ? bottomMargin + cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows)
+            ? bottomMargin + cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows) + stripExtra
             : 0
         return CardLayout(
             editorRect: CGRect(x: minX, y: minY, width: width, height: height),
@@ -244,14 +246,16 @@ final class PCodeDock: NSObject, ObservableObject {
         guard ready, let editor = surfaceView else { return nil }
         let cell = editor.cellSize.height
         let surfaceRows = editor.surfaceSize.map { Int($0.rows) }
+        let drawerOpen = drawer?.isOpen == true
         return Self.cardLayout(
             in: size,
             rows: rows,
             cell: cell,
             surfaceRows: surfaceRows,
             editorHeight: editor.bounds.height,
-            drawerOpen: drawer?.isOpen == true,
-            drawerFraction: drawer?.fraction ?? 0.45
+            drawerOpen: drawerOpen,
+            drawerFraction: drawer?.fraction ?? 0.45,
+            statusStrip: !drawerOpen && showsStatusStrip
         )
     }
 
@@ -281,10 +285,11 @@ final class PCodeDock: NSObject, ObservableObject {
             Self.lastReportedRows = clamped
         case "composer" where parts.count == 2:
             guard let decoded = PCodeComposerStatus.decode(base64: parts[1]) else { return }
-            let wasBusy = composerStatus?.busy ?? false
+            let wasActive = (composerStatus?.busy ?? false) || (composerStatus?.starting ?? false)
+            let isActive = decoded.busy || decoded.starting
             let oldPhase = composerStatus?.phase ?? ""
-            if decoded.busy {
-                if !wasBusy || oldPhase != decoded.phase {
+            if isActive {
+                if !wasActive || oldPhase != decoded.phase {
                     phaseStartedAt = Date()
                 }
             } else {
@@ -559,6 +564,7 @@ private struct PCodeDockCard: View {
 /// and live pending counts + send-mode pill (`steering` / `queue`) on the right.
 private struct PCodeComposerStatusStrip: View {
     @EnvironmentObject var ghostty: Ghostty.App
+    @Environment(\.pcodeWindowOnScreen) private var onScreen
     let status: PCodeComposerStatus
     let startedAt: Date?
 
@@ -594,24 +600,23 @@ private struct PCodeComposerStatusStrip: View {
         HStack(spacing: 8) {
             if status.busy || status.starting {
                 HStack(spacing: 6) {
-                    PCodeComposerSpinner()
+                    PCodeComposerSpinner(paused: !onScreen)
                     Text(status.phase.isEmpty ? "Working" : status.phase)
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.primary.opacity(0.82))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if let startedAt {
-                        TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                            let elapsed = context.date.timeIntervalSince(startedAt)
-                            if elapsed >= 1 {
-                                Text(PCodeComposerStatus.formatElapsed(elapsed))
-                                    .font(.system(size: 11, weight: .regular).monospacedDigit())
-                                    .foregroundStyle(.secondary.opacity(0.75))
-                                    .fixedSize(horizontal: true, vertical: false)
+                        if onScreen {
+                            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                                elapsedLabel(context.date.timeIntervalSince(startedAt))
                             }
+                        } else {
+                            elapsedLabel(Date().timeIntervalSince(startedAt))
                         }
                     }
                 }
+                .layoutPriority(1)
             }
 
             if !status.cacheNote.isEmpty {
@@ -657,26 +662,39 @@ private struct PCodeComposerStatusStrip: View {
             }
         }
         .frame(height: PCodeDock.statusStripHeight)
+        .clipped()
         .background(ghostty.config.backgroundColor)
         .environment(\.colorScheme, stripColorScheme)
         .allowsHitTesting(false)
     }
+
+    @ViewBuilder
+    private func elapsedLabel(_ elapsed: TimeInterval) -> some View {
+        if elapsed >= 1 {
+            Text(PCodeComposerStatus.formatElapsed(elapsed))
+                .font(.system(size: 11, weight: .regular).monospacedDigit())
+                .foregroundStyle(.secondary.opacity(0.75))
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
 }
 
-/// Smooth native spinning arc for `PCodeComposerStatusStrip`.
+/// Smooth native spinning arc for `PCodeComposerStatusStrip`, paused when occluded.
 private struct PCodeComposerSpinner: View {
-    @State private var spinning = false
+    let paused: Bool
 
     var body: some View {
-        Circle()
-            .trim(from: 0.08, to: 0.72)
-            .stroke(
-                Color.accentColor.opacity(0.85),
-                style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-            )
-            .frame(width: 10, height: 10)
-            .rotationEffect(.degrees(spinning ? 360 : 0))
-            .animation(.linear(duration: 0.85).repeatForever(autoreverses: false), value: spinning)
-            .onAppear { spinning = true }
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: paused)) { context in
+            let period = 0.85
+            let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+            Circle()
+                .trim(from: 0.08, to: 0.72)
+                .stroke(
+                    Color.accentColor.opacity(0.85),
+                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+                )
+                .frame(width: 10, height: 10)
+                .rotationEffect(.degrees(phase * 360))
+        }
     }
 }

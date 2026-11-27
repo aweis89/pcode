@@ -236,3 +236,24 @@ def test_native_composer_chrome_hides_terminal_status_and_toolbar(monkeypatch):
         assert apc.startswith("\x1b_pcode;composer;") and apc.endswith("\x1b\\")
         b64 = apc[len("\x1b_pcode;composer;") : -len("\x1b\\")]
         assert json.loads(base64.b64decode(b64)) == payload
+
+        # Attached thinking band is suppressed in native transcript mode.
+        activity.attach_activity = True
+        activity.thought = "step by step reasoning"
+        assert layout.band_rows() == []
+
+        # sync_native_composer deduplicates unchanged payloads and emits on change.
+        writes: list[str] = []
+        fake_app = SimpleNamespace(
+            is_done=False,
+            output=SimpleNamespace(write_raw=writes.append, flush=lambda: None),
+        )
+        layout.sync_native_composer(fake_app)
+        assert len(writes) == 1
+        layout.sync_native_composer(fake_app)
+        assert len(writes) == 1  # unchanged -> no write
+        activity.prompt_state = "done"
+        layout.sync_native_composer(fake_app)
+        assert len(writes) == 2
+        assert layout.native_composer_payload()["busy"] is False
+        assert layout.native_composer_payload()["phase"] == ""
