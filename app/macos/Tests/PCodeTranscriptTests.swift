@@ -1719,7 +1719,7 @@ struct PCodeTranscriptTests {
 
         // A full-width last line drops the copy icon cleanly below the text with zero overlap.
         let wideText = NSAttributedString(
-            string: String(repeating: "word ", count: 6),
+            string: String(repeating: "w", count: 18),
             attributes: [.font: NSFont.systemFont(ofSize: 13)])
         let wrappedHeight = finalRow.configure(
             attributedText: wideText, copyMarkdown: markdown, showCopyButton: true,
