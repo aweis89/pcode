@@ -8,7 +8,31 @@ import SwiftUI
 final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
     // MARK: App
 
+    var appDisplayName: String { "Pcode" }
+
     var replacesTerminalWindows: Bool { PCodeWorkspaceMode.enabled }
+
+    func configureMainMenu(_ menu: NSMenu) {
+        PCodeMenu.configureMainMenu(menu)
+    }
+
+    func configureDockMenu(_ menu: NSMenu) {
+        PCodeMenu.configureDockMenu(menu)
+    }
+
+    func configureSurfaceContextMenu(_ menu: NSMenu) {
+        PCodeMenu.configureSurfaceContextMenu(menu)
+    }
+
+    func showAbout() -> Bool {
+        MainActor.assumeIsolated { PCodeAboutController.shared.show() }
+        return true
+    }
+
+    func showHelp() -> Bool {
+        guard let url = URL(string: "https://aweis89.github.io/pcode/") else { return false }
+        return NSWorkspace.shared.open(url)
+    }
 
     func showWorkspace(_ ghostty: Ghostty.App) {
         PCodeWorkspaceController.show(ghostty)
@@ -125,6 +149,8 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         switch cmd {
         case "peek": try Self.peekSession(args, finish)
         case "sidebar": try Self.sidebarCommand(args, finish)
+        case "menus":
+            finish(["main": NSApp.mainMenu.map(PCodeMenu.dumpMenu) ?? []])
         default: return false
         }
         return true

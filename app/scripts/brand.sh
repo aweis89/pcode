@@ -27,6 +27,9 @@ fi
 # (the fork's AppDelegate.checkForUpdates points at Homebrew instead).
 pb "Set :SUEnableAutomaticChecks false" 2>/dev/null || pb "Add :SUEnableAutomaticChecks bool false"
 
+# Upstream's "New Ghostty Tab/Window Here" Finder services open stock Ghostty windows.
+pb "Delete :NSServices" 2>/dev/null || true
+
 # Icon. CFBundleIconName selects Ghostty's Icon Composer asset in Assets.car,
 # which beats any .icns, so drop it. The dock tile plugin repaints Ghostty's
 # icon on pre-Tahoe macOS (and only serves the `macos-icon` option), so drop
