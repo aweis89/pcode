@@ -455,10 +455,10 @@ struct PCodeDiffParserTests {
         #expect(midFile1?.rowIndex == snap.fileHeaderIndices[0])
         #expect(midFile1?.yOffset == 0)
 
-        // Sticky header pushes upward smoothly as file 2's header enters the top 30pt band.
+        // Sticky header pushes upward smoothly as file 2's header enters the top header band.
         let approachingFile2 = snap.stickyHeaderState(for: secondHeaderY - 10)
         #expect(approachingFile2?.rowIndex == snap.fileHeaderIndices[0])
-        #expect(approachingFile2?.yOffset == -20)
+        #expect(approachingFile2?.yOffset == 10 - PCodeDiffLayoutSnapshot.fileHeaderHeight)
 
         // Once scrolled past file 2's header, file 2 becomes the sticky header.
         let insideFile2 = snap.stickyHeaderState(for: secondHeaderY + 5)

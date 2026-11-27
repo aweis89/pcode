@@ -18,6 +18,22 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
         style == .sansAndMono ? 0.92 : 0.95
     }
 
+    /// Denser monospace scale for the inspector diff view so code diffs remain
+    /// scannable in a narrow split pane while still scaling with ⌘+/⌘-.
+    var diffCodeScale: CGFloat { 0.78 }
+
+    /// AppKit monospace font sized for the inspector diff view.
+    func diffCodeNSFont() -> NSFont {
+        let pt = max(9.5, CGFloat(size) * diffCodeScale)
+        if codeFamilyAvailable,
+           let postScript = Self.jetBrainsPostScriptName(for: weight.nsFontWeight, italic: false),
+           let font = NSFont(name: postScript, size: pt)
+        {
+            return font
+        }
+        return NSFont.monospacedSystemFont(ofSize: pt, weight: weight.nsFontWeight)
+    }
+
     /// Fixed line height for a given font scale so mixed sans + mono inline runs
     /// never shift baselines.
     func lineHeight(scale: CGFloat = 1) -> CGFloat {
@@ -267,6 +283,10 @@ final class PCodeTypography: ObservableObject {
         size = Self.clampSize(size - 1)
     }
 
+    func resetSize() {
+        size = Self.defaultSize
+    }
+
     func reset() {
         style = .sansAndMono
         size = Self.defaultSize
@@ -317,5 +337,31 @@ final class PCodeTypography: ObservableObject {
     /// Code block scale: slightly tighter than body prose so long lines fit cleanly.
     var codeBlockScale: CGFloat {
         style == .sansAndMono ? 0.92 : 0.95
+    }
+}
+
+/// Workspace-wide ⌘+ / ⌘= / ⌘- / ⌘0 font-size shortcut matcher.
+enum PCodeFontSizeShortcut: Equatable, Sendable {
+    case increase
+    case decrease
+    case reset
+
+    static func match(charactersIgnoringModifiers: String?, modifierFlags: NSEvent.ModifierFlags) -> Self? {
+        guard let chars = charactersIgnoringModifiers, !chars.isEmpty else { return nil }
+        let mods = modifierFlags.intersection([.command, .shift, .option, .control])
+        if (chars == "=" || chars == "+") && (mods == .command || mods == [.command, .shift]) {
+            return .increase
+        }
+        if chars == "-" && mods == .command {
+            return .decrease
+        }
+        if chars == "0" && mods == .command {
+            return .reset
+        }
+        return nil
+    }
+
+    static func match(_ event: NSEvent) -> Self? {
+        match(charactersIgnoringModifiers: event.charactersIgnoringModifiers, modifierFlags: event.modifierFlags)
     }
 }

@@ -1297,6 +1297,8 @@ final class PCodeWorkspace: ObservableObject {
     /// The workspace window, for confirmation sheets; set by its controller.
     weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
+    private var typographySizeSubscription: AnyCancellable?
+    private var lastTypographySize: Double = PCodeTypography.shared.size
     private static let openKey = "PCodeWorkspaceOpenSessions"
     private static let selectedKey = "PCodeWorkspaceSelectedSession"
     private static let unseenKey = "PCodeWorkspaceUnseenSessions"
@@ -1317,6 +1319,16 @@ final class PCodeWorkspace: ObservableObject {
         self.ghostty = ghostty
         PCodeStartupTrace.mark("workspace init")
         PCodeWorkspaceMode.warmLoginShellCache()
+        typographySizeSubscription = PCodeTypography.shared.$size
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newSize in
+                guard let self else { return }
+                let delta = Int((newSize - self.lastTypographySize).rounded())
+                self.lastTypographySize = newSize
+                guard delta != 0 else { return }
+                self.applyFontSizeDelta(delta, reset: newSize == PCodeTypography.defaultSize)
+            }
         peek.onTargetChange = { [weak self] in
             guard let self else { return }
             self.syncOcclusion()
@@ -3039,6 +3051,7 @@ final class PCodeWorkspace: ObservableObject {
             guard let app = ghostty.app else { return }
             let shell = Ghostty.SurfaceView(app, baseConfig: config)
             PCode.applyColorScheme(to: shell)
+            applyCurrentFontSize(to: shell)
             pane.setShell(shell)
         }
         pane.shellVisible.toggle()
@@ -3098,6 +3111,7 @@ final class PCodeWorkspace: ObservableObject {
         // A resumed session has a transcript to show while pcode starts (`PCodeStartupOverlay`).
         view.pcodeDock.bootCovered = sessionID != nil
         PCode.applyColorScheme(to: view)
+        applyCurrentFontSize(to: view)
         let pane = PCodeSessionPane(
             surface: view,
             directory: resolvedDir,
@@ -3110,6 +3124,57 @@ final class PCodeWorkspace: ObservableObject {
     /// A fresh host id in pcode's format (`new_host_id`: 8 lowercase hex digits).
     static func newHostID() -> String {
         String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased()
+    }
+
+    // MARK: Workspace-Wide Font Scaling
+
+    /// Every live Ghostty terminal surface owned by the workspace (editors, shells, and overlays).
+    private var allLiveSurfaces: [Ghostty.SurfaceView] {
+        var result = panes.flatMap(\.surfaces)
+        if let overlay = PCode.keyboardOverlay(in: window), !result.contains(where: { $0 === overlay }) {
+            result.append(overlay)
+        }
+        return result
+    }
+
+    /// Apply the current `PCodeTypography.shared` delta (relative to `defaultSize`) to a newly created surface.
+    func applyCurrentFontSize(to view: Ghostty.SurfaceView) {
+        guard let surface = view.surface else { return }
+        let delta = Int((PCodeTypography.shared.size - PCodeTypography.defaultSize).rounded())
+        if delta > 0 {
+            ghostty.changeFontSize(surface: surface, .increase(delta))
+        } else if delta < 0 {
+            ghostty.changeFontSize(surface: surface, .decrease(-delta))
+        }
+    }
+
+    private func applyFontSizeDelta(_ delta: Int, reset: Bool = false) {
+        for view in allLiveSurfaces {
+            guard let surface = view.surface else { continue }
+            if reset {
+                ghostty.changeFontSize(surface: surface, .reset)
+            } else if delta > 0 {
+                ghostty.changeFontSize(surface: surface, .increase(delta))
+            } else if delta < 0 {
+                ghostty.changeFontSize(surface: surface, .decrease(-delta))
+            }
+        }
+    }
+
+    func increaseFontSize() {
+        PCodeTypography.shared.increaseSize()
+    }
+
+    func decreaseFontSize() {
+        PCodeTypography.shared.decreaseSize()
+    }
+
+    func resetFontSize() {
+        let wasDefault = PCodeTypography.shared.size == PCodeTypography.defaultSize
+        PCodeTypography.shared.resetSize()
+        if wasDefault {
+            applyFontSizeDelta(0, reset: true)
+        }
     }
 
     private func surfaceClosed(_ view: Ghostty.SurfaceView, processAlive: Bool) {
@@ -5317,9 +5382,30 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
             .sink { [weak window] config in
                 window?.backgroundColor = NSColor(config.backgroundColor).withAlphaComponent(1)
             }
+        // Intercept ⌘+/⌘=/⌘-/⌘0 at window level before any focused Ghostty SurfaceView
+        // can handle it as a single-surface terminal binding, so transcript, diff view,
+        // editor, and shell drawer always scale together regardless of focus.
+        fontSizeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window,
+                  let action = PCodeFontSizeShortcut.match(event)
+            else { return event }
+            switch action {
+            case .increase: self.increaseFontSize(self)
+            case .decrease: self.decreaseFontSize(self)
+            case .reset: self.resetFontSize(self)
+            }
+            return nil
+        }
     }
 
     private var configSubscription: AnyCancellable?
+    private var fontSizeKeyMonitor: Any?
+
+    deinit {
+        if let fontSizeKeyMonitor {
+            NSEvent.removeMonitor(fontSizeKeyMonitor)
+        }
+    }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
         workspace.syncOcclusion()
@@ -5415,5 +5501,17 @@ final class PCodeWorkspaceController: NSWindowController, NSWindowDelegate {
 
     @IBAction func closeWindow(_ sender: Any) {
         window?.performClose(sender)
+    }
+
+    @IBAction func increaseFontSize(_ sender: Any) {
+        workspace.increaseFontSize()
+    }
+
+    @IBAction func decreaseFontSize(_ sender: Any) {
+        workspace.decreaseFontSize()
+    }
+
+    @IBAction func resetFontSize(_ sender: Any) {
+        workspace.resetFontSize()
     }
 }

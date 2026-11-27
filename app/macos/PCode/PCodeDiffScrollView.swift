@@ -60,13 +60,13 @@ struct PCodeDiffTheme: Equatable {
         let accent = NSColor.controlAccentColor
         let palette = PCodeSyntaxPalette.make(isDark: isDark, foreground: concreteFg)
 
-        let gutterFont = NSFont.monospacedDigitSystemFont(ofSize: max(10, codeFont.pointSize - 1.0), weight: .regular)
-        let headerTitleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        let headerPathFont = NSFont.systemFont(ofSize: 11, weight: .regular)
-        let hunkHeaderFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
-        let noticeFont = NSFont.systemFont(ofSize: 11.5, weight: .regular)
+        let gutterFont = NSFont.monospacedDigitSystemFont(ofSize: max(8.5, codeFont.pointSize - 1.2), weight: .regular)
+        let headerTitleFont = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+        let headerPathFont = NSFont.systemFont(ofSize: 10.5, weight: .regular)
+        let hunkHeaderFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        let noticeFont = NSFont.systemFont(ofSize: 11, weight: .regular)
 
-        let rowHeight = ceil(codeFont.pointSize * 1.48) + 2
+        let rowHeight = ceil(codeFont.pointSize * 1.32) + 1
         let sampleWidth = ("M" as NSString).size(withAttributes: [.font: codeFont]).width
         let charAdvance = max(6.0, sampleWidth)
 
@@ -212,12 +212,12 @@ enum PCodeDiffFlatRow {
 /// O(log N) flat layout engine for virtualized diff scrolling.
 /// Because diff lines never soft-wrap, every row has an exact, fixed height.
 struct PCodeDiffLayoutSnapshot {
-    static let fileHeaderHeight: CGFloat = 30
-    static let hunkHeaderHeight: CGFloat = 23
-    static let expandGapHeight: CGFloat = 24
-    static let noticeHeight: CGFloat = 34
-    static let truncatedNoticeHeight: CGFloat = 26
-    static let fileBottomSpacerHeight: CGFloat = 6
+    static let fileHeaderHeight: CGFloat = 26
+    static let hunkHeaderHeight: CGFloat = 20
+    static let expandGapHeight: CGFloat = 20
+    static let noticeHeight: CGFloat = 28
+    static let truncatedNoticeHeight: CGFloat = 22
+    static let fileBottomSpacerHeight: CGFloat = 4
 
     let rows: [PCodeDiffFlatRow]
     let yOffsets: [CGFloat]
@@ -1270,10 +1270,10 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
     var rowKind: PCodeDiffRowKind { .unifiedLine }
     override var isFlipped: Bool { true }
 
-    static let oldNumWidth: CGFloat = 43
-    static let newNumWidth: CGFloat = 44
-    static let markerWidth: CGFloat = 14
-    static let gutterWidth: CGFloat = oldNumWidth + newNumWidth + markerWidth // 101pt
+    static let oldNumWidth: CGFloat = 32
+    static let newNumWidth: CGFloat = 32
+    static let markerWidth: CGFloat = 12
+    static let gutterWidth: CGFloat = oldNumWidth + newNumWidth + markerWidth // 76pt
 
     private var payload: PCodeDiffUnifiedLinePayload?
     private var theme: PCodeDiffTheme?
@@ -1448,9 +1448,9 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
     var rowKind: PCodeDiffRowKind { .sideBySideRow }
     override var isFlipped: Bool { true }
 
-    static let numWidth: CGFloat = 41
-    static let markerWidth: CGFloat = 12
-    static let halfGutterWidth: CGFloat = numWidth + markerWidth // 53pt
+    static let numWidth: CGFloat = 32
+    static let markerWidth: CGFloat = 11
+    static let halfGutterWidth: CGFloat = numWidth + markerWidth // 43pt
 
     private var payload: PCodeDiffSideBySidePayload?
     private var theme: PCodeDiffTheme?
