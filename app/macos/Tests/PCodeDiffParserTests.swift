@@ -539,4 +539,31 @@ struct PCodeDiffParserTests {
         scrollView.diffDocumentView.adjustHorizontalScroll(deltaX: 500, locationInView: NSPoint(x: 150, y: 450))
         #expect(scrollView.diffDocumentView.unifiedHorizontalOffset == 0)
     }
+
+    @Test @MainActor func followCatchUpGlideReachesBottomMuchFasterThanStreamingConveyor() {
+        var catchUp = PCodeDiffDocumentView.makeCatchUpGlide()
+        var streaming = PCodeDiffDocumentView.makeStreamingGlide()
+
+        catchUp.addOffset(1500)
+        streaming.addOffset(1500)
+
+        let dt = 1.0 / 120.0
+        var catchUpSeconds = 0.0
+        while catchUp.isActive && catchUpSeconds < 2.0 {
+            catchUp.step(dt: dt)
+            catchUpSeconds += dt
+        }
+
+        // Advance streaming for the same elapsed time.
+        var t = 0.0
+        while t < catchUpSeconds {
+            streaming.step(dt: dt)
+            t += dt
+        }
+
+        // Catch-up finishes under 0.7s while streaming still has most of the distance left.
+        #expect(!catchUp.isActive)
+        #expect(catchUpSeconds < 0.7)
+        #expect(streaming.remainingOffset > 900)
+    }
 }
