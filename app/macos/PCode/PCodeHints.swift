@@ -68,17 +68,19 @@ struct PCodeHint: Decodable, Equatable, Hashable {
 ///
 /// It drops the hints that need not stay, from the end, until the rest fit.
 struct PCodeHintBar: View {
+    @ObservedObject private var typography = PCodeTypography.shared
     let hints: [PCodeHint]
     let fonts: PCodePickFonts?
     let muted: Color
 
     var body: some View {
+        let liveFonts = PCodePickFonts(typography: typography.snapshot)
         ViewThatFits(in: .horizontal) {
             ForEach(Array(PCodeHint.narrowings(hints).enumerated()), id: \.offset) { _, shown in
-                row(shown)
+                row(shown, fonts: liveFonts)
             }
         }
-        .font(PCodePickFonts.small(fonts, fallbackSize: 11))
+        .font(PCodePickFonts.small(liveFonts, fallbackSize: 11))
         .foregroundStyle(muted)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
@@ -86,7 +88,7 @@ struct PCodeHintBar: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func row(_ shown: [PCodeHint]) -> some View {
+    private func row(_ shown: [PCodeHint], fonts: PCodePickFonts) -> some View {
         HStack(spacing: 14) {
             ForEach(Array(shown.enumerated()), id: \.offset) { _, hint in
                 HStack(spacing: 4) {

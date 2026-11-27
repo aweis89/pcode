@@ -153,6 +153,7 @@ final class PCodeCompletion: ObservableObject {
 struct PCodeCompletionLayer: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var completion: PCodeCompletion
+    @ObservedObject private var typography = PCodeTypography.shared
 
     static let maxRows = 10
     static let margin: CGFloat = 4
@@ -179,7 +180,7 @@ struct PCodeCompletionLayer: View {
         GeometryReader { geometry in
             let size = Self.layerSize(geometry.size, surface: completion.surfaceView)
             if let menu = completion.menu, !menu.items.isEmpty, let cursor = completion.cursorCell(in: size) {
-                let fonts = PCodePickFonts.of(completion.surfaceView?.surface)
+                let fonts = PCodePickFonts(typography: typography.snapshot)
                 let theme = completion.theme(config: ghostty.config, fonts: fonts)
                 let frame = Self.frame(menu, cursor: cursor, fonts: fonts, in: size)
                 list(menu, theme: theme, rowHeight: Self.rowHeight(cursor: cursor))

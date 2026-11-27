@@ -29,11 +29,27 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         return true
     }
 
+    func showSettings() -> Bool {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { PCodeSettingsController.shared.show() }
+        } else {
+            DispatchQueue.main.async {
+                PCodeSettingsController.shared.show()
+            }
+        }
+        return true
+    }
+
     func showHelp() -> Bool {
         if let url = URL(string: "https://aweis89.github.io/pcode/") {
             _ = NSWorkspace.shared.open(url)
         }
         return true
+    }
+
+    var configOverrideFilePath: String? {
+        guard replacesTerminalWindows else { return nil }
+        return PCodeTypography.shared.syncGhosttyOverrideFile()
     }
 
     func showWorkspace(_ ghostty: Ghostty.App) {
@@ -151,6 +167,17 @@ final class PCodeAppHooksImpl: NSObject, PCodeAppHooks {
         switch cmd {
         case "peek": try Self.peekSession(args, finish)
         case "sidebar": try Self.sidebarCommand(args, finish)
+        case "settings":
+            let action = (args["action"] as? String) ?? "show"
+            let visible: Bool = MainActor.assumeIsolated {
+                if action == "hide" {
+                    PCodeSettingsController.shared.hide()
+                } else {
+                    PCodeSettingsController.shared.show()
+                }
+                return PCodeSettingsController.shared.window?.isVisible ?? false
+            }
+            finish(["visible": visible])
         case "menus":
             finish(["main": NSApp.mainMenu.map(PCodeMenu.dumpMenu) ?? []])
         default: return false

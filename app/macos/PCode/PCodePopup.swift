@@ -284,6 +284,7 @@ struct PCodeSurfaceOverlay: View {
 struct PCodePopupLayer: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var popup: PCodePopup
+    @ObservedObject private var typography = PCodeTypography.shared
 
     private static let cornerRadius: CGFloat = 10
     /// Keeps the terminal's square corners inside the rounded ones.
@@ -304,7 +305,7 @@ struct PCodePopupLayer: View {
                     let size = Self.size(slot.layout, in: geometry.size)
                     VStack(spacing: 0) {
                         if !popup.title.isEmpty {
-                            header(popup.title, fonts: slot.fonts)
+                            header(popup.title, fonts: PCodePickFonts(typography: typography.snapshot))
                         }
                         switch slot.content {
                         case .terminal(let surface):

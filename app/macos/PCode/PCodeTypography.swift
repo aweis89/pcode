@@ -9,6 +9,39 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
     let size: Double
     let weight: PCodeTypography.Weight
     let codeFamilyAvailable: Bool
+    /// Optional custom system font family for prose (`nil` = macOS System SF Pro).
+    let proseFamily: String?
+    /// Optional custom system font family for code/mono (`nil` = bundled JetBrains Mono).
+    let codeFamily: String?
+
+    init(
+        style: PCodeTypography.Style,
+        size: Double,
+        weight: PCodeTypography.Weight,
+        codeFamilyAvailable: Bool,
+        proseFamily: String? = nil,
+        codeFamily: String? = nil
+    ) {
+        self.style = style
+        self.size = size
+        self.weight = weight
+        self.codeFamilyAvailable = codeFamilyAvailable
+        self.proseFamily = Self.normalizedFamily(proseFamily)
+        self.codeFamily = Self.normalizedFamily(codeFamily)
+    }
+
+    static func normalizedFamily(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
+    }
+
+    /// Effective monospace font family name, or `nil` if falling back to system monospaced.
+    var resolvedCodeFamily: String? {
+        if let codeFamily { return codeFamily }
+        return codeFamilyAvailable ? PCodeTypography.defaultCodeFamily : nil
+    }
 
     var inlineCodeScale: CGFloat {
         style == .sansAndMono ? 0.92 : 1.0
@@ -25,13 +58,7 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
     /// AppKit monospace font sized for the inspector diff view.
     func diffCodeNSFont() -> NSFont {
         let pt = max(9.5, CGFloat(size) * diffCodeScale)
-        if codeFamilyAvailable,
-           let postScript = Self.jetBrainsPostScriptName(for: weight.nsFontWeight, italic: false),
-           let font = NSFont(name: postScript, size: pt)
-        {
-            return font
-        }
-        return NSFont.monospacedSystemFont(ofSize: pt, weight: weight.nsFontWeight)
+        return resolveCodeNSFont(pt: pt, weight: weight.nsFontWeight, italic: false)
     }
 
     /// Fixed line height for a given font scale so mixed sans + mono inline runs
@@ -50,6 +77,12 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
         let pt = CGFloat(size) * scale
         switch style {
         case .sansAndMono:
+            if let proseFamily,
+               let custom = Self.resolveFamilyNSFont(
+                   family: proseFamily, size: pt, weight: resolvedWeight, italic: italic)
+            {
+                return custom
+            }
             let base = NSFont.systemFont(ofSize: pt, weight: resolvedWeight)
             guard italic else { return base }
             let desc = base.fontDescriptor.withSymbolicTraits(
@@ -60,7 +93,7 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
         }
     }
 
-    /// AppKit monospace font (bundled JetBrains Mono, falling back to system monospaced).
+    /// AppKit monospace font (user-selected family or bundled JetBrains Mono, falling back to system monospaced).
     func codeNSFont(
         scale: CGFloat = 1,
         weight overrideWeight: NSFont.Weight? = nil,
@@ -68,17 +101,123 @@ struct PCodeTypographySnapshot: Equatable, Sendable {
     ) -> NSFont {
         let resolvedWeight = overrideWeight ?? weight.nsFontWeight
         let pt = CGFloat(size) * scale
-        if codeFamilyAvailable,
-           let postScript = Self.jetBrainsPostScriptName(for: resolvedWeight, italic: italic),
-           let font = NSFont(name: postScript, size: pt)
+        return resolveCodeNSFont(pt: pt, weight: resolvedWeight, italic: italic)
+    }
+
+    private func resolveCodeNSFont(pt: CGFloat, weight: NSFont.Weight, italic: Bool) -> NSFont {
+        if let family = resolvedCodeFamily,
+           let custom = Self.resolveFamilyNSFont(family: family, size: pt, weight: weight, italic: italic)
         {
-            return font
+            return custom
         }
-        let fallback = NSFont.monospacedSystemFont(ofSize: pt, weight: resolvedWeight)
+        let fallback = NSFont.monospacedSystemFont(ofSize: pt, weight: weight)
         guard italic else { return fallback }
         let desc = fallback.fontDescriptor.withSymbolicTraits(
             fallback.fontDescriptor.symbolicTraits.union(.italic))
         return NSFont(descriptor: desc, size: pt) ?? fallback
+    }
+
+    private struct FontMemberCandidate: Sendable {
+        let postScript: String
+        let weight: Int
+        let isItalic: Bool
+        let isCondensedOrExpanded: Bool
+    }
+
+    private static let familyMembersLock = NSLock()
+    private static var familyMembersCache: [String: [FontMemberCandidate]] = [:]
+
+    private static func cachedMembers(for family: String) -> [FontMemberCandidate] {
+        familyMembersLock.lock()
+        if let cached = familyMembersCache[family] {
+            familyMembersLock.unlock()
+            return cached
+        }
+        familyMembersLock.unlock()
+
+        let italicMask = NSFontTraitMask.italicFontMask.rawValue
+        let condensedOrExpandedMask =
+            NSFontTraitMask.condensedFontMask.rawValue
+            | NSFontTraitMask.expandedFontMask.rawValue
+            | NSFontTraitMask.compressedFontMask.rawValue
+            | NSFontTraitMask.narrowFontMask.rawValue
+
+        let members = NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []
+        let parsed: [FontMemberCandidate] = members.compactMap { entry in
+            guard entry.count >= 4,
+                  let ps = entry[0] as? String,
+                  let w = entry[2] as? Int,
+                  let traits = entry[3] as? UInt
+            else { return nil }
+            return FontMemberCandidate(
+                postScript: ps,
+                weight: w,
+                isItalic: (traits & italicMask) != 0,
+                isCondensedOrExpanded: (traits & condensedOrExpandedMask) != 0)
+        }
+
+        familyMembersLock.lock()
+        familyMembersCache[family] = parsed
+        familyMembersLock.unlock()
+        return parsed
+    }
+
+    /// Resolves a named font family to the closest matching `NSFont` for `weight` and `italic`.
+    /// Uses cached `availableMembers(ofFontFamily:)` so families missing intermediate weights (e.g. Medium)
+    /// pick the nearest weight in the same family rather than silently falling back to Helvetica.
+    static func resolveFamilyNSFont(
+        family: String,
+        size pt: CGFloat,
+        weight: NSFont.Weight,
+        italic: Bool
+    ) -> NSFont? {
+        if family == PCodeTypography.defaultCodeFamily,
+           let postScript = jetBrainsPostScriptName(for: weight, italic: italic),
+           let font = NSFont(name: postScript, size: pt)
+        {
+            return font
+        }
+
+        let candidates = cachedMembers(for: family)
+        guard !candidates.isEmpty else { return nil }
+
+        let targetAppKitWeight = appKitWeight(for: weight)
+
+        // Prefer matching italic trait; if italic was requested and the family has no
+        // italic faces, pick the best upright face and convert it to italic below.
+        let matchingItalic = candidates.filter { $0.isItalic == italic }
+        let pool = matchingItalic.isEmpty ? candidates.filter { !$0.isItalic } : matchingItalic
+        let searchPool = pool.isEmpty ? candidates : pool
+
+        let best = searchPool.min { lhs, rhs in
+            if lhs.isCondensedOrExpanded != rhs.isCondensedOrExpanded {
+                return !lhs.isCondensedOrExpanded
+            }
+            let ld = abs(lhs.weight - targetAppKitWeight)
+            let rd = abs(rhs.weight - targetAppKitWeight)
+            if ld != rd { return ld < rd }
+            // Break ties toward slightly lighter/regular weight so Regular wins over Bold for Medium.
+            return lhs.weight < rhs.weight
+        }
+
+        guard let best, let font = NSFont(name: best.postScript, size: pt) else { return nil }
+        if italic && !best.isItalic {
+            let converted = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+            if converted.familyName == font.familyName {
+                return converted
+            }
+        }
+        return font
+    }
+
+    /// Maps `NSFont.Weight` onto `NSFontManager`'s 0...15 weight scale (5 = Regular, 6 = Medium, 8 = Semibold, 9 = Bold).
+    static func appKitWeight(for weight: NSFont.Weight) -> Int {
+        if weight.rawValue >= NSFont.Weight.heavy.rawValue { return 11 }
+        if weight.rawValue >= NSFont.Weight.bold.rawValue { return 9 }
+        if weight.rawValue >= NSFont.Weight.semibold.rawValue { return 8 }
+        if weight.rawValue >= NSFont.Weight.medium.rawValue { return 6 }
+        if weight.rawValue <= NSFont.Weight.light.rawValue { return 3 }
+        return 5
     }
 
     /// Maps an `NSFont.Weight` + italic flag onto the exact bundled JetBrains Mono face.
@@ -190,6 +329,8 @@ final class PCodeTypography: ObservableObject {
         static let style = "PCodeTypographyStyle"
         static let size = "PCodeTypographySize"
         static let weight = "PCodeTypographyWeight"
+        static let proseFamily = "PCodeTypographyProseFamily"
+        static let codeFamily = "PCodeTypographyCodeFamily"
     }
 
     private let defaults: UserDefaults
@@ -221,25 +362,65 @@ final class PCodeTypography: ObservableObject {
         }
     }
 
+    /// Optional custom system font family for prose (`nil` = macOS System SF Pro).
+    @Published var proseFamily: String? {
+        didSet {
+            let normalized = PCodeTypographySnapshot.normalizedFamily(proseFamily)
+            if normalized != proseFamily {
+                proseFamily = normalized
+                return
+            }
+            guard proseFamily != oldValue else { return }
+            if let proseFamily {
+                defaults.set(proseFamily, forKey: Keys.proseFamily)
+            } else {
+                defaults.removeObject(forKey: Keys.proseFamily)
+            }
+        }
+    }
+
+    /// Optional custom system font family for code/mono (`nil` = bundled JetBrains Mono).
+    @Published var codeFamily: String? {
+        didSet {
+            let normalized = PCodeTypographySnapshot.normalizedFamily(codeFamily)
+            if normalized != codeFamily {
+                codeFamily = normalized
+                return
+            }
+            guard codeFamily != oldValue else { return }
+            if let codeFamily {
+                defaults.set(codeFamily, forKey: Keys.codeFamily)
+            } else {
+                defaults.removeObject(forKey: Keys.codeFamily)
+            }
+        }
+    }
+
     /// Current immutable snapshot for AppKit layout and rendering.
     var snapshot: PCodeTypographySnapshot {
         PCodeTypographySnapshot(
             style: style,
             size: size,
             weight: weight,
-            codeFamilyAvailable: codeFamilyAvailable)
+            codeFamilyAvailable: codeFamilyAvailable,
+            proseFamily: proseFamily,
+            codeFamily: codeFamily)
     }
 
-    /// Post-mutation, coalesced snapshot publisher (so `reset()` emits once, not 3x before mutation).
+    /// Post-mutation, coalesced snapshot publisher (so `reset()` emits once, not 5x before mutation).
     var snapshotPublisher: AnyPublisher<PCodeTypographySnapshot, Never> {
         let available = codeFamilyAvailable
-        return Publishers.CombineLatest3($style, $size, $weight)
-            .map { style, size, weight in
+        let base = Publishers.CombineLatest3($style, $size, $weight)
+        let families = Publishers.CombineLatest($proseFamily, $codeFamily)
+        return Publishers.CombineLatest(base, families)
+            .map { base, families in
                 PCodeTypographySnapshot(
-                    style: style,
-                    size: Self.clampSize(size),
-                    weight: weight,
-                    codeFamilyAvailable: available)
+                    style: base.0,
+                    size: Self.clampSize(base.1),
+                    weight: base.2,
+                    codeFamilyAvailable: available,
+                    proseFamily: families.0,
+                    codeFamily: families.1)
             }
             .removeDuplicates()
             .dropFirst()
@@ -266,6 +447,11 @@ final class PCodeTypography: ObservableObject {
         } else {
             self.weight = .medium
         }
+
+        self.proseFamily = PCodeTypographySnapshot.normalizedFamily(
+            defaults.string(forKey: Keys.proseFamily))
+        self.codeFamily = PCodeTypographySnapshot.normalizedFamily(
+            defaults.string(forKey: Keys.codeFamily))
     }
 
     static func clampSize(_ value: Double) -> Double {
@@ -291,40 +477,51 @@ final class PCodeTypography: ObservableObject {
         style = .sansAndMono
         size = Self.defaultSize
         weight = .medium
+        proseFamily = nil
+        codeFamily = nil
     }
 
     /// Prose/body font according to the selected style preset.
     func proseFont(scale: CGFloat = 1, weight overrideWeight: Font.Weight? = nil) -> Font {
-        let resolvedWeight = overrideWeight ?? weight.fontWeight
-        let pt = CGFloat(size) * scale
-        switch style {
-        case .sansAndMono:
-            return .system(size: pt, weight: resolvedWeight, design: .default)
-        case .mono:
-            return codeFont(scale: scale, weight: resolvedWeight)
-        }
+        let nsWeight = overrideWeight.map(Self.nsFontWeight(from:))
+        return Font(snapshot.proseNSFont(scale: scale, weight: nsWeight) as CTFont)
     }
 
-    /// Code/monospace font (bundled JetBrains Mono, falling back to system monospaced).
+    /// Code/monospace font (user-selected family or bundled JetBrains Mono, falling back to system monospaced).
     func codeFont(scale: CGFloat = 1, weight overrideWeight: Font.Weight? = nil) -> Font {
-        Self.makeCodeFont(
-            baseSize: CGFloat(size),
-            scale: scale,
-            weight: overrideWeight ?? weight.fontWeight,
-            familyAvailable: codeFamilyAvailable)
+        let nsWeight = overrideWeight.map(Self.nsFontWeight(from:))
+        return Font(snapshot.codeNSFont(scale: scale, weight: nsWeight) as CTFont)
+    }
+
+    static func nsFontWeight(from weight: Font.Weight) -> NSFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
     }
 
     static func makeCodeFont(
         baseSize: CGFloat,
         scale: CGFloat = 1,
         weight: Font.Weight,
-        familyAvailable: Bool
+        familyAvailable: Bool,
+        family: String? = nil
     ) -> Font {
-        let pt = baseSize * scale
-        if familyAvailable {
-            return .custom(defaultCodeFamily, fixedSize: pt).weight(weight)
-        }
-        return .system(size: pt, weight: weight, design: .monospaced)
+        let snap = PCodeTypographySnapshot(
+            style: .mono,
+            size: Double(baseSize),
+            weight: .regular,
+            codeFamilyAvailable: familyAvailable,
+            codeFamily: family)
+        return Font(snap.codeNSFont(scale: scale, weight: nsFontWeight(from: weight)) as CTFont)
     }
 
     var isCodeFamilyAvailable: Bool { codeFamilyAvailable }
@@ -337,6 +534,104 @@ final class PCodeTypography: ObservableObject {
     /// Code block scale: slightly tighter than body prose so long lines fit cleanly.
     var codeBlockScale: CGFloat {
         style == .sansAndMono ? 0.92 : 0.95
+    }
+
+    // MARK: - System font discovery
+
+    /// Discovers all user-facing font families and fixed-pitch (monospace) families in a single pass.
+    static func discoverSystemFontFamilies() -> (all: [String], monospace: [String]) {
+        let manager = NSFontManager.shared
+        let fixedPitchMask = NSFontTraitMask.fixedPitchFontMask.rawValue
+        let all = manager.availableFontFamilies
+            .filter { !$0.hasPrefix(".") }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let mono = all.filter { family in
+            if family == defaultCodeFamily { return true }
+            guard let members = manager.availableMembers(ofFontFamily: family),
+                  !members.isEmpty
+            else { return false }
+            return members.contains { entry in
+                entry.count >= 4 && ((entry[3] as? UInt) ?? 0) & fixedPitchMask != 0
+            }
+        }
+        return (all: all, monospace: mono)
+    }
+
+    /// All installed user-facing font families (excluding hidden `.`-prefixed system fonts).
+    static func availableSystemFontFamilies() -> [String] {
+        discoverSystemFontFamilies().all
+    }
+
+    /// Installed fixed-pitch (monospace) font families suitable for code blocks, diffs, and the docked editor.
+    static func availableMonospaceFontFamilies() -> [String] {
+        discoverSystemFontFamilies().monospace
+    }
+
+    // MARK: - Ghostty terminal typography override
+
+    /// Managed Ghostty config snippet loaded after user config so the docked editor's
+    /// terminal surface matches Pcode's code font family and base size.
+    static var ghosttyOverrideFilePath: String {
+        PCode.statePath("ghostty-typography.conf")
+    }
+
+    /// Generates the Ghostty config snippet for the given monospace family.
+    static func ghosttyOverrideConfigText(
+        codeFamily: String?,
+        codeFamilyAvailable: Bool
+    ) -> String {
+        let resolved = PCodeTypographySnapshot.normalizedFamily(codeFamily)
+            ?? (codeFamilyAvailable ? defaultCodeFamily : nil)
+
+        var lines: [String] = [
+            "# Managed by Pcode.app typography settings.",
+            "font-family = \"\"",
+            "font-family-bold = \"\"",
+            "font-family-italic = \"\"",
+            "font-family-bold-italic = \"\"",
+            "font-style = default",
+            "font-style-bold = default",
+            "font-style-italic = default",
+            "font-style-bold-italic = default",
+        ]
+        if let resolved {
+            let safe = sanitizeGhosttyConfigValue(resolved)
+            if !safe.isEmpty {
+                lines.append("font-family = \"\(safe)\"")
+            }
+        }
+        lines.append("font-size = \(Int(defaultSize))")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Ghostty's config `LineIterator` strips outer quotes verbatim without unescaping backslashes,
+    /// so sanitize by dropping control chars and double quotes rather than inserting backslashes.
+    private static func sanitizeGhosttyConfigValue(_ value: String) -> String {
+        let filtered = value.unicodeScalars.filter {
+            $0.value >= 0x20 && $0.value != 0x7F && $0 != "\""
+        }
+        return String(String.UnicodeScalarView(filtered))
+    }
+
+    /// Writes `ghosttyOverrideFilePath` atomically and returns the path if ready.
+    @discardableResult
+    func syncGhosttyOverrideFile(to path: String? = nil) -> String? {
+        let targetPath = path ?? Self.ghosttyOverrideFilePath
+        let url = URL(fileURLWithPath: targetPath)
+        let dir = url.deletingLastPathComponent()
+        let content = Self.ghosttyOverrideConfigText(
+            codeFamily: codeFamily,
+            codeFamilyAvailable: codeFamilyAvailable)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let existing = try? String(contentsOf: url, encoding: .utf8), existing == content {
+                return targetPath
+            }
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            return targetPath
+        } catch {
+            return nil
+        }
     }
 }
 

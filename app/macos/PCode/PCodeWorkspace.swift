@@ -1298,6 +1298,7 @@ final class PCodeWorkspace: ObservableObject {
     weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
     private var typographySizeSubscription: AnyCancellable?
+    private var typographyCodeFamilySubscription: AnyCancellable?
     private var lastTypographySize: Double = PCodeTypography.shared.size
     private static let openKey = "PCodeWorkspaceOpenSessions"
     private static let selectedKey = "PCodeWorkspaceSelectedSession"
@@ -1336,6 +1337,14 @@ final class PCodeWorkspace: ObservableObject {
                 } else {
                     DispatchQueue.main.async(execute: apply)
                 }
+            }
+        typographyCodeFamilySubscription = PCodeTypography.shared.$codeFamily
+            .map(PCodeTypographySnapshot.normalizedFamily)
+            .removeDuplicates()
+            .dropFirst()
+            .debounce(for: .zero, scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.ghostty.reloadConfig()
             }
         peek.onTargetChange = { [weak self] in
             guard let self else { return }

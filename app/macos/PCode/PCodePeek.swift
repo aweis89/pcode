@@ -1137,6 +1137,19 @@ struct PCodePeekOverlay: View {
             .padding(.vertical, 1)
             .background(Color.primary.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            Button {
+                PCodeSettingsController.shared.show()
+            } label: {
+                Image(systemName: "textformat")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 20)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("Font Settings (⌘,)")
         }
     }
 }

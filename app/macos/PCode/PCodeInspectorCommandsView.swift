@@ -506,10 +506,7 @@ struct PCodeInspectorCommandsView: View {
 
     private var resolvedCodeFont: NSFont {
         if let codeFont { return codeFont }
-        if let jb = NSFont(name: "JetBrainsMono-Regular", size: 11.5) {
-            return jb
-        }
-        return NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        return PCodeTypography.shared.snapshot.codeNSFont(scale: 0.82)
     }
 
     private var selectedCommand: PCodeInspectorCommandItem? {
