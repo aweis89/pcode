@@ -418,6 +418,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     var groupTools: Bool = PCodeTranscriptPreferences.shared.groupTools {
         didSet {
             guard groupTools != oldValue else { return }
+            clearActiveFoldGhostLayers()
             syncProjectedItems(revealNewIDs: [], foldSnapshot: nil, animateShift: true)
         }
     }
@@ -599,6 +600,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil {
+            clearActiveFoldGhostLayers()
             stopDisplayLink()
             stopLiveRunningTimer()
             cancelResumingDwellTimer()
@@ -929,6 +931,9 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let drawnFrame = view.frame.offsetBy(dx: 0, dy: Self.inFlightShift(of: view))
         rowLayer.bounds = CGRect(origin: .zero, size: drawnFrame.size)
         rowLayer.cornerRadius = view.layer?.cornerRadius ?? 5
+        if let masked = view.layer?.maskedCorners {
+            rowLayer.maskedCorners = masked
+        }
         rowLayer.masksToBounds = true
         return (rowLayer, drawnFrame)
     }
@@ -958,10 +963,12 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         guard window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         else { return nil }
+        let visible = visibleRect
         var capturedRows: [(layer: CALayer, drawnFrame: CGRect)] = []
         capturedRows.reserveCapacity(min(entries.count, 24))
         for entry in entries {
             guard let view = mountedViews[entry.id],
+                  view.frame.intersects(visible),
                   let captured = captureRowBitmapLayer(for: view)
             else { continue }
             capturedRows.append(captured)
@@ -1406,16 +1413,22 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         if shouldAnimateMotion {
             let originShift = (enclosingScrollView?.contentView.bounds.origin.y ?? 0) - previousClipOriginY
             let maxShift = max(400, enclosingScrollView?.contentView.bounds.height ?? 400)
+            let tailShift = previousTotalHeight - layoutEngine.totalHeight
             if let snap = foldSnapshot,
                let targetGroupID = snap.targetGroupID ?? snap.rawItemID.flatMap({ groupIDByRawItemID[$0] }),
                let groupView = mountedViews[targetGroupID]
             {
-                let groupStartBottom = previousRowFrames[targetGroupID].map { $0.maxY + originShift } ?? groupView.frame.maxY
+                // Anchor the clip strictly below the post-collapse group card (shifted by any
+                // in-flight/origin offset) so windowed groups that grow on collapse never show
+                // collapsing child snapshots bleeding behind their translucent rows.
+                let groupStartTop = previousRowFrames[targetGroupID].map { $0.minY + originShift } ?? groupView.frame.minY
+                let clipStartTop = groupStartTop + groupView.frame.height
                 animateFoldSnapshot(
                     snap,
-                    groupStartBottom: groupStartBottom,
+                    clipStartTop: clipStartTop,
                     groupEndBottom: groupView.frame.maxY,
                     originShift: originShift,
+                    tailShift: tailShift,
                     maxShift: maxShift)
             }
             if !previousRowFrames.isEmpty {
@@ -1424,7 +1437,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
                     originShift: originShift,
                     unchangedAbove: prefix,
                     unchangedFrom: newCount - suffix,
-                    tailShift: previousTotalHeight - layoutEngine.totalHeight,
+                    tailShift: tailShift,
                     maxShift: maxShift)
             }
             if let expandedID = animateExpandedGroupID,
@@ -1441,6 +1454,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
 
     private func clearActiveFoldGhostLayers() {
         for ghost in activeFoldGhostLayers {
+            ghost.sublayers?.forEach { $0.removeAllAnimations() }
             ghost.removeAllAnimations()
             ghost.removeFromSuperlayer()
         }
@@ -1459,16 +1473,21 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
     /// `animateVerticalShifts` so rows below stay glued to the retracting bottom edge.
     private func animateFoldSnapshot(
         _ snap: FoldSnapshot,
-        groupStartBottom: CGFloat,
+        clipStartTop: CGFloat,
         groupEndBottom: CGFloat,
         originShift: CGFloat,
+        tailShift: CGFloat,
         maxShift: CGFloat
     ) {
         guard let hostLayer = layer else { return }
         let contentStartTop = snap.originTopY + originShift
         let contentStartBottom = snap.originBottomY + originShift
-        let collapseHeight = contentStartBottom - groupStartBottom
-        guard collapseHeight > 1.0 && collapseHeight < maxShift else { return }
+        let collapseHeight = contentStartBottom - clipStartTop
+        guard collapseHeight > 1.0,
+              collapseHeight < maxShift,
+              abs(tailShift + originShift) < maxShift,
+              abs(groupEndBottom - clipStartTop) < maxShift
+        else { return }
 
         let clipLayer = CALayer()
         clipLayer.masksToBounds = true
@@ -1476,7 +1495,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         clipLayer.zPosition = -1
 
         let contentLayer = snap.contentLayer
-        let contentLocalStartY = contentStartTop - groupStartBottom
+        let contentLocalStartY = contentStartTop - clipStartTop
         let contentLocalEndY = contentLocalStartY - collapseHeight
 
         CATransaction.begin()
@@ -1501,7 +1520,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         clipBoundsAnim.timingFunction = timing
 
         let clipPosAnim = CABasicAnimation(keyPath: "position.y")
-        clipPosAnim.fromValue = groupStartBottom
+        clipPosAnim.fromValue = clipStartTop
         clipPosAnim.toValue = groupEndBottom
         clipPosAnim.duration = duration
         clipPosAnim.timingFunction = timing
@@ -1517,8 +1536,6 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         fade.toValue = Float(0.0)
         fade.duration = duration * 0.85
         fade.timingFunction = timing
-        fade.fillMode = .forwards
-        fade.isRemovedOnCompletion = false
 
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
@@ -1526,7 +1543,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
             self?.activeFoldGhostLayers.removeAll { $0 === clipLayer }
         }
         clipLayer.add(clipBoundsAnim, forKey: "pcode.tool.fold.clipHeight")
-        if abs(groupEndBottom - groupStartBottom) > 0.5 {
+        if abs(groupEndBottom - clipStartTop) > 0.5 {
             clipLayer.add(clipPosAnim, forKey: "pcode.tool.fold.clipPos")
         }
         contentLayer.add(slideUp, forKey: "pcode.tool.fold.slide")
@@ -2768,6 +2785,7 @@ final class PCodeTranscriptDocumentView: NSView, NSUserInterfaceValidations {
         let collapseSnapshot: FoldSnapshot?
         if willExpand {
             collapseSnapshot = nil
+            clearActiveFoldGhostLayers()
             unpinFromBottom()
             expandedGroupIDs.insert(id)
         } else {

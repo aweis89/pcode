@@ -3146,18 +3146,25 @@ struct PCodeTranscriptTests {
             }
         }
 
-        // Expand then manually collapse -> captures mounted children and tucks them behind the pill.
+        // Expand clears any in-flight fold layer; manual collapse then creates one fresh clipped tuck
+        // containing both mounted children behind the pill.
         let groupID = doc.items[1].id
         doc.toggleExpansionForAccessibility(id: groupID)
         scrollView.layoutSubtreeIfNeeded()
         #expect(doc.items.count == 4) // prompt + group + t1 + t2
+        #expect(tuckLayers().isEmpty)
 
         doc.toggleExpansionForAccessibility(id: groupID)
         #expect(doc.items.count == 2) // prompt + group
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let collapseTucks = tuckLayers()
-            #expect(collapseTucks.count >= 1)
-            #expect(collapseTucks.allSatisfy { $0.masksToBounds && $0.zPosition < 0 })
+            #expect(collapseTucks.count == 1)
+            if let clip = collapseTucks.first {
+                #expect(clip.masksToBounds == true)
+                #expect(clip.zPosition < 0)
+                #expect(clip.sublayers?.first?.sublayers?.count == 2)
+                #expect(clip.sublayers?.first?.animation(forKey: "transform.scale.y") == nil)
+            }
         }
 
         doc.setItems([], pinToBottom: false)
