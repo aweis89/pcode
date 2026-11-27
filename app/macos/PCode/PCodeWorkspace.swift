@@ -3882,11 +3882,12 @@ struct PCodeWindowVisibilityReader<Content: View>: View {
     }
 }
 
-/// A turn running: the same green dot as a settled, unseen response, with a
-/// thin arc orbiting it, so running and done differ by motion, not by shape
-/// or size. Fills its frame; the dot is half of it (6pt in a 12pt slot).
+/// A turn running: a soft accent center dot with a thin orbiting arc, distinct
+/// in both color and motion from settled unseen (`Color.green`) and failed
+/// (`Color.red`) dots. Fills its frame; the center dot is 40% of it (~4.8pt in
+/// a 12pt slot) so the orbiting arc reads cleanly.
 private struct PCodeRunningDot: View {
-    private static let period = 1.1
+    private static let period = 1.5
     private static let lineWidth: CGFloat = 1.2
     @Environment(\.pcodeWindowOnScreen) private var onScreen
 
@@ -3905,11 +3906,11 @@ private struct PCodeRunningDot: View {
                         .stroke(
                             AngularGradient(
                                 gradient: Gradient(stops: [
-                                    .init(color: Color.green.opacity(0), location: 0),
-                                    .init(color: Color.green, location: 0.32),
+                                    .init(color: Color.accentColor.opacity(0), location: 0),
+                                    .init(color: Color.accentColor, location: 0.32),
                                     // Fade back out past the head, so the tail's
                                     // round cap (just behind 0) isn't solid.
-                                    .init(color: Color.green.opacity(0), location: 1),
+                                    .init(color: Color.accentColor.opacity(0), location: 1),
                                 ]),
                                 center: .center
                             ),
@@ -3918,7 +3919,9 @@ private struct PCodeRunningDot: View {
                         .padding(Self.lineWidth / 2)
                         .rotationEffect(.radians(turns * 2 * .pi))
                 }
-                Circle().fill(Color.green).frame(width: side * 0.5, height: side * 0.5)
+                Circle()
+                    .fill(Color.accentColor.opacity(0.85))
+                    .frame(width: side * 0.4, height: side * 0.4)
             }
             .frame(width: side, height: side)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4806,7 +4809,7 @@ private struct PCodeProjectLauncher: View {
     }
 }
 
-/// Open and idle: a grey dot. A turn running: a green dot with an orbiting
+/// Open and idle: a grey dot. A turn running: an accent dot with an orbiting
 /// arc. Failed: red. A response not yet looked at: solid green, open or not.
 private struct PCodeActivityIndicator: View {
     var activity: PCodeSessionPane.Activity?
