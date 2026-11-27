@@ -39,15 +39,26 @@ final class PCodeDiffSyntaxStore: ObservableObject {
         guard !lines.isEmpty else { return [] }
         let lang = PCodePrismSyntaxHighlighter.normalizeLanguage(language)
         guard lang != "plain" else { return nil }
-
         let joined = lines.joined(separator: "\n")
         let key = "\(lang)\u{0}\(joined)"
+        return lineTokens(forPrecomputedKey: key, joinedCode: joined, lineCount: lines.count, normalizedLanguage: lang)
+    }
+
+    /// Fast-path lookup using a precomputed `(key, joinedCode)` built once per hunk, avoiding
+    /// per-line string joins and hashing during 120fps scrolling.
+    func lineTokens(
+        forPrecomputedKey key: String,
+        joinedCode: String,
+        lineCount: Int,
+        normalizedLanguage lang: String
+    ) -> [[PCodeSyntaxToken]]? {
+        guard lineCount > 0, lang != "plain" else { return nil }
         if let cached = tokensByKey[key] {
             return cached
         }
 
-        if let syncTokens = highlighter.cachedTokens(code: joined, language: lang) {
-            let split = Self.splitTokensByLine(syncTokens, lineCount: lines.count)
+        if let syncTokens = highlighter.cachedTokens(code: joinedCode, language: lang) {
+            let split = Self.splitTokensByLine(syncTokens, lineCount: lineCount)
             storeTokens(split, forKey: key)
             return split
         }
@@ -55,9 +66,9 @@ final class PCodeDiffSyntaxStore: ObservableObject {
         if !inFlight.contains(key) {
             inFlight.insert(key)
             let hl = highlighter
-            let expectedCount = lines.count
+            let expectedCount = lineCount
             Task { [weak self] in
-                let raw = await hl.tokenize(code: joined, language: lang)
+                let raw = await hl.tokenize(code: joinedCode, language: lang)
                 let split = Self.splitTokensByLine(raw, lineCount: expectedCount)
                 await MainActor.run {
                     guard let self else { return }
@@ -195,6 +206,7 @@ struct PCodeChangesInspectorView: View {
     @State private var containerWidth: CGFloat = 460
     @State private var scrollToBottomToken: Int = 0
     @State private var scrollToFileRequest: (id: String, token: Int, animated: Bool)?
+    @State private var suppressNextFocusScroll: Bool = false
 
     /// Minimum pane width before Side-by-Side layout is enabled without expanding the Inspector.
     static let sideBySideMinWidth: CGFloat = 640
@@ -235,15 +247,6 @@ struct PCodeChangesInspectorView: View {
             return jb
         }
         return NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    }
-
-    private var syntaxPalette: PCodeSyntaxPalette {
-        // Avoid dynamic `.labelColor`/`.textColor`: when Ghostty uses a dark theme while macOS
-        // is in Light Mode, `AttributedString(NSAttributedString)` resolves catalog colors against
-        // the system appearance (turning plain/punctuation tokens black on a dark background).
-        let concreteForeground = foregroundColor
-            ?? (isDark ? NSColor(white: 0.90, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0))
-        return PCodeSyntaxPalette.make(isDark: isDark, foreground: concreteForeground)
     }
 
     private var canUseSideBySide: Bool {
@@ -611,6 +614,11 @@ struct PCodeChangesInspectorView: View {
                             guard !diffs.isEmpty else { return false }
                             openFocusedOrSelectedInEditor()
                             return true
+                        },
+                        onUserScrolledAwayFromBottom: {
+                            if state.diffScope == .session && state.followAgent {
+                                state.followAgent = false
+                            }
                         }
                     )
                     .onAppear {
@@ -621,6 +629,10 @@ struct PCodeChangesInspectorView: View {
                         }
                     }
                     .onChange(of: state.focusedFilePath) { targetPath in
+                        if suppressNextFocusScroll {
+                            suppressNextFocusScroll = false
+                            return
+                        }
                         requestScrollToFocusedFile(targetPath, animated: true)
                     }
 
@@ -703,7 +715,10 @@ struct PCodeChangesInspectorView: View {
     private func handleLineTap(_ line: PCodeDiffLine, filePath: String, isShiftHeld: Bool) {
         guard let lineNum = line.referenceLineNumber else { return }
 
-        state.focusedFilePath = filePath
+        if state.focusedFilePath != filePath {
+            suppressNextFocusScroll = true
+            state.focusedFilePath = filePath
+        }
         updatedUnseenFiles.remove(filePath)
 
         if isShiftHeld, let anchor = selectionAnchor, anchor.path == filePath {
@@ -820,12 +835,16 @@ struct PCodeChangesInspectorView: View {
 
     private func jumpToDiff(_ diff: PCodeFileDiff) {
         state.collapsedFiles.remove(diff.id)
-        state.focusedFilePath = diff.id
         updatedUnseenFiles.remove(diff.path)
-        requestScrollToFocusedFile(diff.id, animated: true)
+        if state.focusedFilePath == diff.id {
+            requestScrollToFocusedFile(diff.id, animated: true)
+        } else {
+            state.focusedFilePath = diff.id
+        }
     }
 
     private func navigateFile(direction: Int) {
+        let previous = state.focusedFilePath
         let next: String? = direction >= 0
             ? PCodeDiffNavigation.selectNextFile(in: diffs, state: state)
             : PCodeDiffNavigation.selectPreviousFile(in: diffs, state: state)
@@ -833,7 +852,11 @@ struct PCodeChangesInspectorView: View {
               let match = diffs.last(where: { $0.id == next || $0.path == next })
         else { return }
         updatedUnseenFiles.remove(match.path)
-        requestScrollToFocusedFile(match.id, animated: true)
+        // If focusedFilePath didn't change (e.g. single file), still scroll explicitly;
+        // otherwise `.onChange(of: state.focusedFilePath)` triggers the scroll once.
+        if previous == state.focusedFilePath {
+            requestScrollToFocusedFile(match.id, animated: true)
+        }
     }
 
     /// Lightweight fingerprint capturing incoming hunks, streaming flags, and file modification timestamps.
@@ -873,8 +896,11 @@ struct PCodeChangesInspectorView: View {
             state.collapsedFiles.remove(latest.id)
             updatedUnseenFiles.remove(latest.path)
             if state.diffScope != .session {
-                state.focusedFilePath = latest.path
-                requestScrollToFocusedFile(latest.id, animated: true)
+                if state.focusedFilePath == latest.path {
+                    requestScrollToFocusedFile(latest.id, animated: true)
+                } else {
+                    state.focusedFilePath = latest.path
+                }
             }
         } else {
             // Do NOT yank scroll when Follow is off — mark updated files with a subtle indicator dot.

@@ -141,12 +141,31 @@ struct PCodeDiffExpandGapPayload: Equatable {
     let step: Int
 }
 
+/// Precomputed syntax-highlighting payload shared by all lines in a single hunk or expanded gap,
+/// avoiding per-line `joined(separator: "\n")` allocations and multi-KB key hashing during 120fps scrolling.
+final class PCodeDiffHunkSyntaxContext {
+    let hunkKey: String
+    let hunkKeyHash: Int
+    let joinedCode: String
+    let lineCount: Int
+    let normalizedLanguage: String
+
+    init(lines: [String], language: String?) {
+        let lang = PCodePrismSyntaxHighlighter.normalizeLanguage(language)
+        let joined = lines.joined(separator: "\n")
+        let key = "\(lang)\u{0}\(joined)"
+        self.hunkKey = key
+        self.hunkKeyHash = key.hashValue
+        self.joinedCode = joined
+        self.lineCount = lines.count
+        self.normalizedLanguage = lang
+    }
+}
+
 struct PCodeDiffUnifiedLinePayload {
     let fileID: String
     let filePath: String
-    let language: String?
-    let hunkKey: String
-    let lineTexts: [String]
+    let syntaxContext: PCodeDiffHunkSyntaxContext
     let lineIndex: Int
     let line: PCodeDiffLine
 }
@@ -154,9 +173,7 @@ struct PCodeDiffUnifiedLinePayload {
 struct PCodeDiffSideBySidePayload {
     let fileID: String
     let filePath: String
-    let language: String?
-    let hunkKey: String
-    let lineTexts: [String]
+    let syntaxContext: PCodeDiffHunkSyntaxContext
     let row: PCodeSideBySideRow
     let leftLineIndex: Int?
     let rightLineIndex: Int?
@@ -185,8 +202,8 @@ enum PCodeDiffFlatRow {
 
     var hunkKey: String? {
         switch self {
-        case .unifiedLine(let payload): return payload.hunkKey
-        case .sideBySideRow(let payload): return payload.hunkKey
+        case .unifiedLine(let payload): return payload.syntaxContext.hunkKey
+        case .sideBySideRow(let payload): return payload.syntaxContext.hunkKey
         default: return nil
         }
     }
@@ -264,6 +281,19 @@ struct PCodeDiffLayoutSnapshot {
             cursorY += height
         }
 
+        @inline(__always)
+        func visualColumnCount(_ text: String) -> Int {
+            var cols = 0
+            for ch in text.utf8 {
+                if ch == 9 { // tab
+                    cols += 4
+                } else {
+                    cols += 1
+                }
+            }
+            return cols
+        }
+
         for diff in diffs {
             let isCollapsed = collapsedFiles.contains(diff.id)
             let isFocused = (focusedFilePath == diff.path || focusedFilePath == diff.id)
@@ -306,25 +336,37 @@ struct PCodeDiffLayoutSnapshot {
 
             func appendExpandedLines(_ loaded: [PCodeDiffLine], gapKey: String) {
                 guard !loaded.isEmpty else { return }
-                let texts = loaded.map(\.text)
-                let lang = PCodePrismSyntaxHighlighter.normalizeLanguage(diff.language)
-                let hunkKey = "\(lang)\u{0}\(texts.joined(separator: "\n"))"
+                let syntaxCtx = PCodeDiffHunkSyntaxContext(lines: loaded.map(\.text), language: diff.language)
                 for (idx, line) in loaded.enumerated() {
-                    maxUnifiedChars = max(maxUnifiedChars, line.text.count)
-                    maxLeftChars = max(maxLeftChars, line.text.count)
-                    maxRightChars = max(maxRightChars, line.text.count)
-                    appendRow(
-                        .unifiedLine(PCodeDiffUnifiedLinePayload(
-                            fileID: diff.id,
-                            filePath: diff.path,
-                            language: diff.language,
-                            hunkKey: hunkKey,
-                            lineTexts: texts,
-                            lineIndex: idx,
-                            line: line
-                        )),
-                        height: lineRowHeight
-                    )
+                    let cols = visualColumnCount(line.text)
+                    maxUnifiedChars = max(maxUnifiedChars, cols)
+                    maxLeftChars = max(maxLeftChars, cols)
+                    maxRightChars = max(maxRightChars, cols)
+                    if layout == .sideBySide {
+                        let sbsRow = PCodeSideBySideRow(id: "exp-\(gapKey)-\(idx)", left: line, right: line, isMeta: false)
+                        appendRow(
+                            .sideBySideRow(PCodeDiffSideBySidePayload(
+                                fileID: diff.id,
+                                filePath: diff.path,
+                                syntaxContext: syntaxCtx,
+                                row: sbsRow,
+                                leftLineIndex: idx,
+                                rightLineIndex: idx
+                            )),
+                            height: lineRowHeight
+                        )
+                    } else {
+                        appendRow(
+                            .unifiedLine(PCodeDiffUnifiedLinePayload(
+                                fileID: diff.id,
+                                filePath: diff.path,
+                                syntaxContext: syntaxCtx,
+                                lineIndex: idx,
+                                line: line
+                            )),
+                            height: lineRowHeight
+                        )
+                    }
                 }
             }
 
@@ -395,9 +437,7 @@ struct PCodeDiffLayoutSnapshot {
 
                 appendRow(.hunkHeader(fileID: diff.id, hunkID: hunk.id, header: hunk.header), height: hunkHeaderHeight)
 
-                let lineTexts = hunk.lines.map(\.text)
-                let lang = PCodePrismSyntaxHighlighter.normalizeLanguage(diff.language)
-                let hunkKey = "\(lang)\u{0}\(lineTexts.joined(separator: "\n"))"
+                let syntaxCtx = PCodeDiffHunkSyntaxContext(lines: hunk.lines.map(\.text), language: diff.language)
 
                 if layout == .sideBySide {
                     let pairedRows = PCodeDiffParser.sideBySideRows(for: hunk)
@@ -407,15 +447,13 @@ struct PCodeDiffLayoutSnapshot {
                         indexByLineID[line.id] = idx
                     }
                     for sbsRow in pairedRows {
-                        if let l = sbsRow.left { maxLeftChars = max(maxLeftChars, l.text.count) }
-                        if let r = sbsRow.right { maxRightChars = max(maxRightChars, r.text.count) }
+                        if let l = sbsRow.left { maxLeftChars = max(maxLeftChars, visualColumnCount(l.text)) }
+                        if let r = sbsRow.right { maxRightChars = max(maxRightChars, visualColumnCount(r.text)) }
                         appendRow(
                             .sideBySideRow(PCodeDiffSideBySidePayload(
                                 fileID: diff.id,
                                 filePath: diff.path,
-                                language: diff.language,
-                                hunkKey: hunkKey,
-                                lineTexts: lineTexts,
+                                syntaxContext: syntaxCtx,
                                 row: sbsRow,
                                 leftLineIndex: sbsRow.left.flatMap { indexByLineID[$0.id] },
                                 rightLineIndex: sbsRow.right.flatMap { indexByLineID[$0.id] }
@@ -425,14 +463,12 @@ struct PCodeDiffLayoutSnapshot {
                     }
                 } else {
                     for (idx, line) in hunk.lines.enumerated() {
-                        maxUnifiedChars = max(maxUnifiedChars, line.text.count)
+                        maxUnifiedChars = max(maxUnifiedChars, visualColumnCount(line.text))
                         appendRow(
                             .unifiedLine(PCodeDiffUnifiedLinePayload(
                                 fileID: diff.id,
                                 filePath: diff.path,
-                                language: diff.language,
-                                hunkKey: hunkKey,
-                                lineTexts: lineTexts,
+                                syntaxContext: syntaxCtx,
                                 lineIndex: idx,
                                 line: line
                             )),
@@ -549,7 +585,7 @@ final class PCodeDiffCTLineCache {
     private struct Key: Hashable {
         let text: String
         let lineKind: PCodeDiffLine.Kind
-        let hunkKey: String
+        let hunkKeyHash: Int
         let lineIndex: Int
         let hasTokens: Bool
         let isDark: Bool
@@ -570,14 +606,14 @@ final class PCodeDiffCTLineCache {
         text: String,
         tokens: [PCodeSyntaxToken]?,
         lineKind: PCodeDiffLine.Kind,
-        hunkKey: String,
+        hunkKeyHash: Int,
         lineIndex: Int,
         theme: PCodeDiffTheme
     ) -> Entry {
         let key = Key(
             text: text,
             lineKind: lineKind,
-            hunkKey: hunkKey,
+            hunkKeyHash: hunkKeyHash,
             lineIndex: lineIndex,
             hasTokens: tokens != nil && !(tokens?.isEmpty ?? true),
             isDark: theme.isDark,
@@ -753,6 +789,9 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
     override func prepareForReuse() {
         super.prepareForReuse()
         diff = nil
+        onToggleCollapse = nil
+        onOpenInEditor = nil
+        onCopyPath = nil
         dotView.configure(color: .clear, active: false)
     }
 
@@ -799,6 +838,31 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
         let openX = max(0, copyX - 4 - btnSize)
         copyButton.frame = CGRect(x: copyX, y: (h - btnSize) * 0.5, width: btnSize, height: btnSize)
         openButton.frame = CGRect(x: openX, y: (h - btnSize) * 0.5, width: btnSize, height: btnSize)
+
+        if !dotView.isHidden, let diff, let theme {
+            let dotX = computeDotOriginX(diff: diff, theme: theme, openButtonMinX: openX)
+            dotView.frame = CGRect(x: dotX, y: (h - 12) * 0.5, width: 12, height: 12)
+        }
+    }
+
+    private func computeDotOriginX(diff: PCodeFileDiff, theme: PCodeDiffTheme, openButtonMinX: CGFloat) -> CGFloat {
+        let statFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        var rightCursor = openButtonMinX - 6
+        if diff.removed > 0 {
+            rightCursor -= ("-\(diff.removed)" as NSString).size(withAttributes: [.font: statFont]).width + 5
+        }
+        if diff.added > 0 {
+            rightCursor -= ("+\(diff.added)" as NSString).size(withAttributes: [.font: statFont]).width + 8
+        }
+        let maxTextX = max(47, rightCursor - 16)
+        var x: CGFloat = 47 // 10 margin + 16 chevron + 21 badge
+        let baseW = min((diff.basename as NSString).size(withAttributes: [.font: theme.headerTitleFont]).width + 1, max(0, maxTextX - x))
+        x += baseW + 6
+        if !diff.parentDirectory.isEmpty && x < maxTextX - 16 {
+            let dirW = min((diff.parentDirectory as NSString).size(withAttributes: [.font: theme.headerPathFont]).width + 1, max(0, maxTextX - x))
+            x += dirW + 4
+        }
+        return min(x, max(47, rightCursor - 12))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -845,12 +909,13 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
 
         // Collapse chevron
         let chevronName = isCollapsed ? "chevron.right" : "chevron.down"
+        let chevronConfig = NSImage.SymbolConfiguration(pointSize: 9.5, weight: .semibold)
+            .applying(.init(paletteColors: [theme.secondaryForeground]))
         if let img = NSImage(systemSymbolName: chevronName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 9.5, weight: .semibold))
+            .withSymbolConfiguration(chevronConfig)
         {
-            let tinted = img.tinted(with: theme.secondaryForeground)
-            let sz = tinted.size
-            tinted.draw(in: CGRect(x: x, y: midY - sz.height * 0.5, width: min(10, sz.width), height: sz.height))
+            let sz = img.size
+            img.draw(in: CGRect(x: x, y: midY - sz.height * 0.5, width: min(10, sz.width), height: sz.height))
         }
         x += 16
 
@@ -943,10 +1008,6 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
                 x += dirWidth + 4
             }
         }
-
-        if !dotView.isHidden {
-            dotView.frame = CGRect(x: min(x, rightCursor - 12), y: midY - 6, width: 12, height: 12)
-        }
     }
 }
 
@@ -1020,6 +1081,7 @@ private final class PCodeDiffExpandGapRowView: NSView, PCodeDiffReusableRowView 
     override func prepareForReuse() {
         super.prepareForReuse()
         payload = nil
+        onExpand = nil
         isHovered = false
     }
 
@@ -1065,12 +1127,13 @@ private final class PCodeDiffExpandGapRowView: NSView, PCodeDiffReusableRowView 
         let midY = bounds.height * 0.5
         var x: CGFloat = 12
         let symbol = payload.fromBottom ? "arrow.up.to.line" : "chevron.up.chevron.down"
+        let iconConfig = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+            .applying(.init(paletteColors: [theme.secondaryForeground]))
         if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+            .withSymbolConfiguration(iconConfig)
         {
-            let tinted = img.tinted(with: theme.secondaryForeground)
-            let sz = tinted.size
-            tinted.draw(in: CGRect(x: x, y: midY - sz.height * 0.5, width: sz.width, height: sz.height))
+            let sz = img.size
+            img.draw(in: CGRect(x: x, y: midY - sz.height * 0.5, width: sz.width, height: sz.height))
             x += sz.width + 6
         }
 
@@ -1121,13 +1184,14 @@ private final class PCodeDiffNoticeRowView: NSView, PCodeDiffReusableRowView {
         guard let theme else { return }
         let midY = bounds.height * 0.5
         var x: CGFloat = 14
+        let iconConfig = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+            .applying(.init(paletteColors: [theme.secondaryForeground]))
         if let symbolName,
            let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+            .withSymbolConfiguration(iconConfig)
         {
-            let tinted = img.tinted(with: theme.secondaryForeground)
-            let sz = tinted.size
-            tinted.draw(in: CGRect(x: x, y: midY - sz.height * 0.5, width: sz.width, height: sz.height))
+            let sz = img.size
+            img.draw(in: CGRect(x: x, y: midY - sz.height * 0.5, width: sz.width, height: sz.height))
             x += sz.width + 6
         }
         let attrs: [NSAttributedString.Key: Any] = [
@@ -1218,8 +1282,9 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
     private weak var syntaxStore: PCodeDiffSyntaxStore?
     private weak var lineCache: PCodeDiffCTLineCache?
     var onLineClick: ((PCodeDiffLine, String, NSEvent.ModifierFlags) -> Void)?
+    var onMeasuredWidth: ((CGFloat) -> Void)?
 
-    var currentHunkKey: String? { payload?.hunkKey }
+    var currentHunkKey: String? { payload?.syntaxContext.hunkKey }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1232,6 +1297,8 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
     override func prepareForReuse() {
         super.prepareForReuse()
         payload = nil
+        onLineClick = nil
+        onMeasuredWidth = nil
         isSelected = false
         horizontalOffset = 0
     }
@@ -1341,16 +1408,23 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
         }
 
         // Syntax-highlighted CoreText line (clipped to code region, horizontally scrolled)
-        let perLineTokens = syntaxStore.lineTokens(for: payload.lineTexts, language: payload.language)
+        let syn = payload.syntaxContext
+        let perLineTokens = syntaxStore.lineTokens(
+            forPrecomputedKey: syn.hunkKey,
+            joinedCode: syn.joinedCode,
+            lineCount: syn.lineCount,
+            normalizedLanguage: syn.normalizedLanguage
+        )
         let tokens = perLineTokens.flatMap { payload.lineIndex < $0.count ? $0[payload.lineIndex] : nil }
         let entry = lineCache.ctLine(
             text: line.text,
             tokens: tokens,
             lineKind: line.kind,
-            hunkKey: payload.hunkKey,
+            hunkKeyHash: syn.hunkKeyHash,
             lineIndex: payload.lineIndex,
             theme: theme
         )
+        onMeasuredWidth?(entry.width + 24)
         let codeRect = CGRect(
             x: Self.gutterWidth,
             y: 0,
@@ -1387,8 +1461,9 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
     private weak var syntaxStore: PCodeDiffSyntaxStore?
     private weak var lineCache: PCodeDiffCTLineCache?
     var onLineClick: ((PCodeDiffLine, String, NSEvent.ModifierFlags) -> Void)?
+    var onMeasuredSideWidths: ((CGFloat, CGFloat) -> Void)?
 
-    var currentHunkKey: String? { payload?.hunkKey }
+    var currentHunkKey: String? { payload?.syntaxContext.hunkKey }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1401,6 +1476,8 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
     override func prepareForReuse() {
         super.prepareForReuse()
         payload = nil
+        onLineClick = nil
+        onMeasuredSideWidths = nil
         leftSelected = false
         rightSelected = false
         leftHorizontalOffset = 0
@@ -1459,7 +1536,13 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         let leftRect = CGRect(x: 0, y: 0, width: halfW, height: bounds.height)
         let rightRect = CGRect(x: halfW + 1, y: 0, width: max(0, bounds.width - halfW - 1), height: bounds.height)
 
-        let perLineTokens = syntaxStore.lineTokens(for: payload.lineTexts, language: payload.language)
+        let syn = payload.syntaxContext
+        let perLineTokens = syntaxStore.lineTokens(
+            forPrecomputedKey: syn.hunkKey,
+            joinedCode: syn.joinedCode,
+            lineCount: syn.lineCount,
+            normalizedLanguage: syn.normalizedLanguage
+        )
 
         if payload.row.isMeta {
             ctx.setFillColor(theme.metaRowFill.cgColor)
@@ -1477,7 +1560,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
                 )
             }
         } else {
-            drawHalf(
+            let leftW = drawHalf(
                 ctx: ctx,
                 rect: leftRect,
                 line: payload.row.left,
@@ -1486,11 +1569,11 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
                 isSelected: leftSelected,
                 horizontalOffset: leftHorizontalOffset,
                 perLineTokens: perLineTokens,
-                hunkKey: payload.hunkKey,
+                hunkKeyHash: syn.hunkKeyHash,
                 theme: theme,
                 lineCache: lineCache
             )
-            drawHalf(
+            let rightW = drawHalf(
                 ctx: ctx,
                 rect: rightRect,
                 line: payload.row.right,
@@ -1499,10 +1582,11 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
                 isSelected: rightSelected,
                 horizontalOffset: rightHorizontalOffset,
                 perLineTokens: perLineTokens,
-                hunkKey: payload.hunkKey,
+                hunkKeyHash: syn.hunkKeyHash,
                 theme: theme,
                 lineCache: lineCache
             )
+            onMeasuredSideWidths?(leftW + 20, rightW + 20)
         }
 
         // Center divider
@@ -1510,6 +1594,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         ctx.fill(CGRect(x: halfW, y: 0, width: 1, height: bounds.height))
     }
 
+    @discardableResult
     private func drawHalf(
         ctx: CGContext,
         rect: CGRect,
@@ -1519,14 +1604,14 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
         isSelected: Bool,
         horizontalOffset: CGFloat,
         perLineTokens: [[PCodeSyntaxToken]]?,
-        hunkKey: String,
+        hunkKeyHash: Int,
         theme: PCodeDiffTheme,
         lineCache: PCodeDiffCTLineCache
-    ) {
+    ) -> CGFloat {
         guard let line else {
             ctx.setFillColor(theme.fillerCellFill.cgColor)
             ctx.fill(rect)
-            return
+            return 0
         }
 
         if isSelected {
@@ -1593,7 +1678,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             text: line.text,
             tokens: tokens,
             lineKind: line.kind,
-            hunkKey: hunkKey,
+            hunkKeyHash: hunkKeyHash,
             lineIndex: lineIndex ?? 0,
             theme: theme
         )
@@ -1612,6 +1697,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             horizontalOffset: horizontalOffset,
             theme: theme
         )
+        return entry.width
     }
 }
 
@@ -1636,16 +1722,21 @@ final class PCodeDiffDocumentView: NSView {
     private var currentLayout: PCodeDiffLayout = .unified
     private var currentSelection: PCodeDiffSelection?
 
-    // Horizontal scroll offsets (in points, >= 0)
+    // Horizontal scroll offsets (in points, >= 0) and dynamically measured max code widths
     private(set) var unifiedHorizontalOffset: CGFloat = 0
     private(set) var leftHorizontalOffset: CGFloat = 0
     private(set) var rightHorizontalOffset: CGFloat = 0
+    private var measuredUnifiedCodeWidth: CGFloat = 0
+    private var measuredLeftCodeWidth: CGFloat = 0
+    private var measuredRightCodeWidth: CGFloat = 0
 
     // 120Hz smooth follow-agent glide (reusing PCodeSmoothScrollGlide from transcript)
     private var smoothGlide = PCodeSmoothScrollGlide()
     private var displayLink: CADisplayLink?
     private var lastDisplayTick: CFTimeInterval = 0
-    private var isProgrammaticScroll = false
+    private var programmaticScrollDepth = 0
+    private var scrollAnimationGeneration = 0
+    private var isAnimatingScrollToFile = false
     private var isFollowPinnedToBottom = false
     private var lastDocumentHeight: CGFloat = 0
 
@@ -1691,6 +1782,29 @@ final class PCodeDiffDocumentView: NSView {
         mountViews(in: rect)
     }
 
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+
+    private func withProgrammaticScroll(_ body: () -> Void) {
+        programmaticScrollDepth += 1
+        defer { programmaticScrollDepth = max(0, programmaticScrollDepth - 1) }
+        body()
+    }
+
+    private var effectiveMaxUnifiedCodeWidth: CGFloat {
+        max(snapshot.maxUnifiedCodeWidth, measuredUnifiedCodeWidth)
+    }
+
+    private var effectiveMaxLeftCodeWidth: CGFloat {
+        max(snapshot.maxLeftCodeWidth, measuredLeftCodeWidth)
+    }
+
+    private var effectiveMaxRightCodeWidth: CGFloat {
+        max(snapshot.maxRightCodeWidth, measuredRightCodeWidth)
+    }
+
     // MARK: - Snapshot & Theme Application
 
     func apply(
@@ -1721,23 +1835,24 @@ final class PCodeDiffDocumentView: NSView {
             guard let sv = enclosingScrollView else { return true }
             let viewportH = sv.contentView.bounds.height
             let maxOriginY = max(0, oldHeight - viewportH)
-            return previousClipY >= maxOriginY - 24
+            return previousClipY + smoothGlide.remainingOffset >= maxOriginY - 24
         }()
 
         snapshot = newSnapshot
-        clampHorizontalOffsets()
+        measuredUnifiedCodeWidth = 0
+        measuredLeftCodeWidth = 0
+        measuredRightCodeWidth = 0
 
         let viewportW = max(1, enclosingScrollView?.contentSize.width ?? bounds.width)
         let viewportH = enclosingScrollView?.contentView.bounds.height ?? 0
         let targetDocHeight = max(newSnapshot.totalHeight, viewportH)
         lastDocumentHeight = targetDocHeight
 
-        isProgrammaticScroll = true
-        frame = CGRect(x: 0, y: 0, width: viewportW, height: targetDocHeight)
-        isProgrammaticScroll = false
-
-        // Reconcile mounted views in the current visible rect.
-        recycleAllMountedViews()
+        withProgrammaticScroll {
+            frame = CGRect(x: 0, y: 0, width: viewportW, height: targetDocHeight)
+        }
+        // Clamp horizontal offsets *after* resizing frame to the new viewport width.
+        clampHorizontalOffsets()
 
         if followBottom, let scrollView = enclosingScrollView {
             let maxOriginY = max(0, targetDocHeight - scrollView.contentView.bounds.height)
@@ -1767,8 +1882,10 @@ final class PCodeDiffDocumentView: NSView {
             stopDisplayLink()
         }
 
-        mountViews(in: visibleRect)
-        (enclosingScrollView as? PCodeDiffScrollView)?.updateStickyHeader()
+        // Reconcile mounted views in-place instead of wholesale unmount/remount,
+        // preserving hover state and CoreAnimation pulsing dots across updates.
+        mountViews(in: visibleRect, reconfigureExisting: true)
+        (enclosingScrollView as? PCodeDiffScrollView)?.updateStickyHeader(forceReconfigure: true)
     }
 
     /// Targeted redraw when async Prism tokenization finishes for one hunk key.
@@ -1814,21 +1931,28 @@ final class PCodeDiffDocumentView: NSView {
         let maxOriginY = max(0, bounds.height - scrollView.contentView.bounds.height)
         let clampedY = max(0, min(maxOriginY, targetY))
         if animated && window != nil {
-            isProgrammaticScroll = true
+            scrollAnimationGeneration += 1
+            let generation = scrollAnimationGeneration
+            isAnimatingScrollToFile = true
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.18
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 scrollView.contentView.animator().setBoundsOrigin(NSPoint(x: 0, y: clampedY))
             } completionHandler: { [weak self] in
                 Task { @MainActor in
-                    guard let self, let sv = self.enclosingScrollView else { return }
-                    self.isProgrammaticScroll = false
+                    guard let self else { return }
+                    if self.scrollAnimationGeneration == generation {
+                        self.isAnimatingScrollToFile = false
+                    }
+                    guard let sv = self.enclosingScrollView else { return }
                     sv.reflectScrolledClipView(sv.contentView)
                     self.mountViews(in: self.visibleRect)
                     (sv as? PCodeDiffScrollView)?.updateStickyHeader()
                 }
             }
         } else {
+            scrollAnimationGeneration += 1
+            isAnimatingScrollToFile = false
             setClipOriginY(clampedY, in: scrollView)
             mountViews(in: visibleRect)
             (scrollView as? PCodeDiffScrollView)?.updateStickyHeader()
@@ -1841,10 +1965,10 @@ final class PCodeDiffDocumentView: NSView {
     var canScrollHorizontally: Bool {
         if currentLayout == .sideBySide {
             let halfCodeW = max(0, floor((bounds.width - 1) * 0.5) - PCodeDiffSideBySideRowView.halfGutterWidth)
-            return snapshot.maxLeftCodeWidth > halfCodeW + 1 || snapshot.maxRightCodeWidth > halfCodeW + 1
+            return effectiveMaxLeftCodeWidth > halfCodeW + 1 || effectiveMaxRightCodeWidth > halfCodeW + 1
         }
         let codeW = max(0, bounds.width - PCodeDiffUnifiedLineRowView.gutterWidth)
-        return snapshot.maxUnifiedCodeWidth > codeW + 1
+        return effectiveMaxUnifiedCodeWidth > codeW + 1
     }
 
     func adjustHorizontalScroll(deltaX: CGFloat, locationInView: NSPoint) {
@@ -1852,25 +1976,27 @@ final class PCodeDiffDocumentView: NSView {
             let halfW = floor((bounds.width - 1) * 0.5)
             let halfCodeW = max(0, halfW - PCodeDiffSideBySideRowView.halfGutterWidth)
             if locationInView.x <= halfW {
-                let maxOff = max(0, snapshot.maxLeftCodeWidth - halfCodeW)
+                let maxOff = max(0, effectiveMaxLeftCodeWidth - halfCodeW)
                 leftHorizontalOffset = max(0, min(maxOff, leftHorizontalOffset - deltaX))
             } else {
-                let maxOff = max(0, snapshot.maxRightCodeWidth - halfCodeW)
+                let maxOff = max(0, effectiveMaxRightCodeWidth - halfCodeW)
                 rightHorizontalOffset = max(0, min(maxOff, rightHorizontalOffset - deltaX))
             }
-            for (_, view) in mountedViews {
-                if let sbs = view as? PCodeDiffSideBySideRowView {
-                    sbs.updateHorizontalOffsets(left: leftHorizontalOffset, right: rightHorizontalOffset)
-                }
-            }
+            pushHorizontalOffsetsToMountedRows()
         } else {
             let codeW = max(0, bounds.width - PCodeDiffUnifiedLineRowView.gutterWidth)
-            let maxOff = max(0, snapshot.maxUnifiedCodeWidth - codeW)
+            let maxOff = max(0, effectiveMaxUnifiedCodeWidth - codeW)
             unifiedHorizontalOffset = max(0, min(maxOff, unifiedHorizontalOffset - deltaX))
-            for (_, view) in mountedViews {
-                if let unified = view as? PCodeDiffUnifiedLineRowView {
-                    unified.updateHorizontalOffset(unifiedHorizontalOffset)
-                }
+            pushHorizontalOffsetsToMountedRows()
+        }
+    }
+
+    private func pushHorizontalOffsetsToMountedRows() {
+        for (_, view) in mountedViews {
+            if let unified = view as? PCodeDiffUnifiedLineRowView {
+                unified.updateHorizontalOffset(unifiedHorizontalOffset)
+            } else if let sbs = view as? PCodeDiffSideBySideRowView {
+                sbs.updateHorizontalOffsets(left: leftHorizontalOffset, right: rightHorizontalOffset)
             }
         }
     }
@@ -1879,11 +2005,11 @@ final class PCodeDiffDocumentView: NSView {
         if currentLayout == .sideBySide {
             let halfW = floor((bounds.width - 1) * 0.5)
             let halfCodeW = max(0, halfW - PCodeDiffSideBySideRowView.halfGutterWidth)
-            leftHorizontalOffset = min(leftHorizontalOffset, max(0, snapshot.maxLeftCodeWidth - halfCodeW))
-            rightHorizontalOffset = min(rightHorizontalOffset, max(0, snapshot.maxRightCodeWidth - halfCodeW))
+            leftHorizontalOffset = min(leftHorizontalOffset, max(0, effectiveMaxLeftCodeWidth - halfCodeW))
+            rightHorizontalOffset = min(rightHorizontalOffset, max(0, effectiveMaxRightCodeWidth - halfCodeW))
         } else {
             let codeW = max(0, bounds.width - PCodeDiffUnifiedLineRowView.gutterWidth)
-            unifiedHorizontalOffset = min(unifiedHorizontalOffset, max(0, snapshot.maxUnifiedCodeWidth - codeW))
+            unifiedHorizontalOffset = min(unifiedHorizontalOffset, max(0, effectiveMaxUnifiedCodeWidth - codeW))
         }
     }
 
@@ -1898,9 +2024,11 @@ final class PCodeDiffDocumentView: NSView {
     }
 
     func handleClipBoundsDidChange() {
-        guard !isProgrammaticScroll else { return }
+        guard programmaticScrollDepth == 0 else { return }
         mountViews(in: visibleRect)
         (enclosingScrollView as? PCodeDiffScrollView)?.updateStickyHeader()
+
+        guard !isAnimatingScrollToFile else { return }
 
         if let scrollView = enclosingScrollView {
             let maxOriginY = max(0, bounds.height - scrollView.contentView.bounds.height)
@@ -1916,18 +2044,26 @@ final class PCodeDiffDocumentView: NSView {
         }
     }
 
-    func handleViewportWidthChanged(newWidth: CGFloat) {
-        guard newWidth > 1, abs(frame.width - newWidth) > 0.5 else { return }
-        let viewportH = enclosingScrollView?.contentView.bounds.height ?? 0
-        let targetH = max(snapshot.totalHeight, viewportH)
-        isProgrammaticScroll = true
-        frame = CGRect(x: 0, y: 0, width: newWidth, height: targetH)
-        isProgrammaticScroll = false
-        clampHorizontalOffsets()
-        for (idx, view) in mountedViews {
-            guard idx < snapshot.rows.count else { continue }
-            view.frame = CGRect(x: 0, y: snapshot.yOffsets[idx], width: newWidth, height: snapshot.heights[idx])
-            view.needsDisplay = true
+    func handleViewportSizeChanged(newSize: NSSize) {
+        let newWidth = newSize.width
+        let targetH = max(snapshot.totalHeight, newSize.height)
+        let widthChanged = newWidth > 1 && abs(frame.width - newWidth) > 0.5
+        let heightChanged = abs(frame.height - targetH) > 0.5
+        guard widthChanged || heightChanged else { return }
+
+        let resolvedW = newWidth > 1 ? newWidth : frame.width
+        lastDocumentHeight = targetH
+        withProgrammaticScroll {
+            frame = CGRect(x: 0, y: 0, width: resolvedW, height: targetH)
+        }
+        if widthChanged {
+            clampHorizontalOffsets()
+            for (idx, view) in mountedViews {
+                guard idx < snapshot.rows.count else { continue }
+                view.frame = CGRect(x: 0, y: snapshot.yOffsets[idx], width: resolvedW, height: snapshot.heights[idx])
+                view.needsDisplay = true
+            }
+            pushHorizontalOffsetsToMountedRows()
         }
         mountViews(in: visibleRect)
         (enclosingScrollView as? PCodeDiffScrollView)?.updateStickyHeader()
@@ -1972,15 +2108,15 @@ final class PCodeDiffDocumentView: NSView {
     }
 
     private func setClipOriginY(_ y: CGFloat, in scrollView: NSScrollView) {
-        isProgrammaticScroll = true
-        scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-        isProgrammaticScroll = false
+        withProgrammaticScroll {
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
     }
 
     // MARK: - View Mounting & Pooling
 
-    func mountViews(in rect: CGRect) {
+    func mountViews(in rect: CGRect, reconfigureExisting: Bool = false) {
         let range = snapshot.visibleRange(in: rect)
 
         // Recycle rows that scrolled out of range.
@@ -1994,10 +2130,17 @@ final class PCodeDiffDocumentView: NSView {
             let row = snapshot.rows[idx]
             let rowFrame = CGRect(x: 0, y: snapshot.yOffsets[idx], width: width, height: snapshot.heights[idx])
             if let existing = mountedViews[idx] {
-                if existing.frame != rowFrame {
-                    existing.frame = rowFrame
+                if existing.rowKind == row.kind {
+                    if existing.frame != rowFrame {
+                        existing.frame = rowFrame
+                    }
+                    if reconfigureExisting {
+                        configure(view: existing, for: row)
+                    }
+                    continue
                 }
-                continue
+                recycle(existing)
+                mountedViews.removeValue(forKey: idx)
             }
             let view = dequeueView(for: row.kind)
             view.frame = rowFrame
@@ -2053,7 +2196,10 @@ final class PCodeDiffDocumentView: NSView {
         switch row {
         case .fileHeader(let diff, let isCollapsed, let isFocused, let hasUnseen, let isCopied):
             guard let headerView = view as? PCodeDiffFileHeaderRowView else { return }
-            headerView.onToggleCollapse = onToggleCollapse
+            headerView.onToggleCollapse = { [weak self] id, path in
+                self?.window?.makeFirstResponder(self)
+                self?.onToggleCollapse?(id, path)
+            }
             headerView.onOpenInEditor = onOpenInEditor
             headerView.onCopyPath = onCopyPath
             headerView.configure(
@@ -2071,7 +2217,10 @@ final class PCodeDiffDocumentView: NSView {
 
         case .expandGap(let payload):
             guard let gapView = view as? PCodeDiffExpandGapRowView else { return }
-            gapView.onExpand = onExpandGap
+            gapView.onExpand = { [weak self] gap in
+                self?.window?.makeFirstResponder(self)
+                self?.onExpandGap?(gap)
+            }
             gapView.configure(payload: payload, theme: theme)
 
         case .unifiedLine(let payload):
@@ -2079,6 +2228,10 @@ final class PCodeDiffDocumentView: NSView {
             lineView.onLineClick = { [weak self] line, path, flags in
                 self?.window?.makeFirstResponder(self)
                 self?.onLineClick?(line, path, flags)
+            }
+            lineView.onMeasuredWidth = { [weak self] w in
+                guard let self, w > self.measuredUnifiedCodeWidth else { return }
+                self.measuredUnifiedCodeWidth = w
             }
             lineView.configure(
                 payload: payload,
@@ -2094,6 +2247,11 @@ final class PCodeDiffDocumentView: NSView {
             sbsView.onLineClick = { [weak self] line, path, flags in
                 self?.window?.makeFirstResponder(self)
                 self?.onLineClick?(line, path, flags)
+            }
+            sbsView.onMeasuredSideWidths = { [weak self] leftW, rightW in
+                guard let self else { return }
+                if leftW > self.measuredLeftCodeWidth { self.measuredLeftCodeWidth = leftW }
+                if rightW > self.measuredRightCodeWidth { self.measuredRightCodeWidth = rightW }
             }
             sbsView.configure(
                 payload: payload,
@@ -2198,6 +2356,7 @@ final class PCodeDiffScrollView: NSScrollView {
         drawsBackground = true
         backgroundColor = theme.background
         borderType = .noBorder
+        clipsToBounds = true
 
         contentView.postsBoundsChangedNotifications = true
         documentView = diffDocumentView
@@ -2211,7 +2370,7 @@ final class PCodeDiffScrollView: NSScrollView {
             object: contentView,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.diffDocumentView.handleClipBoundsDidChange()
             }
         })
@@ -2220,7 +2379,7 @@ final class PCodeDiffScrollView: NSScrollView {
             object: self,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.diffDocumentView.handleLiveScrollBegan()
             }
         })
@@ -2237,9 +2396,8 @@ final class PCodeDiffScrollView: NSScrollView {
 
     override func layout() {
         super.layout()
-        let contentW = contentSize.width
-        diffDocumentView.handleViewportWidthChanged(newWidth: contentW)
-        updateStickyHeader(forceReconfigure: true)
+        diffDocumentView.handleViewportSizeChanged(newSize: contentSize)
+        updateStickyHeader()
     }
 
     func updateStickyHeader(forceReconfigure: Bool = false) {
@@ -2257,7 +2415,7 @@ final class PCodeDiffScrollView: NSScrollView {
         stickyHeaderView.isHidden = false
         let width = contentSize.width
         let h = PCodeDiffLayoutSnapshot.fileHeaderHeight
-        // NSScrollView is non-flipped on macOS (bottom-left origin): top edge is bounds.height.
+        // NSScrollView is flipped on macOS (top-left origin), clipped via `clipsToBounds = true`.
         let topY = isFlipped ? state.yOffset : (bounds.height - h - state.yOffset)
         stickyHeaderView.frame = CGRect(x: 0, y: topY, width: width, height: h)
 
@@ -2279,9 +2437,9 @@ final class PCodeDiffScrollView: NSScrollView {
             return
         }
 
+        // Wait for real deltas on `.mayBegin` instead of leaking an unterminated gesture to NSScrollView.
         if phase == .mayBegin {
             gestureAxis = .undecided
-            super.scrollWheel(with: event)
             return
         }
 
@@ -2300,7 +2458,7 @@ final class PCodeDiffScrollView: NSScrollView {
             let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 12.0
             let pt = diffDocumentView.convert(event.locationInWindow, from: nil)
             diffDocumentView.adjustHorizontalScroll(deltaX: event.scrollingDeltaX * scale, locationInView: pt)
-        } else {
+        } else if currentAxis == .vertical {
             super.scrollWheel(with: event)
         }
     }
@@ -2346,6 +2504,7 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
     let onEscape: () -> Bool
     let onReferenceSelection: () -> Bool
     let onOpenFocusedInEditor: () -> Bool
+    let onUserScrolledAwayFromBottom: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -2378,13 +2537,14 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
         doc.onEscape = onEscape
         doc.onReferenceSelection = onReferenceSelection
         doc.onOpenFocusedInEditor = onOpenFocusedInEditor
+        doc.onUserScrolledAwayFromBottom = onUserScrolledAwayFromBottom
 
         let bottomPadding: CGFloat = selection != nil ? 56 : 16
-        let snapshot = PCodeDiffLayoutSnapshot.build(
+        let inputKey = Coordinator.SnapshotKey(
             diffs: diffs,
             layout: layout,
             collapsedFiles: collapsedFiles,
-            expandedGaps: expandedGaps,
+            expandedGapCounts: expandedGaps.mapValues(\.count),
             focusedFilePath: focusedFilePath,
             updatedUnseenFiles: updatedUnseenFiles,
             copiedPath: copiedPath,
@@ -2394,17 +2554,47 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
         )
 
         let isFirstApply = !coord.hasAppliedOnce
-        coord.hasAppliedOnce = true
+        let needsApply = isFirstApply
+            || coord.lastSnapshotKey != inputKey
+            || coord.lastSelection != selection
+            || coord.lastTheme != theme
+            || coord.lastFollowBottom != followBottom
 
-        doc.apply(
-            snapshot: snapshot,
-            layout: layout,
-            selection: selection,
-            theme: theme,
-            followBottom: followBottom,
-            allowSmoothGlide: !isFirstApply
-        )
-        scrollView.updateStickyHeader(forceReconfigure: true)
+        if needsApply {
+            let snapshot: PCodeDiffLayoutSnapshot
+            if coord.lastSnapshotKey == inputKey, let cached = coord.cachedSnapshot {
+                snapshot = cached
+            } else {
+                snapshot = PCodeDiffLayoutSnapshot.build(
+                    diffs: diffs,
+                    layout: layout,
+                    collapsedFiles: collapsedFiles,
+                    expandedGaps: expandedGaps,
+                    focusedFilePath: focusedFilePath,
+                    updatedUnseenFiles: updatedUnseenFiles,
+                    copiedPath: copiedPath,
+                    lineRowHeight: theme.lineRowHeight,
+                    charAdvance: theme.charAdvance,
+                    bottomPadding: bottomPadding
+                )
+                coord.lastSnapshotKey = inputKey
+                coord.cachedSnapshot = snapshot
+            }
+
+            coord.hasAppliedOnce = true
+            coord.lastSelection = selection
+            coord.lastTheme = theme
+            coord.lastFollowBottom = followBottom
+
+            doc.apply(
+                snapshot: snapshot,
+                layout: layout,
+                selection: selection,
+                theme: theme,
+                followBottom: followBottom,
+                allowSmoothGlide: !isFirstApply
+            )
+        }
 
         if scrollToBottomToken != coord.lastScrollToBottomToken {
             coord.lastScrollToBottomToken = scrollToBottomToken
@@ -2423,11 +2613,37 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator {
+        struct SnapshotKey: Equatable {
+            let diffs: [PCodeFileDiff]
+            let layout: PCodeDiffLayout
+            let collapsedFiles: Set<String>
+            let expandedGapCounts: [PCodeDiffExpandedGapKey: Int]
+            let focusedFilePath: String?
+            let updatedUnseenFiles: Set<String>
+            let copiedPath: String?
+            let lineRowHeight: CGFloat
+            let charAdvance: CGFloat
+            let bottomPadding: CGFloat
+        }
+
         var hasAppliedOnce = false
         var lastScrollToBottomToken = 0
         var lastScrollToFileToken = 0
+        var lastSnapshotKey: SnapshotKey?
+        var cachedSnapshot: PCodeDiffLayoutSnapshot?
+        var lastSelection: PCodeDiffSelection?
+        var lastTheme: PCodeDiffTheme?
+        var lastFollowBottom: Bool?
         private var tokenObserverID: UUID?
         private weak var syntaxStore: PCodeDiffSyntaxStore?
+
+        deinit {
+            if let id = tokenObserverID, let store = syntaxStore {
+                Task { @MainActor in
+                    store.removeTokensReadyObserver(id)
+                }
+            }
+        }
 
         func bind(scrollView: PCodeDiffScrollView, syntaxStore: PCodeDiffSyntaxStore) {
             self.syntaxStore = syntaxStore
@@ -2442,20 +2658,5 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
                 tokenObserverID = nil
             }
         }
-    }
-}
-
-// MARK: - NSImage Tinting Helper
-
-private extension NSImage {
-    func tinted(with color: NSColor) -> NSImage {
-        let img = self.copy() as! NSImage
-        img.lockFocus()
-        color.set()
-        let rect = NSRect(origin: .zero, size: img.size)
-        rect.fill(using: .sourceAtop)
-        img.unlockFocus()
-        img.isTemplate = false
-        return img
     }
 }
