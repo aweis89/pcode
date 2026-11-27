@@ -98,6 +98,7 @@ final class PCodeToast: ObservableObject {
 struct PCodeToastLayer: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var toast: PCodeToast
+    @ObservedObject private var typography = PCodeTypography.shared
 
     static let margin: CGFloat = 6
     static let cornerRadius: CGFloat = 8
@@ -128,7 +129,7 @@ struct PCodeToastLayer: View {
     }
 
     private func pill(_ text: String) -> some View {
-        let fonts = PCodePickFonts.of(toast.surfaceView?.surface)
+        let fonts = PCodePickFonts(typography: typography.snapshot)
         return Text(text)
             .font(PCodePickFonts.small(fonts, fallbackSize: 12, weight: .medium))
             .foregroundStyle(ghostty.config.foregroundColor)

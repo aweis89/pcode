@@ -103,31 +103,56 @@ struct PCodePickStyle: Decodable, Equatable {
     }
 }
 
-/// pcode's terminal font, read from its surface as a popup opens, and the
-/// same family smaller for secondary text.
+/// Typography for native popups, pickers, completions, hints, toasts, and drawers:
+/// aligned with `PCodeTypography` (scrollback) rather than the user's standalone Ghostty font.
 struct PCodePickFonts: Equatable {
     static let smallScale = 0.85
 
     let regular: NSFont
     let small: NSFont
-    /// One terminal column.
+    let smallMedium: NSFont
+    let smallSemibold: NSFont
+    /// One monospace column width (used for picker guide alignment and completion width).
     let advance: CGFloat
+
+    init(typography: PCodeTypographySnapshot = PCodeTypography.shared.snapshot) {
+        regular = typography.proseNSFont()
+        small = typography.proseNSFont(scale: Self.smallScale)
+        smallMedium = typography.proseNSFont(scale: Self.smallScale, weight: .medium)
+        smallSemibold = typography.proseNSFont(scale: Self.smallScale, weight: .semibold)
+        advance = ("M" as NSString).size(withAttributes: [.font: typography.codeNSFont()]).width
+    }
 
     init(_ font: CTFont) {
         regular = font as NSFont
-        small = CTFontCreateCopyWithAttributes(font, CTFontGetSize(font) * Self.smallScale, nil, nil) as NSFont
+        let smallFont = CTFontCreateCopyWithAttributes(font, CTFontGetSize(font) * Self.smallScale, nil, nil) as NSFont
+        small = smallFont
+        smallMedium = smallFont
+        smallSemibold = smallFont
         advance = ("M" as NSString).size(withAttributes: [.font: regular]).width
     }
 
-    /// The font `ghostty_surface_quicklook_font` gives for `surface`, if any.
+    /// Current popup fonts from `PCodeTypography.shared` (consistent with scrollback).
     static func of(_ surface: ghostty_surface_t?) -> PCodePickFonts? {
-        guard let surface, let raw = ghostty_surface_quicklook_font(surface) else { return nil }
-        // The call hands us a copy we own (+1), so take it retained.
-        return PCodePickFonts(Unmanaged<CTFont>.fromOpaque(raw).takeRetainedValue())
+        PCodePickFonts(typography: PCodeTypography.shared.snapshot)
+    }
+
+    func smallFont(weight: Font.Weight = .regular) -> Font {
+        switch weight {
+        case .semibold, .bold, .heavy, .black:
+            return Font(smallSemibold as CTFont)
+        case .medium:
+            return Font(smallMedium as CTFont)
+        default:
+            return Font(small as CTFont)
+        }
     }
 
     static func small(_ fonts: PCodePickFonts?, fallbackSize: CGFloat, weight: Font.Weight = .regular) -> Font {
-        fonts.map { Font($0.small as CTFont).weight(weight) } ?? .system(size: fallbackSize, weight: weight)
+        if let fonts {
+            return fonts.smallFont(weight: weight)
+        }
+        return PCodePickFonts(typography: PCodeTypography.shared.snapshot).smallFont(weight: weight)
     }
 }
 

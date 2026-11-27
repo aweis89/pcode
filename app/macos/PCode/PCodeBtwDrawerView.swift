@@ -288,8 +288,9 @@ struct PCodeBtwDrawerContent: View {
 
     var body: some View {
         let asides = model.asides
+        let liveFonts = PCodePickFonts(typography: typography.snapshot)
         VStack(spacing: 0) {
-            heading(asides.first)
+            heading(asides.first, fonts: liveFonts)
             ZStack {
                 PCodeBtwTranscriptRepresentable(
                     items: PCodeBtwThread.items(for: asides, docked: docked),
@@ -301,13 +302,13 @@ struct PCodeBtwDrawerContent: View {
                 if asides.isEmpty && model.note.isEmpty {
                     Text("Waiting for the side thread…")
                         .foregroundStyle(muted)
-                        .font(PCodePickFonts.small(fonts, fallbackSize: 12))
+                        .font(PCodePickFonts.small(liveFonts, fallbackSize: 12))
                         .allowsHitTesting(false)
                 }
             }
             if !model.note.isEmpty {
                 Text(model.note)
-                    .font(PCodePickFonts.small(fonts, fallbackSize: 11))
+                    .font(PCodePickFonts.small(liveFonts, fallbackSize: 11))
                     .foregroundStyle(muted)
                     .lineLimit(2)
                     .textSelection(.enabled)
@@ -317,7 +318,7 @@ struct PCodeBtwDrawerContent: View {
             }
             let hints = PCodeBtwHints.hints(
                 docked: docked, others: model.store.threadCount > 1, nextThreadKey: model.nextThreadKey)
-            PCodeHintBar(hints: hints, fonts: fonts, muted: muted)
+            PCodeHintBar(hints: hints, fonts: liveFonts, muted: muted)
                 .padding(.bottom, 6)
         }
         .environment(\.colorScheme, colorScheme)
@@ -325,7 +326,7 @@ struct PCodeBtwDrawerContent: View {
 
     /// `Tail._heading`: the badge, the thread's first question, its label.
     @ViewBuilder
-    private func heading(_ first: PCodeAsideState?) -> some View {
+    private func heading(_ first: PCodeAsideState?, fonts: PCodePickFonts) -> some View {
         if let first {
             HStack(spacing: 6) {
                 Text("btw")

@@ -139,4 +139,81 @@ struct PCodeTypographyTests {
         #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "=", modifierFlags: []) == nil)
         #expect(PCodeFontSizeShortcut.match(charactersIgnoringModifiers: "a", modifierFlags: .command) == nil)
     }
+
+    @Test func persistsAndResetsCustomFontFamilies() {
+        withFreshDefaults { defaults in
+            let first = PCodeTypography(defaults: defaults, codeFamilyAvailable: true)
+            #expect(first.proseFamily == nil)
+            #expect(first.codeFamily == nil)
+
+            first.proseFamily = "Helvetica Neue"
+            first.codeFamily = "Menlo"
+
+            let reloaded = PCodeTypography(defaults: defaults, codeFamilyAvailable: true)
+            #expect(reloaded.proseFamily == "Helvetica Neue")
+            #expect(reloaded.codeFamily == "Menlo")
+
+            // Whitespace-only values normalize back to nil.
+            reloaded.proseFamily = "   "
+            reloaded.codeFamily = ""
+            #expect(reloaded.proseFamily == nil)
+            #expect(reloaded.codeFamily == nil)
+
+            reloaded.proseFamily = "Georgia"
+            reloaded.codeFamily = "Menlo"
+            reloaded.reset()
+            #expect(reloaded.proseFamily == nil)
+            #expect(reloaded.codeFamily == nil)
+        }
+    }
+
+    @Test func resolvesInstalledSystemFontFamiliesWithoutFallbackToHelvetica() {
+        let menlo = PCodeTypographySnapshot.resolveFamilyNSFont(
+            family: "Menlo", size: 14, weight: .medium, italic: false)
+        #expect(menlo != nil)
+        #expect(menlo?.familyName == "Menlo")
+
+        let menloBold = PCodeTypographySnapshot.resolveFamilyNSFont(
+            family: "Menlo", size: 14, weight: .bold, italic: false)
+        #expect(menloBold != nil)
+        #expect(menloBold?.familyName == "Menlo")
+
+        let missing = PCodeTypographySnapshot.resolveFamilyNSFont(
+            family: "DefinitelyNotARealFontFamilyXYZ", size: 14, weight: .regular, italic: false)
+        #expect(missing == nil)
+    }
+
+    @Test func enumeratesSystemAndMonospaceFontFamilies() {
+        let all = PCodeTypography.availableSystemFontFamilies()
+        let mono = PCodeTypography.availableMonospaceFontFamilies()
+        #expect(!all.isEmpty)
+        #expect(!mono.isEmpty)
+        #expect(all.allSatisfy { !$0.hasPrefix(".") })
+        #expect(mono.contains("Menlo"))
+    }
+
+    @Test func generatesGhosttyOverrideConfigText() {
+        let bundled = PCodeTypography.ghosttyOverrideConfigText(codeFamily: nil, codeFamilyAvailable: true)
+        #expect(bundled.contains("font-family = \"\""))
+        #expect(bundled.contains("font-family-bold = \"\""))
+        #expect(bundled.contains("font-family = \"JetBrains Mono\""))
+        #expect(bundled.contains("font-size = 14"))
+
+        let custom = PCodeTypography.ghosttyOverrideConfigText(codeFamily: "Menlo", codeFamilyAvailable: true)
+        #expect(custom.contains("font-family = \"Menlo\""))
+        #expect(!custom.contains("JetBrains Mono"))
+
+        let escaped = PCodeTypography.ghosttyOverrideConfigText(
+            codeFamily: "My \"Quoted\" Font\nInjected", codeFamilyAvailable: true)
+        #expect(escaped.contains("font-family = \"My \\\"Quoted\\\" FontInjected\""))
+    }
+
+    @Test func pickFontsReflectTypographySnapshot() {
+        let monoSnap = PCodeTypographySnapshot(
+            style: .mono, size: 16, weight: .regular, codeFamilyAvailable: false, codeFamily: "Menlo")
+        let fonts = PCodePickFonts(typography: monoSnap)
+        #expect(fonts.regular.familyName == "Menlo")
+        #expect(abs(fonts.regular.pointSize - 16) < 0.01)
+        #expect(abs(fonts.small.pointSize - 16 * PCodePickFonts.smallScale) < 0.01)
+    }
 }

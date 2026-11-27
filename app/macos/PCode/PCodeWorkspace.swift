@@ -1298,6 +1298,7 @@ final class PCodeWorkspace: ObservableObject {
     weak var window: NSWindow?
     private var observers: [NSObjectProtocol] = []
     private var typographySizeSubscription: AnyCancellable?
+    private var typographyCodeFamilySubscription: AnyCancellable?
     private var lastTypographySize: Double = PCodeTypography.shared.size
     private static let openKey = "PCodeWorkspaceOpenSessions"
     private static let selectedKey = "PCodeWorkspaceSelectedSession"
@@ -1330,6 +1331,21 @@ final class PCodeWorkspace: ObservableObject {
                     self.lastTypographySize = newSize
                     guard delta != 0 else { return }
                     self.applyFontSizeDelta(delta, reset: newSize == PCodeTypography.defaultSize)
+                }
+                if Thread.isMainThread {
+                    apply()
+                } else {
+                    DispatchQueue.main.async(execute: apply)
+                }
+            }
+        typographyCodeFamilySubscription = PCodeTypography.shared.$codeFamily
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let apply = {
+                    PCodeTypography.shared.syncGhosttyOverrideFile()
+                    self.ghostty.reloadConfig()
                 }
                 if Thread.isMainThread {
                     apply()

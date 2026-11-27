@@ -734,9 +734,10 @@ struct PCodePickGuide: Shape {
 /// line for an action that asks first, and the keys it answers.
 struct PCodePickerView: View {
     @ObservedObject var picker: PCodePicker
+    @ObservedObject private var typography = PCodeTypography.shared
     /// The terminal's config, for its colors.
     let config: Ghostty.Config
-    /// pcode's terminal font, if it could be read.
+    /// Optional font override (defaults to live `PCodeTypography.shared`).
     let fonts: PCodePickFonts?
 
     /// Rows PgUp/PgDn move by.
@@ -748,7 +749,8 @@ struct PCodePickerView: View {
     static let rowPadding: CGFloat = 5
 
     var body: some View {
-        let theme = picker.theme(config: config, fonts: fonts)
+        let liveFonts = PCodePickFonts(typography: typography.snapshot)
+        let theme = picker.theme(config: config, fonts: liveFonts)
         VStack(alignment: .leading, spacing: 0) {
             if let header = picker.payload?.header, !header.isEmpty {
                 Text(header)
