@@ -259,4 +259,24 @@ struct PCodeHostStateTests {
         #expect(fetches.count == 3)
         pendingCompletion?(nil)
     }
+
+    @Test func decodesComposerStatusAPCAndFormatsElapsed() throws {
+        let json = """
+        {"busy":true,"phase":"Thinking","send_mode":"steering","send_mode_once":true,"starting":false,"steering_pending":1,"queued":2,"jobs":0,"btw_running":0,"btw_ready":1,"cache_note":""}
+        """
+        let b64 = Data(json.utf8).base64EncodedString()
+        let decoded = try #require(PCodeComposerStatus.decode(base64: b64))
+        #expect(decoded.busy == true)
+        #expect(decoded.phase == "Thinking")
+        #expect(decoded.sendMode == "steering")
+        #expect(decoded.sendModeOnce == true)
+        #expect(decoded.steeringPending == 1)
+        #expect(decoded.queued == 2)
+        #expect(decoded.btwReady == 1)
+        #expect(PCodeComposerStatus.decode(base64: "not-valid-base64!") == nil)
+
+        #expect(PCodeComposerStatus.formatElapsed(5) == "5s")
+        #expect(PCodeComposerStatus.formatElapsed(60) == "1m")
+        #expect(PCodeComposerStatus.formatElapsed(125) == "2m 5s")
+    }
 }

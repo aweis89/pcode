@@ -3160,6 +3160,22 @@ class PreviewApp:
             self.branch = ""
         return self.branch != previous
 
+    def composer_state(self) -> dict:
+        """Composer/turn-local state for Pcode.app's native docked status strip."""
+        steering_pending = self.activity.queued_modes.count("steering") if self.activity.busy else 0
+        queued = (self.activity.queued - steering_pending) if self.activity.busy else 0
+        return {
+            "send_mode": self.next_send_mode,
+            "send_mode_once": bool(self.send_mode_once),
+            "starting": bool(self._startup_pending),
+            "steering_pending": steering_pending,
+            "queued": max(0, queued),
+            "jobs": self.activity.job_count,
+            "btw_running": self.asides.running,
+            "btw_ready": self.asides.unread,
+            "cache_note": self.activity.cache_note or "",
+        }
+
     def toolbar(self):
         width = get_app().output.get_size().columns
         location = plain(location_label(self.workspace, self.branch), limit=None)
@@ -3642,6 +3658,7 @@ class PreviewApp:
             bottom_toolbar=self.toolbar,
             # Whichever controller is on screen: /attach replaces it.
             session_title=lambda: self.controller.session_title(),
+            composer_state=self.composer_state,
             drafts=drafts,
             kitty_spinners=self._kitty_spinners,
             vi_mode=load_preferences().get("editing_mode", "emacs") == "vi",

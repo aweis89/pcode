@@ -28,6 +28,7 @@ terminal of their own (`pcode.popup_surface`, probed with `pcode;popup?`).
 """
 
 import base64
+import json
 import os
 import re
 from collections.abc import Callable
@@ -94,6 +95,13 @@ def toast(text: str, *, rows_above: int, seconds: float) -> str:
 def hide_toast() -> str:
     """Hide the toast on show, if any: a toast with no text."""
     return "\x1b_pcode;toast;0;0;\x1b\\"
+
+
+def composer_status(payload: dict) -> str:
+    """Update the docked editor's native status/steering strip: `pcode;composer;<base64 json>`."""
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"\x1b_pcode;composer;{encoded}\x1b\\"
 
 
 _SESSION = re.compile(r"[0-9A-Za-z_-]{1,64}")

@@ -2,6 +2,48 @@ import AppKit
 import GhosttyKit
 import SwiftUI
 
+/// Live status & send-mode state sent by pcode's docked editor (`pcode;composer;<base64 json>`).
+struct PCodeComposerStatus: Equatable, Decodable {
+    let busy: Bool
+    let phase: String
+    let sendMode: String
+    let sendModeOnce: Bool
+    let starting: Bool
+    let steeringPending: Int
+    let queued: Int
+    let jobs: Int
+    let btwRunning: Int
+    let btwReady: Int
+    let cacheNote: String
+
+    private enum CodingKeys: String, CodingKey {
+        case busy
+        case phase
+        case sendMode = "send_mode"
+        case sendModeOnce = "send_mode_once"
+        case starting
+        case steeringPending = "steering_pending"
+        case queued
+        case jobs
+        case btwRunning = "btw_running"
+        case btwReady = "btw_ready"
+        case cacheNote = "cache_note"
+    }
+
+    static func decode(base64: String) -> PCodeComposerStatus? {
+        guard !base64.isEmpty, let data = Data(base64Encoded: base64) else { return nil }
+        return try? JSONDecoder().decode(PCodeComposerStatus.self, from: data)
+    }
+
+    static func formatElapsed(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        if total < 60 { return "\(total)s" }
+        let minutes = total / 60
+        let rem = total % 60
+        return rem == 0 ? "\(minutes)m" : "\(minutes)m \(rem)s"
+    }
+}
+
 /// pcode's editor, tasks and status bar in a card docked at the bottom of a session pane.
 ///
 /// In Pcode.app, each workspace pane runs `pcode --host` with `PCODE_EDITOR_ONLY=1`
@@ -14,6 +56,7 @@ import SwiftUI
 ///
 /// - `pcode;ready`: switch to the card and give it the keyboard.
 /// - `pcode;dock-rows;<n>`: the rows its layout needs.
+/// - `pcode;composer;<base64 json>`: native status & steering strip state.
 final class PCodeDock: NSObject, ObservableObject {
     @Published private(set) var ready = false
     /// Starts at the last count any dock reported, so a resumed pane's boot card
@@ -27,6 +70,15 @@ final class PCodeDock: NSObject, ObservableObject {
     /// is ready: the full-pane terminal stays hidden so the saved transcript shows,
     /// and the transcript keeps the card's room so nothing moves when it appears.
     @Published var bootCovered = false
+    /// Native status & send-mode strip state from `pcode;composer;...`.
+    @Published private(set) var composerStatus: PCodeComposerStatus?
+    /// When the current busy phase started, for the native elapsed timer.
+    @Published private(set) var phaseStartedAt: Date?
+
+    var showsStatusStrip: Bool { ready && composerStatus != nil }
+
+    static let statusStripHeight: CGFloat = 22
+    static let statusStripSpacing: CGFloat = 4
 
     static let maxRows = 40
     /// The dock's terminal is always this tall and never resizes; the card
@@ -82,9 +134,17 @@ final class PCodeDock: NSObject, ObservableObject {
     }
 
     /// Everything the card covers at the bottom of pcode's pane for `rows`
-    /// rows of `cell` points, margins included.
-    static func footprint(rows: Int, cell: CGFloat, surfaceRows: Int? = nil) -> CGFloat {
-        cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows) + topMargin + bottomMargin
+    /// rows of `cell` points, margins and optional native status strip included.
+    static func footprint(
+        rows: Int,
+        cell: CGFloat,
+        surfaceRows: Int? = nil,
+        statusStrip: Bool = false
+    ) -> CGFloat {
+        cardHeight(rows: rows, cell: cell, surfaceRows: surfaceRows)
+            + topMargin
+            + bottomMargin
+            + (statusStrip ? statusStripHeight + statusStripSpacing : 0)
     }
 
     /// Horizontal placement of `PCodeDockCard`'s outer container (including `bottomMargin`
@@ -219,6 +279,20 @@ final class PCodeDock: NSObject, ObservableObject {
             let clamped = min(Self.maxRows, max(1, wanted))
             if clamped != rows { rows = clamped }
             Self.lastReportedRows = clamped
+        case "composer" where parts.count == 2:
+            guard let decoded = PCodeComposerStatus.decode(base64: parts[1]) else { return }
+            let wasBusy = composerStatus?.busy ?? false
+            let oldPhase = composerStatus?.phase ?? ""
+            if decoded.busy {
+                if !wasBusy || oldPhase != decoded.phase {
+                    phaseStartedAt = Date()
+                }
+            } else {
+                phaseStartedAt = nil
+            }
+            if composerStatus != decoded {
+                composerStatus = decoded
+            }
         default:
             break
         }
@@ -340,7 +414,11 @@ private struct PCodeDockedTranscriptLayer: View {
         let surfaceRows = docked.surfaceSize.map { Int($0.rows) }
         // Before ready the terminal fills the pane, so its row count says nothing of the card's.
         let bottomInset: CGFloat = (!drawerOpen && (dock.ready || dock.bootCovered))
-            ? PCodeDock.footprint(rows: dock.rows, cell: cell, surfaceRows: dock.ready ? surfaceRows : nil)
+            ? PCodeDock.footprint(
+                rows: dock.rows,
+                cell: cell,
+                surfaceRows: dock.ready ? surfaceRows : nil,
+                statusStrip: dock.showsStatusStrip)
             : 0
         PCodeMainWindowTranscriptView(
             sessionID: sessionID,
@@ -396,6 +474,7 @@ private struct PCodeDockCard: View {
     var body: some View {
         let cell = docked.cellSize.height > 0 ? docked.cellSize.height : fallbackCell
         let surfaceRows = docked.surfaceSize.map { Int($0.rows) }
+        let showStrip = !inDrawer && dock.showsStatusStrip
         ZStack(alignment: .bottomTrailing) {
             // The dock's whole bottom band across the slot (pane or /btw drawer),
             // gutters included, takes the clicks the card itself doesn't: the
@@ -404,12 +483,22 @@ private struct PCodeDockCard: View {
             // clear at the drawer's left edge so the drawer's 8pt drag handle
             // works alongside the card.
             Color.clear
-                .frame(height: PCodeDock.footprint(rows: dock.rows, cell: cell, surfaceRows: surfaceRows))
+                .frame(height: PCodeDock.footprint(
+                    rows: dock.rows,
+                    cell: cell,
+                    surfaceRows: surfaceRows,
+                    statusStrip: showStrip))
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0))
                 .padding(.leading, inDrawer ? 4 : 0)
                 .allowsHitTesting(dock.ready)
-            card(cell: cell, surfaceRows: surfaceRows)
+            VStack(spacing: PCodeDock.statusStripSpacing) {
+                if showStrip, let status = dock.composerStatus {
+                    PCodeComposerStatusStrip(status: status, startedAt: dock.phaseStartedAt)
+                        .padding(.horizontal, PCodeDock.bottomMargin + 4)
+                }
+                card(cell: cell, surfaceRows: surfaceRows)
+            }
                 .frame(width: horizontal.outerWidth)
                 .padding(.trailing, horizontal.trailingInset)
                 // Not removed: the view tree stays put so the terminal keeps its grid and focus.
@@ -462,5 +551,132 @@ private struct PCodeDockCard: View {
             .padding(.horizontal, PCodeDock.bottomMargin)
             .padding(.top, PCodeDock.topMargin)
             .padding(.bottom, PCodeDock.bottomMargin)
+    }
+}
+
+/// Thin native status & steering strip perched directly above the docked editor card.
+/// Shows coarse turn status (spinner + phase + elapsed clock) on the left while busy,
+/// and live pending counts + send-mode pill (`steering` / `queue`) on the right.
+private struct PCodeComposerStatusStrip: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    let status: PCodeComposerStatus
+    let startedAt: Date?
+
+    private var stripColorScheme: ColorScheme {
+        NSColor(ghostty.config.backgroundColor).isLightColor ? .light : .dark
+    }
+
+    private var activityBadges: [String] {
+        var items: [String] = []
+        if status.steeringPending > 0 {
+            items.append("\(status.steeringPending) steering")
+        }
+        if status.queued > 0 {
+            items.append("\(status.queued) queued")
+        }
+        if status.jobs > 0 {
+            items.append("\(status.jobs) \(status.jobs == 1 ? "job" : "jobs")")
+        }
+        if status.btwRunning > 0 {
+            items.append("\(status.btwRunning) btw running")
+        }
+        if status.btwReady > 0 {
+            items.append("\(status.btwReady) btw ready")
+        }
+        return items
+    }
+
+    private var sendModeLabel: String {
+        status.sendModeOnce ? "\(status.sendMode) (once)" : status.sendMode
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if status.busy || status.starting {
+                HStack(spacing: 6) {
+                    PCodeComposerSpinner()
+                    Text(status.phase.isEmpty ? "Working" : status.phase)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.primary.opacity(0.82))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let startedAt {
+                        TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                            let elapsed = context.date.timeIntervalSince(startedAt)
+                            if elapsed >= 1 {
+                                Text(PCodeComposerStatus.formatElapsed(elapsed))
+                                    .font(.system(size: 11, weight: .regular).monospacedDigit())
+                                    .foregroundStyle(.secondary.opacity(0.75))
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !status.cacheNote.isEmpty {
+                Text(status.cacheNote)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.orange.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 6) {
+                ForEach(Array(activityBadges.enumerated()), id: \.offset) { _, badge in
+                    Text(badge)
+                        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(0.06))
+                        )
+                }
+
+                Text(sendModeLabel)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 1.5)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.primary.opacity(0.06))
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    )
+            }
+        }
+        .frame(height: PCodeDock.statusStripHeight)
+        .background(ghostty.config.backgroundColor)
+        .environment(\.colorScheme, stripColorScheme)
+        .allowsHitTesting(false)
+    }
+}
+
+/// Smooth native spinning arc for `PCodeComposerStatusStrip`.
+private struct PCodeComposerSpinner: View {
+    @State private var spinning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0.08, to: 0.72)
+            .stroke(
+                Color.accentColor.opacity(0.85),
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+            )
+            .frame(width: 10, height: 10)
+            .rotationEffect(.degrees(spinning ? 360 : 0))
+            .animation(.linear(duration: 0.85).repeatForever(autoreverses: false), value: spinning)
+            .onAppear { spinning = true }
     }
 }
