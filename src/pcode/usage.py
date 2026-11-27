@@ -214,15 +214,23 @@ def codex_summary(data: dict) -> dict:
                 or not math.isfinite(used)
             ):
                 continue
-            seconds = window.get("limit_window_seconds") or 0
-            if seconds == 5 * 3600:
+            seconds = window.get("limit_window_seconds")
+            valid_seconds = (
+                isinstance(seconds, (int, float))
+                and not isinstance(seconds, bool)
+                and math.isfinite(seconds)
+                and seconds > 0
+            )
+            if valid_seconds and seconds == 5 * 3600:
                 win_key, label = "5h", "5h"
-            elif seconds == 7 * 86400:
+            elif valid_seconds and seconds == 7 * 86400:
                 win_key, label = "weekly", "wk"
-            elif isinstance(seconds, (int, float)) and seconds > 0:
+            elif valid_seconds:
                 win_key = label = duration(seconds)
+            elif key == "primary_window":
+                win_key, label = "5h", "5h"
             else:
-                win_key = label = "5h" if key == "primary_window" else "wk"
+                win_key, label = "weekly", "wk"
             windows.append({"key": win_key, "label": label, "used_percent": _clamp_percent(used)})
     return {"provider": "openai-codex", "windows": windows}
 
@@ -523,7 +531,7 @@ def usage_summary(provider: str) -> dict:
 
 def print_usage_json(argv: list[str]) -> int:
     """Fast-path CLI entry for `pcode --usage-json <provider>`."""
-    provider = argv[0].strip() if argv else ""
+    provider = argv[0].strip() if len(argv) == 1 else ""
     if provider not in USAGE_PROVIDERS:
         print(f"Usage: pcode {USAGE_JSON_COMMAND} [{'|'.join(USAGE_PROVIDERS)}]", file=sys.stderr)
         return 2

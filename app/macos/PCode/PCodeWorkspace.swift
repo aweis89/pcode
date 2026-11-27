@@ -4869,8 +4869,8 @@ struct PCodeSessionPaneView: View {
 
 /// Custom opaque top title bar that sits in the window's traffic-light strip
 /// (`.fullSizeContentView` + hidden system title, no NSToolbar / no glass).
-/// Shows the active session's activity indicator, project/worktree context pill,
-/// and full session title with generous horizontal room.
+/// Shows the active session's activity indicator, title, and project/worktree pill
+/// on the left, with model, context usage, and subscription quota pills on the right.
 private struct PCodeWindowTitleBar: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var workspace: PCodeWorkspace
@@ -5104,7 +5104,7 @@ private struct PCodeActiveSessionTitleContent: View {
 
                     if !usageWindows.isEmpty {
                         HStack(spacing: 5) {
-                            ForEach(Array(usageWindows.enumerated()), id: \.element.id) { index, window in
+                            ForEach(Array(usageWindows.enumerated()), id: \.offset) { index, window in
                                 if index > 0 {
                                     Text("·")
                                         .font(.system(size: 10, weight: .regular))
@@ -5158,8 +5158,13 @@ private struct PCodeActiveSessionTitleContent: View {
             }
             wasRunning = activity == .running
         }
+        .onChange(of: controlActiveState) { state in
+            if state != .inactive {
+                usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
+            }
+        }
         .onReceive(Self.usageRefreshTimer) { _ in
-            guard controlActiveState != .inactive else { return }
+            guard workspace.windowVisible() else { return }
             usageStore.refreshIfNeeded(forModel: pane.modelName, directory: pane.directory)
         }
     }

@@ -106,11 +106,12 @@ final class PCodeUsageStore: ObservableObject {
     ) {
         guard let provider = Self.provider(forModel: model) else { return }
         guard !inFlight.contains(provider) else { return }
-        if let success = lastSuccess[provider] {
+        if let attempt = lastAttempt[provider],
+           lastSuccess[provider].map({ attempt > $0 }) ?? true {
+            if now.timeIntervalSince(attempt) < failureBackoff { return }
+        } else if let success = lastSuccess[provider] {
             let minAge = afterTurn ? turnRefreshCooldown : ttl
             if now.timeIntervalSince(success) < minAge { return }
-        } else if let attempt = lastAttempt[provider] {
-            if now.timeIntervalSince(attempt) < failureBackoff { return }
         }
 
         inFlight.insert(provider)
@@ -138,11 +139,15 @@ final class PCodeUsageStore: ObservableObject {
         completion: @escaping @Sendable (PCodeProviderUsage?) -> Void
     ) {
         DispatchQueue.global(qos: .utility).async {
-            let dir = FileManager.default.fileExists(atPath: directory) ? directory : NSHomeDirectory()
+            var isDir: ObjCBool = false
+            let dir = (FileManager.default.fileExists(atPath: directory, isDirectory: &isDir) && isDir.boolValue)
+                ? directory
+                : NSHomeDirectory()
+            PCodeWorkspaceMode.awaitLoginShellCache(timeout: 2.0)
             let launch = PCodeWorkspaceMode.launchConfig(["--usage-json", provider], directory: dir)
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-            proc.arguments = ["-c", launch.command]
+            proc.arguments = ["-c", "exec \(launch.command)"]
             proc.currentDirectoryURL = URL(fileURLWithPath: dir)
             proc.environment = ProcessInfo.processInfo.environment.merging(launch.env) { _, new in new }
             let stdout = Pipe()
@@ -150,8 +155,28 @@ final class PCodeUsageStore: ObservableObject {
             proc.standardError = FileHandle.nullDevice
             proc.standardInput = FileHandle.nullDevice
 
+            let lock = NSLock()
+            var finished = false
+            let finish: @Sendable (PCodeProviderUsage?) -> Void = { result in
+                lock.lock()
+                let first = !finished
+                finished = true
+                lock.unlock()
+                if first { completion(result) }
+            }
+
             let timeout = DispatchWorkItem {
-                if proc.isRunning { proc.terminate() }
+                let pid = proc.processIdentifier
+                if proc.isRunning {
+                    proc.terminate()
+                    if pid > 0 {
+                        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) {
+                            if proc.isRunning { _ = kill(pid, SIGKILL) }
+                        }
+                    }
+                }
+                try? stdout.fileHandleForReading.close()
+                finish(nil)
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 35.0, execute: timeout)
             defer { timeout.cancel() }
@@ -159,7 +184,7 @@ final class PCodeUsageStore: ObservableObject {
             do {
                 try proc.run()
             } catch {
-                completion(nil)
+                finish(nil)
                 return
             }
 
@@ -168,10 +193,10 @@ final class PCodeUsageStore: ObservableObject {
             guard proc.terminationStatus == 0,
                   let decoded = try? JSONDecoder().decode(PCodeProviderUsage.self, from: data)
             else {
-                completion(nil)
+                finish(nil)
                 return
             }
-            completion(decoded)
+            finish(decoded)
         }
     }
 }

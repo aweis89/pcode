@@ -481,6 +481,26 @@ def test_print_usage_json(monkeypatch, capsys):
     }
     assert usage.print_usage_json(["unknown"]) == 2
     assert "Usage: pcode --usage-json" in capsys.readouterr().err
+    assert usage.print_usage_json([]) == 2
+    assert "Usage: pcode --usage-json" in capsys.readouterr().err
+    assert usage.print_usage_json(["claude", "extra"]) == 2
+    assert "Usage: pcode --usage-json" in capsys.readouterr().err
+
+    # Edge cases: non-finite / bool limit_window_seconds and missing windows.
+    assert usage.codex_summary(
+        {
+            "rate_limit": {
+                "primary_window": {"used_percent": 15.6, "limit_window_seconds": True},
+                "secondary_window": {"used_percent": 120, "limit_window_seconds": float("inf")},
+            }
+        }
+    ) == {
+        "provider": "openai-codex",
+        "windows": [
+            {"key": "5h", "label": "5h", "used_percent": 16},
+            {"key": "weekly", "label": "wk", "used_percent": 100},
+        ],
+    }
 
     def broken():
         raise usage.UsageUnavailable("not logged in")
