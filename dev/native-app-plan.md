@@ -1,8 +1,9 @@
 # Native app plan: making Ghostty a leaf in Pcode.app
 
-Status: steps 1, 2 and 3a done.
-Steps 3b and 4 are undecided: do not start them. This came out of a code
-survey, not a full design; check the current code before extending any step.
+Status: steps 1, 2 and 3a done. Step 3b (native composer) is decided and
+planned but not started (owner, 2026-11-27). Step 4 is undecided: do not start
+it. This came out of a code survey, not a full design; check the current code
+before extending any step.
 
 ## Goal
 
@@ -17,9 +18,9 @@ behind the transcript, and terminal surfaces for the prompt editor, popups and
 `/btw`. Steps 1 to 3a remove the plumbing that nobody sees. They are worth
 doing whether or not Ghostty stays.
 
-Whether the app drops Ghostty altogether (a native composer, then its own
-container) is an open decision, recorded as steps 3b and 4. Keeping Ghostty for
-the editor and the shell split is a valid end state.
+The native composer (step 3b) replaces the terminal editor in the app. Whether
+the app then drops Ghostty altogether (its own container, step 4) is still an
+open decision. Keeping Ghostty for the shell split is a valid end state.
 
 The Ghostty fork (`aweis89/ghostty-smooth`) stays as the standalone terminal
 for people who use pcode's terminal UI either way. pcode's terminal mode must
@@ -220,18 +221,160 @@ two-surface path stays the default until piece 6.
    `make app-lock`). Raise it with the owner once 3a is done; it depends on
    3b and step 4.
 
-### 3b. Native composer (undecided)
+### 3b. Native composer (decided, not started)
 
-Replace the prompt_toolkit editor with a Swift one, sending `submit`,
-`command`, `cancel` and the other intents over the two-way client from 3a.
-Only worth doing if the goal becomes no terminal surfaces at all.
+Replace the prompt_toolkit editor in the app with a Swift one that talks to the
+session host directly. The Python editor stays for terminal mode, untouched.
 
-The long tail is the risk: 14 `.popup()` call sites and roughly 6 to 7k lines
-of `*_ui.py` (config, tree, sessions, inspector, edit review, jobs, workers,
-sign-in). As long as one of them falls back to a terminal overlay, the app
-still needs a terminal emulator.
+Why: the editor surface is the last thing a pane waits on. Today every pane
+holds `PCodeStartupOverlay` until `pcode;ready` arrives from the editor-only
+client. A native composer is focusable and editable on the first frame, for new
+and resumed sessions, and only the model turn itself waits for the host. It
+also removes the fixed-grid clipping and cursor-sync code in `PCodeDock.swift`
+and `PCodeCompletion.swift`.
 
-Decide after 3a, when the editor is a leaf and the cost of keeping it is clear.
+Scope decisions (owner, 2026-11-27):
+
+- Text view: plain `NSTextView` on TextKit 2, which the app already uses
+  (`PCodeTextKit2BlockView.swift`, `PCodePicker.swift`). STTextView is a code
+  editor (gutters, folding, large files) and a new dependency for a box that
+  holds 1 to 40 lines.
+- No vi bindings at first. Native macOS and Emacs-style editing come with
+  `NSTextView`.
+- In scope: Enter to send, Shift+Enter and Ctrl+J for a newline, Ctrl+Enter
+  (interrupt and send), Up/Down history on the first and last line, Ctrl+C
+  (interrupt when busy, clear when idle), the send-mode toggle (steer/queue),
+  drafts, image paste, `@` file references, `/` command completion, the status
+  strip, and the task list.
+- Out of scope: the worker (sub-agent) rows the terminal editor shows. The
+  native transcript and the inspector's Agents tab already cover them.
+
+#### What already exists
+
+Check each of these against the code before building on it.
+
+- Host intents. `_Client` in `host.py` already takes `submit(text, mode)`,
+  `command(text, tag)`, `cancel`, `set_thinking`, `adjust_effort`, `stop_jobs`,
+  `manage_worker`, `navigate_tree`, `cancel_asides`, `watch_job` and `query`.
+  The Swift client only observes today (`observe_transcript`) and refuses
+  requests, so the work is on the Swift side.
+- The command catalog. `SessionController.session_state()` already serializes
+  every command (name, description, aliases, fixed arguments and their
+  descriptions, group), the dynamic argument lists, skill names and the model
+  list, and `commands_changed` pushes it again. It is how an attached terminal
+  builds its `/` menu (`_proxy` in `remote.py`). No new RPC is needed.
+  Unverified: whether the observer welcome carries this state or only the full
+  attach welcome does.
+- The plan. The host reads it from `runtime.plan_store` for `peek()`. Nothing
+  pushes it to a client yet; the terminal editor rebuilds the task list from
+  transcript events.
+- Native popups. Of the 14 `.popup()` call sites in `app.py`, eight already
+  have a native view (Diffs, Tools, Agents, Conversation tree, Side questions,
+  Sessions, Settings, Copy) and three are pick lists that `PCodePicker` can
+  show (Model, Links, Hosts/Attach). Three need a small new sheet: the secret
+  prompt, Session info, and Jobs.
+
+#### Completion: local where it can be, cached where it cannot
+
+The `/` and `@` menus are used in the first second of a session, so neither can
+wait for the host to boot.
+
+- `@` file references are fully native. The Swift side lists the workspace
+  (`git ls-files --cached --others --exclude-standard`, with the directory-walk
+  fallback `file_refs.py` uses), scores with `PCodePickMatch`, and inserts
+  `./relative/path`. Typing `@` completes inline; the same index backs a file
+  picker (`PCodePicker`) for browsing with a wider list. No host involved.
+- `/` commands come from a snapshot. Sharing the code is not an option: the
+  catalog is built from Python objects, and importing that stack is the boot
+  cost being avoided. Reimplementing it in Swift only works for skills
+  (`discover_skills` is a glob and a frontmatter read); built-ins are Python
+  literals and extension commands come from user Python files. So:
+  1. When the app receives session state, it writes the `commands`,
+     `arguments` and `models` parts to a JSON file per workspace.
+  2. The composer loads that file on the first frame, and the live state
+     replaces it when the host connects.
+  3. A workspace opened for the first time falls back to a global last-seen
+     snapshot. Built-ins are the same everywhere, so only that workspace's
+     skills are missing until the host answers.
+- Known limits of the snapshot: a skill or extension command added since the
+  last run appears about a second late; dynamic arguments (`/mcp`, `/jobs`) and
+  `$MODEL` completion show the cached values until connect; a cached command
+  that no longer exists gets the host's ordinary "unknown command" reply.
+  A native skill scan would close the first gap at the price of mirroring the
+  naming-style and shadowing rules in two languages. Not planned unless the
+  gap is noticed.
+- Completing is instant; running is not. A command submitted before the host
+  is up goes through the same pre-connect queue as a prompt.
+
+#### Tasks: where the plan goes
+
+The terminal editor draws the model's plan above the input. In the app it
+should not live inside the text view, and it does not need the full list on
+screen all the time.
+
+Proposed, pending the owner's call on placement:
+
+- A one-line summary in the composer's status strip: progress and the step in
+  flight ("3/7 · Adding the migration"), with the weighted progress bar the
+  terminal shows. Hidden when there is no plan.
+- Clicking it (or a shortcut) opens the full checklist in a popover anchored to
+  the strip, so the list never pushes the transcript around.
+- Optional later: a Tasks tab in the inspector for people who want it pinned.
+
+Feeding it needs one small host addition: push the plan to observers when it
+changes (a `plan_changed` call, or a `plan` field in the state delta), using
+the same items `peek()` already serializes. Deriving it in Swift from
+`write_plan` and `update_task_statuses` tool calls in the transcript would work
+without a host change, but it means replaying tool arguments and result ids in
+a second place.
+
+#### Phases
+
+Each phase merges to `master` behind a `native_composer` preference and leaves
+the app working. The terminal editor stays the default until phase 5.
+
+0. Two-way client. `PCodeHostClient.swift` attaches as a full client and can
+   send `submit`, `command`, `cancel` and the rest. It decodes session state
+   (commands, arguments, models) and writes the per-workspace snapshot. The
+   composer status fields that arrive today as `pcode;composer;` APCs
+   (`PCodeComposerStatus` in `PCodeDock.swift`: phase, send mode, queue,
+   steering, jobs, `/btw` counts, cache note) move to the socket. The host is
+   spawned headless with `Process`, not on a Ghostty surface, and startup
+   states (project trust, no model, config errors) get native cards from
+   `startup_pending` and `startup_error`.
+1. Composer and keys. `PCodeComposerView` on `NSTextView`, growing with its
+   content, mounted on the first frame. The keybindings listed under scope.
+   A pre-connect queue: a prompt or command sent before the host is up shows in
+   the transcript at once and is flushed when the socket connects.
+2. History, drafts and image paste. Up/Down recall on the first and last
+   visual line, keeping the text in progress. Drafts follow `drafts.py`
+   (autosave, save on clear and pane switch, delete on send). A pasted or
+   dropped image is saved and downscaled as `prompt_images.py` does, and its
+   path inserted; the host already attaches any image path in a prompt, so
+   there is no protocol change.
+3. Completion. `@` inline completion and the file picker from the native
+   index; `/` completion from the snapshot, then live. `PCodeCompletionLayer`
+   is reused, anchored with `firstRect(forCharacterRange:)`. Tab, Ctrl+L,
+   Enter, Up/Down, Esc and click to accept.
+4. Tasks and status strip. The host pushes the plan; the strip shows the
+   summary and the popover shows the list, as above. The status strip reads
+   the socket only.
+5. Remaining popups and cutover. Route the eight commands that have native
+   views, drive the three pick lists through `PCodePicker`, add the three
+   sheets. Turn `native_composer` on by default and stop running the
+   editor-only client in session panes. Ghostty is then used only for the
+   shell split.
+
+Phases 0 and 1 are the first milestone: they deliver the instant startup and
+are enough to judge the native text view before building the rest.
+
+Risks:
+
+- The long tail is anything a command draws that was not counted above. Any
+  flow that still needs a terminal overlay blocks the cutover in phase 5, so
+  audit the `*_ui.py` modules again before starting it.
+- Two submitters during the flag period. While both editors exist, make sure a
+  pane runs exactly one of them.
 
 ### 4. Swap the container (only if 3b is done)
 
@@ -266,9 +409,9 @@ since rendering quality will be a step down from Ghostty.
 
 ## Open questions
 
-- Do we want 3b at all? If so, how much editor parity does the native composer
-  need (vi keys, history, image paste, drafts)? That sets its size more than
-  anything else.
+- Where does the task list live in the native composer: the status-strip
+  summary with a popover (proposed in 3b), an inspector tab, or both?
+- Do vi bindings come back after the native composer ships?
 - Is SwiftTerm-level rendering acceptable for the shell split, or does it need
   to look like Ghostty?
 
