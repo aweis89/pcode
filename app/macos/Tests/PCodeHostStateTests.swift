@@ -340,4 +340,69 @@ struct PCodeHostStateTests {
         let stripLayout = PCodeDock.cardLayout(in: CGSize(width: 800, height: 600), rows: 3, cell: 18, statusStrip: true)
         #expect(stripLayout.cardTopFromBottom == baseLayout.cardTopFromBottom + PCodeDock.topMargin + PCodeDock.statusStripSpacing + PCodeDock.statusStripHeight)
     }
+
+    @Test func resolvesThreeZoneTitleBarGeometry() {
+        // Wide window (1200pt total = 76 leading + 1112 avail + 12 trailing):
+        // title centers over the full window at x = 600 (524 in content coords).
+        let wide = PCodeTitleBarGeometry.resolve(
+            availableWidth: 1112,
+            leadingInset: 76,
+            trailingInset: 12,
+            leadingIdeal: 140,
+            centerIdeal: 200,
+            trailingIdeal: 280,
+            spacing: 12
+        )
+        #expect(wide.leadingWidth == 140)
+        #expect(wide.centerWidth == 200)
+        #expect(wide.trailingWidth == 280)
+        #expect(abs((wide.centerX + wide.centerWidth / 2) - (1200 / 2 - 76)) < 0.001)
+        #expect(wide.centerX >= wide.leadingWidth + 12)
+        #expect(wide.centerX + wide.centerWidth <= wide.trailingX - 12)
+
+        // Medium window where true window center would collide with wide trailing pills:
+        // title shifts left into the gap without overlapping either cluster.
+        let medium = PCodeTitleBarGeometry.resolve(
+            availableWidth: 720,
+            leadingInset: 76,
+            trailingInset: 12,
+            leadingIdeal: 140,
+            centerIdeal: 200,
+            trailingIdeal: 320,
+            spacing: 12
+        )
+        #expect(medium.centerWidth == 200)
+        #expect(medium.centerX >= medium.leadingWidth + 12)
+        #expect(medium.centerX + medium.centerWidth <= medium.trailingX - 12)
+
+        // Narrow window: center truncates smoothly and nothing overlaps or goes negative.
+        let narrow = PCodeTitleBarGeometry.resolve(
+            availableWidth: 420,
+            leadingInset: 76,
+            trailingInset: 12,
+            leadingIdeal: 160,
+            centerIdeal: 260,
+            trailingIdeal: 300,
+            spacing: 12
+        )
+        #expect(narrow.leadingWidth >= 0)
+        #expect(narrow.centerWidth >= 120)
+        #expect(narrow.trailingWidth >= 0)
+        #expect(narrow.centerX >= narrow.leadingWidth + 12)
+        #expect(narrow.centerX + narrow.centerWidth <= narrow.trailingX - 12)
+
+        // Empty trailing cluster: no trailing gap reserved.
+        let noTrailing = PCodeTitleBarGeometry.resolve(
+            availableWidth: 400,
+            leadingInset: 16,
+            trailingInset: 12,
+            leadingIdeal: 120,
+            centerIdeal: 300,
+            trailingIdeal: 0,
+            spacing: 12
+        )
+        #expect(noTrailing.trailingWidth == 0)
+        #expect(noTrailing.centerX == 132)
+        #expect(noTrailing.centerWidth == 268)
+    }
 }

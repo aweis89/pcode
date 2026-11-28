@@ -5009,8 +5009,8 @@ struct PCodeSessionPaneView: View {
 
 /// Custom opaque top title bar that sits in the window's traffic-light strip
 /// (`.fullSizeContentView` + hidden system title, no NSToolbar / no glass).
-/// Shows the active session's activity indicator, title, and project/worktree pill
-/// on the left, with model, context usage, and subscription quota pills on the right.
+/// Uses a three-zone layout: project/worktree pill on the left, centered active
+/// session title + activity indicator, and model + telemetry pills on the right.
 private struct PCodeWindowTitleBar: View {
     @EnvironmentObject var ghostty: Ghostty.App
     @ObservedObject var workspace: PCodeWorkspace
@@ -5041,7 +5041,7 @@ private struct PCodeWindowTitleBar: View {
                     HStack {
                         Spacer(minLength: leadingClearance)
                         Text("pcode")
-                            .font(.system(size: 12.5, weight: .medium))
+                            .font(.system(size: 12.5, weight: .semibold))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 16)
                     }
@@ -5061,6 +5061,117 @@ private struct PCodeWindowTitleBar: View {
     }
 }
 
+/// Pure horizontal layout math for the three-zone window title bar:
+/// places leading and trailing pill clusters at the outer edges, centers the
+/// session title over the full window when there is room, and smoothly shifts
+/// it into the available gap when the window narrows.
+enum PCodeTitleBarGeometry {
+    struct Placement: Equatable {
+        let leadingX: CGFloat
+        let leadingWidth: CGFloat
+        let centerX: CGFloat
+        let centerWidth: CGFloat
+        let trailingX: CGFloat
+        let trailingWidth: CGFloat
+    }
+
+    static func resolve(
+        availableWidth: CGFloat,
+        leadingInset: CGFloat,
+        trailingInset: CGFloat,
+        leadingIdeal: CGFloat,
+        centerIdeal: CGFloat,
+        trailingIdeal: CGFloat,
+        spacing: CGFloat = 12
+    ) -> Placement {
+        let avail = max(0, availableWidth)
+        let hasLeading = leadingIdeal > 0
+        let hasTrailing = trailingIdeal > 0
+
+        let minCenter = min(centerIdeal, 120)
+        let minLeading = hasLeading ? min(leadingIdeal, 80) : 0
+
+        let gapForLeading: CGFloat = hasLeading ? spacing : 0
+        let gapForTrailing: CGFloat = hasTrailing ? spacing : 0
+
+        let trailingBudget = max(0, avail - minCenter - minLeading - gapForLeading - gapForTrailing)
+        let trailingWidth = hasTrailing ? min(trailingIdeal, trailingBudget) : 0
+
+        let leadingBudget = max(0, avail - trailingWidth - minCenter - gapForLeading - (trailingWidth > 0 ? spacing : 0))
+        let leadingWidth = hasLeading ? min(leadingIdeal, leadingBudget) : 0
+
+        let leftEdge = leadingWidth + (leadingWidth > 0 ? spacing : 0)
+        let rightEdge = avail - trailingWidth - (trailingWidth > 0 ? spacing : 0)
+        let centerSlotWidth = max(0, rightEdge - leftEdge)
+        let centerWidth = min(centerIdeal, centerSlotWidth)
+
+        // True geometric center of the full window expressed in content-bounds coordinates.
+        let totalWindowWidth = avail + leadingInset + trailingInset
+        let idealCenterX = (totalWindowWidth / 2) - leadingInset
+        let centeredX = idealCenterX - (centerWidth / 2)
+        let centerX = min(max(centeredX, leftEdge), max(leftEdge, rightEdge - centerWidth))
+
+        return Placement(
+            leadingX: 0,
+            leadingWidth: leadingWidth,
+            centerX: centerX,
+            centerWidth: centerWidth,
+            trailingX: avail - trailingWidth,
+            trailingWidth: trailingWidth
+        )
+    }
+}
+
+/// Three-zone horizontal SwiftUI Layout backed by `PCodeTitleBarGeometry`.
+private struct PCodeTitleBarLayout: Layout {
+    let leadingInset: CGFloat
+    let trailingInset: CGFloat
+    var spacing: CGFloat = 12
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let height = subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+        let width = proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let leading = subviews[0]
+        let center = subviews[1]
+        let trailing = subviews[2]
+
+        let leadingSize = leading.sizeThatFits(.unspecified)
+        let centerSize = center.sizeThatFits(.unspecified)
+        let trailingSize = trailing.sizeThatFits(.unspecified)
+
+        let p = PCodeTitleBarGeometry.resolve(
+            availableWidth: bounds.width,
+            leadingInset: leadingInset,
+            trailingInset: trailingInset,
+            leadingIdeal: leadingSize.width,
+            centerIdeal: centerSize.width,
+            trailingIdeal: trailingSize.width,
+            spacing: spacing
+        )
+
+        leading.place(
+            at: CGPoint(x: bounds.minX + p.leadingX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: p.leadingWidth, height: bounds.height)
+        )
+        center.place(
+            at: CGPoint(x: bounds.minX + p.centerX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: p.centerWidth, height: bounds.height)
+        )
+        trailing.place(
+            at: CGPoint(x: bounds.minX + p.trailingX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: p.trailingWidth, height: bounds.height)
+        )
+    }
+}
+
 /// Observes the active pane directly so title (`/rename`, auto-title) and activity
 /// changes refresh the title bar without re-rendering the whole workspace.
 private struct PCodeActiveSessionTitleContent: View {
@@ -5074,6 +5185,7 @@ private struct PCodeActiveSessionTitleContent: View {
     @State private var usageClock = Date()
 
     private static let usageRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    private static let trailingInset: CGFloat = 12
 
     private var savedInfo: PCodeSessionInfo? {
         workspace.info(for: pane)
@@ -5120,95 +5232,87 @@ private struct PCodeActiveSessionTitleContent: View {
         return .secondary
     }
 
-    var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 7) {
-                PCodeActivityIndicator(activity: pane.activity, unseen: false)
-                    .frame(width: 10, height: 10)
+    private var hasContext: Bool { !pane.contextUsage.isEmpty }
+    private var hasUsage: Bool { !usageWindows.isEmpty }
 
-                Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.primary.opacity(0.92))
+    private var projectPill: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary.opacity(0.8))
+            Text(projectName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let worktreeName, !worktreeName.isEmpty {
+                Text("/")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                Text(worktreeName)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.secondary.opacity(0.85))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .layoutPriority(1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2.5)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
+    }
 
+    private var titleCluster: some View {
+        HStack(spacing: 7) {
+            PCodeActivityIndicator(activity: pane.activity, unseen: false)
+                .frame(width: 10, height: 10)
+
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    private var trailingCluster: some View {
+        HStack(spacing: 6) {
+            if !modelParts.name.isEmpty {
                 HStack(spacing: 4) {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.secondary.opacity(0.85))
-                    Text(projectName)
+                    if let provider = modelParts.provider {
+                        Text(provider)
+                            .font(.system(size: 10.5, weight: .regular))
+                            .foregroundStyle(.secondary.opacity(0.65))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Text(modelParts.name)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if let worktreeName, !worktreeName.isEmpty {
-                        Text("/")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.tertiary)
-                        Text(worktreeName)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(.secondary.opacity(0.9))
+                        .layoutPriority(1)
+                    if let effortLabel {
+                        Text("(\(effortLabel))")
+                            .font(.system(size: 10.5, weight: .regular))
+                            .foregroundStyle(.secondary.opacity(0.65))
                             .lineLimit(1)
-                            .truncationMode(.tail)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2.5)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(Color.primary.opacity(0.07))
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        .fill(Color.primary.opacity(0.06))
                 )
             }
-            .frame(minWidth: 0)
 
-            Spacer(minLength: 12)
-
-            if !modelParts.name.isEmpty || !pane.contextUsage.isEmpty || !usageWindows.isEmpty {
-                HStack(spacing: 6) {
-                    if !modelParts.name.isEmpty {
-                        HStack(spacing: 3) {
-                            if let provider = modelParts.provider {
-                                Text(provider)
-                                    .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(.secondary.opacity(0.75))
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Text(":")
-                                    .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(.secondary.opacity(0.45))
-                            }
-                            Text(modelParts.name)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .layoutPriority(1)
-                            if let effortLabel {
-                                Text("(\(effortLabel))")
-                                    .font(.system(size: 10.5, weight: .regular))
-                                    .foregroundStyle(.secondary.opacity(0.75))
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                        }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.primary.opacity(0.06))
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-                        )
-                    }
-
-                    if !pane.contextUsage.isEmpty {
+            if hasContext || hasUsage {
+                HStack(spacing: 7) {
+                    if hasContext {
                         HStack(spacing: 5) {
                             if let ratio = contextRatio {
                                 let barWidth: CGFloat = 24
@@ -5230,20 +5334,15 @@ private struct PCodeActiveSessionTitleContent: View {
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.primary.opacity(0.06))
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-                        )
-                        .layoutPriority(1)
                     }
 
-                    if !usageWindows.isEmpty {
+                    if hasContext && hasUsage {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.14))
+                            .frame(width: 1, height: 9)
+                    }
+
+                    if hasUsage {
                         HStack(spacing: 5) {
                             ForEach(Array(usageWindows.enumerated()), id: \.offset) { index, window in
                                 if index > 0 {
@@ -5263,23 +5362,31 @@ private struct PCodeActiveSessionTitleContent: View {
                         }
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.primary.opacity(0.06))
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-                        )
-                        .layoutPriority(1)
                     }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2.5)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+                )
+                .layoutPriority(1)
             }
         }
+    }
+
+    var body: some View {
+        PCodeTitleBarLayout(
+            leadingInset: leadingClearance,
+            trailingInset: Self.trailingInset,
+            spacing: 12
+        ) {
+            projectPill
+            titleCluster
+            trailingCluster
+        }
         .padding(.leading, leadingClearance)
-        .padding(.trailing, 12)
+        .padding(.trailing, Self.trailingInset)
         .onAppear {
             syncWindowTitle()
             wasRunning = pane.activity == .running
