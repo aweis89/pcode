@@ -5082,26 +5082,42 @@ enum PCodeTitleBarGeometry {
         leadingIdeal: CGFloat,
         centerIdeal: CGFloat,
         trailingIdeal: CGFloat,
+        leadingMin: CGFloat = 0,
+        trailingMin: CGFloat = 0,
         spacing: CGFloat = 12
     ) -> Placement {
         let avail = max(0, availableWidth)
         let hasLeading = leadingIdeal > 0
+        let hasCenter = centerIdeal > 0
         let hasTrailing = trailingIdeal > 0
 
-        let minCenter = min(centerIdeal, 120)
-        let minLeading = hasLeading ? min(leadingIdeal, 80) : 0
+        let minCenter = hasCenter ? min(centerIdeal, 180) : 0
+        let effectiveLeadingMin = hasLeading ? min(leadingIdeal, max(0, leadingMin)) : 0
+        let effectiveTrailingMin = hasTrailing ? min(trailingIdeal, max(0, trailingMin)) : 0
+        let reservedLeading = hasLeading ? max(effectiveLeadingMin, min(leadingIdeal, 80)) : 0
 
-        let gapForLeading: CGFloat = hasLeading ? spacing : 0
-        let gapForTrailing: CGFloat = hasTrailing ? spacing : 0
+        let gapForLeading: CGFloat = (hasLeading && hasCenter) ? spacing : 0
+        let gapForTrailing: CGFloat = (hasTrailing && (hasCenter || hasLeading)) ? spacing : 0
 
-        let trailingBudget = max(0, avail - minCenter - minLeading - gapForLeading - gapForTrailing)
-        let trailingWidth = hasTrailing ? min(trailingIdeal, trailingBudget) : 0
+        let trailingBudget = max(0, avail - minCenter - reservedLeading - gapForLeading - gapForTrailing)
+        let trailingWidth: CGFloat
+        if !hasTrailing || (effectiveTrailingMin > 0 && trailingBudget < effectiveTrailingMin) {
+            trailingWidth = 0
+        } else {
+            trailingWidth = min(trailingIdeal, trailingBudget)
+        }
 
-        let leadingBudget = max(0, avail - trailingWidth - minCenter - gapForLeading - (trailingWidth > 0 ? spacing : 0))
-        let leadingWidth = hasLeading ? min(leadingIdeal, leadingBudget) : 0
+        let gapAfterTrailing: CGFloat = (trailingWidth > 0 && (hasCenter || hasLeading)) ? spacing : 0
+        let leadingBudget = max(0, avail - trailingWidth - minCenter - gapForLeading - gapAfterTrailing)
+        let leadingWidth: CGFloat
+        if !hasLeading || (effectiveLeadingMin > 0 && leadingBudget < effectiveLeadingMin) {
+            leadingWidth = 0
+        } else {
+            leadingWidth = min(leadingIdeal, leadingBudget)
+        }
 
-        let leftEdge = leadingWidth + (leadingWidth > 0 ? spacing : 0)
-        let rightEdge = avail - trailingWidth - (trailingWidth > 0 ? spacing : 0)
+        let leftEdge = leadingWidth + (leadingWidth > 0 && hasCenter ? spacing : 0)
+        let rightEdge = avail - trailingWidth - (trailingWidth > 0 && hasCenter ? spacing : 0)
         let centerSlotWidth = max(0, rightEdge - leftEdge)
         let centerWidth = min(centerIdeal, centerSlotWidth)
 
@@ -5129,9 +5145,14 @@ private struct PCodeTitleBarLayout: Layout {
     var spacing: CGFloat = 12
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let height = subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
-        let width = proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
-        return CGSize(width: width, height: height)
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let height = sizes.map(\.height).max() ?? 0
+        if let proposedWidth = proposal.width {
+            return CGSize(width: proposedWidth, height: height)
+        }
+        let nonEmptyWidths = sizes.map(\.width).filter { $0 > 0 }
+        let gaps = CGFloat(max(0, nonEmptyWidths.count - 1)) * spacing
+        return CGSize(width: nonEmptyWidths.reduce(0, +) + gaps, height: height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
@@ -5143,6 +5164,8 @@ private struct PCodeTitleBarLayout: Layout {
         let leadingSize = leading.sizeThatFits(.unspecified)
         let centerSize = center.sizeThatFits(.unspecified)
         let trailingSize = trailing.sizeThatFits(.unspecified)
+        let leadingMinWidth = leading.sizeThatFits(.zero).width
+        let trailingMinWidth = trailing.sizeThatFits(.zero).width
 
         let p = PCodeTitleBarGeometry.resolve(
             availableWidth: bounds.width,
@@ -5151,6 +5174,8 @@ private struct PCodeTitleBarLayout: Layout {
             leadingIdeal: leadingSize.width,
             centerIdeal: centerSize.width,
             trailingIdeal: trailingSize.width,
+            leadingMin: leadingMinWidth,
+            trailingMin: trailingMinWidth,
             spacing: spacing
         )
 
@@ -5160,13 +5185,13 @@ private struct PCodeTitleBarLayout: Layout {
             proposal: ProposedViewSize(width: p.leadingWidth, height: bounds.height)
         )
         center.place(
-            at: CGPoint(x: bounds.minX + p.centerX, y: bounds.midY),
-            anchor: .leading,
+            at: CGPoint(x: bounds.minX + p.centerX + p.centerWidth / 2, y: bounds.midY),
+            anchor: .center,
             proposal: ProposedViewSize(width: p.centerWidth, height: bounds.height)
         )
         trailing.place(
-            at: CGPoint(x: bounds.minX + p.trailingX, y: bounds.midY),
-            anchor: .leading,
+            at: CGPoint(x: bounds.minX + p.trailingX + p.trailingWidth, y: bounds.midY),
+            anchor: .trailing,
             proposal: ProposedViewSize(width: p.trailingWidth, height: bounds.height)
         )
     }
@@ -5381,9 +5406,9 @@ private struct PCodeActiveSessionTitleContent: View {
             trailingInset: Self.trailingInset,
             spacing: 12
         ) {
-            projectPill
-            titleCluster
-            trailingCluster
+            projectPill.clipped()
+            titleCluster.clipped()
+            trailingCluster.clipped()
         }
         .padding(.leading, leadingClearance)
         .padding(.trailing, Self.trailingInset)
