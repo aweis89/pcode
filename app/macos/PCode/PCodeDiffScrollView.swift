@@ -86,14 +86,17 @@ struct PCodeDiffTheme: Equatable {
                 }
             }
         }
-        for lines in expandedGaps.values {
-            if let first = lines.first {
-                if let old = first.oldLineNumber { highest = max(highest, old) }
-                if let new = first.newLineNumber { highest = max(highest, new) }
-            }
-            if let last = lines.last {
-                if let old = last.oldLineNumber { highest = max(highest, old) }
-                if let new = last.newLineNumber { highest = max(highest, new) }
+        if !expandedGaps.isEmpty {
+            let activeFileIDs = Set(diffs.map(\.id))
+            for (key, lines) in expandedGaps where activeFileIDs.contains(key.fileID) {
+                if let first = lines.first {
+                    if let old = first.oldLineNumber { highest = max(highest, old) }
+                    if let new = first.newLineNumber { highest = max(highest, new) }
+                }
+                if let last = lines.last {
+                    if let old = last.oldLineNumber { highest = max(highest, old) }
+                    if let new = last.newLineNumber { highest = max(highest, new) }
+                }
             }
         }
         return highest

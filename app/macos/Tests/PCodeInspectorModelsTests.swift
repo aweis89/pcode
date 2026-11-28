@@ -317,11 +317,30 @@ struct PCodeInspectorModelsTests {
         #expect(PCodeDiffTheme.maxLineNumber(in: [diff]) == 19)
 
         let gapKey = PCodeDiffExpandedGapKey(fileID: diff.id, gapID: "gap-1")
+        let staleKey = PCodeDiffExpandedGapKey(fileID: "src/removed.swift", gapID: "gap-stale")
         let expanded = [
             gapKey: [
                 PCodeDiffLine(id: "g1", kind: .context, oldLineNumber: 1200, newLineNumber: 1205, text: "x"),
-            ]
+            ],
+            staleKey: [
+                PCodeDiffLine(id: "g2", kind: .context, oldLineNumber: 99_999, newLineNumber: 99_999, text: "stale"),
+            ],
         ]
         #expect(PCodeDiffTheme.maxLineNumber(in: [diff], expandedGaps: expanded) == 1205)
+
+        // Pure-deletion hunk where oldLineNumber > newLineNumber still drives the gutter width.
+        let deletedHunk = PCodeDiffHunk(
+            id: "h-del",
+            header: "@@ -1000,5 +0,0 @@",
+            oldStart: 1000,
+            oldCount: 5,
+            newStart: 0,
+            newCount: 0,
+            lines: [
+                PCodeDiffLine(id: "d1", kind: .deleted, oldLineNumber: 1004, newLineNumber: nil, text: "gone"),
+            ]
+        )
+        let deletedDiff = PCodeFileDiff(path: "src/deleted.swift", kind: .deleted, hunks: [deletedHunk])
+        #expect(PCodeDiffTheme.maxLineNumber(in: [deletedDiff]) == 1004)
     }
 }
