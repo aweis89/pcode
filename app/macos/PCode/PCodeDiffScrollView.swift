@@ -48,25 +48,63 @@ struct PCodeDiffTheme: Equatable {
 
     let lineRowHeight: CGFloat
     let charAdvance: CGFloat
-    let unifiedOldNumWidth: CGFloat
-    let unifiedNewNumWidth: CGFloat
+    let unifiedNumWidth: CGFloat
     let unifiedMarkerWidth: CGFloat
     let sideBySideNumWidth: CGFloat
     let sideBySideMarkerWidth: CGFloat
 
     var unifiedGutterWidth: CGFloat {
-        unifiedOldNumWidth + unifiedNewNumWidth + unifiedMarkerWidth
+        unifiedNumWidth + unifiedMarkerWidth
     }
 
     var sideBySideHalfGutterWidth: CGFloat {
         sideBySideNumWidth + sideBySideMarkerWidth
     }
 
+    /// Highest line number displayed across `diffs` and any loaded `expandedGaps`,
+    /// used to size the line-number gutter dynamically without reserving 5 digits for small files.
+    static func maxLineNumber(
+        in diffs: [PCodeFileDiff],
+        expandedGaps: [PCodeDiffExpandedGapKey: [PCodeDiffLine]] = [:]
+    ) -> Int {
+        var highest = 0
+        for diff in diffs {
+            for hunk in diff.hunks {
+                if hunk.oldCount > 0 {
+                    highest = max(highest, hunk.oldStart + hunk.oldCount - 1)
+                } else {
+                    highest = max(highest, hunk.oldStart)
+                }
+                if hunk.newCount > 0 {
+                    highest = max(highest, hunk.newStart + hunk.newCount - 1)
+                } else {
+                    highest = max(highest, hunk.newStart)
+                }
+                if let last = hunk.lines.last {
+                    if let old = last.oldLineNumber { highest = max(highest, old) }
+                    if let new = last.newLineNumber { highest = max(highest, new) }
+                }
+            }
+        }
+        for lines in expandedGaps.values {
+            if let first = lines.first {
+                if let old = first.oldLineNumber { highest = max(highest, old) }
+                if let new = first.newLineNumber { highest = max(highest, new) }
+            }
+            if let last = lines.last {
+                if let old = last.oldLineNumber { highest = max(highest, old) }
+                if let new = last.newLineNumber { highest = max(highest, new) }
+            }
+        }
+        return highest
+    }
+
     static func make(
         isDark: Bool,
         surfaceBackground: NSColor,
         foreground: NSColor?,
-        codeFont: NSFont
+        codeFont: NSFont,
+        maxLineNumber: Int = 999
     ) -> PCodeDiffTheme {
         let concreteFg = foreground ?? (isDark ? NSColor(white: 0.90, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0))
         let secondaryFg = concreteFg.withAlphaComponent(0.62)
@@ -82,9 +120,12 @@ struct PCodeDiffTheme: Equatable {
         let rowHeight = ceil(codeFont.pointSize * 1.32) + 1
         let sampleWidth = ("M" as NSString).size(withAttributes: [.font: codeFont]).width
         let charAdvance = max(6.0, sampleWidth)
-        let fiveDigitWidth = ceil(("99999" as NSString).size(withAttributes: [.font: gutterFont]).width)
-        let numColWidth = max(34, fiveDigitWidth + 9)
-        let markerWidth = max(12, ceil(("+" as NSString).size(withAttributes: [.font: gutterFont]).width) + 4)
+        let digits = max(2, String(max(1, maxLineNumber)).count)
+        let digitsSample = String(repeating: "9", count: digits)
+        let digitsWidth = ceil((digitsSample as NSString).size(withAttributes: [.font: gutterFont]).width)
+        // 3.5pt left (clears the 2.5pt selection bar) + 3.5pt right before the +/- marker.
+        let numColWidth = max(20, digitsWidth + 7)
+        let markerWidth = max(11, ceil(("+" as NSString).size(withAttributes: [.font: gutterFont]).width) + 3)
 
         let primaryTintBase = isDark ? NSColor.white : NSColor.black
         let headerBase = surfaceBackground.blended(
@@ -129,11 +170,10 @@ struct PCodeDiffTheme: Equatable {
             fillerCellFill: primaryTintBase.withAlphaComponent(isDark ? 0.035 : 0.025),
             lineRowHeight: rowHeight,
             charAdvance: charAdvance,
-            unifiedOldNumWidth: numColWidth,
-            unifiedNewNumWidth: numColWidth,
+            unifiedNumWidth: numColWidth,
             unifiedMarkerWidth: markerWidth,
             sideBySideNumWidth: numColWidth,
-            sideBySideMarkerWidth: max(11, markerWidth - 1)
+            sideBySideMarkerWidth: max(10, markerWidth - 1)
         )
     }
 }
@@ -1506,25 +1546,19 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             ctx.fill(CGRect(x: 0, y: 0, width: 2.5, height: bounds.height))
         }
 
-        // Pinned line-number gutter (aligned to the first visual line when wrapped)
-        let gutterAttrs: [NSAttributedString.Key: Any] = [
-            .font: theme.gutterFont,
-            .foregroundColor: theme.secondaryForeground.withAlphaComponent(0.75),
-        ]
+        // Pinned single-column line-number gutter (aligned to the first visual line when wrapped).
+        // Uses newLineNumber when present, falling back to oldLineNumber (slightly softer) for deletions.
         let midY = theme.lineRowHeight * 0.5
-        if let oldNum = line.oldLineNumber {
-            let s = String(oldNum) as NSString
+        if let displayNum = line.referenceLineNumber {
+            let isOldOnly = (line.newLineNumber == nil)
+            let gutterAttrs: [NSAttributedString.Key: Any] = [
+                .font: theme.gutterFont,
+                .foregroundColor: theme.secondaryForeground.withAlphaComponent(isOldOnly ? 0.50 : 0.75),
+            ]
+            let s = String(displayNum) as NSString
             let sz = s.size(withAttributes: gutterAttrs)
             s.draw(
-                at: CGPoint(x: theme.unifiedOldNumWidth - 5 - sz.width, y: midY - sz.height * 0.5),
-                withAttributes: gutterAttrs
-            )
-        }
-        if let newNum = line.newLineNumber {
-            let s = String(newNum) as NSString
-            let sz = s.size(withAttributes: gutterAttrs)
-            s.draw(
-                at: CGPoint(x: theme.unifiedOldNumWidth + theme.unifiedNewNumWidth - 6 - sz.width, y: midY - sz.height * 0.5),
+                at: CGPoint(x: theme.unifiedNumWidth - 3.5 - sz.width, y: midY - sz.height * 0.5),
                 withAttributes: gutterAttrs
             )
         }
@@ -1545,7 +1579,7 @@ private final class PCodeDiffUnifiedLineRowView: NSView, PCodeDiffReusableRowVie
             ]
             let s = marker as NSString
             let sz = s.size(withAttributes: markerAttrs)
-            let mx = theme.unifiedOldNumWidth + theme.unifiedNewNumWidth + (theme.unifiedMarkerWidth - sz.width) * 0.5
+            let mx = theme.unifiedNumWidth + (theme.unifiedMarkerWidth - sz.width) * 0.5
             s.draw(at: CGPoint(x: mx, y: midY - sz.height * 0.5), withAttributes: markerAttrs)
         }
 
@@ -1791,7 +1825,7 @@ private final class PCodeDiffSideBySideRowView: NSView, PCodeDiffReusableRowView
             let s = String(num) as NSString
             let sz = s.size(withAttributes: attrs)
             s.draw(
-                at: CGPoint(x: rect.minX + theme.sideBySideNumWidth - 5 - sz.width, y: midY - sz.height * 0.5),
+                at: CGPoint(x: rect.minX + theme.sideBySideNumWidth - 3.5 - sz.width, y: midY - sz.height * 0.5),
                 withAttributes: attrs
             )
         }

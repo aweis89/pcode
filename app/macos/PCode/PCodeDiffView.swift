@@ -602,7 +602,8 @@ struct PCodeChangesInspectorView: View {
             isDark: isDark,
             surfaceBackground: NSColor(surfaceBackground),
             foreground: foregroundColor,
-            codeFont: resolvedCodeFont
+            codeFont: resolvedCodeFont,
+            maxLineNumber: PCodeDiffTheme.maxLineNumber(in: diffs, expandedGaps: expandedGaps)
         )
     }
 
