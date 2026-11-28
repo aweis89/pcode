@@ -3072,6 +3072,7 @@ final class PCodeWorkspace: ObservableObject {
     }
 
     func openQuickFilePicker() {
+        guard !showingDirectoryPicker else { return }
         guard let pane = selectedPane else { return }
         MainActor.assumeIsolated {
             pane.filesStore.ensureTreeAndIndexLoaded()
