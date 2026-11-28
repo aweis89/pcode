@@ -633,6 +633,11 @@ struct PCodeChangesInspectorView: View {
                             state.toggleCollapsed(filePath: diffID)
                             updatedUnseenFiles.remove(diffPath)
                         },
+                        onEditInFilesTab: { diff in
+                            let targetPath = diff.absolutePath ?? diff.path
+                            let line = (selection?.path == diff.path ? selection?.startLine : nil) ?? diff.firstChangedLine
+                            actions.openInFilesTab(targetPath, line, line)
+                        },
                         onOpenInEditor: { diff in
                             let targetPath = diff.absolutePath ?? diff.path
                             let line = (selection?.path == diff.path ? selection?.startLine : nil) ?? diff.firstChangedLine

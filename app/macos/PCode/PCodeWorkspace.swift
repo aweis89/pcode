@@ -929,6 +929,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
     /// Per-session right-hand Inspector state and live stores.
     let inspectorState: PCodeInspectorState
     let changesStore: PCodeSessionChangesStore
+    let filesStore: PCodeInspectorFilesStore
     let agentsStore: PCodeInspectorAgentsStore
     let commandsStore: PCodeInspectorCommandsStore
     let treeStore: PCodeConversationTreeStore
@@ -944,9 +945,17 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             return
         }
         changesStore.apply(event)
+        filesStore.apply(event)
         agentsStore.apply(event)
         commandsStore.apply(event)
         treeStore.apply(event)
+    }
+
+    @MainActor
+    func openFileInInspector(path: String, line: Int? = nil, endLine: Int? = nil) {
+        filesStore.ensureTreeAndIndexLoaded()
+        _ = filesStore.openFile(path: path, line: line, endLine: endLine)
+        inspectorState.openFiles()
     }
 
     init(surface: Ghostty.SurfaceView, directory: String, projectPath: String? = nil, sessionID: String?) {
@@ -960,6 +969,7 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
             (
                 PCodeInspectorState(),
                 PCodeSessionChangesStore(sessionDirectory: directory),
+                PCodeInspectorFilesStore(sessionDirectory: directory),
                 PCodeInspectorAgentsStore(),
                 PCodeInspectorCommandsStore(),
                 PCodeConversationTreeStore(sessionID: sessionID)
@@ -967,9 +977,10 @@ final class PCodeSessionPane: ObservableObject, Identifiable {
         }
         self.inspectorState = inspectorBundle.0
         self.changesStore = inspectorBundle.1
-        self.agentsStore = inspectorBundle.2
-        self.commandsStore = inspectorBundle.3
-        self.treeStore = inspectorBundle.4
+        self.filesStore = inspectorBundle.2
+        self.agentsStore = inspectorBundle.3
+        self.commandsStore = inspectorBundle.4
+        self.treeStore = inspectorBundle.5
         titleSubscription = surface.$title.removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] title in
@@ -3060,6 +3071,15 @@ final class PCodeWorkspace: ObservableObject {
         }
     }
 
+    func openQuickFilePicker() {
+        guard let pane = selectedPane else { return }
+        MainActor.assumeIsolated {
+            pane.filesStore.ensureTreeAndIndexLoaded()
+            pane.inspectorState.openFiles()
+            pane.inspectorState.isQuickOpenPresented = true
+        }
+    }
+
     func toggleShell() {
         guard let pane = selectedPane else { return }
         if pane.shell == nil {
@@ -3461,12 +3481,16 @@ struct PCodeWorkspaceView: View {
                     .keyboardShortcut("i", modifiers: .command)
                 Button("") { workspace.selectInspectorTab(.changes) }
                     .keyboardShortcut("1", modifiers: [.command, .option])
-                Button("") { workspace.selectInspectorTab(.agents) }
+                Button("") { workspace.selectInspectorTab(.files) }
                     .keyboardShortcut("2", modifiers: [.command, .option])
-                Button("") { workspace.selectInspectorTab(.commands) }
+                Button("") { workspace.selectInspectorTab(.agents) }
                     .keyboardShortcut("3", modifiers: [.command, .option])
-                Button("") { workspace.selectInspectorTab(.tree) }
+                Button("") { workspace.selectInspectorTab(.commands) }
                     .keyboardShortcut("4", modifiers: [.command, .option])
+                Button("") { workspace.selectInspectorTab(.tree) }
+                    .keyboardShortcut("5", modifiers: [.command, .option])
+                Button("") { workspace.openQuickFilePicker() }
+                    .keyboardShortcut("p", modifiers: .command)
                 Button("") { workspace.toggleInspectorExpanded() }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
             }

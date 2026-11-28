@@ -931,10 +931,12 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
     private var isCopied = false
 
     var onToggleCollapse: ((String, String) -> Void)?
+    var onEditInFilesTab: ((PCodeFileDiff) -> Void)?
     var onOpenInEditor: ((PCodeFileDiff) -> Void)?
     var onCopyPath: ((String) -> Void)?
 
     private let dotView = PCodeDiffPulsingDotLayerView(frame: .zero)
+    private let editButton = NSButton(frame: .zero)
     private let openButton = NSButton(frame: .zero)
     private let copyButton = NSButton(frame: .zero)
 
@@ -943,7 +945,12 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
         wantsLayer = true
         addSubview(dotView)
 
-        configureIconButton(openButton, symbol: "arrow.up.forward.square", tooltip: "Open in Editor (⌘O)")
+        configureIconButton(editButton, symbol: "pencil.line", tooltip: "Edit in Files tab")
+        editButton.target = self
+        editButton.action = #selector(handleEditClick)
+        addSubview(editButton)
+
+        configureIconButton(openButton, symbol: "arrow.up.forward.square", tooltip: "Open in External Editor (⌘O)")
         openButton.target = self
         openButton.action = #selector(handleOpenClick)
         addSubview(openButton)
@@ -970,6 +977,7 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
         super.prepareForReuse()
         diff = nil
         onToggleCollapse = nil
+        onEditInFilesTab = nil
         onOpenInEditor = nil
         onCopyPath = nil
         dotView.configure(color: .clear, active: false)
@@ -990,6 +998,8 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
         self.isCopied = isCopied
         self.theme = theme
 
+        editButton.contentTintColor = theme.secondaryForeground
+        editButton.isHidden = onEditInFilesTab == nil
         openButton.contentTintColor = theme.secondaryForeground
         copyButton.image = NSImage(
             systemSymbolName: isCopied ? "checkmark" : "doc.on.doc",
@@ -1016,11 +1026,14 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
         let btnSize: CGFloat = 20
         let copyX = max(0, w - 10 - btnSize)
         let openX = max(0, copyX - 4 - btnSize)
+        let editX = max(0, openX - 4 - btnSize)
         copyButton.frame = CGRect(x: copyX, y: (h - btnSize) * 0.5, width: btnSize, height: btnSize)
         openButton.frame = CGRect(x: openX, y: (h - btnSize) * 0.5, width: btnSize, height: btnSize)
+        editButton.frame = CGRect(x: editX, y: (h - btnSize) * 0.5, width: btnSize, height: btnSize)
 
+        let leftmostButtonX = editButton.isHidden ? openX : editX
         if !dotView.isHidden, let diff, let theme {
-            let dotX = computeDotOriginX(diff: diff, theme: theme, openButtonMinX: openX)
+            let dotX = computeDotOriginX(diff: diff, theme: theme, openButtonMinX: leftmostButtonX)
             dotView.frame = CGRect(x: dotX, y: (h - 12) * 0.5, width: 12, height: 12)
         }
     }
@@ -1049,8 +1062,14 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
         guard let diff else { return }
         let pt = convert(event.locationInWindow, from: nil)
         // Ignore clicks on the trailing action buttons.
-        if pt.x >= openButton.frame.minX - 4 { return }
+        let actionMinX = editButton.isHidden ? openButton.frame.minX : editButton.frame.minX
+        if pt.x >= actionMinX - 4 { return }
         onToggleCollapse?(diff.id, diff.path)
+    }
+
+    @objc private func handleEditClick() {
+        guard let diff else { return }
+        onEditInFilesTab?(diff)
     }
 
     @objc private func handleOpenClick() {
@@ -1127,7 +1146,7 @@ final class PCodeDiffFileHeaderRowView: NSView, PCodeDiffReusableRowView {
 
         // Compute right-hand stats area so title/path truncate cleanly before stats + buttons.
         let statFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-        var rightCursor = openButton.frame.minX - 6
+        var rightCursor = (editButton.isHidden ? openButton.frame.minX : editButton.frame.minX) - 6
 
         if diff.removed > 0 {
             let remStr = "-\(diff.removed)" as NSString
@@ -1944,6 +1963,7 @@ final class PCodeDiffDocumentView: NSView {
 
     // Callbacks wired by Coordinator
     var onToggleCollapse: ((String, String) -> Void)?
+    var onEditInFilesTab: ((PCodeFileDiff) -> Void)?
     var onOpenInEditor: ((PCodeFileDiff) -> Void)?
     var onCopyPath: ((String) -> Void)?
     var onExpandGap: ((PCodeDiffExpandGapPayload) -> Void)?
@@ -2418,6 +2438,7 @@ final class PCodeDiffDocumentView: NSView {
                 self?.window?.makeFirstResponder(self)
                 self?.onToggleCollapse?(id, path)
             }
+            headerView.onEditInFilesTab = onEditInFilesTab
             headerView.onOpenInEditor = onOpenInEditor
             headerView.onCopyPath = onCopyPath
             headerView.configure(
@@ -2498,6 +2519,7 @@ final class PCodeDiffDocumentView: NSView {
               case .fileHeader(let diff, let isCollapsed, let isFocused, let hasUnseen, let isCopied) = snapshot.rows[rowIndex]
         else { return }
         headerView.onToggleCollapse = onToggleCollapse
+        headerView.onEditInFilesTab = onEditInFilesTab
         headerView.onOpenInEditor = onOpenInEditor
         headerView.onCopyPath = onCopyPath
         headerView.configure(
@@ -2717,6 +2739,7 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
     let syntaxStore: PCodeDiffSyntaxStore
 
     let onToggleCollapse: (String, String) -> Void
+    let onEditInFilesTab: (PCodeFileDiff) -> Void
     let onOpenInEditor: (PCodeFileDiff) -> Void
     let onCopyPath: (String) -> Void
     let onExpandGap: (PCodeDiffExpandGapPayload) -> Void
@@ -2750,6 +2773,7 @@ struct PCodeNativeDiffScrollView: NSViewRepresentable {
         scrollView.backgroundColor = theme.background
 
         doc.onToggleCollapse = onToggleCollapse
+        doc.onEditInFilesTab = onEditInFilesTab
         doc.onOpenInEditor = onOpenInEditor
         doc.onCopyPath = onCopyPath
         doc.onExpandGap = onExpandGap
