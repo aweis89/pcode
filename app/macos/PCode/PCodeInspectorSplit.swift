@@ -321,6 +321,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
     @ObservedObject var pane: PCodeSessionPane
     @ObservedObject var inspectorState: PCodeInspectorState
     @ObservedObject var changesStore: PCodeSessionChangesStore
+    @ObservedObject var filesStore: PCodeInspectorFilesStore
     @ObservedObject var agentsStore: PCodeInspectorAgentsStore
     @ObservedObject var commandsStore: PCodeInspectorCommandsStore
     @ObservedObject var treeStore: PCodeConversationTreeStore
@@ -337,6 +338,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         self.pane = pane
         self.inspectorState = pane.inspectorState
         self.changesStore = pane.changesStore
+        self.filesStore = pane.filesStore
         self.agentsStore = pane.agentsStore
         self.commandsStore = pane.commandsStore
         self.treeStore = pane.treeStore
@@ -376,6 +378,10 @@ struct PCodeInspectorSplit<MainContent: View>: View {
             openInEditor: { path, line in
                 let resolved = Self.resolvePath(path, relativeTo: directory)
                 PCodeExternalEditor.open(path: resolved, line: line)
+            },
+            openInFilesTab: { path, line, endLine in
+                let resolved = Self.resolvePath(path, relativeTo: directory)
+                pane.openFileInInspector(path: resolved, line: line, endLine: endLine)
             },
             copyToClipboard: { text in
                 NSPasteboard.general.clearContents()
@@ -512,13 +518,15 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 }
             }
             .background(
-                PCodeInspectorEscapeMonitor(enabled: isOverlay || isExpanded) {
-                    if inspectorState.isExpanded {
+                PCodeInspectorEscapeMonitor(enabled: isOverlay || isExpanded || inspectorState.isQuickOpenPresented) {
+                    if inspectorState.isQuickOpenPresented {
+                        inspectorState.isQuickOpenPresented = false
+                    } else if inspectorState.isExpanded {
                         inspectorState.isExpanded = false
                     } else {
                         inspectorState.close()
+                        Ghostty.moveFocus(to: pane.keyboardSurface)
                     }
-                    Ghostty.moveFocus(to: pane.keyboardSurface)
                 }
             )
         }
@@ -588,6 +596,7 @@ struct PCodeInspectorSplit<MainContent: View>: View {
         return HStack(spacing: isCompact ? 4 : 6) {
             HStack(spacing: isCompact ? 1 : 2) {
                 tabButton(.changes, badge: changesBadgeCount, pulsing: changesHasStreaming, compact: isCompact)
+                tabButton(.files, badge: filesBadgeCount, pulsing: filesStore.dirtyBufferCount > 0, compact: isCompact)
                 tabButton(.agents, badge: agentsBadgeCount, pulsing: agentsStore.activeCount > 0, compact: isCompact)
                 tabButton(.commands, badge: commandsBadgeCount, pulsing: commandsStore.runningCount > 0, compact: isCompact)
                 tabButton(.tree, badge: treeBadgeCount, pulsing: false, compact: isCompact)
@@ -637,6 +646,10 @@ struct PCodeInspectorSplit<MainContent: View>: View {
 
     private var changesHasStreaming: Bool {
         changesStore.sessionFiles.contains(where: \.isStreaming)
+    }
+
+    private var filesBadgeCount: Int {
+        filesStore.dirtyBufferCount > 0 ? filesStore.dirtyBufferCount : filesStore.openBuffers.count
     }
 
     private var agentsBadgeCount: Int {
@@ -734,6 +747,15 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                         Task { await changesStore.refreshGit(for: scope) }
                     }
                 }
+            )
+        case .files:
+            PCodeInspectorFilesView(
+                state: inspectorState,
+                store: filesStore,
+                actions: resolvedActions,
+                codeFont: typography.snapshot.diffCodeNSFont(),
+                surfaceBackground: inspectorBackground,
+                foregroundColor: NSColor(ghostty.config.foregroundColor)
             )
         case .agents:
             PCodeInspectorAgentsView(
