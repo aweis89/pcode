@@ -24,6 +24,7 @@
 
 - **Stale modules in running sessions:** `make install` is editable, so a running session keeps whatever source was on disk when each module was first imported; a mid-turn fix does not reach it until restart. Before hunting an unreproducible failure, compare its timestamp against file mtimes and check whether another session was editing.
 - **Failed turns:** Full frames are saved to `<session-dir>/errors.log`; the transcript's `turn_failed` record carries only a type and message.
+- **Host memory in Pcode.app:** `session_host_idle_minutes` doesn't free app hosts, because each pane's `pcode --host` client stays attached for the pane's lifetime. Fewer hosts means fewer live panes. Also, a host that idle-stops tidies as if the session were finished (`leave_worktree`): it removes an untouched worktree and deletes a session with no turns. Stopping a session you mean to resume needs `keep_worktree`.
 - **Library warnings:** `logging` warnings and `warnings.warn` never reach the terminal — `library_log.install()` sends `WARNING` and above (plus `ANTHROPIC_LOG=debug` etc.) to `~/.local/state/pcode/library.log` (or the host log for hosted sessions).
 
 ## References
