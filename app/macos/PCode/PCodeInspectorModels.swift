@@ -486,8 +486,20 @@ final class PCodeInspectorState: ObservableObject {
     static let sessionDiffViewModeKey = "PCodeInspectorSessionDiffViewMode"
     static let diffWrapLinesKey = "PCodeInspectorDiffWrapLines"
 
-    @Published var isOpen: Bool = true
-    @Published var activeTab: PCodeInspectorTab = .changes
+    @Published var isOpen: Bool = true {
+        didSet {
+            if !isOpen && isQuickOpenPresented {
+                isQuickOpenPresented = false
+            }
+        }
+    }
+    @Published var activeTab: PCodeInspectorTab = .changes {
+        didSet {
+            if activeTab != .files && isQuickOpenPresented {
+                isQuickOpenPresented = false
+            }
+        }
+    }
     @Published var diffScope: PCodeDiffScope = .session
     @Published var sessionDiffViewMode: PCodeSessionDiffViewMode = {
         if let raw = UserDefaults.standard.string(forKey: PCodeInspectorState.sessionDiffViewModeKey),

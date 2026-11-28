@@ -15,10 +15,12 @@ struct PCodeInspectorFilesView: View {
     let foregroundColor: NSColor
 
     @Environment(\.colorScheme) private var colorScheme
-    @State private var editorState = SourceEditorState()
+    @State private var editorStatesByPath: [String: SourceEditorState] = [:]
+    @State private var jumpCoordinator = PCodeSourceEditorJumpCoordinator()
     @State private var lastAppliedJumpToken: UUID?
     @State private var quickOpenQuery: String = ""
     @State private var quickOpenSelectionIndex: Int = 0
+    @State private var quickOpenMatches: [String] = []
 
     private var isDark: Bool {
         colorScheme == .dark
@@ -41,7 +43,7 @@ struct PCodeInspectorFilesView: View {
                         Divider().opacity(0.35)
                     }
 
-                    if let buffer = activeBuffer, buffer.diskChangedConflict {
+                    if let buffer = activeBuffer, buffer.isMissingOnDisk || buffer.diskChangedConflict {
                         conflictBanner(for: buffer)
                         Divider().opacity(0.35)
                     }
@@ -64,19 +66,14 @@ struct PCodeInspectorFilesView: View {
                     quickOpenOverlay
                 }
             }
-            .background {
-                Group {
-                    Button("") { _ = store.saveActiveFile() }
-                        .keyboardShortcut("s", modifiers: .command)
-                    Button("") { referenceActiveFileInComposer() }
-                        .keyboardShortcut("l", modifiers: .command)
-                    Button("") { openActiveFileInExternalEditor() }
-                        .keyboardShortcut("o", modifiers: .command)
-                }
-                .opacity(0)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
+            .background(
+                PCodeFilesShortcutMonitor(
+                    enabled: activeBuffer != nil && !state.isQuickOpenPresented,
+                    onSave: { _ = store.saveActiveFile() },
+                    onReference: { referenceActiveFileInComposer() },
+                    onOpenExternal: { openActiveFileInExternalEditor() }
+                )
+            )
         }
         .onAppear {
             store.ensureTreeAndIndexLoaded()
@@ -85,17 +82,24 @@ struct PCodeInspectorFilesView: View {
         .onChange(of: store.activeFilePath) { _ in
             syncJumpIfNeeded()
         }
+        .onChange(of: store.openBuffers.map(\.path)) { openPaths in
+            let openSet = Set(openPaths)
+            editorStatesByPath = editorStatesByPath.filter { openSet.contains($0.key) }
+        }
         .onChange(of: activeBuffer?.pendingJumpToken) { _ in
             syncJumpIfNeeded()
-        }
-        .onChange(of: editorState.cursorPositions) { positions in
-            reportSelectionToStore(positions)
         }
         .onChange(of: state.isQuickOpenPresented) { presented in
             if presented {
                 quickOpenQuery = ""
                 quickOpenSelectionIndex = 0
                 store.ensureTreeAndIndexLoaded()
+                quickOpenMatches = store.filteredQuickOpenFiles(query: "", limit: 80)
+            }
+        }
+        .onChange(of: store.allProjectFiles.count) { _ in
+            if state.isQuickOpenPresented {
+                quickOpenMatches = store.filteredQuickOpenFiles(query: quickOpenQuery, limit: 80)
             }
         }
     }
@@ -266,7 +270,7 @@ struct PCodeInspectorFilesView: View {
                     )
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        store.activeFilePath = buffer.path
+                        store.selectFile(path: buffer.path)
                     }
                     .help(buffer.displayPath)
                 }
@@ -283,23 +287,42 @@ struct PCodeInspectorFilesView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11))
                 .foregroundStyle(.orange)
-            Text("Changed on disk while you have unsaved edits.")
-                .font(.system(size: 11))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Button("Reload") {
-                store.reloadFile(path: buffer.path)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Button("Keep Mine") {
-                store.dismissConflict(for: buffer.path)
-            }
-            .buttonStyle(.plain)
+            Text(
+                buffer.isMissingOnDisk
+                    ? "File was removed or moved on disk."
+                    : "Changed on disk while you have unsaved edits."
+            )
             .font(.system(size: 11))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            Spacer(minLength: 4)
+            if buffer.isMissingOnDisk {
+                Button("Save Copy") {
+                    _ = store.saveFile(path: buffer.path)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Close") {
+                    store.closeFile(path: buffer.path)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            } else {
+                Button("Reload") {
+                    store.reloadFile(path: buffer.path)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Keep Mine") {
+                    store.dismissConflict(for: buffer.path)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -460,6 +483,13 @@ struct PCodeInspectorFilesView: View {
                     get: { store.openBuffers.first(where: { $0.path == buffer.path })?.text ?? buffer.text },
                     set: { store.updateText($0, for: buffer.path) }
                 )
+                let stateBinding = Binding<SourceEditorState>(
+                    get: { editorStatesByPath[buffer.path] ?? SourceEditorState() },
+                    set: { newValue in
+                        editorStatesByPath[buffer.path] = newValue
+                        reportSelectionToStore(newValue.cursorPositions, for: buffer.path)
+                    }
+                )
                 let language = CodeLanguage.detectLanguageFrom(url: URL(fileURLWithPath: buffer.path))
                 let config = makeEditorConfiguration()
 
@@ -467,7 +497,8 @@ struct PCodeInspectorFilesView: View {
                     textBinding,
                     language: language,
                     configuration: config,
-                    state: $editorState
+                    state: stateBinding,
+                    coordinators: [jumpCoordinator]
                 )
                 .id("\(buffer.path)#\(store.reloadGeneration)")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -534,7 +565,7 @@ struct PCodeInspectorFilesView: View {
     // MARK: - Quick Open Overlay (⌘P)
 
     private var quickOpenOverlay: some View {
-        let matches = store.filteredQuickOpenFiles(query: quickOpenQuery, limit: 80)
+        let matches = quickOpenMatches
         return ZStack(alignment: .top) {
             Color.black.opacity(isDark ? 0.35 : 0.18)
                 .onTapGesture {
@@ -617,45 +648,53 @@ struct PCodeInspectorFilesView: View {
                         .foregroundStyle(.secondary)
                         .padding(16)
                 } else {
-                    ScrollView(.vertical) {
-                        LazyVStack(alignment: .leading, spacing: 1) {
-                            ForEach(Array(matches.enumerated()), id: \.element) { idx, relPath in
-                                let isHighlighted = idx == min(quickOpenSelectionIndex, matches.count - 1)
-                                let basename = (relPath as NSString).lastPathComponent
-                                let dir = (relPath as NSString).deletingLastPathComponent
-                                HStack(spacing: 6) {
-                                    Image(systemName: "doc.text")
-                                        .font(.system(size: 10.5))
-                                        .foregroundStyle(isHighlighted ? Color.accentColor : .secondary)
-                                    Text(basename)
-                                        .font(.system(size: 11.5, weight: .medium))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    if !dir.isEmpty && dir != "." {
-                                        Text(dir)
+                    ScrollViewReader { proxy in
+                        ScrollView(.vertical) {
+                            LazyVStack(alignment: .leading, spacing: 1) {
+                                ForEach(Array(matches.enumerated()), id: \.element) { idx, relPath in
+                                    let isHighlighted = idx == min(quickOpenSelectionIndex, matches.count - 1)
+                                    let basename = (relPath as NSString).lastPathComponent
+                                    let dir = (relPath as NSString).deletingLastPathComponent
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "doc.text")
                                             .font(.system(size: 10.5))
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(isHighlighted ? Color.accentColor : .secondary)
+                                        Text(basename)
+                                            .font(.system(size: 11.5, weight: .medium))
+                                            .foregroundStyle(.primary)
                                             .lineLimit(1)
-                                            .truncationMode(.head)
+                                        if !dir.isEmpty && dir != "." {
+                                            Text(dir)
+                                                .font(.system(size: 10.5))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.head)
+                                        }
+                                        Spacer(minLength: 0)
                                     }
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                        .fill(isHighlighted ? Color.accentColor.opacity(isDark ? 0.24 : 0.15) : Color.clear)
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    _ = store.openFile(path: relPath)
-                                    state.isQuickOpenPresented = false
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            .fill(isHighlighted ? Color.accentColor.opacity(isDark ? 0.24 : 0.15) : Color.clear)
+                                    )
+                                    .contentShape(Rectangle())
+                                    .id(idx)
+                                    .onTapGesture {
+                                        _ = store.openFile(path: relPath)
+                                        state.isQuickOpenPresented = false
+                                    }
                                 }
                             }
+                            .padding(4)
                         }
-                        .padding(4)
+                        .frame(maxHeight: 280)
+                        .onChange(of: quickOpenSelectionIndex) { newIndex in
+                            if matches.indices.contains(newIndex) {
+                                proxy.scrollTo(newIndex, anchor: .center)
+                            }
+                        }
                     }
-                    .frame(maxHeight: 280)
                 }
             }
             .background(
@@ -671,8 +710,9 @@ struct PCodeInspectorFilesView: View {
             .padding(.top, 20)
             .frame(maxWidth: 460)
         }
-        .onChange(of: quickOpenQuery) { _ in
+        .onChange(of: quickOpenQuery) { newQuery in
             quickOpenSelectionIndex = 0
+            quickOpenMatches = store.filteredQuickOpenFiles(query: newQuery, limit: 80)
         }
     }
 
@@ -735,21 +775,25 @@ struct PCodeInspectorFilesView: View {
               buffer.pendingJumpToken != lastAppliedJumpToken
         else { return }
         lastAppliedJumpToken = buffer.pendingJumpToken
+        let positions: [CursorPosition]
         if let range = buffer.highlightedLineRange, range.upperBound > range.lowerBound {
-            editorState.cursorPositions = [
+            positions = [
                 CursorPosition(
                     start: CursorPosition.Position(line: range.lowerBound, column: 1),
                     end: CursorPosition.Position(line: range.upperBound, column: 1)
                 )
             ]
         } else {
-            editorState.cursorPositions = [CursorPosition(line: jumpLine, column: 1)]
+            positions = [CursorPosition(line: jumpLine, column: 1)]
         }
+        var currentState = editorStatesByPath[buffer.path] ?? SourceEditorState()
+        currentState.cursorPositions = positions
+        editorStatesByPath[buffer.path] = currentState
+        jumpCoordinator.jump(to: positions)
     }
 
-    private func reportSelectionToStore(_ positions: [CursorPosition]?) {
-        guard let path = store.activeFilePath,
-              let first = positions?.first,
+    private func reportSelectionToStore(_ positions: [CursorPosition]?, for path: String) {
+        guard let first = positions?.first,
               first.start.line > 0
         else { return }
         let startLine = first.start.line
@@ -837,6 +881,133 @@ private struct PCodeQuickOpenSearchField: NSViewRepresentable {
                 return true
             default:
                 return false
+            }
+        }
+    }
+}
+
+/// Coordinator that bridges programmatic jump-to-line requests onto `TextViewController`,
+/// scrolling the target line range into view immediately on attach or update.
+@MainActor
+private final class PCodeSourceEditorJumpCoordinator: TextViewCoordinator {
+    private weak var controller: TextViewController?
+    private var pendingPositions: [CursorPosition]?
+
+    func prepareCoordinator(controller: TextViewController) {
+        self.controller = controller
+        if let pendingPositions {
+            self.pendingPositions = nil
+            DispatchQueue.main.async { [weak controller] in
+                controller?.setCursorPositions(pendingPositions, scrollToVisible: true)
+            }
+        }
+    }
+
+    func destroy() {
+        controller = nil
+    }
+
+    func jump(to positions: [CursorPosition]) {
+        if let controller {
+            controller.setCursorPositions(positions, scrollToVisible: true)
+        } else {
+            pendingPositions = positions
+        }
+    }
+}
+
+/// Scoped key monitor for `⌘S`, `⌘L`, and `⌘O` that only intercepts events when
+/// the window's first responder is inside the Files inspector view hierarchy.
+private struct PCodeFilesShortcutMonitor: NSViewRepresentable {
+    let enabled: Bool
+    let onSave: () -> Void
+    let onReference: () -> Void
+    let onOpenExternal: () -> Void
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        update(view)
+        return view
+    }
+
+    func updateNSView(_ view: MonitorView, context: Context) {
+        update(view)
+    }
+
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) {
+        view.teardown()
+    }
+
+    private func update(_ view: MonitorView) {
+        view.enabled = enabled
+        view.onSave = onSave
+        view.onReference = onReference
+        view.onOpenExternal = onOpenExternal
+    }
+
+    final class MonitorView: NSView {
+        var enabled = false {
+            didSet { syncMonitor() }
+        }
+        var onSave: (() -> Void)?
+        var onReference: (() -> Void)?
+        var onOpenExternal: (() -> Void)?
+        private var monitor: Any?
+
+        deinit {
+            teardown()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            syncMonitor()
+        }
+
+        func teardown() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func isResponderInsideFilesView() -> Bool {
+            guard let window,
+                  let container = superview,
+                  let responder = window.firstResponder as? NSView
+            else { return false }
+            return responder === container || responder.isDescendant(of: container)
+        }
+
+        private func syncMonitor() {
+            guard enabled, window != nil else {
+                teardown()
+                return
+            }
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      self.enabled,
+                      let window = self.window,
+                      event.window === window,
+                      event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
+                      self.isResponderInsideFilesView(),
+                      let key = event.charactersIgnoringModifiers?.lowercased()
+                else {
+                    return event
+                }
+                switch key {
+                case "s":
+                    self.onSave?()
+                    return nil
+                case "l":
+                    self.onReference?()
+                    return nil
+                case "o":
+                    self.onOpenExternal?()
+                    return nil
+                default:
+                    return event
+                }
             }
         }
     }

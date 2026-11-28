@@ -66,6 +66,7 @@ struct PCodeOpenFileBuffer: Identifiable, Equatable {
     var text: String
     var diskText: String
     var diskChangedConflict: Bool = false
+    var isMissingOnDisk: Bool = false
     var errorMessage: String?
     var isBinary: Bool = false
     var isTooLarge: Bool = false
@@ -184,10 +185,9 @@ final class PCodeInspectorFilesStore: ObservableObject {
     @Published private(set) var reloadGeneration: Int = 0
 
     private var fileWatcher: DispatchSourceFileSystemObject?
-    private var watchedFileDescriptor: Int32 = -1
-    private var watchedPath: String?
     private var watcherDebounceWork: DispatchWorkItem?
     private var indexTask: Task<Void, Never>?
+    private var indexGeneration: Int = 0
     private var statusClearWork: DispatchWorkItem?
     private var hasLoadedInitialTree = false
 
@@ -196,12 +196,10 @@ final class PCodeInspectorFilesStore: ObservableObject {
     }
 
     deinit {
+        watcherDebounceWork?.cancel()
+        statusClearWork?.cancel()
         fileWatcher?.cancel()
         fileWatcher = nil
-        if watchedFileDescriptor >= 0 {
-            Darwin.close(watchedFileDescriptor)
-            watchedFileDescriptor = -1
-        }
         indexTask?.cancel()
     }
 
@@ -220,6 +218,10 @@ final class PCodeInspectorFilesStore: ObservableObject {
         sessionDirectory = standardized
         expandedDirectories.removeAll()
         hasLoadedInitialTree = false
+        indexTask?.cancel()
+        indexTask = nil
+        indexGeneration &+= 1
+        isIndexingFiles = false
         allProjectFiles = []
         refreshTree()
     }
@@ -250,7 +252,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
             }
         case .editCompleted:
             if !isHistoryReplay {
-                recheckActiveFileOnDisk()
+                recheckAllOpenFilesOnDisk()
             }
         case .history(let events):
             for nested in events {
@@ -362,6 +364,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
             try textToWrite.write(toFile: path, atomically: true, encoding: .utf8)
             openBuffers[idx].diskText = textToWrite
             openBuffers[idx].diskChangedConflict = false
+            openBuffers[idx].isMissingOnDisk = false
             openBuffers[idx].lastLoadedAt = Date()
             openBuffers[idx].fileSize = Int64(textToWrite.utf8.count)
             // Atomic writes replace the inode; re-arm the watcher on the new descriptor.
@@ -397,6 +400,12 @@ final class PCodeInspectorFilesStore: ObservableObject {
         openBuffers[idx].diskChangedConflict = false
     }
 
+    func selectFile(path: String) {
+        guard openBuffers.contains(where: { $0.path == path }) else { return }
+        activeFilePath = path
+        recheckFileOnDisk(path: path)
+    }
+
     func closeFile(path: String) {
         guard let idx = openBuffers.firstIndex(where: { $0.path == path }) else { return }
         openBuffers.remove(at: idx)
@@ -405,7 +414,9 @@ final class PCodeInspectorFilesStore: ObservableObject {
                 activeFilePath = nil
             } else {
                 let nextIdx = min(idx, openBuffers.count - 1)
-                activeFilePath = openBuffers[nextIdx].path
+                let nextPath = openBuffers[nextIdx].path
+                activeFilePath = nextPath
+                recheckFileOnDisk(path: nextPath)
             }
         }
     }
@@ -483,12 +494,18 @@ final class PCodeInspectorFilesStore: ObservableObject {
     func refreshFileIndex() {
         indexTask?.cancel()
         let root = sessionDirectory
-        guard !root.isEmpty else { return }
+        guard !root.isEmpty else {
+            isIndexingFiles = false
+            return
+        }
+        indexGeneration &+= 1
+        let gen = indexGeneration
         isIndexingFiles = true
         indexTask = Task.detached(priority: .utility) { [weak self] in
             let files = Self.collectProjectFiles(in: root)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, self.sessionDirectory == root else { return }
+                guard let self, self.sessionDirectory == root, self.indexGeneration == gen else { return }
                 self.allProjectFiles = files
                 self.isIndexingFiles = false
             }
@@ -541,19 +558,23 @@ final class PCodeInspectorFilesStore: ObservableObject {
     }
 
     nonisolated private static func collectGitFiles(in root: String) -> [String]? {
+        guard !Task.isCancelled else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
         let outPipe = Pipe()
-        let errPipe = Pipe()
         process.standardOutput = outPipe
-        process.standardError = errPipe
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return nil
         }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        if Task.isCancelled {
+            if process.isRunning { process.terminate() }
+            return nil
+        }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
         var files: [String] = []
@@ -566,6 +587,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
     }
 
     nonisolated private static func collectFileManagerFiles(in root: String) -> [String] {
+        guard !Task.isCancelled else { return [] }
         let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: root, isDirectory: true)
         guard let enumerator = fm.enumerator(
@@ -577,6 +599,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
         var files: [String] = []
         let prefix = root.hasSuffix("/") ? root : root + "/"
         while let url = enumerator.nextObject() as? URL {
+            if Task.isCancelled { return [] }
             let name = url.lastPathComponent
             let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             if isDir {
@@ -599,13 +622,9 @@ final class PCodeInspectorFilesStore: ObservableObject {
     private func teardownWatcher() {
         watcherDebounceWork?.cancel()
         watcherDebounceWork = nil
+        // Descriptor is closed asynchronously inside the source's cancel handler.
         fileWatcher?.cancel()
         fileWatcher = nil
-        if watchedFileDescriptor >= 0 {
-            Darwin.close(watchedFileDescriptor)
-            watchedFileDescriptor = -1
-        }
-        watchedPath = nil
     }
 
     private func armWatcherForActiveFile() {
@@ -614,31 +633,31 @@ final class PCodeInspectorFilesStore: ObservableObject {
 
         let fd = Darwin.open(path, O_EVTONLY)
         guard fd >= 0 else { return }
-        watchedFileDescriptor = fd
-        watchedPath = path
 
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .rename, .delete, .extend, .attrib],
             queue: DispatchQueue.global(qos: .utility)
         )
-        source.setEventHandler { [weak self] in
+        source.setEventHandler { [weak self, weak source] in
+            let flags = source?.data ?? []
+            let inodeChanged = flags.contains(.rename) || flags.contains(.delete)
             Task { @MainActor [weak self] in
-                self?.scheduleDiskRecheck(for: path)
+                self?.scheduleDiskRecheck(for: path, rearmWatcher: inodeChanged)
             }
         }
         source.setCancelHandler {
-            // Descriptor closed in teardownWatcher.
+            Darwin.close(fd)
         }
         fileWatcher = source
         source.resume()
     }
 
-    private func scheduleDiskRecheck(for path: String) {
+    private func scheduleDiskRecheck(for path: String, rearmWatcher: Bool) {
         watcherDebounceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
-                self?.recheckFileOnDisk(path: path)
+                self?.recheckFileOnDisk(path: path, rearmWatcher: rearmWatcher)
             }
         }
         watcherDebounceWork = work
@@ -650,25 +669,48 @@ final class PCodeInspectorFilesStore: ObservableObject {
         recheckFileOnDisk(path: activeFilePath)
     }
 
-    func recheckFileOnDisk(path: String) {
+    func recheckAllOpenFilesOnDisk() {
+        let paths = openBuffers.map(\.path)
+        for path in paths {
+            recheckFileOnDisk(path: path)
+        }
+    }
+
+    func recheckFileOnDisk(path: String, rearmWatcher: Bool = false) {
         guard let idx = openBuffers.firstIndex(where: { $0.path == path }) else { return }
         let current = openBuffers[idx]
         guard current.canEdit else { return }
 
         guard FileManager.default.fileExists(atPath: path) else {
-            if !current.diskChangedConflict {
+            openBuffers[idx].isMissingOnDisk = true
+            if current.isDirty {
                 openBuffers[idx].diskChangedConflict = true
             }
             return
         }
 
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+        if openBuffers[idx].isMissingOnDisk {
+            openBuffers[idx].isMissingOnDisk = false
+        }
+
+        let resolvedURL = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        let resolvedSize = (try? resolvedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        guard resolvedSize <= Self.maxEditableFileBytes,
+              let data = try? Data(contentsOf: resolvedURL),
               Int64(data.count) <= Self.maxEditableFileBytes,
               !Self.looksBinary(data),
-              let freshText = String(data: data, encoding: .utf8)
-        else { return }
+              let freshText = Self.decodeText(data)
+        else {
+            if rearmWatcher && activeFilePath == path {
+                armWatcherForActiveFile()
+            }
+            return
+        }
 
         if freshText == current.diskText {
+            if rearmWatcher && activeFilePath == path {
+                armWatcherForActiveFile()
+            }
             return
         }
 
@@ -678,6 +720,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
             openBuffers[idx].text = freshText
             openBuffers[idx].diskText = freshText
             openBuffers[idx].diskChangedConflict = false
+            openBuffers[idx].isMissingOnDisk = false
             openBuffers[idx].lastLoadedAt = Date()
             openBuffers[idx].fileSize = Int64(data.count)
             reloadGeneration &+= 1
@@ -743,8 +786,9 @@ final class PCodeInspectorFilesStore: ObservableObject {
             )
         }
 
-        let attrs = try? fm.attributesOfItem(atPath: absolutePath)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let resolvedURL = URL(fileURLWithPath: absolutePath).resolvingSymlinksInPath()
+        let size = (try? resolvedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
+            ?? ((try? fm.attributesOfItem(atPath: resolvedURL.path)[.size] as? NSNumber)?.int64Value ?? 0)
         if size > Self.maxEditableFileBytes {
             return PCodeOpenFileBuffer(
                 id: absolutePath,
@@ -758,7 +802,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
             )
         }
 
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: absolutePath)) else {
+        guard let data = try? Data(contentsOf: resolvedURL) else {
             return PCodeOpenFileBuffer(
                 id: absolutePath,
                 path: absolutePath,
@@ -768,6 +812,19 @@ final class PCodeInspectorFilesStore: ObservableObject {
                 diskText: "",
                 errorMessage: "Could not read file contents.",
                 fileSize: size
+            )
+        }
+
+        if Int64(data.count) > Self.maxEditableFileBytes {
+            return PCodeOpenFileBuffer(
+                id: absolutePath,
+                path: absolutePath,
+                displayPath: display,
+                basename: basename,
+                text: "",
+                diskText: "",
+                isTooLarge: true,
+                fileSize: Int64(data.count)
             )
         }
 
@@ -784,9 +841,7 @@ final class PCodeInspectorFilesStore: ObservableObject {
             )
         }
 
-        guard let text = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1)
-        else {
+        guard let text = Self.decodeText(data) else {
             return PCodeOpenFileBuffer(
                 id: absolutePath,
                 path: absolutePath,
@@ -825,6 +880,10 @@ final class PCodeInspectorFilesStore: ObservableObject {
         }
         statusClearWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    private static func decodeText(_ data: Data) -> String? {
+        String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
     }
 
     private static func looksBinary(_ data: Data) -> Bool {

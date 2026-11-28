@@ -453,7 +453,10 @@ struct PCodeInspectorSplit<MainContent: View>: View {
             // Keep `mainContent()` at a single invariant structural position across all states
             // so opening/closing/expanding or crossing the overlay width threshold never tears
             // down the live transcript controller or Ghostty terminal surfaces.
-            ZStack(alignment: .trailing) {
+            let isQuickOpenActive = inspectorState.isOpen
+                && inspectorState.activeTab == .files
+                && inspectorState.isQuickOpenPresented
+            return ZStack(alignment: .trailing) {
                 HStack(spacing: 0) {
                     mainContent()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -518,8 +521,8 @@ struct PCodeInspectorSplit<MainContent: View>: View {
                 }
             }
             .background(
-                PCodeInspectorEscapeMonitor(enabled: isOverlay || isExpanded || inspectorState.isQuickOpenPresented) {
-                    if inspectorState.isQuickOpenPresented {
+                PCodeInspectorEscapeMonitor(enabled: isOverlay || isExpanded || isQuickOpenActive) {
+                    if isQuickOpenActive {
                         inspectorState.isQuickOpenPresented = false
                     } else if inspectorState.isExpanded {
                         inspectorState.isExpanded = false
